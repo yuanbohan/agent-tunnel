@@ -2,6 +2,8 @@ package session
 
 import (
 	"bytes"
+	"context"
+	"strings"
 	"testing"
 )
 
@@ -106,5 +108,30 @@ func TestHubResizeRejectsInvalidDimensions(t *testing.T) {
 				t.Fatalf("Resize error = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestStartCommandBridgesInputAndOutput(t *testing.T) {
+	running, err := StartCommand(context.Background(), "/bin/sh", []string{
+		"-c",
+		"read line; printf %s \"$line\"",
+	})
+	if err != nil {
+		t.Fatalf("StartCommand returned error: %v", err)
+	}
+	defer running.Close()
+
+	sink := &recordingSink{}
+	running.Hub.AddSink("test", sink)
+
+	if err := running.Hub.WriteInput([]byte("hello\n")); err != nil {
+		t.Fatalf("WriteInput returned error: %v", err)
+	}
+	if err := running.Wait(); err != nil {
+		t.Fatalf("Wait returned error: %v", err)
+	}
+
+	if got := string(bytes.Join(sink.chunks, nil)); !strings.Contains(got, "hello") {
+		t.Fatalf("output %q does not contain hello", got)
 	}
 }
