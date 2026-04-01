@@ -3,8 +3,11 @@ package session
 import (
 	"bytes"
 	"context"
+	"errors"
+	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 type recordingSink struct {
@@ -114,7 +117,7 @@ func TestHubResizeRejectsInvalidDimensions(t *testing.T) {
 func TestStartCommandBridgesInputAndOutput(t *testing.T) {
 	running, err := StartCommand(context.Background(), "/bin/sh", []string{
 		"-c",
-		"read line; printf 'child:%s' \"$line\"",
+		"read line; printf '<child>%s</child>' \"$line\"",
 	})
 	if err != nil {
 		t.Fatalf("StartCommand returned error: %v", err)
@@ -131,8 +134,8 @@ func TestStartCommandBridgesInputAndOutput(t *testing.T) {
 		t.Fatalf("Wait returned error: %v", err)
 	}
 
-	if got := string(bytes.Join(sink.chunks, nil)); !strings.Contains(got, "child:hello") {
-		t.Fatalf("output %q does not contain child output", got)
+	if got := string(bytes.Join(sink.chunks, nil)); strings.Count(got, "<child>hello</child>") != 1 || !strings.HasSuffix(got, "<child>hello</child>") {
+		t.Fatalf("output %q does not show the expected child-only marker", got)
 	}
 }
 
@@ -172,5 +175,49 @@ func TestRunningWaitDrainsPTYOutput(t *testing.T) {
 	got := bytes.Join(sink.chunks, nil)
 	if len(got) != 8192 {
 		t.Fatalf("got %d bytes, want 8192", len(got))
+	}
+}
+
+func TestRunningWaitClosesPTY(t *testing.T) {
+	running, err := StartCommand(context.Background(), "/bin/sh", []string{
+		"-c",
+		"printf done",
+	})
+	if err != nil {
+		t.Fatalf("StartCommand returned error: %v", err)
+	}
+
+	if err := running.Wait(); err != nil {
+		t.Fatalf("Wait returned error: %v", err)
+	}
+
+	if _, err := running.ptmx.Write([]byte("x")); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("PTY write error = %v, want %v", err, os.ErrClosed)
+	}
+}
+
+func TestCopyInputStopsOnCancel(t *testing.T) {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("Pipe returned error: %v", err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+
+	hub := NewHub(func([]byte) error { return nil }, func(int, int) error { return nil })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		copyInput(ctx, reader, hub)
+	}()
+
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("copyInput did not stop after context cancellation")
 	}
 }

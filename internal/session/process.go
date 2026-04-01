@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"sync"
@@ -15,6 +16,8 @@ type Running struct {
 	ptmx      *os.File
 	cmd       *exec.Cmd
 	closeOnce sync.Once
+	cleanOnce sync.Once
+	cleanErr  error
 	waitOnce  sync.Once
 	waitErr   error
 	waitDone  chan struct{}
@@ -69,20 +72,24 @@ func StartCommand(ctx context.Context, path string, args []string) (*Running, er
 
 func (r *Running) Wait() error {
 	err := r.waitForProcess()
+	cleanupErr := r.cleanupPTY()
 	<-r.readDone
+	if err != nil {
+		return err
+	}
+	if cleanupErr != nil {
+		return cleanupErr
+	}
 	return err
 }
 
 func (r *Running) Close() error {
-	var err error
 	r.closeOnce.Do(func() {
-		_ = r.ptmx.Close()
 		if r.cmd.Process != nil {
 			_ = r.cmd.Process.Kill()
 		}
-		err = r.Wait()
 	})
-	return err
+	return r.Wait()
 }
 
 func (r *Running) waitForProcess() error {
@@ -93,4 +100,15 @@ func (r *Running) waitForProcess() error {
 
 	<-r.waitDone
 	return r.waitErr
+}
+
+func (r *Running) cleanupPTY() error {
+	r.cleanOnce.Do(func() {
+		r.cleanErr = r.ptmx.Close()
+	})
+
+	if errors.Is(r.cleanErr, os.ErrClosed) {
+		return nil
+	}
+	return r.cleanErr
 }
