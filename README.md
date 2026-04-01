@@ -8,7 +8,7 @@ A terminal-over-WebSocket tool. The agent spawns a real PTY shell and exposes it
 
 ## Run
 
-Open **two terminal tabs/splits** in Ghostty.
+Start the agent first — it's the same for both clients.
 
 **Tab 1 — start the agent:**
 ```bash
@@ -17,7 +17,20 @@ make agent
 # 2026/03/31 22:00:00 listening on :8585
 ```
 
-**Tab 2 — connect the client:**
+### Option A: Web client (browser)
+
+```bash
+# First time only
+make web-install
+
+make web
+# → open http://localhost:3000
+```
+
+The browser terminal connects to the agent automatically. A status bar shows connection state; click **Reconnect** if the agent isn't running yet.
+
+### Option B: CLI client (Go)
+
 ```bash
 make client
 # or: go run ./cmd/client
@@ -33,8 +46,9 @@ You will see your zsh prompt. Type commands and see results — it is a real PTY
 
 ```bash
 make build        # builds bin/agent and bin/client
-make agent        # run agent directly (port 8585)
-make client       # run client (connects to localhost:8585)
+make agent        # run agent (port 8585)
+make client       # run CLI client (connects to localhost:8585)
+make web          # run web client dev server (port 3000)
 ```
 
 Custom port / URL:
