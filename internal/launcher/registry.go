@@ -1,6 +1,7 @@
 package launcher
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 	"sort"
@@ -36,7 +37,10 @@ func resolveWithLookPath(name string, args []string, lookPath func(string) (stri
 
 	path, err := lookPath(executable)
 	if err != nil {
-		return Command{}, fmt.Errorf("%s executable not found in PATH", executable)
+		if errors.Is(err, exec.ErrNotFound) {
+			return Command{}, fmt.Errorf("%s executable not found in PATH", executable)
+		}
+		return Command{}, fmt.Errorf("%s executable lookup failed: %w", executable, err)
 	}
 
 	return Command{

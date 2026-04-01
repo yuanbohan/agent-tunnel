@@ -2,6 +2,7 @@ package launcher
 
 import (
 	"errors"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -42,12 +43,45 @@ func TestResolveRejectsUnsupportedLauncher(t *testing.T) {
 
 func TestResolveReportsMissingExecutable(t *testing.T) {
 	_, err := resolveWithLookPath("gemini", nil, func(string) (string, error) {
-		return "", errors.New("not found")
+		return "", exec.ErrNotFound
 	})
 	if err == nil {
 		t.Fatal("expected an error for missing executable")
 	}
 	if !strings.Contains(err.Error(), "gemini executable not found in PATH") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestResolveWrapsUnexpectedLookupFailure(t *testing.T) {
+	wantErr := errors.New("permission denied")
+	_, err := resolveWithLookPath("codex", nil, func(string) (string, error) {
+		return "", wantErr
+	})
+	if err == nil {
+		t.Fatal("expected an error for lookup failure")
+	}
+	if !strings.Contains(err.Error(), "codex executable lookup failed") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("error = %v, want it to wrap %v", err, wantErr)
+	}
+}
+
+func TestResolveCopiesArgsDefensively(t *testing.T) {
+	args := []string{"--resume"}
+	cmd, err := resolveWithLookPath("claude", args, func(string) (string, error) {
+		return "/usr/local/bin/claude", nil
+	})
+	if err != nil {
+		t.Fatalf("Resolve returned error: %v", err)
+	}
+
+	args[0] = "--other"
+	args = append(args, "--new-flag")
+
+	if len(cmd.Args) != 1 || cmd.Args[0] != "--resume" {
+		t.Fatalf("Args = %#v, want [--resume]", cmd.Args)
 	}
 }
