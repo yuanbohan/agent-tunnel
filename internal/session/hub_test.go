@@ -14,6 +14,19 @@ func (s *recordingSink) WriteOutput(data []byte) error {
 	return nil
 }
 
+type mutatingSink struct {
+	seen [][]byte
+}
+
+func (s *mutatingSink) WriteOutput(data []byte) error {
+	if len(data) > 0 {
+		data[0] = 'x'
+	}
+	cp := append([]byte(nil), data...)
+	s.seen = append(s.seen, cp)
+	return nil
+}
+
 func TestHubBroadcastsOutputToAllSinks(t *testing.T) {
 	hub := NewHub(func([]byte) error { return nil }, func(int, int) error { return nil })
 
@@ -31,6 +44,24 @@ func TestHubBroadcastsOutputToAllSinks(t *testing.T) {
 	}
 	if got := bytes.Join(right.chunks, nil); string(got) != "hello" {
 		t.Fatalf("right sink got %q, want hello", string(got))
+	}
+}
+
+func TestHubBroadcastsIndependentCopiesToEachSink(t *testing.T) {
+	hub := NewHub(func([]byte) error { return nil }, func(int, int) error { return nil })
+
+	mutator := &mutatingSink{}
+	observer := &recordingSink{}
+	hub.AddSink("mutator", mutator)
+	hub.AddSink("observer", observer)
+
+	hub.BroadcastOutput([]byte("hello"))
+
+	if got := bytes.Join(observer.chunks, nil); string(got) != "hello" {
+		t.Fatalf("observer sink got %q, want hello", string(got))
+	}
+	if got := bytes.Join(mutator.seen, nil); string(got) != "xello" {
+		t.Fatalf("mutator sink saw %q, want xello", string(got))
 	}
 }
 
