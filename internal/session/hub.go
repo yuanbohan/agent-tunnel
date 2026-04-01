@@ -39,8 +39,13 @@ func (h *Hub) RemoveSink(id string) {
 
 func (h *Hub) BroadcastOutput(data []byte) {
 	h.mu.RLock()
-	defer h.mu.RUnlock()
+	sinks := make([]OutputSink, 0, len(h.sinks))
 	for _, sink := range h.sinks {
+		sinks = append(sinks, sink)
+	}
+	h.mu.RUnlock()
+
+	for _, sink := range sinks {
 		cp := append([]byte(nil), data...)
 		_ = sink.WriteOutput(cp)
 	}

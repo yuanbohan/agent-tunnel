@@ -10,8 +10,7 @@ type recordingSink struct {
 }
 
 func (s *recordingSink) WriteOutput(data []byte) error {
-	cp := append([]byte(nil), data...)
-	s.chunks = append(s.chunks, cp)
+	s.chunks = append(s.chunks, data)
 	return nil
 }
 
@@ -23,7 +22,9 @@ func TestHubBroadcastsOutputToAllSinks(t *testing.T) {
 	hub.AddSink("left", left)
 	hub.AddSink("right", right)
 
-	hub.BroadcastOutput([]byte("hello"))
+	output := []byte("hello")
+	hub.BroadcastOutput(output)
+	output[0] = 'j'
 
 	if got := bytes.Join(left.chunks, nil); string(got) != "hello" {
 		t.Fatalf("left sink got %q, want hello", string(got))
@@ -36,13 +37,15 @@ func TestHubBroadcastsOutputToAllSinks(t *testing.T) {
 func TestHubWriteInputPassesBytesToWriter(t *testing.T) {
 	var got []byte
 	hub := NewHub(func(data []byte) error {
-		got = append([]byte(nil), data...)
+		got = data
 		return nil
 	}, func(int, int) error { return nil })
 
-	if err := hub.WriteInput([]byte("input")); err != nil {
+	input := []byte("input")
+	if err := hub.WriteInput(input); err != nil {
 		t.Fatalf("WriteInput returned error: %v", err)
 	}
+	input[0] = 'o'
 	if string(got) != "input" {
 		t.Fatalf("got input %q, want input", string(got))
 	}
@@ -51,10 +54,26 @@ func TestHubWriteInputPassesBytesToWriter(t *testing.T) {
 func TestHubResizeRejectsInvalidDimensions(t *testing.T) {
 	hub := NewHub(func([]byte) error { return nil }, func(int, int) error { return nil })
 
-	if err := hub.Resize(0, 24); err == nil {
-		t.Fatal("expected an error for zero columns")
+	tests := []struct {
+		name string
+		cols int
+		rows int
+		want string
+	}{
+		{name: "zero columns", cols: 0, rows: 24, want: "invalid resize 0x24"},
+		{name: "zero rows", cols: 80, rows: 0, want: "invalid resize 80x0"},
+		{name: "negative rows", cols: 80, rows: -1, want: "invalid resize 80x-1"},
 	}
-	if err := hub.Resize(80, 0); err == nil {
-		t.Fatal("expected an error for zero rows")
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := hub.Resize(tc.cols, tc.rows)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if got := err.Error(); got != tc.want {
+				t.Fatalf("Resize error = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
