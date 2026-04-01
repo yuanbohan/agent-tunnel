@@ -114,7 +114,7 @@ func TestHubResizeRejectsInvalidDimensions(t *testing.T) {
 func TestStartCommandBridgesInputAndOutput(t *testing.T) {
 	running, err := StartCommand(context.Background(), "/bin/sh", []string{
 		"-c",
-		"read line; printf %s \"$line\"",
+		"read line; printf 'child:%s' \"$line\"",
 	})
 	if err != nil {
 		t.Fatalf("StartCommand returned error: %v", err)
@@ -131,7 +131,46 @@ func TestStartCommandBridgesInputAndOutput(t *testing.T) {
 		t.Fatalf("Wait returned error: %v", err)
 	}
 
-	if got := string(bytes.Join(sink.chunks, nil)); !strings.Contains(got, "hello") {
-		t.Fatalf("output %q does not contain hello", got)
+	if got := string(bytes.Join(sink.chunks, nil)); !strings.Contains(got, "child:hello") {
+		t.Fatalf("output %q does not contain child output", got)
+	}
+}
+
+func TestRunningCloseReapsChildProcess(t *testing.T) {
+	running, err := StartCommand(context.Background(), "/bin/sh", []string{
+		"-c",
+		"sleep 30",
+	})
+	if err != nil {
+		t.Fatalf("StartCommand returned error: %v", err)
+	}
+
+	_ = running.Close()
+
+	if running.cmd.ProcessState == nil {
+		t.Fatal("Close did not reap child process")
+	}
+}
+
+func TestRunningWaitDrainsPTYOutput(t *testing.T) {
+	running, err := StartCommand(context.Background(), "/bin/sh", []string{
+		"-c",
+		"i=0; while [ $i -lt 8192 ]; do printf x; i=$((i+1)); done",
+	})
+	if err != nil {
+		t.Fatalf("StartCommand returned error: %v", err)
+	}
+	defer running.Close()
+
+	sink := &recordingSink{}
+	running.Hub.AddSink("test", sink)
+
+	if err := running.Wait(); err != nil {
+		t.Fatalf("Wait returned error: %v", err)
+	}
+
+	got := bytes.Join(sink.chunks, nil)
+	if len(got) != 8192 {
+		t.Fatalf("got %d bytes, want 8192", len(got))
 	}
 }

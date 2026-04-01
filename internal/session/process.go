@@ -15,6 +15,10 @@ type Running struct {
 	ptmx      *os.File
 	cmd       *exec.Cmd
 	closeOnce sync.Once
+	waitOnce  sync.Once
+	waitErr   error
+	waitDone  chan struct{}
+	readDone  chan struct{}
 }
 
 func StartCommand(ctx context.Context, path string, args []string) (*Running, error) {
@@ -27,8 +31,10 @@ func StartCommand(ctx context.Context, path string, args []string) (*Running, er
 	}
 
 	running := &Running{
-		ptmx: ptmx,
-		cmd:  cmd,
+		ptmx:     ptmx,
+		cmd:      cmd,
+		waitDone: make(chan struct{}),
+		readDone: make(chan struct{}),
 	}
 	running.Hub = NewHub(
 		func(data []byte) error {
@@ -44,6 +50,8 @@ func StartCommand(ctx context.Context, path string, args []string) (*Running, er
 	)
 
 	go func() {
+		defer close(running.readDone)
+
 		buf := make([]byte, 4096)
 		for {
 			n, err := ptmx.Read(buf)
@@ -60,7 +68,9 @@ func StartCommand(ctx context.Context, path string, args []string) (*Running, er
 }
 
 func (r *Running) Wait() error {
-	return r.cmd.Wait()
+	err := r.waitForProcess()
+	<-r.readDone
+	return err
 }
 
 func (r *Running) Close() error {
@@ -70,6 +80,17 @@ func (r *Running) Close() error {
 		if r.cmd.Process != nil {
 			_ = r.cmd.Process.Kill()
 		}
+		err = r.Wait()
 	})
 	return err
+}
+
+func (r *Running) waitForProcess() error {
+	r.waitOnce.Do(func() {
+		r.waitErr = r.cmd.Wait()
+		close(r.waitDone)
+	})
+
+	<-r.waitDone
+	return r.waitErr
 }

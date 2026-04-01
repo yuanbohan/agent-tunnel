@@ -29,36 +29,19 @@ func AttachLocalTerminal(ctx context.Context, hub *Hub) (restore func(), done <-
 		defer close(finished)
 		defer hub.RemoveSink("local-terminal")
 
-		type stdinMessage struct {
-			data []byte
-			err  error
-		}
-
-		stdinCh := make(chan stdinMessage, 1)
-		go func() {
-			buf := make([]byte, 256)
-			for {
-				n, readErr := os.Stdin.Read(buf)
-				if n > 0 {
-					cp := append([]byte(nil), buf[:n]...)
-					stdinCh <- stdinMessage{data: cp}
-				}
-				if readErr != nil {
-					stdinCh <- stdinMessage{err: readErr}
-					return
-				}
-			}
-		}()
-
+		buf := make([]byte, 256)
 		for {
-			select {
-			case <-ctx.Done():
+			if ctx.Err() != nil {
 				return
-			case msg := <-stdinCh:
-				if msg.err != nil {
-					return
-				}
-				_ = hub.WriteInput(msg.data)
+			}
+
+			n, readErr := os.Stdin.Read(buf)
+			if n > 0 {
+				cp := append([]byte(nil), buf[:n]...)
+				_ = hub.WriteInput(cp)
+			}
+			if readErr != nil {
+				return
 			}
 		}
 	}()
