@@ -10,7 +10,7 @@ export class ConnectionManager {
 
   constructor(url: string) {
     this.url = url
-    this.connect()
+    setTimeout(() => this.connect(), 0)
   }
 
   private connect() {
@@ -32,8 +32,10 @@ export class ConnectionManager {
     }
 
     ws.onclose = () => {
-      this.ws = null
-      this.emitStatus('disconnected')
+      if (this.ws === ws) {        // ← only null if this is still the active socket
+        this.ws = null
+        this.emitStatus('disconnected')
+      }
     }
 
     ws.onerror = () => {
