@@ -23,7 +23,8 @@ type LiveSession interface {
 	AddSink(string, session.OutputSink)
 	RemoveSink(string)
 	WriteInput([]byte) error
-	Resize(int, int) error
+	CurrentSize() (int, int)
+	OnResize(func(int, int))
 }
 
 type Running struct {
@@ -153,6 +154,24 @@ func sameOriginLoopbackOnly(r *http.Request) bool {
 
 func NewHandler(sess LiveSession) http.Handler {
 	fileServer := http.FileServer(http.FS(webui.Files()))
+
+	var wsMu sync.Mutex
+	wsConns := make(map[string]*websocket.Conn)
+
+	sess.OnResize(func(cols, rows int) {
+		msg := protocol.Message{Type: "resize", Cols: cols, Rows: rows}
+		wsMu.Lock()
+		conns := make([]*websocket.Conn, 0, len(wsConns))
+		for _, c := range wsConns {
+			conns = append(conns, c)
+		}
+		wsMu.Unlock()
+
+		for _, c := range conns {
+			_ = c.WriteJSON(msg)
+		}
+	})
+
 	mux := http.NewServeMux()
 	mux.Handle("/", fileServer)
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
@@ -164,10 +183,28 @@ func NewHandler(sess LiveSession) http.Handler {
 		sinkID := fmt.Sprintf("ws-%d", atomic.AddUint64(&nextSinkID, 1))
 		sink := newWSSink(conn)
 		sess.AddSink(sinkID, sink)
+
+		wsMu.Lock()
+		wsConns[sinkID] = conn
+		wsMu.Unlock()
+
 		defer func() {
 			sess.RemoveSink(sinkID)
+			wsMu.Lock()
+			delete(wsConns, sinkID)
+			wsMu.Unlock()
 			_ = sink.Close()
 		}()
+
+		// Send current PTY size to browser on connect
+		cols, rows := sess.CurrentSize()
+		if cols > 0 && rows > 0 {
+			_ = conn.WriteJSON(protocol.Message{
+				Type: "resize",
+				Cols: cols,
+				Rows: rows,
+			})
+		}
 
 		for {
 			_, raw, err := conn.ReadMessage()
@@ -187,8 +224,6 @@ func NewHandler(sess LiveSession) http.Handler {
 					continue
 				}
 				_ = sess.WriteInput(data)
-			case "resize":
-				_ = sess.Resize(msg.Cols, msg.Rows)
 			}
 		}
 	})

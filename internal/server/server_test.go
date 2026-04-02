@@ -20,12 +20,12 @@ import (
 type fakeSession struct {
 	mu sync.Mutex
 
-	input    []byte
-	cols     int
-	rows     int
-	sinks    map[string]session.OutputSink
-	inputCh  chan struct{}
-	resizeCh chan struct{}
+	input      []byte
+	cols       int
+	rows       int
+	sinks      map[string]session.OutputSink
+	inputCh    chan struct{}
+	onResizeCb func(int, int)
 }
 
 func (f *fakeSession) AddSink(id string, sink session.OutputSink) {
@@ -59,31 +59,22 @@ func (f *fakeSession) WriteInput(data []byte) error {
 	return nil
 }
 
-func (f *fakeSession) Resize(cols, rows int) error {
+func (f *fakeSession) CurrentSize() (int, int) {
 	f.mu.Lock()
-	f.cols = cols
-	f.rows = rows
-	f.mu.Unlock()
+	defer f.mu.Unlock()
+	return f.cols, f.rows
+}
 
-	if f.resizeCh != nil {
-		select {
-		case f.resizeCh <- struct{}{}:
-		default:
-		}
-	}
-	return nil
+func (f *fakeSession) OnResize(cb func(int, int)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.onResizeCb = cb
 }
 
 func (f *fakeSession) Input() []byte {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]byte(nil), f.input...)
-}
-
-func (f *fakeSession) ResizeSize() (int, int) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.cols, f.rows
 }
 
 func (f *fakeSession) Sinks() map[string]session.OutputSink {
@@ -336,8 +327,9 @@ func TestWebSocketBridgeAllowsSameOrigin(t *testing.T) {
 	conn.Close()
 }
 
-func TestWebSocketBridgeForwardsResize(t *testing.T) {
-	sess := &fakeSession{resizeCh: make(chan struct{}, 1)}
+func TestWebSocketSendsPTYSizeOnConnect(t *testing.T) {
+	sess := &fakeSession{cols: 120, rows: 40}
+
 	server := httptest.NewServer(NewHandler(sess))
 	defer server.Close()
 
@@ -348,23 +340,64 @@ func TestWebSocketBridgeForwardsResize(t *testing.T) {
 	}
 	defer conn.Close()
 
+	var msg protocol.Message
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if err := conn.ReadJSON(&msg); err != nil {
+		t.Fatalf("ReadJSON returned error: %v", err)
+	}
+
+	if msg.Type != "resize" || msg.Cols != 120 || msg.Rows != 40 {
+		t.Fatalf("initial message = %+v, want resize 120x40", msg)
+	}
+}
+
+func TestWebSocketIgnoresBrowserResize(t *testing.T) {
+	sess := &fakeSession{cols: 80, rows: 24, inputCh: make(chan struct{}, 1)}
+
+	server := httptest.NewServer(NewHandler(sess))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Dial returned error: %v", err)
+	}
+	defer conn.Close()
+
+	// Read and discard the initial PTY size message
+	var initial protocol.Message
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if err := conn.ReadJSON(&initial); err != nil {
+		t.Fatalf("ReadJSON returned error: %v", err)
+	}
+
+	// Send a resize from browser — should be ignored
 	if err := conn.WriteJSON(protocol.Message{
 		Type: "resize",
-		Cols: 120,
-		Rows: 40,
+		Cols: 200,
+		Rows: 60,
+	}); err != nil {
+		t.Fatalf("WriteJSON returned error: %v", err)
+	}
+
+	// Send an input message to verify the connection is still working
+	if err := conn.WriteJSON(protocol.Message{
+		Type: "input",
+		Data: base64.StdEncoding.EncodeToString([]byte("test")),
 	}); err != nil {
 		t.Fatalf("WriteJSON returned error: %v", err)
 	}
 
 	select {
-	case <-sess.resizeCh:
+	case <-sess.inputCh:
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for resize")
+		t.Fatal("timed out waiting for input after ignored resize")
 	}
 
-	cols, rows := sess.ResizeSize()
-	if cols != 120 || rows != 40 {
-		t.Fatalf("resize = %dx%d, want 120x40", cols, rows)
+	// Verify the session size was NOT changed
+	cols, rows := sess.CurrentSize()
+	if cols != 80 || rows != 24 {
+		t.Fatalf("session resized to %dx%d, want 80x24 (unchanged)", cols, rows)
 	}
 }
 
