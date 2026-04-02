@@ -1,13 +1,33 @@
 package relayserver
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"net/http"
 	"path"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 
+	"github.com/gorilla/websocket"
+	"yuanbohan/tunnel/internal/protocol"
+	"yuanbohan/tunnel/internal/relayapi"
 	"yuanbohan/tunnel/internal/webui"
+)
+
+const (
+	defaultWSSinkBufferSize = 64
+	defaultWSWriteTimeout   = 5 * time.Second
+)
+
+var (
+	errWSSinkClosed       = errors.New("websocket sink closed")
+	errWSSinkBackpressure = errors.New("websocket sink backpressure")
+	nextSinkID            uint64
 )
 
 type HandlerConfig struct {
@@ -16,6 +36,117 @@ type HandlerConfig struct {
 	BrowserPassword string
 	AgentToken      string
 	Files           fs.FS
+}
+
+type wsAgentPeer struct {
+	conn *websocket.Conn
+	mu   sync.Mutex
+}
+
+type wsConn interface {
+	WriteJSON(v any) error
+	SetWriteDeadline(t time.Time) error
+	Close() error
+}
+
+type wsSink struct {
+	conn         wsConn
+	writeTimeout time.Duration
+
+	mu        sync.RWMutex
+	closed    bool
+	outbound  chan []byte
+	closeOnce sync.Once
+}
+
+func newWSSink(conn wsConn) *wsSink {
+	return newWSSinkWithConfig(conn, defaultWSSinkBufferSize, defaultWSWriteTimeout)
+}
+
+func newWSSinkWithConfig(conn wsConn, bufferSize int, writeTimeout time.Duration) *wsSink {
+	if bufferSize <= 0 {
+		bufferSize = 1
+	}
+
+	sink := &wsSink{
+		conn:         conn,
+		writeTimeout: writeTimeout,
+		outbound:     make(chan []byte, bufferSize),
+	}
+	go sink.run()
+	return sink
+}
+
+func (s *wsSink) WriteOutput(data []byte) error {
+	cp := append([]byte(nil), data...)
+
+	s.mu.RLock()
+	if s.closed {
+		s.mu.RUnlock()
+		return errWSSinkClosed
+	}
+
+	select {
+	case s.outbound <- cp:
+		s.mu.RUnlock()
+		return nil
+	default:
+		s.mu.RUnlock()
+		_ = s.Close()
+		return errWSSinkBackpressure
+	}
+}
+
+func (s *wsSink) Close() error {
+	s.closeOnce.Do(func() {
+		s.mu.Lock()
+		s.closed = true
+		close(s.outbound)
+		s.mu.Unlock()
+		_ = s.conn.Close()
+	})
+	return nil
+}
+
+func (s *wsSink) run() {
+	defer s.Close()
+
+	for data := range s.outbound {
+		if s.writeTimeout > 0 {
+			if err := s.conn.SetWriteDeadline(time.Now().Add(s.writeTimeout)); err != nil {
+				return
+			}
+		}
+		if err := s.conn.WriteJSON(protocol.EncodeOutput(data)); err != nil {
+			return
+		}
+	}
+}
+
+func newWSAgentPeer(conn *websocket.Conn) *wsAgentPeer {
+	return &wsAgentPeer{conn: conn}
+}
+
+func (p *wsAgentPeer) SendInput(data []byte) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.conn.WriteJSON(protocol.Message{
+		Type: "input",
+		Data: base64.StdEncoding.EncodeToString(data),
+	})
+}
+
+func (p *wsAgentPeer) Resize(cols, rows int) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.conn.WriteJSON(protocol.Message{Type: "resize", Cols: cols, Rows: rows})
+}
+
+func (p *wsAgentPeer) Close() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.conn.Close()
 }
 
 func NewHandler(cfg HandlerConfig) http.Handler {
@@ -31,6 +162,7 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 
 	mux := http.NewServeMux()
 	fileServer := http.FileServer(http.FS(files))
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 
 	serveRelayShell := func(w http.ResponseWriter, r *http.Request) {
 		if !checkBasicAuth(r, cfg.BrowserUser, cfg.BrowserPassword) {
@@ -80,8 +212,36 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
 
-		http.Error(w, "not implemented yet", http.StatusNotImplemented)
+		var register relayapi.AgentFrame
+		if err := conn.ReadJSON(&register); err != nil || register.Type != "register" || register.Session == nil {
+			return
+		}
+
+		peer := newWSAgentPeer(conn)
+		registry.Register(*register.Session, peer)
+		defer registry.RemoveIfOwner(register.Session.SessionID, peer)
+
+		for {
+			var msg protocol.Message
+			if err := conn.ReadJSON(&msg); err != nil {
+				return
+			}
+			if msg.Type != "output" {
+				continue
+			}
+
+			data, err := protocol.DecodeData(msg)
+			if err != nil {
+				continue
+			}
+			registry.TouchOutputIfOwner(register.Session.SessionID, peer, data, time.Now().UTC())
+		}
 	})
 
 	mux.HandleFunc("/api/sessions/", func(w http.ResponseWriter, r *http.Request) {
@@ -95,7 +255,46 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 			return
 		}
 
-		http.Error(w, "not implemented yet", http.StatusNotImplemented)
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		if len(parts) != 4 || parts[0] != "api" || parts[1] != "sessions" || parts[3] != "ws" {
+			http.NotFound(w, r)
+			return
+		}
+		sessionID := parts[2]
+
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		sinkID := "browser-" + strconv.FormatUint(atomic.AddUint64(&nextSinkID, 1), 10)
+		sink := newWSSink(conn)
+		if err := registry.AddSink(sessionID, sinkID, sink); err != nil {
+			_ = sink.Close()
+			return
+		}
+		defer func() {
+			registry.RemoveSink(sessionID, sinkID)
+			_ = sink.Close()
+		}()
+
+		for {
+			var msg protocol.Message
+			if err := conn.ReadJSON(&msg); err != nil {
+				return
+			}
+
+			switch msg.Type {
+			case "input":
+				data, err := protocol.DecodeData(msg)
+				if err == nil {
+					_ = registry.WriteInput(sessionID, data)
+				}
+			case "resize":
+				_ = registry.Resize(sessionID, msg.Cols, msg.Rows)
+			}
+		}
 	})
 
 	return mux

@@ -8,20 +8,32 @@ import (
 	"time"
 
 	"yuanbohan/tunnel/internal/launcher"
+	"yuanbohan/tunnel/internal/relayapi"
+	"yuanbohan/tunnel/internal/relayclient"
 	"yuanbohan/tunnel/internal/server"
 	"yuanbohan/tunnel/internal/session"
 )
+
+type fakeRelaySink struct{}
+
+func (fakeRelaySink) WriteOutput([]byte) error { return nil }
+func (fakeRelaySink) BindHub(*session.Hub)     {}
+func (fakeRelaySink) Run(context.Context)      {}
 
 func TestRunWithArgsStopsBeforeStartingSessionWhenLocalTerminalPreparationFails(t *testing.T) {
 	oldResolve := resolveLauncher
 	oldPrepare := prepareLocalTerminal
 	oldStartSession := startSession
 	oldStartServer := startServer
+	oldLoadRelayConfig := loadRelayConfig
+	oldNewRelayConnector := newRelayConnector
 	t.Cleanup(func() {
 		resolveLauncher = oldResolve
 		prepareLocalTerminal = oldPrepare
 		startSession = oldStartSession
 		startServer = oldStartServer
+		loadRelayConfig = oldLoadRelayConfig
+		newRelayConnector = oldNewRelayConnector
 	})
 
 	resolveLauncher = func(name string, args []string) (launcher.Command, error) {
@@ -58,6 +70,90 @@ func TestRunWithArgsStopsBeforeStartingSessionWhenLocalTerminalPreparationFails(
 	}
 	if got := stderr.String(); got != "" {
 		t.Fatalf("stderr = %q, want no startup banner on terminal preparation failure", got)
+	}
+}
+
+func TestRunWithArgsAddsRelayConnectorToInitialSinksWhenEnabled(t *testing.T) {
+	oldResolve := resolveLauncher
+	oldPrepare := prepareLocalTerminal
+	oldStartSession := startSession
+	oldStartServer := startServer
+	oldLoadRelayConfig := loadRelayConfig
+	oldNewRelayConnector := newRelayConnector
+	t.Cleanup(func() {
+		resolveLauncher = oldResolve
+		prepareLocalTerminal = oldPrepare
+		startSession = oldStartSession
+		startServer = oldStartServer
+		loadRelayConfig = oldLoadRelayConfig
+		newRelayConnector = oldNewRelayConnector
+	})
+
+	resolveLauncher = func(name string, args []string) (launcher.Command, error) {
+		return launcher.Command{Name: name, Path: "/usr/bin/codex", Args: append([]string(nil), args...)}, nil
+	}
+
+	prepareLocalTerminal = func() (*session.LocalTerminal, error) {
+		return &session.LocalTerminal{}, nil
+	}
+
+	loadRelayConfig = func(func(string) string, string) (relayclient.Config, bool, error) {
+		return relayclient.Config{URL: "wss://relay.example", Token: "token"}, true, nil
+	}
+
+	var gotInfo relayapi.SessionInfo
+	fakeConnector := fakeRelaySink{}
+	newRelayConnector = func(cfg relayclient.Config, info relayapi.SessionInfo) relaySink {
+		gotInfo = info
+		return fakeConnector
+	}
+
+	wantErr := errors.New("start session failed")
+	var gotSinks map[string]session.OutputSink
+	startSession = func(_ context.Context, path string, args []string, sinks map[string]session.OutputSink) (*session.Running, error) {
+		gotSinks = sinks
+		return nil, wantErr
+	}
+
+	startServer = func(server.LiveSession) (*server.Running, error) {
+		t.Fatal("startServer should not be called when startSession fails")
+		return nil, nil
+	}
+
+	var stderr bytes.Buffer
+	err := runWithArgs([]string{"agentunnel", "--label", "api-fix", "codex", "--profile", "prod"}, &stderr)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("runWithArgs error = %v, want %v", err, wantErr)
+	}
+	if gotSinks == nil {
+		t.Fatal("startSession did not receive initial sinks")
+	}
+	if _, ok := gotSinks["relay"]; !ok {
+		t.Fatalf("initial sinks = %#v, want relay sink", gotSinks)
+	}
+	if gotSinks["relay"] != fakeConnector {
+		t.Fatalf("relay sink = %#v, want fake connector", gotSinks["relay"])
+	}
+	if gotInfo.Launcher != "codex" {
+		t.Fatalf("Launcher = %q, want codex", gotInfo.Launcher)
+	}
+	if gotInfo.Label != "api-fix" {
+		t.Fatalf("Label = %q, want api-fix", gotInfo.Label)
+	}
+	if gotInfo.CommandPreview != "codex --profile prod" {
+		t.Fatalf("CommandPreview = %q, want codex --profile prod", gotInfo.CommandPreview)
+	}
+	if gotInfo.CWD == "" {
+		t.Fatal("CWD = empty, want current working directory")
+	}
+	if gotInfo.SessionID == "" {
+		t.Fatal("SessionID = empty, want generated session id")
+	}
+	if gotInfo.StartedAt.IsZero() {
+		t.Fatal("StartedAt = zero, want current time")
+	}
+	if got := stderr.String(); got != "" {
+		t.Fatalf("stderr = %q, want no startup banner on startSession failure", got)
 	}
 }
 
