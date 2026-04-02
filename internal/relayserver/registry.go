@@ -19,9 +19,8 @@ type AgentPeer interface {
 }
 
 type Registry struct {
-	mu            sync.RWMutex
-	sessions      map[string]*liveSession
-	detachedSinks map[string]map[string]session.OutputSink
+	mu       sync.RWMutex
+	sessions map[string]*liveSession
 }
 
 type liveSession struct {
@@ -31,10 +30,7 @@ type liveSession struct {
 }
 
 func NewRegistry() *Registry {
-	return &Registry{
-		sessions:      make(map[string]*liveSession),
-		detachedSinks: make(map[string]map[string]session.OutputSink),
-	}
+	return &Registry{sessions: make(map[string]*liveSession)}
 }
 
 func (r *Registry) Register(info relayapi.SessionInfo, peer AgentPeer) {
@@ -43,10 +39,6 @@ func (r *Registry) Register(info relayapi.SessionInfo, peer AgentPeer) {
 	var sinks map[string]session.OutputSink
 	if old != nil {
 		sinks = old.sinks
-	}
-	if sinks == nil {
-		sinks = r.detachedSinks[info.SessionID]
-		delete(r.detachedSinks, info.SessionID)
 	}
 	if sinks == nil {
 		sinks = make(map[string]session.OutputSink)
@@ -66,8 +58,6 @@ func (r *Registry) Register(info relayapi.SessionInfo, peer AgentPeer) {
 func (r *Registry) Remove(sessionID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-
-	r.detachSinksLocked(sessionID)
 	delete(r.sessions, sessionID)
 }
 
@@ -79,8 +69,6 @@ func (r *Registry) RemoveIfOwner(sessionID string, owner AgentPeer) bool {
 	if !ok || owner == nil || live.peer != owner {
 		return false
 	}
-
-	r.detachSinksLocked(sessionID)
 	delete(r.sessions, sessionID)
 	return true
 }
@@ -139,34 +127,31 @@ func (r *Registry) RemoveSink(sessionID, sinkID string) {
 	defer r.mu.Unlock()
 	if live, ok := r.sessions[sessionID]; ok {
 		delete(live.sinks, sinkID)
-		return
-	}
-	if sinks, ok := r.detachedSinks[sessionID]; ok {
-		delete(sinks, sinkID)
-		if len(sinks) == 0 {
-			delete(r.detachedSinks, sessionID)
-		}
 	}
 }
 
 func (r *Registry) WriteInput(sessionID string, data []byte) error {
 	r.mu.RLock()
 	live, ok := r.sessions[sessionID]
-	r.mu.RUnlock()
 	if !ok {
+		r.mu.RUnlock()
 		return ErrSessionNotFound
 	}
-	return live.peer.SendInput(data)
+	err := live.peer.SendInput(data)
+	r.mu.RUnlock()
+	return err
 }
 
 func (r *Registry) Resize(sessionID string, cols, rows int) error {
 	r.mu.RLock()
 	live, ok := r.sessions[sessionID]
-	r.mu.RUnlock()
 	if !ok {
+		r.mu.RUnlock()
 		return ErrSessionNotFound
 	}
-	return live.peer.Resize(cols, rows)
+	err := live.peer.Resize(cols, rows)
+	r.mu.RUnlock()
+	return err
 }
 
 func lastActiveTime(info relayapi.SessionInfo) time.Time {
@@ -199,13 +184,4 @@ func (r *Registry) touchOutput(sessionID string, owner AgentPeer, chunk []byte, 
 		_ = sink.WriteOutput(cp)
 	}
 	return true
-}
-
-func (r *Registry) detachSinksLocked(sessionID string) {
-	live, ok := r.sessions[sessionID]
-	if !ok || len(live.sinks) == 0 {
-		delete(r.detachedSinks, sessionID)
-		return
-	}
-	r.detachedSinks[sessionID] = live.sinks
 }

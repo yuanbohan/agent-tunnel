@@ -315,7 +315,7 @@ func TestBrowserAttachAllowsSameOrigin(t *testing.T) {
 	defer browserConn.Close()
 }
 
-func TestBrowserAttachSurvivesTemporaryAgentDisconnectAndResumesAfterReconnect(t *testing.T) {
+func TestBrowserAttachStaysLiveAcrossSameSessionReplacementAndRoutesToNewAgent(t *testing.T) {
 	reg := NewRegistry()
 	server := httptest.NewServer(NewHandler(HandlerConfig{
 		Registry:        reg,
@@ -333,11 +333,13 @@ func TestBrowserAttachSurvivesTemporaryAgentDisconnectAndResumesAfterReconnect(t
 	browserHeaders := http.Header{}
 	browserHeaders.Set("Authorization", basicAuth("demo", "secret"))
 
-	agentConn, _, err := websocket.DefaultDialer.Dial(agentURL, agentHeaders)
+	oldAgentConn, _, err := websocket.DefaultDialer.Dial(agentURL, agentHeaders)
 	if err != nil {
-		t.Fatalf("Dial agent returned error: %v", err)
+		t.Fatalf("Dial old agent returned error: %v", err)
 	}
-	if err := agentConn.WriteJSON(relayapi.RegisterFrame(relayapi.SessionInfo{
+	defer oldAgentConn.Close()
+
+	if err := oldAgentConn.WriteJSON(relayapi.RegisterFrame(relayapi.SessionInfo{
 		SessionID: "sess-1",
 		Launcher:  "codex",
 	})); err != nil {
@@ -350,35 +352,43 @@ func TestBrowserAttachSurvivesTemporaryAgentDisconnectAndResumesAfterReconnect(t
 	}
 	defer browserConn.Close()
 
-	if err := agentConn.Close(); err != nil {
-		t.Fatalf("Close agent returned error: %v", err)
-	}
-
-	waitForSessionCount(t, server.URL, browserHeaders.Get("Authorization"), 0)
-
-	offlineConn, resp, err := websocket.DefaultDialer.Dial(browserURL, browserHeaders)
-	if err == nil {
-		offlineConn.Close()
-		t.Fatal("Dial browser while session offline succeeded, want failure")
-	}
-	if resp == nil || resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("offline attach status = %v, want 404", responseStatusCode(resp))
-	}
-
-	agentConn, _, err = websocket.DefaultDialer.Dial(agentURL, agentHeaders)
+	newAgentConn, _, err := websocket.DefaultDialer.Dial(agentURL, agentHeaders)
 	if err != nil {
-		t.Fatalf("Dial agent reconnect returned error: %v", err)
+		t.Fatalf("Dial new agent returned error: %v", err)
 	}
-	defer agentConn.Close()
+	defer newAgentConn.Close()
 
-	if err := agentConn.WriteJSON(relayapi.RegisterFrame(relayapi.SessionInfo{
+	if err := newAgentConn.WriteJSON(relayapi.RegisterFrame(relayapi.SessionInfo{
 		SessionID: "sess-1",
 		Launcher:  "codex",
 	})); err != nil {
-		t.Fatalf("WriteJSON reconnect register returned error: %v", err)
+		t.Fatalf("WriteJSON replacement register returned error: %v", err)
 	}
 
-	if err := agentConn.WriteJSON(protocol.EncodeOutput([]byte("after-reconnect"))); err != nil {
+	if err := browserConn.WriteJSON(protocol.Message{
+		Type: "input",
+		Data: base64.StdEncoding.EncodeToString([]byte("hello-new")),
+	}); err != nil {
+		t.Fatalf("WriteJSON browser input returned error: %v", err)
+	}
+
+	_ = newAgentConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var input protocol.Message
+	if err := newAgentConn.ReadJSON(&input); err != nil {
+		t.Fatalf("ReadJSON new agent returned error: %v", err)
+	}
+	if input.Type != "input" {
+		t.Fatalf("Type = %q, want input", input.Type)
+	}
+	inputData, err := protocol.DecodeData(input)
+	if err != nil {
+		t.Fatalf("DecodeData input returned error: %v", err)
+	}
+	if string(inputData) != "hello-new" {
+		t.Fatalf("input = %q, want hello-new", string(inputData))
+	}
+
+	if err := newAgentConn.WriteJSON(protocol.EncodeOutput([]byte("after-replace"))); err != nil {
 		t.Fatalf("WriteJSON output returned error: %v", err)
 	}
 
@@ -394,43 +404,13 @@ func TestBrowserAttachSurvivesTemporaryAgentDisconnectAndResumesAfterReconnect(t
 	if err != nil {
 		t.Fatalf("DecodeData returned error: %v", err)
 	}
-	if string(data) != "after-reconnect" {
-		t.Fatalf("output = %q, want after-reconnect", string(data))
+	if string(data) != "after-replace" {
+		t.Fatalf("output = %q, want after-replace", string(data))
 	}
 }
 
 func basicAuth(user, pass string) string {
 	return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pass))
-}
-
-func waitForSessionCount(t *testing.T, baseURL, auth string, want int) {
-	t.Helper()
-
-	client := &http.Client{Timeout: 500 * time.Millisecond}
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		req, err := http.NewRequest(http.MethodGet, baseURL+"/api/sessions", nil)
-		if err != nil {
-			t.Fatalf("NewRequest returned error: %v", err)
-		}
-		req.Header.Set("Authorization", auth)
-		resp, err := client.Do(req)
-		if err != nil {
-			t.Fatalf("Do returned error: %v", err)
-		}
-		var sessions []relayapi.SessionInfo
-		if err := json.NewDecoder(resp.Body).Decode(&sessions); err != nil {
-			resp.Body.Close()
-			t.Fatalf("Decode returned error: %v", err)
-		}
-		resp.Body.Close()
-		if len(sessions) == want {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	t.Fatalf("timed out waiting for %d live sessions", want)
 }
 
 func responseStatusCode(resp *http.Response) int {

@@ -44,6 +44,31 @@ func (s *recordingSink) WriteOutput(data []byte) error {
 	return nil
 }
 
+type blockingPeer struct {
+	sendStarted   chan struct{}
+	sendRelease   chan struct{}
+	resizeStarted chan struct{}
+	resizeRelease chan struct{}
+	inputs        [][]byte
+	resizes       [][2]int
+}
+
+func (p *blockingPeer) SendInput(data []byte) error {
+	p.inputs = append(p.inputs, append([]byte(nil), data...))
+	close(p.sendStarted)
+	<-p.sendRelease
+	return nil
+}
+
+func (p *blockingPeer) Resize(cols, rows int) error {
+	p.resizes = append(p.resizes, [2]int{cols, rows})
+	close(p.resizeStarted)
+	<-p.resizeRelease
+	return nil
+}
+
+func (p *blockingPeer) Close() error { return nil }
+
 func TestRegistryRegisterAndListSortedByLastActive(t *testing.T) {
 	reg := NewRegistry()
 	olderActive := time.Unix(20, 0)
@@ -213,5 +238,131 @@ func TestRegistryTouchOutputIfOwnerSkipsStaleOwnerAfterReplacement(t *testing.T)
 	}
 	if len(newPeer.inputs) != 0 {
 		t.Fatalf("new peer received input-like output = %#v, want none", newPeer.inputs)
+	}
+}
+
+func TestRegistryWriteInputWaitsForInFlightOldPeerBeforeReplacement(t *testing.T) {
+	reg := NewRegistry()
+	oldPeer := &blockingPeer{
+		sendStarted:   make(chan struct{}),
+		sendRelease:   make(chan struct{}),
+		resizeStarted: make(chan struct{}),
+		resizeRelease: make(chan struct{}),
+	}
+	newPeer := &recordingPeer{}
+
+	reg.Register(relayapi.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, oldPeer)
+
+	writeDone := make(chan error, 1)
+	go func() {
+		writeDone <- reg.WriteInput("sess-1", []byte("ping"))
+	}()
+
+	select {
+	case <-oldPeer.sendStarted:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timed out waiting for old peer SendInput to start")
+	}
+
+	registerDone := make(chan struct{})
+	go func() {
+		reg.Register(relayapi.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, newPeer)
+		close(registerDone)
+	}()
+
+	select {
+	case <-registerDone:
+		t.Fatal("Register completed before in-flight input finished")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(oldPeer.sendRelease)
+
+	select {
+	case err := <-writeDone:
+		if err != nil {
+			t.Fatalf("WriteInput returned error: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timed out waiting for WriteInput to finish")
+	}
+
+	select {
+	case <-registerDone:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timed out waiting for Register to finish")
+	}
+
+	if err := reg.WriteInput("sess-1", []byte("pong")); err != nil {
+		t.Fatalf("WriteInput after replacement returned error: %v", err)
+	}
+	if got := string(bytes.Join(oldPeer.inputs, nil)); got != "ping" {
+		t.Fatalf("old peer input = %q, want ping", got)
+	}
+	if got := string(bytes.Join(newPeer.inputs, nil)); got != "pong" {
+		t.Fatalf("new peer input = %q, want pong", got)
+	}
+}
+
+func TestRegistryResizeWaitsForInFlightOldPeerBeforeReplacement(t *testing.T) {
+	reg := NewRegistry()
+	oldPeer := &blockingPeer{
+		sendStarted:   make(chan struct{}),
+		sendRelease:   make(chan struct{}),
+		resizeStarted: make(chan struct{}),
+		resizeRelease: make(chan struct{}),
+	}
+	newPeer := &recordingPeer{}
+
+	reg.Register(relayapi.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, oldPeer)
+
+	resizeDone := make(chan error, 1)
+	go func() {
+		resizeDone <- reg.Resize("sess-1", 80, 24)
+	}()
+
+	select {
+	case <-oldPeer.resizeStarted:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timed out waiting for old peer Resize to start")
+	}
+
+	registerDone := make(chan struct{})
+	go func() {
+		reg.Register(relayapi.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, newPeer)
+		close(registerDone)
+	}()
+
+	select {
+	case <-registerDone:
+		t.Fatal("Register completed before in-flight resize finished")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(oldPeer.resizeRelease)
+
+	select {
+	case err := <-resizeDone:
+		if err != nil {
+			t.Fatalf("Resize returned error: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timed out waiting for Resize to finish")
+	}
+
+	select {
+	case <-registerDone:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timed out waiting for Register to finish")
+	}
+
+	if err := reg.Resize("sess-1", 100, 40); err != nil {
+		t.Fatalf("Resize after replacement returned error: %v", err)
+	}
+	if len(oldPeer.resizes) != 1 || oldPeer.resizes[0] != [2]int{80, 24} {
+		t.Fatalf("old peer resizes = %#v, want [[80 24]]", oldPeer.resizes)
+	}
+	if len(newPeer.resizes) != 1 || newPeer.resizes[0] != [2]int{100, 40} {
+		t.Fatalf("new peer resizes = %#v, want [[100 40]]", newPeer.resizes)
 	}
 }
