@@ -36,10 +36,17 @@ func NewRegistry() *Registry {
 func (r *Registry) Register(info relayapi.SessionInfo, peer AgentPeer) {
 	r.mu.Lock()
 	old := r.sessions[info.SessionID]
+	var sinks map[string]session.OutputSink
+	if old != nil {
+		sinks = old.sinks
+	}
+	if sinks == nil {
+		sinks = make(map[string]session.OutputSink)
+	}
 	r.sessions[info.SessionID] = &liveSession{
 		info:  info,
 		peer:  peer,
-		sinks: make(map[string]session.OutputSink),
+		sinks: sinks,
 	}
 	r.mu.Unlock()
 
@@ -52,6 +59,18 @@ func (r *Registry) Remove(sessionID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.sessions, sessionID)
+}
+
+func (r *Registry) RemoveIfOwner(sessionID string, owner AgentPeer) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	live, ok := r.sessions[sessionID]
+	if !ok || owner == nil || live.peer != owner {
+		return false
+	}
+	delete(r.sessions, sessionID)
+	return true
 }
 
 func (r *Registry) List() []relayapi.SessionInfo {

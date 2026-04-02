@@ -1,6 +1,7 @@
 package relayserver
 
 import (
+	"bytes"
 	"testing"
 	"time"
 
@@ -12,6 +13,36 @@ type fakeAgentPeer struct{}
 func (fakeAgentPeer) SendInput([]byte) error { return nil }
 func (fakeAgentPeer) Resize(int, int) error  { return nil }
 func (fakeAgentPeer) Close() error           { return nil }
+
+type recordingPeer struct {
+	inputs  [][]byte
+	resizes [][2]int
+	closed  int
+}
+
+func (p *recordingPeer) SendInput(data []byte) error {
+	p.inputs = append(p.inputs, append([]byte(nil), data...))
+	return nil
+}
+
+func (p *recordingPeer) Resize(cols, rows int) error {
+	p.resizes = append(p.resizes, [2]int{cols, rows})
+	return nil
+}
+
+func (p *recordingPeer) Close() error {
+	p.closed++
+	return nil
+}
+
+type recordingSink struct {
+	chunks [][]byte
+}
+
+func (s *recordingSink) WriteOutput(data []byte) error {
+	s.chunks = append(s.chunks, append([]byte(nil), data...))
+	return nil
+}
 
 func TestRegistryRegisterAndListSortedByLastActive(t *testing.T) {
 	reg := NewRegistry()
@@ -29,6 +60,20 @@ func TestRegistryRegisterAndListSortedByLastActive(t *testing.T) {
 	}
 	if got[0].SessionID != "b" || got[1].SessionID != "a" {
 		t.Fatalf("order = %#v, want b before a", got)
+	}
+}
+
+func TestRegistryMissingSessionErrors(t *testing.T) {
+	reg := NewRegistry()
+
+	if err := reg.AddSink("missing", "sink", &recordingSink{}); err != ErrSessionNotFound {
+		t.Fatalf("AddSink error = %v, want ErrSessionNotFound", err)
+	}
+	if err := reg.WriteInput("missing", []byte("x")); err != ErrSessionNotFound {
+		t.Fatalf("WriteInput error = %v, want ErrSessionNotFound", err)
+	}
+	if err := reg.Resize("missing", 80, 24); err != ErrSessionNotFound {
+		t.Fatalf("Resize error = %v, want ErrSessionNotFound", err)
 	}
 }
 
@@ -55,26 +100,53 @@ func TestRegistryTouchOutputUpdatesPreviewAndLastActive(t *testing.T) {
 	}
 }
 
-func TestRegistryReplaceSessionIDClosesPreviousPeer(t *testing.T) {
-	var closed int
+func TestRegistryReplaceSessionIDPreservesSinksAndFansOutToThem(t *testing.T) {
 	reg := NewRegistry()
-	reg.Register(relayapi.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, closingPeer{onClose: func() { closed++ }})
-	reg.Register(relayapi.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, closingPeer{onClose: func() { closed += 10 }})
+	oldPeer := &recordingPeer{}
+	newPeer := &recordingPeer{}
+	sink := &recordingSink{}
 
-	if closed != 1 {
-		t.Fatalf("closed = %d, want 1 old peer close", closed)
+	reg.Register(relayapi.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, oldPeer)
+	if err := reg.AddSink("sess-1", "browser", sink); err != nil {
+		t.Fatalf("AddSink returned error: %v", err)
+	}
+	reg.Register(relayapi.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, newPeer)
+	reg.TouchOutput("sess-1", []byte("\x1b[32mPASS\x1b[0m focused test\n"), time.Unix(40, 0))
+
+	if got := string(bytes.Join(sink.chunks, nil)); got != "\x1b[32mPASS\x1b[0m focused test\n" {
+		t.Fatalf("sink output = %q, want raw chunk", got)
+	}
+	if got := reg.List(); len(got) != 1 || got[0].LastPreview != "PASS focused test" {
+		t.Fatalf("registered session = %#v, want preview PASS focused test", got)
+	}
+	if oldPeer.closed != 1 {
+		t.Fatalf("old peer close count = %d, want 1", oldPeer.closed)
 	}
 }
 
-type closingPeer struct {
-	onClose func()
-}
+func TestRegistryRemoveIfOwnerSkipsStaleOwnerAfterReplacement(t *testing.T) {
+	reg := NewRegistry()
+	oldPeer := &recordingPeer{}
+	newPeer := &recordingPeer{}
 
-func (p closingPeer) SendInput([]byte) error { return nil }
-func (p closingPeer) Resize(int, int) error  { return nil }
-func (p closingPeer) Close() error {
-	if p.onClose != nil {
-		p.onClose()
+	reg.Register(relayapi.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, oldPeer)
+	reg.Register(relayapi.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, newPeer)
+
+	if removed := reg.RemoveIfOwner("sess-1", oldPeer); removed {
+		t.Fatal("RemoveIfOwner returned true for stale owner, want false")
 	}
-	return nil
+
+	got := reg.List()
+	if len(got) != 1 {
+		t.Fatalf("len(List()) = %d, want 1", len(got))
+	}
+	if err := reg.WriteInput("sess-1", []byte("ping")); err != nil {
+		t.Fatalf("WriteInput returned error after stale-owner cleanup: %v", err)
+	}
+	if got := string(bytes.Join(newPeer.inputs, nil)); got != "ping" {
+		t.Fatalf("new peer input = %q, want ping", got)
+	}
+	if len(oldPeer.inputs) != 0 {
+		t.Fatalf("old peer received input = %#v, want none", oldPeer.inputs)
+	}
 }
