@@ -35,7 +35,7 @@ conn.onStatusChange((status: ConnectionStatus) => {
 
   switch (status) {
     case 'connecting':
-      statusText.textContent = `Connecting to ${AGENT_URL}...`
+      statusText.textContent = `Connecting to ${AGENT_URL}…`
       break
     case 'connected': {
       statusText.textContent = `Connected to ${AGENT_URL}`
