@@ -69,3 +69,27 @@ func TestSessionSummaryJSONUsesStableFieldNames(t *testing.T) {
 		}
 	}
 }
+
+func TestSessionSummaryOmittedUnsetOptionalFields(t *testing.T) {
+	info := SessionInfo{
+		SessionID:      "sess-2",
+		Launcher:       "claude",
+		CWD:            "/Users/test/project",
+		CommandPreview: "claude",
+	}
+
+	raw, err := json.Marshal(info)
+	if err != nil {
+		t.Fatalf("Marshal returned error: %v", err)
+	}
+
+	got := string(raw)
+	for _, unwanted := range []string{
+		"last_preview",
+		"last_active_at",
+	} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("json = %s, did not expect field %q", got, unwanted)
+		}
+	}
+}
