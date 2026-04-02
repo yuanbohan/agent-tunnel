@@ -1,4 +1,4 @@
-.PHONY: agent client agentunnel build clean vet test web web-install web-build
+.PHONY: agent client agentunnel relay build clean vet test web web-install web-build
 
 agent:
 	go run ./cmd/agent
@@ -9,6 +9,9 @@ client:
 agentunnel: web-build
 	@test -n "$(LAUNCHER)" || (echo "usage: make agentunnel LAUNCHER=claude" && exit 1)
 	go run ./cmd/agentunnel $(LAUNCHER)
+
+relay: web-build
+	go run ./cmd/relay
 
 web-install:
 	cd web && npm install
@@ -23,6 +26,7 @@ build: web-build
 	go build -o bin/agent ./cmd/agent
 	go build -o bin/client ./cmd/client
 	go build -o bin/agentunnel ./cmd/agentunnel
+	go build -o bin/relay ./cmd/relay
 
 clean:
 	rm -rf bin/
