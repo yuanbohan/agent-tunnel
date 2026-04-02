@@ -103,6 +103,9 @@ func TestWebSocketBridgeForwardsInputAndOutput(t *testing.T) {
 	if err := conn.ReadJSON(&msg); err != nil {
 		t.Fatalf("ReadJSON returned error: %v", err)
 	}
+	if msg.Type != "output" {
+		t.Fatalf("message type = %q, want output", msg.Type)
+	}
 	out, err := protocol.DecodeData(msg)
 	if err != nil {
 		t.Fatalf("DecodeData returned error: %v", err)
