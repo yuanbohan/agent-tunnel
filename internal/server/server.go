@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"sync"
 	"sync/atomic"
 
@@ -41,10 +42,33 @@ func (s *wsSink) WriteOutput(data []byte) error {
 }
 
 var upgrader = websocket.Upgrader{
-	CheckOrigin: func(*http.Request) bool { return true },
+	CheckOrigin: sameOriginLoopbackOnly,
 }
 
 var nextSinkID uint64
+
+func sameOriginLoopbackOnly(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+
+	originURL, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	if originURL.Host != r.Host {
+		return false
+	}
+
+	host := originURL.Hostname()
+	if host == "localhost" {
+		return true
+	}
+
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
 
 func NewHandler(sess LiveSession) http.Handler {
 	fileServer := http.FileServer(http.FS(webui.Files()))
