@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/url"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"yuanbohan/tunnel/internal/protocol"
@@ -30,15 +32,94 @@ type Running struct {
 	listener net.Listener
 }
 
+const (
+	defaultWSSinkBufferSize = 64
+	defaultWSWriteTimeout   = 5 * time.Second
+)
+
+var (
+	errWSSinkClosed       = errors.New("websocket sink closed")
+	errWSSinkBackpressure = errors.New("websocket sink backpressure")
+)
+
+type wsConn interface {
+	WriteJSON(v any) error
+	SetWriteDeadline(t time.Time) error
+	Close() error
+}
+
 type wsSink struct {
-	conn *websocket.Conn
-	mu   sync.Mutex
+	conn         wsConn
+	writeTimeout time.Duration
+
+	mu        sync.RWMutex
+	closed    bool
+	outbound  chan []byte
+	closeOnce sync.Once
 }
 
 func (s *wsSink) WriteOutput(data []byte) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.conn.WriteJSON(protocol.EncodeOutput(data))
+	cp := append([]byte(nil), data...)
+
+	s.mu.RLock()
+	if s.closed {
+		s.mu.RUnlock()
+		return errWSSinkClosed
+	}
+
+	select {
+	case s.outbound <- cp:
+		s.mu.RUnlock()
+		return nil
+	default:
+		s.mu.RUnlock()
+		_ = s.Close()
+		return errWSSinkBackpressure
+	}
+}
+
+func (s *wsSink) Close() error {
+	s.closeOnce.Do(func() {
+		s.mu.Lock()
+		s.closed = true
+		close(s.outbound)
+		s.mu.Unlock()
+		_ = s.conn.Close()
+	})
+	return nil
+}
+
+func (s *wsSink) run() {
+	defer s.Close()
+
+	for data := range s.outbound {
+		if s.writeTimeout > 0 {
+			if err := s.conn.SetWriteDeadline(time.Now().Add(s.writeTimeout)); err != nil {
+				return
+			}
+		}
+		if err := s.conn.WriteJSON(protocol.EncodeOutput(data)); err != nil {
+			return
+		}
+	}
+}
+
+func newWSSink(conn wsConn) *wsSink {
+	return newWSSinkWithConfig(conn, defaultWSSinkBufferSize, defaultWSWriteTimeout)
+}
+
+func newWSSinkWithConfig(conn wsConn, bufferSize int, writeTimeout time.Duration) *wsSink {
+	if bufferSize <= 0 {
+		bufferSize = 1
+	}
+
+	sink := &wsSink{
+		conn:         conn,
+		writeTimeout: writeTimeout,
+		outbound:     make(chan []byte, bufferSize),
+	}
+	go sink.run()
+	return sink
 }
 
 var upgrader = websocket.Upgrader{
@@ -79,11 +160,14 @@ func NewHandler(sess LiveSession) http.Handler {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
 
 		sinkID := fmt.Sprintf("ws-%d", atomic.AddUint64(&nextSinkID, 1))
-		sess.AddSink(sinkID, &wsSink{conn: conn})
-		defer sess.RemoveSink(sinkID)
+		sink := newWSSink(conn)
+		sess.AddSink(sinkID, sink)
+		defer func() {
+			sess.RemoveSink(sinkID)
+			_ = sink.Close()
+		}()
 
 		for {
 			_, raw, err := conn.ReadMessage()

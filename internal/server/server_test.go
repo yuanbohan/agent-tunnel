@@ -3,10 +3,12 @@ package server
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -95,6 +97,69 @@ func (f *fakeSession) Sinks() map[string]session.OutputSink {
 	return sinks
 }
 
+type recordingSink struct {
+	mu     sync.Mutex
+	chunks [][]byte
+}
+
+func (s *recordingSink) WriteOutput(data []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.chunks = append(s.chunks, append([]byte(nil), data...))
+	return nil
+}
+
+func (s *recordingSink) Joined() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var joined []byte
+	for _, chunk := range s.chunks {
+		joined = append(joined, chunk...)
+	}
+	return string(joined)
+}
+
+type blockingWSConn struct {
+	writeStarted chan struct{}
+	releaseWrite chan struct{}
+	closeSignal  chan struct{}
+	closeCalls   atomic.Int32
+}
+
+func newBlockingWSConn() *blockingWSConn {
+	return &blockingWSConn{
+		writeStarted: make(chan struct{}, 1),
+		releaseWrite: make(chan struct{}),
+		closeSignal:  make(chan struct{}),
+	}
+}
+
+func (c *blockingWSConn) WriteJSON(any) error {
+	select {
+	case c.writeStarted <- struct{}{}:
+	default:
+	}
+
+	select {
+	case <-c.releaseWrite:
+		return nil
+	case <-c.closeSignal:
+		return errors.New("closed")
+	}
+}
+
+func (c *blockingWSConn) SetWriteDeadline(time.Time) error {
+	return nil
+}
+
+func (c *blockingWSConn) Close() error {
+	if c.closeCalls.Add(1) == 1 {
+		close(c.closeSignal)
+	}
+	return nil
+}
+
 func TestNewHandlerServesIndex(t *testing.T) {
 	handler := NewHandler(&fakeSession{})
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -158,6 +223,84 @@ func TestWebSocketBridgeForwardsInputAndOutput(t *testing.T) {
 	}
 	if string(out) != "world" {
 		t.Fatalf("output = %q, want world", string(out))
+	}
+}
+
+func TestWSSinkBackpressureDoesNotBlockHubBroadcast(t *testing.T) {
+	hub := session.NewHub(func([]byte) error { return nil }, func(int, int) error { return nil })
+	conn := newBlockingWSConn()
+	sink := newWSSinkWithConfig(conn, 1, 0)
+	t.Cleanup(func() {
+		_ = sink.Close()
+		close(conn.releaseWrite)
+	})
+
+	observer := &recordingSink{}
+	hub.AddSink("browser", sink)
+	hub.AddSink("observer", observer)
+
+	hub.BroadcastOutput([]byte("one"))
+
+	select {
+	case <-conn.writeStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for blocked websocket writer")
+	}
+
+	hub.BroadcastOutput([]byte("two"))
+
+	done := make(chan struct{})
+	go func() {
+		hub.BroadcastOutput([]byte("three"))
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("BroadcastOutput blocked on stalled websocket sink")
+	}
+
+	if got := observer.Joined(); got != "onetwothree" {
+		t.Fatalf("observer output = %q, want onetwothree", got)
+	}
+}
+
+func TestWSSinkClosesConnectionWhenQueueFills(t *testing.T) {
+	conn := newBlockingWSConn()
+	sink := newWSSinkWithConfig(conn, 1, 0)
+	t.Cleanup(func() {
+		_ = sink.Close()
+		close(conn.releaseWrite)
+	})
+
+	if err := sink.WriteOutput([]byte("one")); err != nil {
+		t.Fatalf("first WriteOutput returned error: %v", err)
+	}
+
+	select {
+	case <-conn.writeStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for blocked websocket writer")
+	}
+
+	if err := sink.WriteOutput([]byte("two")); err != nil {
+		t.Fatalf("second WriteOutput returned error: %v", err)
+	}
+
+	start := time.Now()
+	err := sink.WriteOutput([]byte("three"))
+	if !errors.Is(err, errWSSinkBackpressure) {
+		t.Fatalf("third WriteOutput error = %v, want %v", err, errWSSinkBackpressure)
+	}
+	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
+		t.Fatalf("third WriteOutput took %v, want under 200ms", elapsed)
+	}
+
+	select {
+	case <-conn.closeSignal:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for websocket close")
 	}
 }
 
