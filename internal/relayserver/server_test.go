@@ -409,8 +409,105 @@ func TestBrowserAttachStaysLiveAcrossSameSessionReplacementAndRoutesToNewAgent(t
 	}
 }
 
+func TestAgentDisconnectRemovesSessionFromList(t *testing.T) {
+	reg := NewRegistry()
+	server := httptest.NewServer(NewHandler(HandlerConfig{
+		Registry:        reg,
+		BrowserUser:     "demo",
+		BrowserPassword: "secret",
+		AgentToken:      "agent-token",
+	}))
+	defer server.Close()
+
+	agentURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/agent/ws"
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer agent-token")
+	agentConn, _, err := websocket.DefaultDialer.Dial(agentURL, headers)
+	if err != nil {
+		t.Fatalf("Dial returned error: %v", err)
+	}
+
+	if err := agentConn.WriteJSON(relayapi.RegisterFrame(relayapi.SessionInfo{
+		SessionID: "sess-1",
+		Launcher:  "codex",
+	})); err != nil {
+		t.Fatalf("WriteJSON returned error: %v", err)
+	}
+
+	waitForSessionCount(t, server.URL, basicAuth("demo", "secret"), 1)
+
+	_ = agentConn.Close()
+	waitForSessionCount(t, server.URL, basicAuth("demo", "secret"), 0)
+}
+
+func TestStaleAgentConnectionTimesOutAndRemovesSessionFromList(t *testing.T) {
+	reg := NewRegistry()
+	server := httptest.NewServer(NewHandler(HandlerConfig{
+		Registry:              reg,
+		BrowserUser:           "demo",
+		BrowserPassword:       "secret",
+		AgentToken:            "agent-token",
+		AgentReadTimeout:      75 * time.Millisecond,
+		AgentPingInterval:     20 * time.Millisecond,
+		AgentPingWriteTimeout: 20 * time.Millisecond,
+	}))
+	defer server.Close()
+
+	agentURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/agent/ws"
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer agent-token")
+	agentConn, _, err := websocket.DefaultDialer.Dial(agentURL, headers)
+	if err != nil {
+		t.Fatalf("Dial returned error: %v", err)
+	}
+	defer agentConn.Close()
+
+	if err := agentConn.WriteJSON(relayapi.RegisterFrame(relayapi.SessionInfo{
+		SessionID: "sess-1",
+		Launcher:  "codex",
+	})); err != nil {
+		t.Fatalf("WriteJSON returned error: %v", err)
+	}
+
+	waitForSessionCount(t, server.URL, basicAuth("demo", "secret"), 1)
+	waitForSessionCount(t, server.URL, basicAuth("demo", "secret"), 0)
+}
+
 func basicAuth(user, pass string) string {
 	return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pass))
+}
+
+func waitForSessionCount(t *testing.T, baseURL, auth string, want int) {
+	t.Helper()
+
+	client := &http.Client{Timeout: 500 * time.Millisecond}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		req, err := http.NewRequest(http.MethodGet, baseURL+"/api/sessions", nil)
+		if err != nil {
+			t.Fatalf("NewRequest returned error: %v", err)
+		}
+		req.Header.Set("Authorization", auth)
+
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("Do returned error: %v", err)
+		}
+
+		var sessions []relayapi.SessionInfo
+		if err := json.NewDecoder(resp.Body).Decode(&sessions); err != nil {
+			resp.Body.Close()
+			t.Fatalf("Decode returned error: %v", err)
+		}
+		resp.Body.Close()
+
+		if len(sessions) == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("timed out waiting for %d live sessions", want)
 }
 
 func responseStatusCode(resp *http.Response) int {

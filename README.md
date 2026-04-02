@@ -35,6 +35,27 @@ Expected stderr output:
 
 Open the printed URL in a browser. The local terminal and browser can both read from and write to the same live session.
 
+## Relay Mode
+
+Start the relay on a public host:
+
+```bash
+export AGENTUNNEL_BASIC_USER=demo
+export AGENTUNNEL_BASIC_PASSWORD=secret
+export AGENTUNNEL_AGENT_TOKEN=agent-token
+make relay
+```
+
+Start a local session and register it with the relay:
+
+```bash
+export AGENTUNNEL_RELAY_URL=wss://relay.example
+export AGENTUNNEL_RELAY_TOKEN=agent-token
+go run ./cmd/agentunnel --label api-fix codex
+```
+
+Then open `https://relay.example/`, authenticate with Basic Auth, and choose a live session from the dashboard.
+
 ## Supported Launchers
 
 - `claude`
@@ -73,6 +94,7 @@ make web               # run web client dev server
 make web-build         # rebuild embedded web assets in internal/webui/dist
 make agent             # run legacy PTY shell server on localhost:8585
 make client            # run legacy CLI client against ws://localhost:8585/ws
+make relay             # run relay server with Basic Auth and agent token auth
 ```
 
 If you change files under `web/`, rebuild the embedded assets before committing:

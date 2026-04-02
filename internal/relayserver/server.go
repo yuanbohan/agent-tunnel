@@ -21,8 +21,11 @@ import (
 )
 
 const (
-	defaultWSSinkBufferSize = 64
-	defaultWSWriteTimeout   = 5 * time.Second
+	defaultWSSinkBufferSize      = 64
+	defaultWSWriteTimeout        = 5 * time.Second
+	defaultAgentReadTimeout      = 30 * time.Second
+	defaultAgentPingInterval     = 10 * time.Second
+	defaultAgentPingWriteTimeout = 5 * time.Second
 )
 
 var (
@@ -32,11 +35,14 @@ var (
 )
 
 type HandlerConfig struct {
-	Registry        *Registry
-	BrowserUser     string
-	BrowserPassword string
-	AgentToken      string
-	Files           fs.FS
+	Registry              *Registry
+	BrowserUser           string
+	BrowserPassword       string
+	AgentToken            string
+	Files                 fs.FS
+	AgentReadTimeout      time.Duration
+	AgentPingInterval     time.Duration
+	AgentPingWriteTimeout time.Duration
 }
 
 type wsAgentPeer struct {
@@ -160,6 +166,18 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 	if files == nil {
 		files = webui.Files()
 	}
+	agentReadTimeout := cfg.AgentReadTimeout
+	if agentReadTimeout <= 0 {
+		agentReadTimeout = defaultAgentReadTimeout
+	}
+	agentPingInterval := cfg.AgentPingInterval
+	if agentPingInterval <= 0 {
+		agentPingInterval = defaultAgentPingInterval
+	}
+	agentPingWriteTimeout := cfg.AgentPingWriteTimeout
+	if agentPingWriteTimeout <= 0 {
+		agentPingWriteTimeout = defaultAgentPingWriteTimeout
+	}
 
 	mux := http.NewServeMux()
 	fileServer := http.FileServer(http.FS(files))
@@ -219,6 +237,11 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 			return
 		}
 		defer conn.Close()
+		conn.SetReadLimit(1 << 20)
+		_ = conn.SetReadDeadline(time.Now().Add(agentReadTimeout))
+		conn.SetPongHandler(func(string) error {
+			return conn.SetReadDeadline(time.Now().Add(agentReadTimeout))
+		})
 
 		var register relayapi.AgentFrame
 		if err := conn.ReadJSON(&register); err != nil || register.Type != "register" || register.Session == nil {
@@ -228,6 +251,24 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 		peer := newWSAgentPeer(conn)
 		registry.Register(*register.Session, peer)
 		defer registry.RemoveIfOwner(register.Session.SessionID, peer)
+
+		stopPings := make(chan struct{})
+		defer close(stopPings)
+		go func() {
+			ticker := time.NewTicker(agentPingInterval)
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-stopPings:
+					return
+				case <-ticker.C:
+					if err := conn.WriteControl(websocket.PingMessage, []byte("ping"), time.Now().Add(agentPingWriteTimeout)); err != nil {
+						return
+					}
+				}
+			}
+		}()
 
 		for {
 			var msg protocol.Message

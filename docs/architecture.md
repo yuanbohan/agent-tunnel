@@ -44,6 +44,17 @@ This document describes the internal architecture of `agentunnel` -- how Go pack
                               └──────────┘
 ```
 
+## Relay Extension
+
+Remote mode adds a second server role:
+
+- local `agentunnel` keeps owning the PTY and local terminal
+- local `agentunnel` optionally opens one outbound websocket to the relay
+- relay maintains a live in-memory session registry
+- browsers authenticate to the relay, list live sessions, and attach to one session terminal stream
+
+The localhost single-session server remains available for local use. Relay mode is additive.
+
 ## Package Dependency Graph
 
 ```
