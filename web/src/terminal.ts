@@ -3,11 +3,12 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 
+export type DisplayMode = 'scroll' | 'wrap'
+
 export interface TerminalHandle {
   write(data: Uint8Array): void
   onData(callback: (str: string) => void): void
-  onResize(callback: (cols: number, rows: number) => void): void
-  currentSize(): { cols: number; rows: number }
+  setDisplayMode(mode: DisplayMode, ptyCols?: number, ptyRows?: number): void
   dispose(): void
 }
 
@@ -36,14 +37,12 @@ export function createTerminal(container: HTMLElement): TerminalHandle {
   term.loadAddon(fitAddon)
   term.loadAddon(new WebLinksAddon())
   term.open(container)
-  fitAddon.fit()
 
-  let resizeCallback: ((cols: number, rows: number) => void) | null = null
+  let currentMode: DisplayMode = 'scroll'
 
   const observer = new ResizeObserver(() => {
-    fitAddon.fit()
-    if (resizeCallback) {
-      resizeCallback(term.cols, term.rows)
+    if (currentMode === 'wrap') {
+      fitAddon.fit()
     }
   })
   observer.observe(container)
@@ -55,11 +54,13 @@ export function createTerminal(container: HTMLElement): TerminalHandle {
     onData(callback: (str: string) => void) {
       term.onData(callback)
     },
-    onResize(callback: (cols: number, rows: number) => void) {
-      resizeCallback = callback
-    },
-    currentSize() {
-      return { cols: term.cols, rows: term.rows }
+    setDisplayMode(mode: DisplayMode, ptyCols?: number, ptyRows?: number) {
+      currentMode = mode
+      if (mode === 'scroll' && ptyCols && ptyRows) {
+        term.resize(ptyCols, ptyRows)
+      } else if (mode === 'wrap') {
+        fitAddon.fit()
+      }
     },
     dispose() {
       observer.disconnect()
