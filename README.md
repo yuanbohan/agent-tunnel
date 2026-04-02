@@ -1,23 +1,28 @@
 # agent-tunnel
 
-A terminal-over-WebSocket tool. The agent spawns a real PTY shell and exposes it over WebSocket on localhost. The client connects, puts your terminal in raw mode, and proxies all I/O — giving you a live shell session.
+Launch a terminal agent locally and mirror the same PTY session into a localhost web client.
+
+`agentunnel` starts a real CLI such as `claude`, `codex`, or `gemini`, keeps the launching terminal interactive, and serves a browser client that shares the exact same input and output stream. The original `agent` and `client` commands also remain available as the legacy shell-over-WebSocket mode.
 
 ## Requirements
 
 - Go 1.25+
 - Node.js and npm for the bundled web UI (`make build` and `make agentunnel` both depend on `web-build`)
+- A supported launcher installed on `PATH`: `claude`, `codex`, or `gemini`
 
-## Run
+## Quick Start
 
-### Shared live session mode
-
-Use `agentunnel` to launch a supported terminal agent and mirror the same session into the browser.
-
-On a fresh machine, install the web dependencies first:
+On a fresh machine, install web dependencies first:
 
 ```bash
 make web-install
 make agentunnel LAUNCHER=claude
+```
+
+Equivalent direct command:
+
+```bash
+go run ./cmd/agentunnel claude
 ```
 
 Expected stderr output:
@@ -28,9 +33,17 @@ Expected stderr output:
   local terminal and browser share the same live session
 ```
 
-The local terminal remains interactive. Open the printed URL in a browser to view and type into the same live session.
+Open the printed URL in a browser. The local terminal and browser can both read from and write to the same live session.
 
-### Legacy tools
+## Supported Launchers
+
+- `claude`
+- `codex`
+- `gemini`
+
+`agentunnel` resolves these executables from `PATH` and runs the real CLI unchanged, so approvals and terminal UX still come from the original tool.
+
+## Legacy Mode
 
 The original `agent` and `client` commands remain available:
 
@@ -39,22 +52,33 @@ make agent
 make client
 ```
 
-## Build
+This path starts a shell PTY on localhost and connects a terminal client to it. It is separate from `agentunnel`.
 
-On a fresh machine, run `make web-install` before `make build` or `make agentunnel`.
+## Development
+
+On a fresh machine, run `make web-install` before `make build`, `make test`, or `make agentunnel`.
+
+```bash
+make agentunnel LAUNCHER=claude
+make build
+make test
+make web
+```
+
+Command reference:
 
 ```bash
 make build             # builds bin/agent, bin/client, and bin/agentunnel
-make agentunnel LAUNCHER=claude
-make agent             # run agent (port 8585)
-make client            # run CLI client (connects to localhost:8585)
-make web               # run web client dev server (port 3000)
+make web               # run web client dev server
+make web-build         # rebuild embedded web assets in internal/webui/dist
+make agent             # run legacy PTY shell server on localhost:8585
+make client            # run legacy CLI client against ws://localhost:8585/ws
 ```
 
-Custom port / URL:
+If you change files under `web/`, rebuild the embedded assets before committing:
+
 ```bash
-go run ./cmd/agent  -port 9000
-go run ./cmd/client -url ws://localhost:9000/ws
+make web-build
 ```
 
 ## Protocol
@@ -67,4 +91,4 @@ JSON frames over WebSocket text messages.
 | `output` | agent → client   | `data`: base64-encoded stdout  |
 | `resize` | client → agent   | `cols`, `rows` as integers     |
 
-stderr is merged into `output` — the PTY has a single output stream, same as a real terminal.
+`stderr` is merged into `output` because the PTY exposes a single terminal stream.
