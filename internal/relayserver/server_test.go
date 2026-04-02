@@ -113,6 +113,33 @@ func TestHandlerServesRelayShellOnRootAndSessionPath(t *testing.T) {
 	}
 }
 
+func TestHandlerFallsBackToIndexHTMLWhenRelayHTMLIsMissing(t *testing.T) {
+	reg := NewRegistry()
+	handler := NewHandler(HandlerConfig{
+		Registry:        reg,
+		BrowserUser:     "demo",
+		BrowserPassword: "secret",
+		AgentToken:      "agent-token",
+		Files: fstest.MapFS{
+			"index.html": {
+				Data: []byte("<!doctype html><div id=\"index-root\">index-root</div>"),
+			},
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", basicAuth("demo", "secret"))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "index-root") {
+		t.Fatalf("body = %q, want index.html fallback shell marker", rec.Body.String())
+	}
+}
+
 func basicAuth(user, pass string) string {
 	return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pass))
 }

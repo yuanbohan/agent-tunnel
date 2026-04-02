@@ -31,6 +31,7 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 
 	mux := http.NewServeMux()
 	fileServer := http.FileServer(http.FS(files))
+	shellPath := resolveShellPath(files)
 
 	serveRelayShell := func(w http.ResponseWriter, r *http.Request) {
 		if !checkBasicAuth(r, cfg.BrowserUser, cfg.BrowserPassword) {
@@ -39,7 +40,7 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 			return
 		}
 
-		http.ServeFileFS(w, r, files, "relay.html")
+		http.ServeFileFS(w, r, files, shellPath)
 	}
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -99,4 +100,11 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 	})
 
 	return mux
+}
+
+func resolveShellPath(files fs.FS) string {
+	if _, err := fs.Stat(files, "relay.html"); err == nil {
+		return "relay.html"
+	}
+	return "index.html"
 }

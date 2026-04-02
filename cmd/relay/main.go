@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"yuanbohan/tunnel/internal/relayserver"
 )
@@ -46,5 +47,16 @@ func main() {
 		AgentToken:      cfg.AgentToken,
 	})
 
-	log.Fatal(http.ListenAndServe(cfg.ListenAddr, handler))
+	log.Fatal(newHTTPServer(cfg, handler).ListenAndServe())
+}
+
+func newHTTPServer(cfg mainConfig, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              cfg.ListenAddr,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+	}
 }
