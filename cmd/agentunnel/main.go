@@ -14,6 +14,12 @@ import (
 )
 
 func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() error {
 	if len(os.Args) < 2 {
 		fmt.Fprintf(os.Stderr, "usage: agentunnel <claude|codex|gemini> [args...]\n")
 		os.Exit(2)
@@ -21,7 +27,7 @@ func main() {
 
 	command, err := launcher.Resolve(os.Args[1], os.Args[2:])
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -29,13 +35,13 @@ func main() {
 
 	running, err := session.StartCommand(ctx, command.Path, command.Args)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	defer running.Close()
 
 	web, err := server.StartLocal(running.Hub)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	defer web.Close(context.Background())
 
@@ -48,7 +54,7 @@ func main() {
 
 	restore, done, err := session.AttachLocalTerminal(ctx, running.Hub)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	defer restore()
 
@@ -62,8 +68,9 @@ func main() {
 	case <-done:
 	case err := <-waitErr:
 		if err != nil {
-			restore()
-			log.Fatal(err)
+			return err
 		}
 	}
+
+	return nil
 }

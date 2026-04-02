@@ -5,12 +5,15 @@ A terminal-over-WebSocket tool. The agent spawns a real PTY shell and exposes it
 ## Requirements
 
 - Go 1.25+
+- Node.js and npm for the bundled web UI (`make build` and `make agentunnel` both depend on `web-build`)
 
 ## Run
 
 ### Shared live session mode
 
 Use `agentunnel` to launch a supported terminal agent and mirror the same session into the browser.
+
+On a fresh machine, install the web dependencies first:
 
 ```bash
 make web-install
@@ -37,6 +40,8 @@ make client
 ```
 
 ## Build
+
+On a fresh machine, run `make web-install` before `make build` or `make agentunnel`.
 
 ```bash
 make build             # builds bin/agent, bin/client, and bin/agentunnel
