@@ -162,3 +162,90 @@ func TestConnectorStreamsOutputFramesToRelay(t *testing.T) {
 		t.Fatal("timed out waiting for output")
 	}
 }
+
+func TestConnectorBuffersOutputAcrossReconnectWithoutLeakingOldWriter(t *testing.T) {
+	firstUpgrader := websocket.Upgrader{}
+	firstServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := firstUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("Upgrade first returned error: %v", err)
+		}
+		defer conn.Close()
+
+		var register relayapi.AgentFrame
+		if err := conn.ReadJSON(&register); err != nil {
+			t.Fatalf("ReadJSON first register returned error: %v", err)
+		}
+	}))
+	defer firstServer.Close()
+
+	firstURL := "ws" + strings.TrimPrefix(firstServer.URL, "http")
+	connector := New(Config{URL: firstURL, Token: "token"}, relayapi.SessionInfo{
+		SessionID: "sess-1",
+		Launcher:  "codex",
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if err := connector.runOnce(ctx); err == nil {
+		t.Fatal("runOnce returned nil after relay disconnect, want error")
+	}
+
+	if err := connector.WriteOutput([]byte("persisted")); err != nil {
+		t.Fatalf("WriteOutput returned error: %v", err)
+	}
+
+	received := make(chan protocol.Message, 1)
+	secondUpgrader := websocket.Upgrader{}
+	secondServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := secondUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("Upgrade second returned error: %v", err)
+		}
+		defer conn.Close()
+
+		var register relayapi.AgentFrame
+		if err := conn.ReadJSON(&register); err != nil {
+			t.Fatalf("ReadJSON second register returned error: %v", err)
+		}
+
+		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		var msg protocol.Message
+		if err := conn.ReadJSON(&msg); err != nil {
+			t.Fatalf("ReadJSON second output returned error: %v", err)
+		}
+		received <- msg
+	}))
+	defer secondServer.Close()
+
+	connector.cfg.URL = "ws" + strings.TrimPrefix(secondServer.URL, "http")
+
+	done := make(chan error, 1)
+	go func() {
+		done <- connector.runOnce(ctx)
+	}()
+
+	select {
+	case msg := <-received:
+		if msg.Type != "output" {
+			t.Fatalf("Type = %q, want output", msg.Type)
+		}
+		data, err := protocol.DecodeData(msg)
+		if err != nil {
+			t.Fatalf("DecodeData returned error: %v", err)
+		}
+		if string(data) != "persisted" {
+			t.Fatalf("output = %q, want persisted", string(data))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for reconnected output")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for second runOnce to exit")
+	}
+}

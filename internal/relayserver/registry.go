@@ -19,8 +19,9 @@ type AgentPeer interface {
 }
 
 type Registry struct {
-	mu       sync.RWMutex
-	sessions map[string]*liveSession
+	mu            sync.RWMutex
+	sessions      map[string]*liveSession
+	detachedSinks map[string]map[string]session.OutputSink
 }
 
 type liveSession struct {
@@ -30,7 +31,10 @@ type liveSession struct {
 }
 
 func NewRegistry() *Registry {
-	return &Registry{sessions: make(map[string]*liveSession)}
+	return &Registry{
+		sessions:      make(map[string]*liveSession),
+		detachedSinks: make(map[string]map[string]session.OutputSink),
+	}
 }
 
 func (r *Registry) Register(info relayapi.SessionInfo, peer AgentPeer) {
@@ -39,6 +43,10 @@ func (r *Registry) Register(info relayapi.SessionInfo, peer AgentPeer) {
 	var sinks map[string]session.OutputSink
 	if old != nil {
 		sinks = old.sinks
+	}
+	if sinks == nil {
+		sinks = r.detachedSinks[info.SessionID]
+		delete(r.detachedSinks, info.SessionID)
 	}
 	if sinks == nil {
 		sinks = make(map[string]session.OutputSink)
@@ -58,6 +66,8 @@ func (r *Registry) Register(info relayapi.SessionInfo, peer AgentPeer) {
 func (r *Registry) Remove(sessionID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	r.detachSinksLocked(sessionID)
 	delete(r.sessions, sessionID)
 }
 
@@ -69,8 +79,18 @@ func (r *Registry) RemoveIfOwner(sessionID string, owner AgentPeer) bool {
 	if !ok || owner == nil || live.peer != owner {
 		return false
 	}
+
+	r.detachSinksLocked(sessionID)
 	delete(r.sessions, sessionID)
 	return true
+}
+
+func (r *Registry) HasSession(sessionID string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	_, ok := r.sessions[sessionID]
+	return ok
 }
 
 func (r *Registry) List() []relayapi.SessionInfo {
@@ -119,6 +139,13 @@ func (r *Registry) RemoveSink(sessionID, sinkID string) {
 	defer r.mu.Unlock()
 	if live, ok := r.sessions[sessionID]; ok {
 		delete(live.sinks, sinkID)
+		return
+	}
+	if sinks, ok := r.detachedSinks[sessionID]; ok {
+		delete(sinks, sinkID)
+		if len(sinks) == 0 {
+			delete(r.detachedSinks, sessionID)
+		}
 	}
 }
 
@@ -172,4 +199,13 @@ func (r *Registry) touchOutput(sessionID string, owner AgentPeer, chunk []byte, 
 		_ = sink.WriteOutput(cp)
 	}
 	return true
+}
+
+func (r *Registry) detachSinksLocked(sessionID string) {
+	live, ok := r.sessions[sessionID]
+	if !ok || len(live.sinks) == 0 {
+		delete(r.detachedSinks, sessionID)
+		return
+	}
+	r.detachedSinks[sessionID] = live.sinks
 }

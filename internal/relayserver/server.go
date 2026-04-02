@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"path"
 	"strconv"
 	"strings"
@@ -162,7 +163,8 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 
 	mux := http.NewServeMux()
 	fileServer := http.FileServer(http.FS(files))
-	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	agentUpgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	browserUpgrader := websocket.Upgrader{CheckOrigin: sameOriginOrEmpty}
 
 	serveRelayShell := func(w http.ResponseWriter, r *http.Request) {
 		if !checkBasicAuth(r, cfg.BrowserUser, cfg.BrowserPassword) {
@@ -212,7 +214,7 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		conn, err := upgrader.Upgrade(w, r, nil)
+		conn, err := agentUpgrader.Upgrade(w, r, nil)
 		if err != nil {
 			return
 		}
@@ -261,8 +263,12 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 			return
 		}
 		sessionID := parts[2]
+		if !registry.HasSession(sessionID) {
+			http.NotFound(w, r)
+			return
+		}
 
-		conn, err := upgrader.Upgrade(w, r, nil)
+		conn, err := browserUpgrader.Upgrade(w, r, nil)
 		if err != nil {
 			return
 		}
@@ -298,6 +304,19 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 	})
 
 	return mux
+}
+
+func sameOriginOrEmpty(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+
+	originURL, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	return originURL.Host == r.Host
 }
 
 func serveRelayShellAsset(w http.ResponseWriter, r *http.Request, files fs.FS) {

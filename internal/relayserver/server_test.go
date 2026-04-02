@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -259,8 +260,184 @@ func TestBrowserAttachRoutesInputToRegisteredAgent(t *testing.T) {
 	}
 }
 
+func TestBrowserAttachRejectsForeignOrigin(t *testing.T) {
+	reg := NewRegistry()
+	reg.Register(relayapi.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, fakeAgentPeer{})
+
+	server := httptest.NewServer(NewHandler(HandlerConfig{
+		Registry:        reg,
+		BrowserUser:     "demo",
+		BrowserPassword: "secret",
+		AgentToken:      "agent-token",
+	}))
+	defer server.Close()
+
+	browserURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/sessions/sess-1/ws"
+	headers := http.Header{}
+	headers.Set("Authorization", basicAuth("demo", "secret"))
+	headers.Set("Origin", "https://evil.example")
+
+	_, resp, err := websocket.DefaultDialer.Dial(browserURL, headers)
+	if err == nil {
+		t.Fatal("Dial browser succeeded with foreign origin, want failure")
+	}
+	if resp == nil || resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %v, want 403", responseStatusCode(resp))
+	}
+}
+
+func TestBrowserAttachAllowsSameOrigin(t *testing.T) {
+	reg := NewRegistry()
+	reg.Register(relayapi.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, fakeAgentPeer{})
+
+	server := httptest.NewServer(NewHandler(HandlerConfig{
+		Registry:        reg,
+		BrowserUser:     "demo",
+		BrowserPassword: "secret",
+		AgentToken:      "agent-token",
+	}))
+	defer server.Close()
+
+	parsedURL, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+
+	browserURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/sessions/sess-1/ws"
+	headers := http.Header{}
+	headers.Set("Authorization", basicAuth("demo", "secret"))
+	headers.Set("Origin", parsedURL.Scheme+"://"+parsedURL.Host)
+
+	browserConn, _, err := websocket.DefaultDialer.Dial(browserURL, headers)
+	if err != nil {
+		t.Fatalf("Dial browser returned error: %v", err)
+	}
+	defer browserConn.Close()
+}
+
+func TestBrowserAttachSurvivesTemporaryAgentDisconnectAndResumesAfterReconnect(t *testing.T) {
+	reg := NewRegistry()
+	server := httptest.NewServer(NewHandler(HandlerConfig{
+		Registry:        reg,
+		BrowserUser:     "demo",
+		BrowserPassword: "secret",
+		AgentToken:      "agent-token",
+	}))
+	defer server.Close()
+
+	agentURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/agent/ws"
+	browserURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/sessions/sess-1/ws"
+
+	agentHeaders := http.Header{}
+	agentHeaders.Set("Authorization", "Bearer agent-token")
+	browserHeaders := http.Header{}
+	browserHeaders.Set("Authorization", basicAuth("demo", "secret"))
+
+	agentConn, _, err := websocket.DefaultDialer.Dial(agentURL, agentHeaders)
+	if err != nil {
+		t.Fatalf("Dial agent returned error: %v", err)
+	}
+	if err := agentConn.WriteJSON(relayapi.RegisterFrame(relayapi.SessionInfo{
+		SessionID: "sess-1",
+		Launcher:  "codex",
+	})); err != nil {
+		t.Fatalf("WriteJSON register returned error: %v", err)
+	}
+
+	browserConn, _, err := websocket.DefaultDialer.Dial(browserURL, browserHeaders)
+	if err != nil {
+		t.Fatalf("Dial browser returned error: %v", err)
+	}
+	defer browserConn.Close()
+
+	if err := agentConn.Close(); err != nil {
+		t.Fatalf("Close agent returned error: %v", err)
+	}
+
+	waitForSessionCount(t, server.URL, browserHeaders.Get("Authorization"), 0)
+
+	offlineConn, resp, err := websocket.DefaultDialer.Dial(browserURL, browserHeaders)
+	if err == nil {
+		offlineConn.Close()
+		t.Fatal("Dial browser while session offline succeeded, want failure")
+	}
+	if resp == nil || resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("offline attach status = %v, want 404", responseStatusCode(resp))
+	}
+
+	agentConn, _, err = websocket.DefaultDialer.Dial(agentURL, agentHeaders)
+	if err != nil {
+		t.Fatalf("Dial agent reconnect returned error: %v", err)
+	}
+	defer agentConn.Close()
+
+	if err := agentConn.WriteJSON(relayapi.RegisterFrame(relayapi.SessionInfo{
+		SessionID: "sess-1",
+		Launcher:  "codex",
+	})); err != nil {
+		t.Fatalf("WriteJSON reconnect register returned error: %v", err)
+	}
+
+	if err := agentConn.WriteJSON(protocol.EncodeOutput([]byte("after-reconnect"))); err != nil {
+		t.Fatalf("WriteJSON output returned error: %v", err)
+	}
+
+	_ = browserConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var got protocol.Message
+	if err := browserConn.ReadJSON(&got); err != nil {
+		t.Fatalf("ReadJSON browser returned error: %v", err)
+	}
+	if got.Type != "output" {
+		t.Fatalf("Type = %q, want output", got.Type)
+	}
+	data, err := protocol.DecodeData(got)
+	if err != nil {
+		t.Fatalf("DecodeData returned error: %v", err)
+	}
+	if string(data) != "after-reconnect" {
+		t.Fatalf("output = %q, want after-reconnect", string(data))
+	}
+}
+
 func basicAuth(user, pass string) string {
 	return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pass))
+}
+
+func waitForSessionCount(t *testing.T, baseURL, auth string, want int) {
+	t.Helper()
+
+	client := &http.Client{Timeout: 500 * time.Millisecond}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		req, err := http.NewRequest(http.MethodGet, baseURL+"/api/sessions", nil)
+		if err != nil {
+			t.Fatalf("NewRequest returned error: %v", err)
+		}
+		req.Header.Set("Authorization", auth)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("Do returned error: %v", err)
+		}
+		var sessions []relayapi.SessionInfo
+		if err := json.NewDecoder(resp.Body).Decode(&sessions); err != nil {
+			resp.Body.Close()
+			t.Fatalf("Decode returned error: %v", err)
+		}
+		resp.Body.Close()
+		if len(sessions) == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("timed out waiting for %d live sessions", want)
+}
+
+func responseStatusCode(resp *http.Response) int {
+	if resp == nil {
+		return 0
+	}
+	return resp.StatusCode
 }
 
 func testFiles() fstest.MapFS {

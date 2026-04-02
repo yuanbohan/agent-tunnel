@@ -21,6 +21,11 @@ type Connector struct {
 	dialer   *websocket.Dialer
 }
 
+type readResult struct {
+	msg protocol.Message
+	err error
+}
+
 func New(cfg Config, info relayapi.SessionInfo) *Connector {
 	return &Connector{
 		cfg:      cfg,
@@ -72,23 +77,37 @@ func (c *Connector) runOnce(ctx context.Context) error {
 		return err
 	}
 
-	errCh := make(chan error, 2)
-	go func() { errCh <- c.readLoop(conn) }()
-	go func() { errCh <- c.writeLoop(ctx, conn) }()
+	incoming := make(chan readResult, 1)
+	go c.readLoop(conn, incoming)
 
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case err := <-errCh:
-		return err
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case result, ok := <-incoming:
+			if !ok {
+				return nil
+			}
+			if result.err != nil {
+				return result.err
+			}
+			c.handleMessage(result.msg)
+		case chunk := <-c.outbound:
+			if err := conn.WriteJSON(protocol.EncodeOutput(chunk)); err != nil {
+				return err
+			}
+		}
 	}
 }
 
-func (c *Connector) readLoop(conn *websocket.Conn) error {
+func (c *Connector) readLoop(conn *websocket.Conn, incoming chan<- readResult) {
+	defer close(incoming)
+
 	for {
 		_, raw, err := conn.ReadMessage()
 		if err != nil {
-			return err
+			incoming <- readResult{err: err}
+			return
 		}
 
 		var msg protocol.Message
@@ -96,29 +115,20 @@ func (c *Connector) readLoop(conn *websocket.Conn) error {
 			continue
 		}
 
-		switch msg.Type {
-		case "input":
-			data, err := protocol.DecodeData(msg)
-			if err == nil && c.hub != nil {
-				_ = c.hub.WriteInput(data)
-			}
-		case "resize":
-			if c.hub != nil {
-				_ = c.hub.Resize(msg.Cols, msg.Rows)
-			}
-		}
+		incoming <- readResult{msg: msg}
 	}
 }
 
-func (c *Connector) writeLoop(ctx context.Context, conn *websocket.Conn) error {
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case chunk := <-c.outbound:
-			if err := conn.WriteJSON(protocol.EncodeOutput(chunk)); err != nil {
-				return err
-			}
+func (c *Connector) handleMessage(msg protocol.Message) {
+	switch msg.Type {
+	case "input":
+		data, err := protocol.DecodeData(msg)
+		if err == nil && c.hub != nil {
+			_ = c.hub.WriteInput(data)
+		}
+	case "resize":
+		if c.hub != nil {
+			_ = c.hub.Resize(msg.Cols, msg.Rows)
 		}
 	}
 }
