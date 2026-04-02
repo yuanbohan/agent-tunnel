@@ -8,47 +8,42 @@ A terminal-over-WebSocket tool. The agent spawns a real PTY shell and exposes it
 
 ## Run
 
-Start the agent first — it's the same for both clients.
+### Shared live session mode
 
-**Tab 1 — start the agent:**
+Use `agentunnel` to launch a supported terminal agent and mirror the same session into the browser.
+
+```bash
+make web-install
+make agentunnel LAUNCHER=claude
+```
+
+Expected stderr output:
+
+```text
+▶ agentunnel — claude
+  open http://127.0.0.1:43127
+  local terminal and browser share the same live session
+```
+
+The local terminal remains interactive. Open the printed URL in a browser to view and type into the same live session.
+
+### Legacy tools
+
+The original `agent` and `client` commands remain available:
+
 ```bash
 make agent
-# or: go run ./cmd/agent
-# 2026/03/31 22:00:00 listening on :8585
-```
-
-### Option A: Web client (browser)
-
-```bash
-# First time only
-make web-install
-
-make web
-# → open http://localhost:3000
-```
-
-The browser terminal connects to the agent automatically. A status bar shows connection state; click **Reconnect** if the agent isn't running yet.
-
-### Option B: CLI client (Go)
-
-```bash
 make client
-# or: go run ./cmd/client
 ```
-
-You will see your zsh prompt. Type commands and see results — it is a real PTY session, so interactive programs (`vim`, `htop`, `top`) work too.
-
-**To disconnect:** type `exit` or press Ctrl+D inside the session.
-
-> **Note on Ctrl+C:** In raw mode, Ctrl+C is forwarded to the remote shell (interrupts whatever is running there), not to the client itself. Use `exit` or Ctrl+D to end the session.
 
 ## Build
 
 ```bash
-make build        # builds bin/agent and bin/client
-make agent        # run agent (port 8585)
-make client       # run CLI client (connects to localhost:8585)
-make web          # run web client dev server (port 3000)
+make build             # builds bin/agent, bin/client, and bin/agentunnel
+make agentunnel LAUNCHER=claude
+make agent             # run agent (port 8585)
+make client            # run CLI client (connects to localhost:8585)
+make web               # run web client dev server (port 3000)
 ```
 
 Custom port / URL:
