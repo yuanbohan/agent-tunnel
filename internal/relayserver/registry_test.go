@@ -100,6 +100,36 @@ func TestRegistryTouchOutputUpdatesPreviewAndLastActive(t *testing.T) {
 	}
 }
 
+func TestRegistryTouchOutputIfOwnerUpdatesPreviewAndFanoutForCurrentOwner(t *testing.T) {
+	reg := NewRegistry()
+	peer := &recordingPeer{}
+	sink := &recordingSink{}
+
+	reg.Register(relayapi.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, peer)
+	if err := reg.AddSink("sess-1", "browser", sink); err != nil {
+		t.Fatalf("AddSink returned error: %v", err)
+	}
+
+	now := time.Unix(45, 0)
+	if ok := reg.TouchOutputIfOwner("sess-1", peer, []byte("\x1b[32mPASS\x1b[0m current owner\n"), now); !ok {
+		t.Fatal("TouchOutputIfOwner returned false for current owner")
+	}
+
+	got := reg.List()
+	if len(got) != 1 {
+		t.Fatalf("len(List()) = %d, want 1", len(got))
+	}
+	if got[0].LastPreview != "PASS current owner" {
+		t.Fatalf("LastPreview = %q, want PASS current owner", got[0].LastPreview)
+	}
+	if got[0].LastActiveAt == nil || !got[0].LastActiveAt.Equal(now) {
+		t.Fatalf("LastActiveAt = %v, want 45", got[0].LastActiveAt)
+	}
+	if got := string(bytes.Join(sink.chunks, nil)); got != "\x1b[32mPASS\x1b[0m current owner\n" {
+		t.Fatalf("sink output = %q, want raw chunk", got)
+	}
+}
+
 func TestRegistryReplaceSessionIDPreservesSinksAndFansOutToThem(t *testing.T) {
 	reg := NewRegistry()
 	oldPeer := &recordingPeer{}
@@ -148,5 +178,40 @@ func TestRegistryRemoveIfOwnerSkipsStaleOwnerAfterReplacement(t *testing.T) {
 	}
 	if len(oldPeer.inputs) != 0 {
 		t.Fatalf("old peer received input = %#v, want none", oldPeer.inputs)
+	}
+}
+
+func TestRegistryTouchOutputIfOwnerSkipsStaleOwnerAfterReplacement(t *testing.T) {
+	reg := NewRegistry()
+	oldPeer := &recordingPeer{}
+	newPeer := &recordingPeer{}
+	sink := &recordingSink{}
+
+	reg.Register(relayapi.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, oldPeer)
+	if err := reg.AddSink("sess-1", "browser", sink); err != nil {
+		t.Fatalf("AddSink returned error: %v", err)
+	}
+	reg.Register(relayapi.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, newPeer)
+
+	now := time.Unix(50, 0)
+	if ok := reg.TouchOutputIfOwner("sess-1", oldPeer, []byte("\x1b[32mPASS\x1b[0m stale output\n"), now); ok {
+		t.Fatal("TouchOutputIfOwner returned true for stale owner, want false")
+	}
+
+	got := reg.List()
+	if len(got) != 1 {
+		t.Fatalf("len(List()) = %d, want 1", len(got))
+	}
+	if got[0].LastPreview != "" {
+		t.Fatalf("LastPreview = %q, want empty", got[0].LastPreview)
+	}
+	if got[0].LastActiveAt != nil {
+		t.Fatalf("LastActiveAt = %v, want nil", got[0].LastActiveAt)
+	}
+	if len(sink.chunks) != 0 {
+		t.Fatalf("sink received output = %#v, want none", sink.chunks)
+	}
+	if len(newPeer.inputs) != 0 {
+		t.Fatalf("new peer received input-like output = %#v, want none", newPeer.inputs)
 	}
 }

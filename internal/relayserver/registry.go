@@ -92,28 +92,14 @@ func (r *Registry) List() []relayapi.SessionInfo {
 	return out
 }
 
+// TouchOutput is the legacy sessionID-only output path.
+// Prefer TouchOutputIfOwner for peer-owned loops so stale peers cannot mutate state.
 func (r *Registry) TouchOutput(sessionID string, chunk []byte, now time.Time) {
-	r.mu.Lock()
-	live, ok := r.sessions[sessionID]
-	if !ok {
-		r.mu.Unlock()
-		return
-	}
-	nowCopy := now
-	live.info.LastActiveAt = &nowCopy
-	if preview, ok := ExtractPreview(chunk); ok {
-		live.info.LastPreview = preview
-	}
-	sinks := make([]session.OutputSink, 0, len(live.sinks))
-	for _, sink := range live.sinks {
-		sinks = append(sinks, sink)
-	}
-	r.mu.Unlock()
+	r.touchOutput(sessionID, nil, chunk, now, false)
+}
 
-	for _, sink := range sinks {
-		cp := append([]byte(nil), chunk...)
-		_ = sink.WriteOutput(cp)
-	}
+func (r *Registry) TouchOutputIfOwner(sessionID string, owner AgentPeer, chunk []byte, now time.Time) bool {
+	return r.touchOutput(sessionID, owner, chunk, now, true)
 }
 
 func (r *Registry) AddSink(sessionID, sinkID string, sink session.OutputSink) error {
@@ -161,4 +147,29 @@ func lastActiveTime(info relayapi.SessionInfo) time.Time {
 		return time.Time{}
 	}
 	return *info.LastActiveAt
+}
+
+func (r *Registry) touchOutput(sessionID string, owner AgentPeer, chunk []byte, now time.Time, requireOwner bool) bool {
+	r.mu.Lock()
+	live, ok := r.sessions[sessionID]
+	if !ok || (requireOwner && live.peer != owner) {
+		r.mu.Unlock()
+		return false
+	}
+	nowCopy := now
+	live.info.LastActiveAt = &nowCopy
+	if preview, ok := ExtractPreview(chunk); ok {
+		live.info.LastPreview = preview
+	}
+	sinks := make([]session.OutputSink, 0, len(live.sinks))
+	for _, sink := range live.sinks {
+		sinks = append(sinks, sink)
+	}
+	r.mu.Unlock()
+
+	for _, sink := range sinks {
+		cp := append([]byte(nil), chunk...)
+		_ = sink.WriteOutput(cp)
+	}
+	return true
 }
