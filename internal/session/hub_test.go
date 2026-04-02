@@ -148,7 +148,9 @@ func TestRunningCloseReapsChildProcess(t *testing.T) {
 		t.Fatalf("StartCommand returned error: %v", err)
 	}
 
-	_ = running.Close()
+	if err := running.Close(); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
 
 	if running.cmd.ProcessState == nil {
 		t.Fatal("Close did not reap child process")

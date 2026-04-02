@@ -22,6 +22,9 @@ type Running struct {
 	waitErr   error
 	waitDone  chan struct{}
 	readDone  chan struct{}
+
+	mu             sync.Mutex
+	closeRequested bool
 }
 
 func StartCommand(ctx context.Context, path string, args []string) (*Running, error) {
@@ -74,6 +77,9 @@ func (r *Running) Wait() error {
 	err := r.waitForProcess()
 	cleanupErr := r.cleanupPTY()
 	<-r.readDone
+	if r.closeWasRequested() && isExpectedShutdownError(err) {
+		err = nil
+	}
 	if err != nil {
 		return err
 	}
@@ -85,6 +91,7 @@ func (r *Running) Wait() error {
 
 func (r *Running) Close() error {
 	r.closeOnce.Do(func() {
+		r.markCloseRequested()
 		if r.cmd.Process != nil {
 			_ = r.cmd.Process.Kill()
 		}
@@ -111,4 +118,27 @@ func (r *Running) cleanupPTY() error {
 		return nil
 	}
 	return r.cleanErr
+}
+
+func (r *Running) markCloseRequested() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.closeRequested = true
+}
+
+func (r *Running) closeWasRequested() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.closeRequested
+}
+
+func isExpectedShutdownError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return false
+	}
+	return exitErr.ProcessState != nil && !exitErr.ProcessState.Success()
 }
