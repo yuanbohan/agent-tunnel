@@ -365,6 +365,26 @@ func TestBrowserAttachStaysLiveAcrossSameSessionReplacementAndRoutesToNewAgent(t
 		t.Fatalf("WriteJSON replacement register returned error: %v", err)
 	}
 
+	if err := newAgentConn.WriteJSON(protocol.EncodeOutput([]byte("after-replace"))); err != nil {
+		t.Fatalf("WriteJSON output returned error: %v", err)
+	}
+
+	_ = browserConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var output protocol.Message
+	if err := browserConn.ReadJSON(&output); err != nil {
+		t.Fatalf("ReadJSON browser returned error: %v", err)
+	}
+	if output.Type != "output" {
+		t.Fatalf("Type = %q, want output", output.Type)
+	}
+	outputData, err := protocol.DecodeData(output)
+	if err != nil {
+		t.Fatalf("DecodeData output returned error: %v", err)
+	}
+	if string(outputData) != "after-replace" {
+		t.Fatalf("output = %q, want after-replace", string(outputData))
+	}
+
 	if err := browserConn.WriteJSON(protocol.Message{
 		Type: "input",
 		Data: base64.StdEncoding.EncodeToString([]byte("hello-new")),
@@ -386,26 +406,6 @@ func TestBrowserAttachStaysLiveAcrossSameSessionReplacementAndRoutesToNewAgent(t
 	}
 	if string(inputData) != "hello-new" {
 		t.Fatalf("input = %q, want hello-new", string(inputData))
-	}
-
-	if err := newAgentConn.WriteJSON(protocol.EncodeOutput([]byte("after-replace"))); err != nil {
-		t.Fatalf("WriteJSON output returned error: %v", err)
-	}
-
-	_ = browserConn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	var got protocol.Message
-	if err := browserConn.ReadJSON(&got); err != nil {
-		t.Fatalf("ReadJSON browser returned error: %v", err)
-	}
-	if got.Type != "output" {
-		t.Fatalf("Type = %q, want output", got.Type)
-	}
-	data, err := protocol.DecodeData(got)
-	if err != nil {
-		t.Fatalf("DecodeData returned error: %v", err)
-	}
-	if string(data) != "after-replace" {
-		t.Fatalf("output = %q, want after-replace", string(data))
 	}
 }
 
