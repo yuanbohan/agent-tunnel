@@ -63,14 +63,22 @@ func run() error {
 		waitErr <- running.Wait()
 	}()
 
-	select {
-	case <-ctx.Done():
-	case <-done:
-	case err := <-waitErr:
-		if err != nil {
-			return err
-		}
+	if err := waitForProcessOrShutdown(ctx, done, waitErr); err != nil {
+		return err
 	}
 
 	return nil
+}
+
+func waitForProcessOrShutdown(ctx context.Context, localDone <-chan struct{}, waitErr <-chan error) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-localDone:
+			localDone = nil
+		case err := <-waitErr:
+			return err
+		}
+	}
 }

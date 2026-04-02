@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
+	"golang.org/x/term"
 	clientterm "yuanbohan/tunnel/internal/client"
 )
 
@@ -31,6 +34,9 @@ func AttachLocalTerminal(ctx context.Context, hub *Hub) (restore func(), done <-
 		return writeErr
 	}))
 
+	resizeSignals := make(chan os.Signal, 1)
+	signal.Notify(resizeSignals, syscall.SIGWINCH)
+
 	finished := make(chan struct{})
 	go func() {
 		defer close(finished)
@@ -38,8 +44,40 @@ func AttachLocalTerminal(ctx context.Context, hub *Hub) (restore func(), done <-
 
 		_ = copyInput(ctx, os.Stdin, hub)
 	}()
+	go func() {
+		defer signal.Stop(resizeSignals)
+		forwardLocalTerminalResizes(ctx, hub, resizeSignals, getLocalTerminalSize)
+	}()
 
 	return restore, finished, nil
+}
+
+func forwardLocalTerminalResizes(ctx context.Context, hub *Hub, signals <-chan os.Signal, getSize func() (int, int, error)) {
+	sendResize := func() {
+		cols, rows, err := getSize()
+		if err != nil {
+			return
+		}
+		_ = hub.Resize(cols, rows)
+	}
+
+	sendResize()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case _, ok := <-signals:
+			if !ok {
+				return
+			}
+			sendResize()
+		}
+	}
+}
+
+func getLocalTerminalSize() (int, int, error) {
+	return term.GetSize(int(os.Stdin.Fd()))
 }
 
 func copyInput(ctx context.Context, input *os.File, hub *Hub) error {
