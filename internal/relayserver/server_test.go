@@ -113,7 +113,7 @@ func TestHandlerServesRelayShellOnRootAndSessionPath(t *testing.T) {
 	}
 }
 
-func TestHandlerFallsBackToIndexHTMLWhenRelayHTMLIsMissing(t *testing.T) {
+func TestHandlerServesBuiltInRelayShellWhenRelayHTMLIsMissing(t *testing.T) {
 	reg := NewRegistry()
 	handler := NewHandler(HandlerConfig{
 		Registry:        reg,
@@ -135,8 +135,14 @@ func TestHandlerFallsBackToIndexHTMLWhenRelayHTMLIsMissing(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "index-root") {
-		t.Fatalf("body = %q, want index.html fallback shell marker", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "relay-root") {
+		t.Fatalf("body = %q, want built-in relay shell marker", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "index-root") {
+		t.Fatalf("body = %q, want built-in relay shell instead of index.html", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "/ws") {
+		t.Fatalf("body = %q, want no localhost /ws dependency in relay fallback shell", rec.Body.String())
 	}
 }
 

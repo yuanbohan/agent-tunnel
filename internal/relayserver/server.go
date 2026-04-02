@@ -31,7 +31,6 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 
 	mux := http.NewServeMux()
 	fileServer := http.FileServer(http.FS(files))
-	shellPath := resolveShellPath(files)
 
 	serveRelayShell := func(w http.ResponseWriter, r *http.Request) {
 		if !checkBasicAuth(r, cfg.BrowserUser, cfg.BrowserPassword) {
@@ -40,7 +39,7 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 			return
 		}
 
-		http.ServeFileFS(w, r, files, shellPath)
+		serveRelayShellAsset(w, r, files)
 	}
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -102,9 +101,25 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 	return mux
 }
 
-func resolveShellPath(files fs.FS) string {
+func serveRelayShellAsset(w http.ResponseWriter, r *http.Request, files fs.FS) {
 	if _, err := fs.Stat(files, "relay.html"); err == nil {
-		return "relay.html"
+		http.ServeFileFS(w, r, files, "relay.html")
+		return
 	}
-	return "index.html"
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(relayFallbackHTML))
 }
+
+const relayFallbackHTML = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agentunnel Relay</title>
+</head>
+<body>
+<main id="relay-root">relay-root</main>
+</body>
+</html>
+`
