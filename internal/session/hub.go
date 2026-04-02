@@ -13,8 +13,11 @@ type Hub struct {
 	writeInput func([]byte) error
 	resizePTY  func(int, int) error
 
-	mu    sync.RWMutex
-	sinks map[string]OutputSink
+	mu       sync.RWMutex
+	sinks    map[string]OutputSink
+	cols     int
+	rows     int
+	onResize func(int, int)
 }
 
 func NewHub(writeInput func([]byte) error, resizePTY func(int, int) error) *Hub {
@@ -60,5 +63,30 @@ func (h *Hub) Resize(cols, rows int) error {
 	if cols <= 0 || rows <= 0 {
 		return fmt.Errorf("invalid resize %dx%d", cols, rows)
 	}
-	return h.resizePTY(cols, rows)
+	if err := h.resizePTY(cols, rows); err != nil {
+		return err
+	}
+
+	h.mu.Lock()
+	h.cols = cols
+	h.rows = rows
+	cb := h.onResize
+	h.mu.Unlock()
+
+	if cb != nil {
+		cb(cols, rows)
+	}
+	return nil
+}
+
+func (h *Hub) CurrentSize() (int, int) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.cols, h.rows
+}
+
+func (h *Hub) OnResize(cb func(cols, rows int)) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.onResize = cb
 }

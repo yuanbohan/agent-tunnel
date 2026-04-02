@@ -292,6 +292,46 @@ func TestCopyInputStopsOnWriteError(t *testing.T) {
 	}
 }
 
+func TestHubCurrentSizeReturnsZeroBeforeFirstResize(t *testing.T) {
+	hub := NewHub(func([]byte) error { return nil }, func(int, int) error { return nil })
+
+	cols, rows := hub.CurrentSize()
+	if cols != 0 || rows != 0 {
+		t.Fatalf("CurrentSize = %dx%d, want 0x0", cols, rows)
+	}
+}
+
+func TestHubResizeStoresCurrentSize(t *testing.T) {
+	hub := NewHub(func([]byte) error { return nil }, func(int, int) error { return nil })
+
+	if err := hub.Resize(120, 40); err != nil {
+		t.Fatalf("Resize returned error: %v", err)
+	}
+
+	cols, rows := hub.CurrentSize()
+	if cols != 120 || rows != 40 {
+		t.Fatalf("CurrentSize = %dx%d, want 120x40", cols, rows)
+	}
+}
+
+func TestHubResizeCallsOnResizeCallback(t *testing.T) {
+	hub := NewHub(func([]byte) error { return nil }, func(int, int) error { return nil })
+
+	var gotCols, gotRows int
+	hub.OnResize(func(cols, rows int) {
+		gotCols = cols
+		gotRows = rows
+	})
+
+	if err := hub.Resize(100, 50); err != nil {
+		t.Fatalf("Resize returned error: %v", err)
+	}
+
+	if gotCols != 100 || gotRows != 50 {
+		t.Fatalf("OnResize callback got %dx%d, want 100x50", gotCols, gotRows)
+	}
+}
+
 func TestNextLocalTerminalSinkIDIsUnique(t *testing.T) {
 	first := nextLocalTerminalSinkID()
 	second := nextLocalTerminalSinkID()
