@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"syscall"
 
 	"github.com/creack/pty"
 )
@@ -24,7 +25,7 @@ type Running struct {
 	readDone  chan struct{}
 
 	mu             sync.Mutex
-	closeRequested bool
+	closeInitiated bool
 }
 
 func StartCommand(ctx context.Context, path string, args []string) (*Running, error) {
@@ -77,7 +78,7 @@ func (r *Running) Wait() error {
 	err := r.waitForProcess()
 	cleanupErr := r.cleanupPTY()
 	<-r.readDone
-	if r.closeWasRequested() && isExpectedShutdownError(err) {
+	if r.closeWasInitiated() && isExpectedShutdownError(err) {
 		err = nil
 	}
 	if err != nil {
@@ -91,9 +92,10 @@ func (r *Running) Wait() error {
 
 func (r *Running) Close() error {
 	r.closeOnce.Do(func() {
-		r.markCloseRequested()
 		if r.cmd.Process != nil {
-			_ = r.cmd.Process.Kill()
+			if err := r.cmd.Process.Kill(); err == nil {
+				r.markCloseInitiated()
+			}
 		}
 	})
 	return r.Wait()
@@ -120,16 +122,16 @@ func (r *Running) cleanupPTY() error {
 	return r.cleanErr
 }
 
-func (r *Running) markCloseRequested() {
+func (r *Running) markCloseInitiated() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.closeRequested = true
+	r.closeInitiated = true
 }
 
-func (r *Running) closeWasRequested() bool {
+func (r *Running) closeWasInitiated() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.closeRequested
+	return r.closeInitiated
 }
 
 func isExpectedShutdownError(err error) bool {
@@ -140,5 +142,6 @@ func isExpectedShutdownError(err error) bool {
 	if !errors.As(err, &exitErr) {
 		return false
 	}
-	return exitErr.ProcessState != nil && !exitErr.ProcessState.Success()
+	status, ok := exitErr.ProcessState.Sys().(syscall.WaitStatus)
+	return ok && status.Signaled()
 }

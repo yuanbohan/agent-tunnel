@@ -157,6 +157,22 @@ func TestRunningCloseReapsChildProcess(t *testing.T) {
 	}
 }
 
+func TestRunningCloseReturnsProcessExitWhenCommandAlreadyFinished(t *testing.T) {
+	running, err := StartCommand(context.Background(), "/bin/sh", []string{
+		"-c",
+		"sleep 0.05; exit 7",
+	})
+	if err != nil {
+		t.Fatalf("StartCommand returned error: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	if err := running.Close(); err == nil {
+		t.Fatal("Close returned nil for a process that had already exited with failure")
+	}
+}
+
 func TestRunningWaitDrainsPTYOutput(t *testing.T) {
 	running, err := StartCommand(context.Background(), "/bin/sh", []string{
 		"-c",
