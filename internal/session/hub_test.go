@@ -139,6 +139,28 @@ func TestStartCommandBridgesInputAndOutput(t *testing.T) {
 	}
 }
 
+func TestStartCommandWithInitialSinksCapturesImmediateOutput(t *testing.T) {
+	sink := &recordingSink{}
+	running, err := StartCommandWithInitialSinks(context.Background(), "/bin/sh", []string{
+		"-c",
+		"printf 'ready'",
+	}, map[string]OutputSink{
+		"initial": sink,
+	})
+	if err != nil {
+		t.Fatalf("StartCommandWithInitialSinks returned error: %v", err)
+	}
+	defer running.Close()
+
+	if err := running.Wait(); err != nil {
+		t.Fatalf("Wait returned error: %v", err)
+	}
+
+	if got := string(bytes.Join(sink.chunks, nil)); got != "ready" {
+		t.Fatalf("initial sink output = %q, want ready", got)
+	}
+}
+
 func TestRunningCloseReapsChildProcess(t *testing.T) {
 	running, err := StartCommand(context.Background(), "/bin/sh", []string{
 		"-c",

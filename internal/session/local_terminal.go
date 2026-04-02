@@ -20,27 +20,49 @@ func (f outputSinkFunc) WriteOutput(data []byte) error {
 	return f(data)
 }
 
+type LocalTerminal struct {
+	restore func()
+	sinkID  string
+	sink    OutputSink
+}
+
 var localTerminalSinkID uint64
 
-func AttachLocalTerminal(ctx context.Context, hub *Hub) (restore func(), done <-chan struct{}, err error) {
-	restore, err = clientterm.EnterRawMode()
+func PrepareLocalTerminal() (*LocalTerminal, error) {
+	restore, err := clientterm.EnterRawMode()
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
-	sinkID := nextLocalTerminalSinkID()
-	hub.AddSink(sinkID, outputSinkFunc(func(data []byte) error {
-		_, writeErr := os.Stdout.Write(data)
-		return writeErr
-	}))
+	return &LocalTerminal{
+		restore: restore,
+		sinkID:  nextLocalTerminalSinkID(),
+		sink: outputSinkFunc(func(data []byte) error {
+			_, writeErr := os.Stdout.Write(data)
+			return writeErr
+		}),
+	}, nil
+}
 
+func (t *LocalTerminal) Restore() {
+	if t == nil || t.restore == nil {
+		return
+	}
+	t.restore()
+}
+
+func (t *LocalTerminal) SinkRegistration() (string, OutputSink) {
+	return t.sinkID, t.sink
+}
+
+func (t *LocalTerminal) Start(ctx context.Context, hub *Hub) <-chan struct{} {
 	resizeSignals := make(chan os.Signal, 1)
 	signal.Notify(resizeSignals, syscall.SIGWINCH)
 
 	finished := make(chan struct{})
 	go func() {
 		defer close(finished)
-		defer hub.RemoveSink(sinkID)
+		defer hub.RemoveSink(t.sinkID)
 
 		_ = copyInput(ctx, os.Stdin, hub)
 	}()
@@ -49,7 +71,19 @@ func AttachLocalTerminal(ctx context.Context, hub *Hub) (restore func(), done <-
 		forwardLocalTerminalResizes(ctx, hub, resizeSignals, getLocalTerminalSize)
 	}()
 
-	return restore, finished, nil
+	return finished
+}
+
+func AttachLocalTerminal(ctx context.Context, hub *Hub) (restore func(), done <-chan struct{}, err error) {
+	local, err := PrepareLocalTerminal()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	sinkID, sink := local.SinkRegistration()
+	hub.AddSink(sinkID, sink)
+
+	return local.Restore, local.Start(ctx, hub), nil
 }
 
 func forwardLocalTerminalResizes(ctx context.Context, hub *Hub, signals <-chan os.Signal, getSize func() (int, int, error)) {

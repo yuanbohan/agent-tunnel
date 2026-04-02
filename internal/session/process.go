@@ -29,6 +29,10 @@ type Running struct {
 }
 
 func StartCommand(ctx context.Context, path string, args []string) (*Running, error) {
+	return StartCommandWithInitialSinks(ctx, path, args, nil)
+}
+
+func StartCommandWithInitialSinks(ctx context.Context, path string, args []string, initialSinks map[string]OutputSink) (*Running, error) {
 	cmd := exec.CommandContext(ctx, path, args...)
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 
@@ -55,6 +59,9 @@ func StartCommand(ctx context.Context, path string, args []string) (*Running, er
 			})
 		},
 	)
+	for id, sink := range initialSinks {
+		running.Hub.AddSink(id, sink)
+	}
 
 	go func() {
 		defer close(running.readDone)

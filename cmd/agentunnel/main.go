@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -13,6 +14,13 @@ import (
 	"yuanbohan/tunnel/internal/session"
 )
 
+var (
+	resolveLauncher      = launcher.Resolve
+	prepareLocalTerminal = session.PrepareLocalTerminal
+	startSession         = session.StartCommandWithInitialSinks
+	startServer          = server.StartLocal
+)
+
 func main() {
 	if err := run(); err != nil {
 		log.Fatal(err)
@@ -20,12 +28,16 @@ func main() {
 }
 
 func run() error {
-	if len(os.Args) < 2 {
-		fmt.Fprintf(os.Stderr, "usage: agentunnel <claude|codex|gemini> [args...]\n")
+	return runWithArgs(os.Args, os.Stderr)
+}
+
+func runWithArgs(args []string, stderr io.Writer) error {
+	if len(args) < 2 {
+		fmt.Fprintf(stderr, "usage: agentunnel <claude|codex|gemini> [args...]\n")
 		os.Exit(2)
 	}
 
-	command, err := launcher.Resolve(os.Args[1], os.Args[2:])
+	command, err := resolveLauncher(args[1], args[2:])
 	if err != nil {
 		return err
 	}
@@ -33,30 +45,35 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	running, err := session.StartCommand(ctx, command.Path, command.Args)
+	local, err := prepareLocalTerminal()
+	if err != nil {
+		return err
+	}
+	defer local.Restore()
+
+	sinkID, sink := local.SinkRegistration()
+	running, err := startSession(ctx, command.Path, command.Args, map[string]session.OutputSink{
+		sinkID: sink,
+	})
 	if err != nil {
 		return err
 	}
 	defer running.Close()
 
-	web, err := server.StartLocal(running.Hub)
+	web, err := startServer(running.Hub)
 	if err != nil {
 		return err
 	}
 	defer web.Close(context.Background())
 
 	fmt.Fprintf(
-		os.Stderr,
+		stderr,
 		"▶ agentunnel — %s\n  open %s\n  local terminal and browser share the same live session\n\n",
 		command.Name,
 		web.URL,
 	)
 
-	restore, done, err := session.AttachLocalTerminal(ctx, running.Hub)
-	if err != nil {
-		return err
-	}
-	defer restore()
+	done := local.Start(ctx, running.Hub)
 
 	waitErr := make(chan error, 1)
 	go func() {
