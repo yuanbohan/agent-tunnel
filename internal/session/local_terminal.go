@@ -2,10 +2,12 @@ package session
 
 import (
 	"context"
+	"fmt"
 	"os"
-	"syscall"
+	"sync/atomic"
 	"time"
 
+	"golang.org/x/sys/unix"
 	clientterm "yuanbohan/tunnel/internal/client"
 )
 
@@ -15,13 +17,16 @@ func (f outputSinkFunc) WriteOutput(data []byte) error {
 	return f(data)
 }
 
+var localTerminalSinkID uint64
+
 func AttachLocalTerminal(ctx context.Context, hub *Hub) (restore func(), done <-chan struct{}, err error) {
 	restore, err = clientterm.EnterRawMode()
 	if err != nil {
 		return nil, nil, err
 	}
 
-	hub.AddSink("local-terminal", outputSinkFunc(func(data []byte) error {
+	sinkID := nextLocalTerminalSinkID()
+	hub.AddSink(sinkID, outputSinkFunc(func(data []byte) error {
 		_, writeErr := os.Stdout.Write(data)
 		return writeErr
 	}))
@@ -29,21 +34,21 @@ func AttachLocalTerminal(ctx context.Context, hub *Hub) (restore func(), done <-
 	finished := make(chan struct{})
 	go func() {
 		defer close(finished)
-		defer hub.RemoveSink("local-terminal")
+		defer hub.RemoveSink(sinkID)
 
-		copyInput(ctx, os.Stdin, hub)
+		_ = copyInput(ctx, os.Stdin, hub)
 	}()
 
 	return restore, finished, nil
 }
 
-func copyInput(ctx context.Context, input *os.File, hub *Hub) {
+func copyInput(ctx context.Context, input *os.File, hub *Hub) error {
 	buf := make([]byte, 256)
 	fd := int(input.Fd())
 
 	for {
 		if ctx.Err() != nil {
-			return
+			return nil
 		}
 
 		ready, err := waitForInput(ctx, fd)
@@ -51,45 +56,48 @@ func copyInput(ctx context.Context, input *os.File, hub *Hub) {
 			if err == nil {
 				continue
 			}
-			return
+			return err
 		}
 
 		n, readErr := input.Read(buf)
 		if n > 0 {
 			cp := append([]byte(nil), buf[:n]...)
-			_ = hub.WriteInput(cp)
+			if err := hub.WriteInput(cp); err != nil {
+				return err
+			}
 		}
 		if readErr != nil {
-			return
+			return readErr
 		}
 	}
 }
 
 func waitForInput(ctx context.Context, fd int) (bool, error) {
+	fds := []unix.PollFd{{
+		Fd:     int32(fd),
+		Events: unix.POLLIN,
+	}}
+
 	for {
 		if ctx.Err() != nil {
 			return false, nil
 		}
 
-		timeout := syscall.NsecToTimeval((100 * time.Millisecond).Nanoseconds())
-		var readfds syscall.FdSet
-		fdSet(fd, &readfds)
-
-		err := syscall.Select(fd+1, &readfds, nil, nil, &timeout)
-		if err == syscall.EINTR {
+		n, err := unix.Poll(fds, int((100 * time.Millisecond).Milliseconds()))
+		if err == unix.EINTR {
 			continue
 		}
 		if err != nil {
 			return false, err
 		}
-		return fdIsSet(fd, &readfds), nil
+		if n == 0 {
+			return false, nil
+		}
+		return fds[0].Revents&(unix.POLLIN|unix.POLLHUP|unix.POLLERR) != 0, nil
 	}
 }
 
-func fdSet(fd int, set *syscall.FdSet) {
-	set.Bits[fd/64] |= 1 << (uint(fd) % 64)
-}
-
-func fdIsSet(fd int, set *syscall.FdSet) bool {
-	return set.Bits[fd/64]&(1<<(uint(fd)%64)) != 0
+func nextLocalTerminalSinkID() string {
+	id := atomic.AddUint64(&localTerminalSinkID, 1)
+	return fmt.Sprintf("local-terminal-%d", id)
 }
