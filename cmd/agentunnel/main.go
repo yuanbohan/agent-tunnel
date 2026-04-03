@@ -57,6 +57,13 @@ func runWithArgs(args []string, stderr io.Writer) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	fmt.Fprintf(
+		stderr,
+		"▶ agentunnel — %s\n  relay: %s\n  local terminal is interactive\n\n",
+		command.Name,
+		parsed.RelayAddr,
+	)
+
 	local, err := prepareLocalTerminal()
 	if err != nil {
 		return err
@@ -88,13 +95,6 @@ func runWithArgs(args []string, stderr io.Writer) error {
 
 	relay.BindHub(running.Hub)
 	go relay.Run(ctx)
-
-	fmt.Fprintf(
-		stderr,
-		"▶ agentunnel — %s\n  relay: %s\n  local terminal is interactive\n\n",
-		command.Name,
-		parsed.RelayAddr,
-	)
 
 	done := local.Start(ctx, running.Hub)
 
