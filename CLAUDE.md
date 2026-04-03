@@ -6,29 +6,27 @@ During the brainstorming, spec, and planning phases, avoid writing code whenever
 
 ## Start Here
 
-- The main product is `agentunnel`, not the legacy `agent`/`client` pair.
-- `cmd/agentunnel` launches `claude`, `codex`, or `gemini`, keeps the local terminal interactive, always serves the same PTY session to a localhost browser client, and can optionally register that session with a remote relay.
-- `cmd/relay` is the standalone relay server. It serves the relay dashboard/session UI, authenticates browsers with Basic Auth, authenticates local agents with a bearer token, and maintains a live in-memory session registry.
-- `internal/session/` owns PTY lifecycle, fanout, local terminal attach, and resize/input forwarding.
-- `internal/server/` serves the embedded web UI and the WebSocket bridge.
-- `internal/relayapi/` defines shared relay payloads such as `SessionInfo` and `AgentFrame`.
-- `internal/relayclient/` is the outbound connector from a local `agentunnel` process to `/agent/ws` on the relay.
-- `internal/relayserver/` owns relay auth, registry, preview extraction, heartbeat cleanup, and relay HTTP/WebSocket handlers.
-- `internal/launcher/` is the supported-launcher registry and PATH resolution layer.
-- `web/` contains two browser entrypoints:
-  - `index.html` / `src/main.ts` for localhost single-session mode
-  - `relay.html` / `src/relay_app.ts` for relay dashboard + mobile session detail mode
-- `web/src/terminal.ts` is shared by both UIs. Localhost mode also uses `web/src/input_filter.ts` to avoid forwarding xterm auto-response sequences back into the PTY.
-- Rebuild tracked embedded assets in `internal/webui/dist/` with `make web-build` or `cd web && npm run build` after web changes.
+- The main product is `agentunnel` with a mandatory relay connection.
+- `cmd/agentunnel` launches `claude`, `codex`, or `gemini`, keeps the local terminal interactive, and registers the PTY session with a remote relay server.
+- `cmd/relay` is the standalone relay server. It serves the dashboard/session UI, authenticates browsers with Basic Auth, authenticates agents with a bearer token, and maintains a live in-memory session registry. Supports `--port` flag to override listen address.
+- `session/` owns PTY lifecycle, Hub fanout, local terminal attach, and resize/input forwarding.
+- `protocol/` defines wire types: `Message` (input/output/resize), `SessionInfo`, and `AgentFrame`.
+- `connector/` is the mandatory outbound connector from a local `agentunnel` process to `/agent/ws` on the relay.
+- `relay/` owns relay auth, registry, preview extraction, heartbeat cleanup, and relay HTTP/WebSocket handlers.
+- `launcher/` is the supported-launcher registry and PATH resolution layer.
+- `webui/` holds the embedded web assets built from `web/dist/`.
+- `web/` contains a single browser entrypoint: `index.html` / `src/app.ts` for the relay dashboard and session detail view.
+- `web/src/terminal.ts` is the shared xterm.js wrapper. `web/src/input_filter.ts` filters auto-response sequences in the session page before forwarding input.
+- Rebuild tracked embedded assets in `webui/dist/` with `make web-build` or `cd web && npm run build` after web changes.
 - `docs/architecture.md` describes how all Go packages and web modules interact.
-- `cmd/agent` and `cmd/client` are legacy shell-over-WebSocket mode. Do not break or remove them unless the task explicitly says so.
 
 ## Current Product Boundaries
 
-- `agentunnel` remains the PTY owner in all modes. Relay mode is additive; it does not replace localhost mode.
+- `agentunnel` is the PTY owner. It has no localhost HTTP server; browser access is exclusively through the relay.
+- The relay connection is mandatory. `agentunnel` requires `--relay-url` (or `AGENTUNNEL_RELAY_URL`) and `AGENTUNNEL_RELAY_TOKEN` to start.
 - The relay is `attach-only`. It lists live sessions and lets a browser attach to one; it does not create or stop local sessions.
 - Relay state is live-only and in-memory. If the owning agent socket disappears, the session disappears from the list.
-- Browser relay session pages start in `Read-only` mode and only send input after the state chip is toggled to `Input on`.
+- Browser session pages start in `Read-only` mode and only send input after the state chip is toggled to `Input on`.
 - Browser WebSocket attach on the relay is same-origin checked. Do not relax this casually.
 
 ## Docs Expectations
@@ -36,7 +34,6 @@ During the brainstorming, spec, and planning phases, avoid writing code whenever
 - Keep `README.md`, `docs/architecture.md`, and `CLAUDE.md` aligned with the current implementation when behavior or scope changes.
 - If you change relay auth, relay lifecycle, browser entrypoints, or PTY/input behavior, update `docs/architecture.md`.
 - If you change operator-facing startup flow or environment variables, update `README.md`.
-- Avoid leaving docs in a “pre-relay” state; this repo now has both localhost and relay paths.
 
 ## Verification
 

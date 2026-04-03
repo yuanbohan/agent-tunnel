@@ -1,43 +1,20 @@
 # agent-tunnel
 
-Launch a terminal agent locally and mirror the same PTY session into a localhost web client.
+Launch a terminal agent locally and stream the live PTY session to a remote relay dashboard.
 
-`agentunnel` starts a real CLI such as `claude`, `codex`, or `gemini`, keeps the launching terminal interactive, and serves a browser client that shares the exact same input and output stream. The original `agent` and `client` commands also remain available as the legacy shell-over-WebSocket mode.
+`agentunnel` starts a real CLI such as `claude`, `codex`, or `gemini`, keeps the launching terminal interactive, and registers the session with a relay server. The relay serves a browser dashboard where authenticated users can list live sessions and attach to any one of them in real time.
 
 ## Requirements
 
 - Go 1.25+
-- Node.js and npm for the bundled web UI (`make build` and `make agentunnel` both depend on `web-build`)
+- Node.js and npm for the bundled web UI (`make build` depends on `web-build`)
 - A supported launcher installed on `PATH`: `claude`, `codex`, or `gemini`
 
 ## Quick Start
 
-On a fresh machine, install web dependencies first:
+### 1. Start the relay
 
-```bash
-make web-install
-make agentunnel LAUNCHER=claude
-```
-
-Equivalent direct command:
-
-```bash
-go run ./cmd/agentunnel claude
-```
-
-Expected stderr output:
-
-```text
-▶ agentunnel — claude
-  open http://127.0.0.1:43127
-  local terminal and browser share the same live session
-```
-
-Open the printed URL in a browser. The local terminal and browser can both read from and write to the same live session.
-
-## Relay Mode
-
-Start the relay on a public host:
+The relay requires three environment variables for auth:
 
 ```bash
 export AGENTUNNEL_BASIC_USER=demo
@@ -46,15 +23,60 @@ export AGENTUNNEL_AGENT_TOKEN=agent-token
 make relay
 ```
 
-Start a local session and register it with the relay:
+The relay listens on `:8586` by default. Override with `--port` or `AGENTUNNEL_RELAY_ADDR`:
 
 ```bash
-export AGENTUNNEL_RELAY_URL=wss://relay.example
+go run ./cmd/relay --port 9000
+```
+
+### 2. Start agentunnel
+
+Point the agent at the relay and launch a session:
+
+```bash
+export AGENTUNNEL_RELAY_URL=ws://localhost:8586
 export AGENTUNNEL_RELAY_TOKEN=agent-token
+go run ./cmd/agentunnel claude
+```
+
+Or with a label:
+
+```bash
 go run ./cmd/agentunnel --label api-fix codex
 ```
 
-Then open `https://relay.example/`, authenticate with Basic Auth, and choose a live session from the dashboard.
+Expected stderr output:
+
+```text
+▶ agentunnel — claude
+  relay: ws://localhost:8586
+  local terminal is interactive
+```
+
+### 3. Open the dashboard
+
+Open `http://localhost:8586/` in a browser, authenticate with the Basic Auth credentials, and choose a live session from the dashboard.
+
+## VPS Deployment
+
+On the remote host:
+
+```bash
+export AGENTUNNEL_BASIC_USER=ops
+export AGENTUNNEL_BASIC_PASSWORD=strong-password
+export AGENTUNNEL_AGENT_TOKEN=shared-agent-token
+./bin/relay --port 443
+```
+
+On each developer machine:
+
+```bash
+export AGENTUNNEL_RELAY_URL=wss://relay.example.com
+export AGENTUNNEL_RELAY_TOKEN=shared-agent-token
+./bin/agentunnel --label "feature-branch" claude
+```
+
+Then open `https://relay.example.com/` in any browser.
 
 ## Supported Launchers
 
@@ -64,37 +86,18 @@ Then open `https://relay.example/`, authenticate with Basic Auth, and choose a l
 
 `agentunnel` resolves these executables from `PATH` and runs the real CLI unchanged, so approvals and terminal UX still come from the original tool.
 
-## Legacy Mode
-
-The original `agent` and `client` commands remain available:
-
-```bash
-make agent
-make client
-```
-
-This path starts a shell PTY on localhost and connects a terminal client to it. It is separate from `agentunnel`.
-
 ## Development
 
-On a fresh machine, run `make web-install` before `make build`, `make test`, or `make agentunnel`.
+On a fresh machine, run `make web-install` before `make build` or `make test`.
 
 ```bash
-make agentunnel LAUNCHER=claude
-make build
-make test
-make web
-```
-
-Command reference:
-
-```bash
-make build             # builds bin/agent, bin/client, and bin/agentunnel
-make web               # run web client dev server
-make web-build         # rebuild embedded web assets in internal/webui/dist
-make agent             # run legacy PTY shell server on localhost:8585
-make client            # run legacy CLI client against ws://localhost:8585/ws
-make relay             # run relay server with Basic Auth and agent token auth
+make web-install       # install web dependencies
+make build             # builds bin/agentunnel and bin/relay
+make test              # go test + web tests
+make web-build         # rebuild embedded web assets in webui/dist
+make web               # run web dev server
+make agentunnel LAUNCHER=claude   # run agentunnel directly
+make relay             # run relay server
 ```
 
 If you change files under `web/`, rebuild the embedded assets before committing:
@@ -105,12 +108,12 @@ make web-build
 
 ## Protocol
 
-JSON frames over WebSocket text messages.
+See [docs/protocol.md](docs/protocol.md) for the full wire format specification.
+
+JSON frames over WebSocket text messages:
 
 | Type     | Direction        | Payload                        |
 |----------|------------------|--------------------------------|
-| `input`  | client → agent   | `data`: base64-encoded stdin   |
-| `output` | agent → client   | `data`: base64-encoded stdout  |
-| `resize` | client → agent   | `cols`, `rows` as integers     |
-
-`stderr` is merged into `output` because the PTY exposes a single terminal stream.
+| `input`  | browser -> relay -> agent | `data`: base64-encoded stdin |
+| `output` | agent -> relay -> browser | `data`: base64-encoded stdout |
+| `resize` | browser -> relay -> agent | `cols`, `rows` as integers   |
