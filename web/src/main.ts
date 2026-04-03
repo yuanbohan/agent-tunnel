@@ -4,6 +4,7 @@ import { ConnectionManager, type ConnectionStatus } from './connection'
 import { encodeInput, decodeOutput } from './protocol'
 import type { Message } from './protocol'
 import { sessionWebSocketURL } from './session_url'
+import { isTerminalAutoResponse } from './input_filter'
 
 const AGENT_URL = sessionWebSocketURL(window.location)
 
@@ -37,7 +38,9 @@ toggleBtn.addEventListener('click', () => {
 termContainer.classList.add('scroll-mode')
 
 terminal.onData((str) => {
-  conn.send(encodeInput(str))
+  if (!isTerminalAutoResponse(str)) {
+    conn.send(encodeInput(str))
+  }
 })
 
 conn.onMessage((msg: Message) => {
