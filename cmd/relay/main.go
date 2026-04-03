@@ -46,14 +46,22 @@ func main() {
 		log.Fatal(err)
 	}
 
+	logger := relay.NewLogger(os.Stderr)
+	logRelayStarted(logger, cfg)
+
 	handler := relay.NewHandler(relay.HandlerConfig{
 		Registry:        relay.NewRegistry(),
 		BrowserUser:     cfg.BrowserUser,
 		BrowserPassword: cfg.BrowserPassword,
 		AgentToken:      cfg.AgentToken,
+		Logger:          logger,
 	})
 
 	log.Fatal(newHTTPServer(cfg, handler).ListenAndServe())
+}
+
+func logRelayStarted(logger *relay.Logger, cfg mainConfig) {
+	logger.Info("relay_started", relay.String("listen_addr", cfg.ListenAddr))
 }
 
 func newHTTPServer(cfg mainConfig, handler http.Handler) *http.Server {

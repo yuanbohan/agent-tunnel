@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
+
+	"yuanbohan/tunnel/relay"
 )
 
 func validEnv(key string) string {
@@ -56,6 +60,20 @@ func TestLoadMainConfigIgnoresLegacyRelayAddrEnv(t *testing.T) {
 	}
 	if cfg.ListenAddr != "0.0.0.0:8586" {
 		t.Errorf("ListenAddr = %q, want 0.0.0.0:8586 (legacy env should be ignored)", cfg.ListenAddr)
+	}
+}
+
+func TestLogRelayStartedWritesListenAddr(t *testing.T) {
+	var buf bytes.Buffer
+
+	logRelayStarted(relay.NewLogger(&buf), mainConfig{ListenAddr: "0.0.0.0:8586"})
+
+	got := buf.String()
+	if !strings.Contains(got, `"event":"relay_started"`) {
+		t.Fatalf("log = %q, want event relay_started", got)
+	}
+	if !strings.Contains(got, `"listen_addr":"0.0.0.0:8586"`) {
+		t.Fatalf("log = %q, want listen_addr 0.0.0.0:8586", got)
 	}
 }
 

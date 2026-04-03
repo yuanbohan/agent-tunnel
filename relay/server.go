@@ -37,6 +37,7 @@ type HandlerConfig struct {
 	BrowserUser           string
 	BrowserPassword       string
 	AgentToken            string
+	Logger                *Logger
 	Files                 fs.FS
 	AgentReadTimeout      time.Duration
 	AgentPingInterval     time.Duration
