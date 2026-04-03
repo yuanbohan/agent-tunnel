@@ -57,28 +57,31 @@ type wsConn interface {
 }
 
 type wsSink struct {
-	conn         wsConn
-	writeTimeout time.Duration
+	conn           wsConn
+	writeTimeout   time.Duration
+	onBackpressure func()
 
-	mu        sync.RWMutex
-	closed    bool
-	outbound  chan protocol.Message
-	closeOnce sync.Once
+	mu               sync.RWMutex
+	closed           bool
+	outbound         chan protocol.Message
+	closeOnce        sync.Once
+	backpressureOnce sync.Once
 }
 
 func newWSSink(conn wsConn) *wsSink {
-	return newWSSinkWithConfig(conn, defaultWSSinkBufferSize, defaultWSWriteTimeout)
+	return newWSSinkWithConfig(conn, defaultWSSinkBufferSize, defaultWSWriteTimeout, nil)
 }
 
-func newWSSinkWithConfig(conn wsConn, bufferSize int, writeTimeout time.Duration) *wsSink {
+func newWSSinkWithConfig(conn wsConn, bufferSize int, writeTimeout time.Duration, onBackpressure func()) *wsSink {
 	if bufferSize <= 0 {
 		bufferSize = 1
 	}
 
 	sink := &wsSink{
-		conn:         conn,
-		writeTimeout: writeTimeout,
-		outbound:     make(chan protocol.Message, bufferSize),
+		conn:           conn,
+		writeTimeout:   writeTimeout,
+		onBackpressure: onBackpressure,
+		outbound:       make(chan protocol.Message, bufferSize),
 	}
 	go sink.run()
 	return sink
@@ -111,6 +114,11 @@ func (s *wsSink) enqueue(msg protocol.Message) error {
 		return nil
 	default:
 		s.mu.RUnlock()
+		s.backpressureOnce.Do(func() {
+			if s.onBackpressure != nil {
+				s.onBackpressure()
+			}
+		})
 		_ = s.Close()
 		return errWSSinkBackpressure
 	}
@@ -420,7 +428,17 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 		defer conn.Close()
 
 		sinkID := "browser-" + strconv.FormatUint(atomic.AddUint64(&nextSinkID, 1), 10)
-		sink := newWSSink(conn)
+		var sinkBackpressure atomic.Bool
+		sink := newWSSinkWithConfig(conn, defaultWSSinkBufferSize, defaultWSWriteTimeout, func() {
+			if !sinkBackpressure.CompareAndSwap(false, true) {
+				return
+			}
+			logger.Warn("sink_backpressure",
+				String("session_id", sessionID),
+				String("client_id", sinkID),
+			)
+			_ = conn.Close()
+		})
 		if err := registry.AddSink(sessionID, sinkID, sink); err != nil {
 			_ = sink.Close()
 			return
@@ -436,11 +454,15 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 		defer func() {
 			registry.RemoveSink(sessionID, sinkID)
 			_ = sink.Close()
+			reason := classifyDisconnectReason(loopErr)
+			if sinkBackpressure.Load() {
+				reason = "backpressure"
+			}
 			logger.Info("client_disconnected",
 				String("session_id", sessionID),
 				String("client_id", sinkID),
 				Int64("duration_ms", time.Since(connectedAt).Milliseconds()),
-				String("reason", classifyDisconnectReason(loopErr)),
+				String("reason", reason),
 			)
 		}()
 
@@ -482,6 +504,10 @@ func logWSUpgradeFailed(logger *Logger, r *http.Request, role string) {
 func classifyDisconnectReason(err error) string {
 	if err == nil {
 		return "closed"
+	}
+
+	if errors.Is(err, errWSSinkBackpressure) {
+		return "backpressure"
 	}
 
 	var netErr net.Error

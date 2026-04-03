@@ -66,6 +66,7 @@ func (r *Registry) SetLogger(logger *Logger) {
 func (r *Registry) Register(info protocol.SessionInfo, peer AgentPeer) {
 	r.mu.Lock()
 	old := r.sessions[info.SessionID]
+	logger := r.logger
 	var sinks map[string]session.OutputSink
 	var history []historyFrame
 	var historyBytes int
@@ -103,6 +104,9 @@ func (r *Registry) Register(info protocol.SessionInfo, peer AgentPeer) {
 	r.sessions[info.SessionID].info.LastActiveAt = lastActiveAt
 	r.mu.Unlock()
 
+	if old != nil {
+		logger.Info("session_replaced", String("session_id", info.SessionID))
+	}
 	if old != nil && old.peer != nil {
 		_ = old.peer.Close()
 	}
