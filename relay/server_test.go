@@ -277,6 +277,24 @@ func TestHandlerRejectsAgentWebSocketWithWrongToken(t *testing.T) {
 	}
 }
 
+func TestNewHandlerWiresInjectedLoggerIntoRegistry(t *testing.T) {
+	reg := NewRegistry()
+	logger := NewDiscardLogger()
+
+	_ = NewHandler(HandlerConfig{
+		Registry:        reg,
+		BrowserUser:     "demo",
+		BrowserPassword: "secret",
+		AgentToken:      "agent-token",
+		Logger:          logger,
+		Files:           testFiles(),
+	})
+
+	if reg.logger != logger {
+		t.Fatalf("registry logger = %p, want %p", reg.logger, logger)
+	}
+}
+
 func TestHandlerLogsAgentAuthFailure(t *testing.T) {
 	reg := NewRegistry()
 	logs := newLogRecorder()

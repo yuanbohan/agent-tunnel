@@ -28,6 +28,7 @@ type ResizeSink interface {
 type Registry struct {
 	mu       sync.RWMutex
 	sessions map[string]*liveSession
+	logger   *Logger
 }
 
 type liveSession struct {
@@ -44,7 +45,22 @@ type liveSession struct {
 }
 
 func NewRegistry() *Registry {
-	return &Registry{sessions: make(map[string]*liveSession)}
+	return &Registry{
+		sessions: make(map[string]*liveSession),
+		logger:   NewDiscardLogger(),
+	}
+}
+
+func (r *Registry) SetLogger(logger *Logger) {
+	if r == nil {
+		return
+	}
+	if logger == nil {
+		logger = NewDiscardLogger()
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.logger = logger
 }
 
 func (r *Registry) Register(info protocol.SessionInfo, peer AgentPeer) {

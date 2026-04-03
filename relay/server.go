@@ -31,7 +31,6 @@ var (
 	errWSSinkClosed       = errors.New("websocket sink closed")
 	errWSSinkBackpressure = errors.New("websocket sink backpressure")
 	nextSinkID            uint64
-	registryLoggers       sync.Map
 )
 
 type HandlerConfig struct {
@@ -462,13 +461,6 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 	})
 
 	return mux
-}
-
-func (r *Registry) SetLogger(logger *Logger) {
-	if r == nil {
-		return
-	}
-	registryLoggers.Store(r, logger)
 }
 
 func logAuthFailed(logger *Logger, r *http.Request, authType string) {
