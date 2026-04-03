@@ -7,7 +7,7 @@ import (
 	"os"
 	"time"
 
-	"yuanbohan/tunnel/internal/relayserver"
+	"yuanbohan/tunnel/relay"
 )
 
 type mainConfig struct {
@@ -40,8 +40,8 @@ func main() {
 		log.Fatal(err)
 	}
 
-	handler := relayserver.NewHandler(relayserver.HandlerConfig{
-		Registry:        relayserver.NewRegistry(),
+	handler := relay.NewHandler(relay.HandlerConfig{
+		Registry:        relay.NewRegistry(),
 		BrowserUser:     cfg.BrowserUser,
 		BrowserPassword: cfg.BrowserPassword,
 		AgentToken:      cfg.AgentToken,

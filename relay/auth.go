@@ -1,4 +1,4 @@
-package relayserver
+package relay
 
 import (
 	"crypto/subtle"
