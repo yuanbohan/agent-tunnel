@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io/fs"
-	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -185,10 +184,17 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 		registry = NewRegistry()
 	}
 	logger := cfg.Logger
-	if logger == nil {
-		logger = NewDiscardLogger()
+	if logger != nil {
+		registry.SetLogger(logger)
+	} else {
+		registry.mu.RLock()
+		logger = registry.logger
+		registry.mu.RUnlock()
+		if logger == nil {
+			logger = NewDiscardLogger()
+			registry.SetLogger(logger)
+		}
 	}
-	registry.SetLogger(logger)
 
 	files := cfg.Files
 	if files == nil {
@@ -511,24 +517,13 @@ func logWSUpgradeFailed(logger *Logger, r *http.Request, role string) {
 }
 
 func classifyDisconnectReason(err error) string {
-	if err == nil {
-		return "closed"
-	}
-
 	if errors.Is(err, errWSSinkBackpressure) {
 		return "backpressure"
 	}
-
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
-		return "timeout"
+	if err == nil || websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+		return "client_closed"
 	}
-
-	if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-		return "closed"
-	}
-
-	return "error"
+	return "read_error"
 }
 
 func sameOriginOrEmpty(r *http.Request) bool {

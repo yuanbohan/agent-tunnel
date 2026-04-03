@@ -105,7 +105,7 @@ func (r *Registry) Register(info protocol.SessionInfo, peer AgentPeer) {
 	r.mu.Unlock()
 
 	if old != nil {
-		logger.Info("session_replaced", String("session_id", info.SessionID))
+		logger.Warn("session_replaced", String("session_id", info.SessionID))
 	}
 	if old != nil && old.peer != nil {
 		_ = old.peer.Close()

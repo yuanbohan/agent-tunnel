@@ -285,39 +285,44 @@ func TestClassifyDisconnectReason(t *testing.T) {
 		want string
 	}{
 		{
-			name: "nil is closed",
+			name: "nil is client closed",
 			err:  nil,
-			want: "closed",
+			want: "client_closed",
 		},
 		{
-			name: "normal close is closed",
+			name: "normal close is client closed",
 			err:  &websocket.CloseError{Code: websocket.CloseNormalClosure},
-			want: "closed",
+			want: "client_closed",
 		},
 		{
-			name: "going away is closed",
+			name: "going away is client closed",
 			err:  &websocket.CloseError{Code: websocket.CloseGoingAway},
-			want: "closed",
+			want: "client_closed",
 		},
 		{
-			name: "timeout stays timeout",
+			name: "timeout is read error",
 			err:  timeoutError{},
-			want: "timeout",
+			want: "read_error",
 		},
 		{
-			name: "abnormal close is error",
+			name: "abnormal close is read error",
 			err:  &websocket.CloseError{Code: websocket.CloseAbnormalClosure},
-			want: "error",
+			want: "read_error",
 		},
 		{
-			name: "protocol close is error",
+			name: "protocol close is read error",
 			err:  &websocket.CloseError{Code: websocket.CloseProtocolError},
-			want: "error",
+			want: "read_error",
 		},
 		{
-			name: "generic error is error",
+			name: "backpressure stays backpressure",
+			err:  errWSSinkBackpressure,
+			want: "backpressure",
+		},
+		{
+			name: "generic error is read error",
 			err:  errors.New("boom"),
-			want: "error",
+			want: "read_error",
 		},
 	}
 
@@ -345,6 +350,24 @@ func TestNewHandlerWiresInjectedLoggerIntoRegistry(t *testing.T) {
 
 	if reg.logger != logger {
 		t.Fatalf("registry logger = %p, want %p", reg.logger, logger)
+	}
+}
+
+func TestNewHandlerKeepsRegistryLoggerWhenConfigLoggerNil(t *testing.T) {
+	reg := NewRegistry()
+	logger := NewDiscardLogger()
+	reg.SetLogger(logger)
+
+	_ = NewHandler(HandlerConfig{
+		Registry:        reg,
+		BrowserUser:     "demo",
+		BrowserPassword: "secret",
+		AgentToken:      "agent-token",
+		Files:           testFiles(),
+	})
+
+	if reg.logger != logger {
+		t.Fatalf("registry logger = %p, want preserved %p", reg.logger, logger)
 	}
 }
 
@@ -834,7 +857,13 @@ func TestAgentDisconnectRemovesSessionFromList(t *testing.T) {
 
 	waitForSessionCount(t, server.URL, basicAuth("demo", "secret"), 1)
 
-	_ = agentConn.Close()
+	if err := agentConn.WriteControl(
+		websocket.CloseMessage,
+		websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
+		time.Now().Add(time.Second),
+	); err != nil {
+		t.Fatalf("WriteControl close returned error: %v", err)
+	}
 	waitForSessionCount(t, server.URL, basicAuth("demo", "secret"), 0)
 }
 
@@ -893,12 +922,13 @@ func TestAgentRegisterLogsLifecycle(t *testing.T) {
 	disconnected := waitForLogEvent(t, logs, "agent_disconnected", func(entry map[string]any) bool {
 		return entry["session_id"] == "sess-1"
 	})
-	if disconnected["reason"] == "" {
-		t.Fatalf("reason = %v, want non-empty", disconnected["reason"])
+	if got := disconnected["reason"]; got != "read_error" {
+		t.Fatalf("reason = %v, want read_error", got)
 	}
 	if _, ok := disconnected["duration_ms"].(float64); !ok {
 		t.Fatalf("duration_ms = %T, want number", disconnected["duration_ms"])
 	}
+	_ = agentConn.Close()
 }
 
 func TestClientAttachLogsLifecycle(t *testing.T) {
@@ -940,17 +970,24 @@ func TestClientAttachLogsLifecycle(t *testing.T) {
 		t.Fatalf("remote_addr = %v, want non-empty", connected["remote_addr"])
 	}
 
-	_ = browserConn.Close()
+	if err := browserConn.WriteControl(
+		websocket.CloseMessage,
+		websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
+		time.Now().Add(time.Second),
+	); err != nil {
+		t.Fatalf("WriteControl close returned error: %v", err)
+	}
 
 	disconnected := waitForLogEvent(t, logs, "client_disconnected", func(entry map[string]any) bool {
 		return entry["session_id"] == "sess-1" && entry["client_id"] == clientID
 	})
-	if disconnected["reason"] == "" {
-		t.Fatalf("reason = %v, want non-empty", disconnected["reason"])
+	if got := disconnected["reason"]; got != "client_closed" {
+		t.Fatalf("reason = %v, want client_closed", got)
 	}
 	if _, ok := disconnected["duration_ms"].(float64); !ok {
 		t.Fatalf("duration_ms = %T, want number", disconnected["duration_ms"])
 	}
+	_ = browserConn.Close()
 }
 
 type backpressureTestSink struct {

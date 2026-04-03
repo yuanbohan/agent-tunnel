@@ -181,6 +181,9 @@ func TestRegistryReplaceSessionIDLogsSessionReplaced(t *testing.T) {
 	if got := entries[0]["event"]; got != "session_replaced" {
 		t.Fatalf("event = %v, want session_replaced", got)
 	}
+	if got := entries[0]["level"]; got != "WARN" {
+		t.Fatalf("level = %v, want WARN", got)
+	}
 	if got := entries[0]["session_id"]; got != "sess-1" {
 		t.Fatalf("session_id = %v, want sess-1", got)
 	}

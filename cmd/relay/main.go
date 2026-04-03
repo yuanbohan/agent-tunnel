@@ -61,8 +61,8 @@ func main() {
 	}))
 }
 
-func logRelayStarted(logger *relay.Logger, cfg mainConfig) {
-	logger.Info("relay_started", relay.String("listen_addr", cfg.ListenAddr))
+func logRelayStarted(logger *relay.Logger, listenAddr string) {
+	logger.Info("relay_started", relay.String("listen_addr", listenAddr))
 }
 
 func startRelay(
@@ -77,7 +77,7 @@ func startRelay(
 		return err
 	}
 
-	logRelayStarted(logger, cfg)
+	logRelayStarted(logger, ln.Addr().String())
 	return serve(newHTTPServer(cfg, handler), ln)
 }
 

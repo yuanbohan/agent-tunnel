@@ -68,7 +68,7 @@ func TestLoadMainConfigIgnoresLegacyRelayAddrEnv(t *testing.T) {
 func TestLogRelayStartedWritesListenAddr(t *testing.T) {
 	var buf bytes.Buffer
 
-	logRelayStarted(relay.NewLogger(&buf), mainConfig{ListenAddr: "0.0.0.0:8586"})
+	logRelayStarted(relay.NewLogger(&buf), "0.0.0.0:8586")
 
 	got := buf.String()
 	if !strings.Contains(got, `"event":"relay_started"`) {
@@ -99,6 +99,36 @@ func TestStartRelayDoesNotLogBeforeBind(t *testing.T) {
 	}
 	if got := buf.String(); got != "" {
 		t.Fatalf("log = %q, want no startup log on bind failure", got)
+	}
+}
+
+func TestStartRelayLogsBoundListenerAddr(t *testing.T) {
+	var buf bytes.Buffer
+
+	var servedAddr string
+	err := startRelay(
+		mainConfig{ListenAddr: "127.0.0.1:0"},
+		http.NewServeMux(),
+		relay.NewLogger(&buf),
+		net.Listen,
+		func(_ *http.Server, ln net.Listener) error {
+			servedAddr = ln.Addr().String()
+			return ln.Close()
+		},
+	)
+	if err != nil {
+		t.Fatalf("startRelay returned error: %v", err)
+	}
+	if servedAddr == "" {
+		t.Fatal("servedAddr = empty, want bound listener address")
+	}
+
+	got := buf.String()
+	if !strings.Contains(got, `"listen_addr":"`+servedAddr+`"`) {
+		t.Fatalf("log = %q, want bound listen_addr %q", got, servedAddr)
+	}
+	if strings.Contains(got, `"listen_addr":"127.0.0.1:0"`) {
+		t.Fatalf("log = %q, want actual bound address instead of configured :0 address", got)
 	}
 }
 
