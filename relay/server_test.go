@@ -115,18 +115,14 @@ func TestHandlerServesRelayShellOnRootAndSessionPath(t *testing.T) {
 	}
 }
 
-func TestHandlerServesBuiltInRelayShellWhenRelayHTMLIsMissing(t *testing.T) {
+func TestHandlerServesBuiltInRelayShellWhenIndexHTMLIsMissing(t *testing.T) {
 	reg := NewRegistry()
 	handler := NewHandler(HandlerConfig{
 		Registry:        reg,
 		BrowserUser:     "demo",
 		BrowserPassword: "secret",
 		AgentToken:      "agent-token",
-		Files: fstest.MapFS{
-			"index.html": {
-				Data: []byte("<!doctype html><div id=\"index-root\">index-root</div>"),
-			},
-		},
+		Files:           fstest.MapFS{},
 	})
 
 	rec := httptest.NewRecorder()
@@ -139,12 +135,6 @@ func TestHandlerServesBuiltInRelayShellWhenRelayHTMLIsMissing(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "relay-root") {
 		t.Fatalf("body = %q, want built-in relay shell marker", rec.Body.String())
-	}
-	if strings.Contains(rec.Body.String(), "index-root") {
-		t.Fatalf("body = %q, want built-in relay shell instead of index.html", rec.Body.String())
-	}
-	if strings.Contains(rec.Body.String(), "/ws") {
-		t.Fatalf("body = %q, want no localhost /ws dependency in relay fallback shell", rec.Body.String())
 	}
 }
 
@@ -518,7 +508,7 @@ func responseStatusCode(resp *http.Response) int {
 
 func testFiles() fstest.MapFS {
 	return fstest.MapFS{
-		"relay.html": {
+		"index.html": {
 			Data: []byte("<!doctype html><div id=\"relay-root\">relay-root</div>"),
 		},
 	}

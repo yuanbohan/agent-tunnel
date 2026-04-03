@@ -360,8 +360,8 @@ func sameOriginOrEmpty(r *http.Request) bool {
 }
 
 func serveRelayShellAsset(w http.ResponseWriter, r *http.Request, files fs.FS) {
-	if _, err := fs.Stat(files, "relay.html"); err == nil {
-		http.ServeFileFS(w, r, files, "relay.html")
+	if _, err := fs.Stat(files, "index.html"); err == nil {
+		http.ServeFileFS(w, r, files, "index.html")
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
