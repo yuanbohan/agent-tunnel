@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -274,6 +275,58 @@ func TestHandlerRejectsAgentWebSocketWithWrongToken(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestClassifyDisconnectReason(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			name: "nil is closed",
+			err:  nil,
+			want: "closed",
+		},
+		{
+			name: "normal close is closed",
+			err:  &websocket.CloseError{Code: websocket.CloseNormalClosure},
+			want: "closed",
+		},
+		{
+			name: "going away is closed",
+			err:  &websocket.CloseError{Code: websocket.CloseGoingAway},
+			want: "closed",
+		},
+		{
+			name: "timeout stays timeout",
+			err:  timeoutError{},
+			want: "timeout",
+		},
+		{
+			name: "abnormal close is error",
+			err:  &websocket.CloseError{Code: websocket.CloseAbnormalClosure},
+			want: "error",
+		},
+		{
+			name: "protocol close is error",
+			err:  &websocket.CloseError{Code: websocket.CloseProtocolError},
+			want: "error",
+		},
+		{
+			name: "generic error is error",
+			err:  errors.New("boom"),
+			want: "error",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := classifyDisconnectReason(tt.err); got != tt.want {
+				t.Fatalf("classifyDisconnectReason(%v) = %q, want %q", tt.err, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -989,6 +1042,12 @@ type logRecorder struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
 }
+
+type timeoutError struct{}
+
+func (timeoutError) Error() string   { return "timeout" }
+func (timeoutError) Timeout() bool   { return true }
+func (timeoutError) Temporary() bool { return false }
 
 func newLogRecorder() *logRecorder {
 	return &logRecorder{}

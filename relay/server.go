@@ -484,18 +484,13 @@ func classifyDisconnectReason(err error) string {
 		return "closed"
 	}
 
-	if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-		return "closed"
-	}
-
-	var closeErr *websocket.CloseError
-	if errors.As(err, &closeErr) {
-		return "closed"
-	}
-
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr.Timeout() {
 		return "timeout"
+	}
+
+	if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+		return "closed"
 	}
 
 	return "error"
