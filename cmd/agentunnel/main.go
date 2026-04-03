@@ -12,11 +12,11 @@ import (
 	"syscall"
 	"time"
 
-	"yuanbohan/tunnel/internal/launcher"
+	"yuanbohan/tunnel/launcher"
 	"yuanbohan/tunnel/internal/relayapi"
 	"yuanbohan/tunnel/internal/relayclient"
 	"yuanbohan/tunnel/internal/server"
-	"yuanbohan/tunnel/internal/session"
+	"yuanbohan/tunnel/session"
 )
 
 var (

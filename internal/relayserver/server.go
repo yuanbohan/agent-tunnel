@@ -15,9 +15,9 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"yuanbohan/tunnel/internal/protocol"
+	"yuanbohan/tunnel/protocol"
 	"yuanbohan/tunnel/internal/relayapi"
-	"yuanbohan/tunnel/internal/webui"
+	"yuanbohan/tunnel/webui"
 )
 
 const (

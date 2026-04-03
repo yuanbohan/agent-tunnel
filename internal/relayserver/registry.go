@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"yuanbohan/tunnel/internal/relayapi"
-	"yuanbohan/tunnel/internal/session"
+	"yuanbohan/tunnel/session"
 )
 
 var ErrSessionNotFound = errors.New("relay session not found")

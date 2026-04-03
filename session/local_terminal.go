@@ -11,7 +11,6 @@ import (
 
 	"golang.org/x/sys/unix"
 	"golang.org/x/term"
-	clientterm "yuanbohan/tunnel/internal/client"
 )
 
 type outputSinkFunc func([]byte) error
@@ -29,7 +28,7 @@ type LocalTerminal struct {
 var localTerminalSinkID uint64
 
 func PrepareLocalTerminal() (*LocalTerminal, error) {
-	restore, err := clientterm.EnterRawMode()
+	restore, err := enterRawMode()
 	if err != nil {
 		return nil, err
 	}
@@ -172,4 +171,14 @@ func waitForInput(ctx context.Context, fd int) (bool, error) {
 func nextLocalTerminalSinkID() string {
 	id := atomic.AddUint64(&localTerminalSinkID, 1)
 	return fmt.Sprintf("local-terminal-%d", id)
+}
+
+// enterRawMode puts stdin into raw mode and returns a restore function.
+func enterRawMode() (restore func(), err error) {
+	fd := int(os.Stdin.Fd())
+	oldState, err := term.MakeRaw(fd)
+	if err != nil {
+		return func() {}, err
+	}
+	return func() { term.Restore(fd, oldState) }, nil
 }

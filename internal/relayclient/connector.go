@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"yuanbohan/tunnel/internal/protocol"
+	"yuanbohan/tunnel/protocol"
 	"yuanbohan/tunnel/internal/relayapi"
-	"yuanbohan/tunnel/internal/session"
+	"yuanbohan/tunnel/session"
 )
 
 type Connector struct {
