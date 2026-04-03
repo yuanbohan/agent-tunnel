@@ -50,8 +50,9 @@ Remote mode adds a second server role:
 
 - local `agentunnel` keeps owning the PTY and local terminal
 - local `agentunnel` optionally opens one outbound websocket to the relay
-- relay maintains a live in-memory session registry
-- browsers authenticate to the relay, list live sessions, and attach to one session terminal stream
+- relay authenticates browser traffic with Basic Auth and agent traffic with a bearer token
+- relay maintains a live in-memory session registry with rolling preview metadata
+- browsers can either list live sessions from the relay dashboard or attach to one session terminal stream
 
 The localhost single-session server remains available for local use. Relay mode is additive.
 
@@ -59,6 +60,8 @@ The localhost single-session server remains available for local use. Relay mode 
 
 ```
 cmd/agentunnel
+├── internal/relayclient     ← optional outbound relay connector + config
+├── internal/relayapi        ← shared relay session/register payloads
 ├── internal/launcher       ← resolves executable name to PATH
 ├── internal/session        ← PTY lifecycle, Hub, local terminal
 │   └── (no internal deps)
@@ -67,6 +70,13 @@ cmd/agentunnel
 │   ├── internal/protocol   ← message encoding (JSON + base64)
 │   └── internal/webui      ← embedded static assets (web/dist)
 └── (stdlib: context, os, syscall, signal)
+
+cmd/relay
+├── internal/relayserver    ← auth, registry, preview extraction, relay HTTP/WS handlers
+│   ├── internal/protocol   ← browser/agent terminal traffic
+│   ├── internal/relayapi   ← register/session payloads
+│   └── internal/webui      ← embedded local + relay web assets
+└── (stdlib: net/http, os, time)
 
 --- legacy (independent) ---
 cmd/agent  → internal/agent   (PTY + WebSocket handler)
@@ -83,16 +93,22 @@ cmd/client → internal/client  (WebSocket client + raw terminal)
 main()
   └─> runWithArgs(args, stderr)
         │
-        ├─ 1. launcher.Resolve(name, args)      → launcher.Command
-        ├─ 2. session.PrepareLocalTerminal()     → LocalTerminal
-        ├─ 3. session.StartCommandWithInitialSinks(ctx, path, args, sinks)
+        ├─ 1. parseRunArgs(args)                 → runArgs{Label, RelayURL, Launcher, Args}
+        ├─ 2. launcher.Resolve(name, args)       → launcher.Command
+        ├─ 3. relayclient.LoadConfig(...)        → optional relay config
+        ├─ 4. session.PrepareLocalTerminal()     → LocalTerminal
+        ├─ 5. session.StartCommandWithInitialSinks(ctx, path, args, sinks)
         │                                        → session.Running
-        ├─ 4. server.StartLocal(hub)             → server.Running
-        ├─ 5. localTerminal.Start(ctx, hub)      → <-chan struct{}
-        └─ 6. waitForProcessOrShutdown()         → blocks until exit
+        ├─ 6. optionally bind/start relay connector
+        ├─ 7. server.StartLocal(hub)             → server.Running
+        ├─ 8. localTerminal.Start(ctx, hub)      → <-chan struct{}
+        └─ 9. waitForProcessOrShutdown()         → blocks until exit
 ```
 
-Key design choice: the local terminal is registered as an initial sink *before* the process starts, ensuring no output is lost between process start and sink registration.
+Key design choices:
+- the local terminal sink is registered *before* the child process starts, so no early output is lost
+- relay mode is optional and additive; localhost mode still starts for every `agentunnel` session
+- relay metadata (`label`, `cwd`, `command_preview`, `started_at`) is constructed in `cmd/agentunnel` and sent once per relay registration
 
 ### `internal/launcher` -- Launcher Registry
 
@@ -345,52 +361,161 @@ Uses Go's `//go:embed` to bundle the built web client (`web/dist/`) into the bin
 func Files() fs.FS  // returns the embedded dist/ filesystem
 ```
 
+### `cmd/relay` -- Relay Server Entry Point
+
+`cmd/relay` is the standalone remote access entrypoint. It reads configuration from environment variables, creates one process-wide relay registry, and serves the relay UI plus attach/list endpoints.
+
+```go
+type mainConfig struct {
+    ListenAddr      string
+    BrowserUser     string
+    BrowserPassword string
+    AgentToken      string
+}
+```
+
+Environment variables:
+- `AGENTUNNEL_RELAY_ADDR` (defaults to `:8586`)
+- `AGENTUNNEL_BASIC_USER`
+- `AGENTUNNEL_BASIC_PASSWORD`
+- `AGENTUNNEL_AGENT_TOKEN`
+
+### `internal/relayapi` -- Shared Relay Payloads
+
+Defines the shared wire shapes used by the local connector, relay registry, and relay UI list API.
+
+```go
+type SessionInfo struct {
+    SessionID      string
+    Launcher       string
+    Label          string
+    CWD            string
+    CommandPreview string
+    StartedAt      time.Time
+    LastPreview    string
+    LastActiveAt   *time.Time
+}
+
+type AgentFrame struct {
+    Type    string
+    Session *SessionInfo
+    Data    string
+    Cols    int
+    Rows    int
+}
+```
+
+`RegisterFrame(info)` builds the initial `{"type":"register"}` message that an `agentunnel` process sends when it first attaches to the relay.
+
+### `internal/relayclient` -- Outbound Relay Connector
+
+This package makes a live `agentunnel` session visible to a remote relay without changing the local PTY ownership model.
+
+Responsibilities:
+- load optional relay config from `--relay-url` or `AGENTUNNEL_RELAY_URL`
+- require `AGENTUNNEL_RELAY_TOKEN` when relay mode is enabled
+- open one outbound WebSocket to `.../agent/ws`
+- send a single registration frame first
+- forward PTY output to the relay as `output`
+- route relay `input` and `resize` messages back into the session hub
+- reconnect with backoff when the relay connection drops
+
+The connector is also an `OutputSink`, so `cmd/agentunnel` can register it in the same initial sink map as the local terminal sink.
+
+### `internal/relayserver` -- Relay HTTP / WS Bridge
+
+This package is the remote analogue of `internal/server`, but with extra control-plane responsibilities:
+
+- `auth.go`
+  - validates browser Basic Auth
+  - validates agent bearer token auth
+- `registry.go`
+  - stores only live sessions
+  - preserves browser sinks across same-session live replacement
+  - sorts list output by `LastActiveAt`
+  - serializes input/resize routing safely across peer replacement
+- `preview.go`
+  - strips ANSI noise and extracts a rolling textual preview from raw terminal output
+- `server.go`
+  - serves `/`, `/sessions/:id`, `/api/sessions`, `/agent/ws`, and `/api/sessions/:id/ws`
+  - applies same-origin checks for browser WebSockets
+  - applies heartbeat/read-deadline cleanup for stale agent sockets
+  - serves `relay.html` when present, otherwise a relay-specific fallback shell
+
+The relay server keeps a strict live-session model: if the owning agent socket goes away, the session disappears from the list.
+
 ## Web Client Modules
 
-The browser client is a TypeScript application built with Vite, using xterm.js for terminal rendering.
+The browser client is a TypeScript application built with Vite, using xterm.js for terminal rendering. It now has two entrypoints:
+
+- `index.html` / `main.ts` for localhost single-session mode
+- `relay.html` / `relay_app.ts` for relay dashboard + mobile session detail mode
 
 ### Module Interaction
 
 ```
-index.html
-  └─ <script type="module" src="main.ts">
+index.html                relay.html
+  │                         │
+  ▼                         ▼
+main.ts                 relay_app.ts
+  │                         ├─ relay_routes.ts
+  │                         ├─ relay_api.ts
+  │                         ├─ relay_dashboard.ts
+  │                         ├─ relay_session_page.ts
+  │                         └─ relay.css
+  │
+  ├─ session_url.ts
+  ├─ input_filter.ts
+  ├─ connection.ts
+  ├─ terminal.ts
+  └─ protocol.ts
 
-main.ts (orchestrator)
-  ├─ imports session_url.ts     → sessionWebSocketURL()
-  ├─ imports connection.ts      → ConnectionManager
-  ├─ imports terminal.ts        → createTerminal()
-  └─ imports protocol.ts        → encodeInput(), decodeOutput()
-
-Wiring:
-  terminal.onData ──> encodeInput() ──> connection.send()     (user types)
-  terminal.onResize ──> JSON ──> connection.send()            (terminal resized)
-  connection.onMessage ──> decodeOutput() ──> terminal.write() (PTY output)
-  connection.onStatusChange ──> update status bar UI           (connected/disconnected)
+Shared runtime pieces:
+  terminal.onData      ──> protocol.encodeInput() ──> connection.send()
+  terminal.onResize    ──> JSON resize frame      ──> connection.send()
+  connection.onMessage ──> protocol.decodeOutput() ──> terminal.write()
 ```
 
 ### `main.ts` -- Application Entry
 
-Creates all components and wires them together:
+Creates the localhost single-session UI and wires it to `/ws`.
 
 ```
 boot()
   ├─ sessionWebSocketURL(window.location) → ws://127.0.0.1:PORT/ws
   ├─ createTerminal(container)            → TerminalHandle
   ├─ new ConnectionManager(wsURL)         → conn
+  ├─ create "Wrap / Scroll" display toggle
   │
   ├─ terminal.onData(str)
-  │    └─ conn.send(encodeInput(str))
-  │
-  ├─ terminal.onResize({cols, rows})
-  │    └─ conn.send(JSON.stringify({type:"resize", cols, rows}))
+  │    └─ if !isTerminalAutoResponse(str)
+  │         conn.send(encodeInput(str))
   │
   ├─ conn.onMessage(msg)
-  │    └─ if msg.type === "output"
-  │         terminal.write(decodeOutput(msg))
+  │    ├─ if msg.type === "output"
+  │    │    terminal.write(decodeOutput(msg))
+  │    └─ if msg.type === "resize"
+  │         update local scroll-mode viewport size
   │
   └─ conn.onStatusChange(status)
        └─ update DOM indicator + reconnect button
 ```
+
+The local page intentionally filters known xterm auto-response sequences before forwarding input to the PTY, which avoids feedback loops from terminal query responses.
+
+### `relay_app.ts` -- Relay Dashboard And Session Entry
+
+This is the mobile-first remote UI bootstrap.
+
+Route handling:
+- `/` → fetch `/api/sessions` and render the live dashboard
+- `/sessions/:id` → attach xterm.js to `/api/sessions/:id/ws`
+
+Session-page behavior:
+- terminal starts in read-only mode
+- the compact state chip toggles between `Read-only` and `Input on`
+- browser input is only forwarded when the chip is enabled
+- a resize frame is sent once the socket reaches `connected`
 
 ### `terminal.ts` -- xterm.js Wrapper
 
@@ -398,10 +523,11 @@ Creates and configures an xterm.js Terminal instance. Returns a `TerminalHandle`
 
 ```typescript
 interface TerminalHandle {
-  write(data: Uint8Array): void   // display PTY output
-  onData(cb: (data: string) => void): void  // user keyboard input
-  onResize(cb: (size: {cols, rows}) => void): void
+  write(data: Uint8Array): void
+  onData(cb: (data: string) => void): void
+  onResize(cb: (cols: number, rows: number) => void): void
   currentSize(): {cols: number, rows: number}
+  setDisplayMode(mode: 'scroll' | 'wrap', ptyCols?: number, ptyRows?: number): void
   dispose(): void
 }
 ```
@@ -409,11 +535,12 @@ interface TerminalHandle {
 Features:
 - FitAddon for responsive resizing via ResizeObserver
 - WebLinksAddon for clickable URLs
-- Dark theme (Tokyonight-inspired)
+- scroll/wrap display mode switching for the localhost page
+- resize callback support reused by the relay detail page
 
 ### `connection.ts` -- WebSocket Manager
 
-Manages the WebSocket lifecycle with automatic reconnection.
+Manages the WebSocket lifecycle with explicit reconnect support.
 
 ```
 ConnectionManager
@@ -433,6 +560,8 @@ ConnectionManager
        └─ close current socket → connect()
 ```
 
+It does not auto-retry in the browser. The localhost page exposes a reconnect button; the relay session page currently only re-sends the initial resize frame after a successful connection.
+
 ### `protocol.ts` -- Message Encoding
 
 Mirrors the Go `internal/protocol` package:
@@ -449,6 +578,24 @@ encodeInput(str: string): string
 decodeOutput(msg: Message): Uint8Array
   └─ base64 string → Uint8Array (binary PTY output)
 ```
+
+### Relay-Specific Frontend Modules
+
+- `relay_types.ts`
+  - shared TypeScript shape for relay session cards
+- `relay_api.ts`
+  - fetches `/api/sessions`
+  - builds browser attach URLs for `/api/sessions/:id/ws`
+- `relay_routes.ts`
+  - parses `/` versus `/sessions/:id`
+- `relay_dashboard.ts`
+  - renders compact session cards with launcher icon, label, command clue, cwd, preview, and last-active hint
+- `relay_session_page.ts`
+  - owns the state-chip helpers (`Read-only` / `Input on`)
+- `relay.css`
+  - mobile-first dashboard + terminal-detail styling
+- `input_filter.ts`
+  - filters xterm-generated auto-responses such as CPR / DA reports before localhost input forwarding
 
 ### `session_url.ts` -- URL Construction
 
@@ -472,26 +619,35 @@ User runs: agentunnel claude --resume
 │  1. launcher.Resolve("claude", ["--resume"])                 │
 │     └─ validates name, finds /usr/local/bin/claude           │
 │                                                              │
-│  2. session.PrepareLocalTerminal()                           │
+│  2. relayclient.LoadConfig(...)                              │
+│     └─ decides whether relay mode is enabled                 │
+│                                                              │
+│  3. session.PrepareLocalTerminal()                           │
 │     └─ enters raw mode, saves restore func                   │
 │                                                              │
-│  3. session.StartCommandWithInitialSinks(ctx, path, args,    │
-│         {"local": stdoutSink})                               │
+│  4. build initial sink map                                   │
+│     └─ always includes local stdout sink                     │
+│     └─ optionally adds relay connector sink                  │
+│                                                              │
+│  5. session.StartCommandWithInitialSinks(ctx, path, args,    │
+│         initialSinks)                                        │
 │     ├─ pty.Start(exec.Command("claude", "--resume"))         │
 │     ├─ creates Hub with ptmx.Write and pty.Setsize           │
-│     ├─ registers stdoutSink as "local" sink                  │
+│     ├─ registers local + optional relay sinks                │
 │     └─ starts read loop goroutine                            │
 │                                                              │
-│  4. server.StartLocal(hub)                                   │
+│  6. optionally bind relay connector to Hub and start it      │
+│                                                              │
+│  7. server.StartLocal(hub)                                   │
 │     ├─ binds to 127.0.0.1:0 (ephemeral port)                │
 │     ├─ prints URL: http://127.0.0.1:43127                   │
 │     └─ starts serving in background goroutine                │
 │                                                              │
-│  5. localTerminal.Start(ctx, hub)                            │
+│  8. localTerminal.Start(ctx, hub)                            │
 │     ├─ starts stdin→hub input forwarding goroutine           │
 │     └─ starts SIGWINCH resize handler goroutine              │
 │                                                              │
-│  6. waitForProcessOrShutdown()                               │
+│  9. waitForProcessOrShutdown()                               │
 │     └─ blocks until child exits or signal received           │
 │                                                              │
 │  cleanup:                                                    │
