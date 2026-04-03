@@ -8,13 +8,12 @@ import (
 
 	"github.com/gorilla/websocket"
 	"yuanbohan/tunnel/protocol"
-	"yuanbohan/tunnel/internal/relayapi"
 	"yuanbohan/tunnel/session"
 )
 
 type Connector struct {
 	cfg  Config
-	info relayapi.SessionInfo
+	info protocol.SessionInfo
 	hub  *session.Hub
 
 	outbound chan []byte
@@ -26,7 +25,7 @@ type readResult struct {
 	err error
 }
 
-func New(cfg Config, info relayapi.SessionInfo) *Connector {
+func New(cfg Config, info protocol.SessionInfo) *Connector {
 	return &Connector{
 		cfg:      cfg,
 		info:     info,
@@ -73,7 +72,7 @@ func (c *Connector) runOnce(ctx context.Context) error {
 	}
 	defer conn.Close()
 
-	if err := conn.WriteJSON(relayapi.RegisterFrame(c.info)); err != nil {
+	if err := conn.WriteJSON(protocol.RegisterFrame(c.info)); err != nil {
 		return err
 	}
 

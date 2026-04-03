@@ -16,7 +16,6 @@ import (
 
 	"github.com/gorilla/websocket"
 	"yuanbohan/tunnel/protocol"
-	"yuanbohan/tunnel/internal/relayapi"
 	"yuanbohan/tunnel/webui"
 )
 
@@ -243,7 +242,7 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 			return conn.SetReadDeadline(time.Now().Add(agentReadTimeout))
 		})
 
-		var register relayapi.AgentFrame
+		var register protocol.AgentFrame
 		if err := conn.ReadJSON(&register); err != nil || register.Type != "register" || register.Session == nil {
 			return
 		}

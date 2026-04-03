@@ -1,4 +1,4 @@
-package relayapi
+package protocol
 
 import (
 	"encoding/json"

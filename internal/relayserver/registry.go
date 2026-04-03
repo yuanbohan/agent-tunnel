@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"yuanbohan/tunnel/internal/relayapi"
+	"yuanbohan/tunnel/protocol"
 	"yuanbohan/tunnel/session"
 )
 
@@ -24,7 +24,7 @@ type Registry struct {
 }
 
 type liveSession struct {
-	info  relayapi.SessionInfo
+	info  protocol.SessionInfo
 	peer  AgentPeer
 	sinks map[string]session.OutputSink
 }
@@ -33,7 +33,7 @@ func NewRegistry() *Registry {
 	return &Registry{sessions: make(map[string]*liveSession)}
 }
 
-func (r *Registry) Register(info relayapi.SessionInfo, peer AgentPeer) {
+func (r *Registry) Register(info protocol.SessionInfo, peer AgentPeer) {
 	r.mu.Lock()
 	old := r.sessions[info.SessionID]
 	var sinks map[string]session.OutputSink
@@ -81,11 +81,11 @@ func (r *Registry) HasSession(sessionID string) bool {
 	return ok
 }
 
-func (r *Registry) List() []relayapi.SessionInfo {
+func (r *Registry) List() []protocol.SessionInfo {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	out := make([]relayapi.SessionInfo, 0, len(r.sessions))
+	out := make([]protocol.SessionInfo, 0, len(r.sessions))
 	for _, live := range r.sessions {
 		out = append(out, live.info)
 	}
@@ -154,7 +154,7 @@ func (r *Registry) Resize(sessionID string, cols, rows int) error {
 	return err
 }
 
-func lastActiveTime(info relayapi.SessionInfo) time.Time {
+func lastActiveTime(info protocol.SessionInfo) time.Time {
 	if info.LastActiveAt == nil {
 		return time.Time{}
 	}

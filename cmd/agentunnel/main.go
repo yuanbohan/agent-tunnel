@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"yuanbohan/tunnel/launcher"
-	"yuanbohan/tunnel/internal/relayapi"
+	"yuanbohan/tunnel/protocol"
 	"yuanbohan/tunnel/internal/relayclient"
 	"yuanbohan/tunnel/internal/server"
 	"yuanbohan/tunnel/session"
@@ -25,7 +25,7 @@ var (
 	startSession         = session.StartCommandWithInitialSinks
 	startServer          = server.StartLocal
 	loadRelayConfig      = relayclient.LoadConfig
-	newRelayConnector    = func(cfg relayclient.Config, info relayapi.SessionInfo) relaySink {
+	newRelayConnector    = func(cfg relayclient.Config, info protocol.SessionInfo) relaySink {
 		return relayclient.New(cfg, info)
 	}
 )
@@ -83,7 +83,7 @@ func runWithArgs(args []string, stderr io.Writer) error {
 
 	var connector relaySink
 	if relayEnabled {
-		connector = newRelayConnector(relayCfg, relayapi.SessionInfo{
+		connector = newRelayConnector(relayCfg, protocol.SessionInfo{
 			SessionID:      fmt.Sprintf("%d", time.Now().UnixNano()),
 			Launcher:       command.Name,
 			Label:          parsed.Label,

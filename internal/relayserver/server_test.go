@@ -13,7 +13,6 @@ import (
 
 	"github.com/gorilla/websocket"
 	"yuanbohan/tunnel/protocol"
-	"yuanbohan/tunnel/internal/relayapi"
 )
 
 func TestHandlerRejectsDashboardWithoutBasicAuth(t *testing.T) {
@@ -37,7 +36,7 @@ func TestHandlerRejectsDashboardWithoutBasicAuth(t *testing.T) {
 
 func TestHandlerReturnsLiveSessionsWithBasicAuth(t *testing.T) {
 	reg := NewRegistry()
-	reg.Register(relayapi.SessionInfo{
+	reg.Register(protocol.SessionInfo{
 		SessionID:      "sess-1",
 		Launcher:       "codex",
 		Label:          "api-fix",
@@ -63,7 +62,7 @@ func TestHandlerReturnsLiveSessionsWithBasicAuth(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 
-	var sessions []relayapi.SessionInfo
+	var sessions []protocol.SessionInfo
 	if err := json.Unmarshal(rec.Body.Bytes(), &sessions); err != nil {
 		t.Fatalf("Unmarshal returned error: %v", err)
 	}
@@ -168,7 +167,7 @@ func TestAgentRegisterAddsLiveSessionAndBrowserAttachReceivesOutput(t *testing.T
 	}
 	defer agentConn.Close()
 
-	register := relayapi.RegisterFrame(relayapi.SessionInfo{
+	register := protocol.RegisterFrame(protocol.SessionInfo{
 		SessionID:      "sess-1",
 		Launcher:       "codex",
 		Label:          "api-fix",
@@ -221,7 +220,7 @@ func TestBrowserAttachRoutesInputToRegisteredAgent(t *testing.T) {
 	}
 	defer agentConn.Close()
 
-	if err := agentConn.WriteJSON(relayapi.RegisterFrame(relayapi.SessionInfo{
+	if err := agentConn.WriteJSON(protocol.RegisterFrame(protocol.SessionInfo{
 		SessionID: "sess-1",
 		Launcher:  "codex",
 	})); err != nil {
@@ -262,7 +261,7 @@ func TestBrowserAttachRoutesInputToRegisteredAgent(t *testing.T) {
 
 func TestBrowserAttachRejectsForeignOrigin(t *testing.T) {
 	reg := NewRegistry()
-	reg.Register(relayapi.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, fakeAgentPeer{})
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, fakeAgentPeer{})
 
 	server := httptest.NewServer(NewHandler(HandlerConfig{
 		Registry:        reg,
@@ -288,7 +287,7 @@ func TestBrowserAttachRejectsForeignOrigin(t *testing.T) {
 
 func TestBrowserAttachAllowsSameOrigin(t *testing.T) {
 	reg := NewRegistry()
-	reg.Register(relayapi.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, fakeAgentPeer{})
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, fakeAgentPeer{})
 
 	server := httptest.NewServer(NewHandler(HandlerConfig{
 		Registry:        reg,
@@ -339,7 +338,7 @@ func TestBrowserAttachStaysLiveAcrossSameSessionReplacementAndRoutesToNewAgent(t
 	}
 	defer oldAgentConn.Close()
 
-	if err := oldAgentConn.WriteJSON(relayapi.RegisterFrame(relayapi.SessionInfo{
+	if err := oldAgentConn.WriteJSON(protocol.RegisterFrame(protocol.SessionInfo{
 		SessionID: "sess-1",
 		Launcher:  "codex",
 	})); err != nil {
@@ -358,7 +357,7 @@ func TestBrowserAttachStaysLiveAcrossSameSessionReplacementAndRoutesToNewAgent(t
 	}
 	defer newAgentConn.Close()
 
-	if err := newAgentConn.WriteJSON(relayapi.RegisterFrame(relayapi.SessionInfo{
+	if err := newAgentConn.WriteJSON(protocol.RegisterFrame(protocol.SessionInfo{
 		SessionID: "sess-1",
 		Launcher:  "codex",
 	})); err != nil {
@@ -427,7 +426,7 @@ func TestAgentDisconnectRemovesSessionFromList(t *testing.T) {
 		t.Fatalf("Dial returned error: %v", err)
 	}
 
-	if err := agentConn.WriteJSON(relayapi.RegisterFrame(relayapi.SessionInfo{
+	if err := agentConn.WriteJSON(protocol.RegisterFrame(protocol.SessionInfo{
 		SessionID: "sess-1",
 		Launcher:  "codex",
 	})); err != nil {
@@ -462,7 +461,7 @@ func TestStaleAgentConnectionTimesOutAndRemovesSessionFromList(t *testing.T) {
 	}
 	defer agentConn.Close()
 
-	if err := agentConn.WriteJSON(relayapi.RegisterFrame(relayapi.SessionInfo{
+	if err := agentConn.WriteJSON(protocol.RegisterFrame(protocol.SessionInfo{
 		SessionID: "sess-1",
 		Launcher:  "codex",
 	})); err != nil {
@@ -494,7 +493,7 @@ func waitForSessionCount(t *testing.T, baseURL, auth string, want int) {
 			t.Fatalf("Do returned error: %v", err)
 		}
 
-		var sessions []relayapi.SessionInfo
+		var sessions []protocol.SessionInfo
 		if err := json.NewDecoder(resp.Body).Decode(&sessions); err != nil {
 			resp.Body.Close()
 			t.Fatalf("Decode returned error: %v", err)

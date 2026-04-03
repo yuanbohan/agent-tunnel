@@ -11,12 +11,11 @@ import (
 
 	"github.com/gorilla/websocket"
 	"yuanbohan/tunnel/protocol"
-	"yuanbohan/tunnel/internal/relayapi"
 	"yuanbohan/tunnel/session"
 )
 
 func TestConnectorSendsRegisterBeforeStreamingOutput(t *testing.T) {
-	received := make(chan relayapi.AgentFrame, 1)
+	received := make(chan protocol.AgentFrame, 1)
 	upgrader := websocket.Upgrader{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -25,7 +24,7 @@ func TestConnectorSendsRegisterBeforeStreamingOutput(t *testing.T) {
 		}
 		defer conn.Close()
 
-		var frame relayapi.AgentFrame
+		var frame protocol.AgentFrame
 		if err := conn.ReadJSON(&frame); err != nil {
 			t.Fatalf("ReadJSON returned error: %v", err)
 		}
@@ -35,7 +34,7 @@ func TestConnectorSendsRegisterBeforeStreamingOutput(t *testing.T) {
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
 	hub := session.NewHub(func([]byte) error { return nil }, func(int, int) error { return nil })
-	connector := New(Config{URL: wsURL, Token: "token"}, relayapi.SessionInfo{
+	connector := New(Config{URL: wsURL, Token: "token"}, protocol.SessionInfo{
 		SessionID: "sess-1",
 		Launcher:  "codex",
 	})
@@ -73,7 +72,7 @@ func TestConnectorRoutesInputFrameIntoHub(t *testing.T) {
 		}
 		defer conn.Close()
 
-		var register relayapi.AgentFrame
+		var register protocol.AgentFrame
 		if err := conn.ReadJSON(&register); err != nil {
 			t.Fatalf("ReadJSON returned error: %v", err)
 		}
@@ -89,7 +88,7 @@ func TestConnectorRoutesInputFrameIntoHub(t *testing.T) {
 	defer server.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
-	connector := New(Config{URL: wsURL, Token: "token"}, relayapi.SessionInfo{
+	connector := New(Config{URL: wsURL, Token: "token"}, protocol.SessionInfo{
 		SessionID: "sess-1",
 		Launcher:  "codex",
 	})
@@ -119,7 +118,7 @@ func TestConnectorStreamsOutputFramesToRelay(t *testing.T) {
 		}
 		defer conn.Close()
 
-		var register relayapi.AgentFrame
+		var register protocol.AgentFrame
 		if err := conn.ReadJSON(&register); err != nil {
 			t.Fatalf("ReadJSON register returned error: %v", err)
 		}
@@ -133,7 +132,7 @@ func TestConnectorStreamsOutputFramesToRelay(t *testing.T) {
 	defer server.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
-	connector := New(Config{URL: wsURL, Token: "token"}, relayapi.SessionInfo{
+	connector := New(Config{URL: wsURL, Token: "token"}, protocol.SessionInfo{
 		SessionID: "sess-1",
 		Launcher:  "codex",
 	})
@@ -172,7 +171,7 @@ func TestConnectorBuffersOutputAcrossReconnectWithoutLeakingOldWriter(t *testing
 		}
 		defer conn.Close()
 
-		var register relayapi.AgentFrame
+		var register protocol.AgentFrame
 		if err := conn.ReadJSON(&register); err != nil {
 			t.Fatalf("ReadJSON first register returned error: %v", err)
 		}
@@ -180,7 +179,7 @@ func TestConnectorBuffersOutputAcrossReconnectWithoutLeakingOldWriter(t *testing
 	defer firstServer.Close()
 
 	firstURL := "ws" + strings.TrimPrefix(firstServer.URL, "http")
-	connector := New(Config{URL: firstURL, Token: "token"}, relayapi.SessionInfo{
+	connector := New(Config{URL: firstURL, Token: "token"}, protocol.SessionInfo{
 		SessionID: "sess-1",
 		Launcher:  "codex",
 	})
@@ -205,7 +204,7 @@ func TestConnectorBuffersOutputAcrossReconnectWithoutLeakingOldWriter(t *testing
 		}
 		defer conn.Close()
 
-		var register relayapi.AgentFrame
+		var register protocol.AgentFrame
 		if err := conn.ReadJSON(&register); err != nil {
 			t.Fatalf("ReadJSON second register returned error: %v", err)
 		}

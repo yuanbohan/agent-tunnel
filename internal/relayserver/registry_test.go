@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"yuanbohan/tunnel/internal/relayapi"
+	"yuanbohan/tunnel/protocol"
 )
 
 type fakeAgentPeer struct{}
@@ -73,8 +73,8 @@ func TestRegistryRegisterAndListSortedByLastActive(t *testing.T) {
 	reg := NewRegistry()
 	olderActive := time.Unix(20, 0)
 	newerActive := time.Unix(30, 0)
-	older := relayapi.SessionInfo{SessionID: "a", Launcher: "codex", StartedAt: time.Unix(10, 0), LastActiveAt: &olderActive}
-	newer := relayapi.SessionInfo{SessionID: "b", Launcher: "gemini", StartedAt: time.Unix(11, 0), LastActiveAt: &newerActive}
+	older := protocol.SessionInfo{SessionID: "a", Launcher: "codex", StartedAt: time.Unix(10, 0), LastActiveAt: &olderActive}
+	newer := protocol.SessionInfo{SessionID: "b", Launcher: "gemini", StartedAt: time.Unix(11, 0), LastActiveAt: &newerActive}
 
 	reg.Register(older, fakeAgentPeer{})
 	reg.Register(newer, fakeAgentPeer{})
@@ -104,7 +104,7 @@ func TestRegistryMissingSessionErrors(t *testing.T) {
 
 func TestRegistryTouchOutputUpdatesPreviewAndLastActive(t *testing.T) {
 	reg := NewRegistry()
-	info := relayapi.SessionInfo{SessionID: "sess-1", Launcher: "codex", StartedAt: time.Unix(10, 0)}
+	info := protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex", StartedAt: time.Unix(10, 0)}
 	reg.Register(info, fakeAgentPeer{})
 
 	now := time.Unix(40, 0)
@@ -130,7 +130,7 @@ func TestRegistryTouchOutputIfOwnerUpdatesPreviewAndFanoutForCurrentOwner(t *tes
 	peer := &recordingPeer{}
 	sink := &recordingSink{}
 
-	reg.Register(relayapi.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, peer)
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, peer)
 	if err := reg.AddSink("sess-1", "browser", sink); err != nil {
 		t.Fatalf("AddSink returned error: %v", err)
 	}
@@ -161,11 +161,11 @@ func TestRegistryReplaceSessionIDPreservesSinksAndFansOutToThem(t *testing.T) {
 	newPeer := &recordingPeer{}
 	sink := &recordingSink{}
 
-	reg.Register(relayapi.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, oldPeer)
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, oldPeer)
 	if err := reg.AddSink("sess-1", "browser", sink); err != nil {
 		t.Fatalf("AddSink returned error: %v", err)
 	}
-	reg.Register(relayapi.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, newPeer)
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, newPeer)
 	reg.TouchOutput("sess-1", []byte("\x1b[32mPASS\x1b[0m focused test\n"), time.Unix(40, 0))
 
 	if got := string(bytes.Join(sink.chunks, nil)); got != "\x1b[32mPASS\x1b[0m focused test\n" {
@@ -184,8 +184,8 @@ func TestRegistryRemoveIfOwnerSkipsStaleOwnerAfterReplacement(t *testing.T) {
 	oldPeer := &recordingPeer{}
 	newPeer := &recordingPeer{}
 
-	reg.Register(relayapi.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, oldPeer)
-	reg.Register(relayapi.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, newPeer)
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, oldPeer)
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, newPeer)
 
 	if removed := reg.RemoveIfOwner("sess-1", oldPeer); removed {
 		t.Fatal("RemoveIfOwner returned true for stale owner, want false")
@@ -212,11 +212,11 @@ func TestRegistryTouchOutputIfOwnerSkipsStaleOwnerAfterReplacement(t *testing.T)
 	newPeer := &recordingPeer{}
 	sink := &recordingSink{}
 
-	reg.Register(relayapi.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, oldPeer)
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, oldPeer)
 	if err := reg.AddSink("sess-1", "browser", sink); err != nil {
 		t.Fatalf("AddSink returned error: %v", err)
 	}
-	reg.Register(relayapi.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, newPeer)
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, newPeer)
 
 	now := time.Unix(50, 0)
 	if ok := reg.TouchOutputIfOwner("sess-1", oldPeer, []byte("\x1b[32mPASS\x1b[0m stale output\n"), now); ok {
@@ -251,7 +251,7 @@ func TestRegistryWriteInputWaitsForInFlightOldPeerBeforeReplacement(t *testing.T
 	}
 	newPeer := &recordingPeer{}
 
-	reg.Register(relayapi.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, oldPeer)
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, oldPeer)
 
 	writeDone := make(chan error, 1)
 	go func() {
@@ -266,7 +266,7 @@ func TestRegistryWriteInputWaitsForInFlightOldPeerBeforeReplacement(t *testing.T
 
 	registerDone := make(chan struct{})
 	go func() {
-		reg.Register(relayapi.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, newPeer)
+		reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, newPeer)
 		close(registerDone)
 	}()
 
@@ -314,7 +314,7 @@ func TestRegistryResizeWaitsForInFlightOldPeerBeforeReplacement(t *testing.T) {
 	}
 	newPeer := &recordingPeer{}
 
-	reg.Register(relayapi.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, oldPeer)
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, oldPeer)
 
 	resizeDone := make(chan error, 1)
 	go func() {
@@ -329,7 +329,7 @@ func TestRegistryResizeWaitsForInFlightOldPeerBeforeReplacement(t *testing.T) {
 
 	registerDone := make(chan struct{})
 	go func() {
-		reg.Register(relayapi.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, newPeer)
+		reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, newPeer)
 		close(registerDone)
 	}()
 
