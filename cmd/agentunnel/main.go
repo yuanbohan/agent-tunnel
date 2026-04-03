@@ -90,7 +90,7 @@ func runWithArgs(args []string, stderr io.Writer) error {
 
 	fmt.Fprintf(
 		stderr,
-		"▶ agentunnel — %s\n  relay %s\n\n",
+		"▶ agentunnel — %s\n  relay: %s\n  local terminal is interactive\n\n",
 		command.Name,
 		parsed.RelayURL,
 	)
@@ -102,11 +102,7 @@ func runWithArgs(args []string, stderr io.Writer) error {
 		waitErr <- running.Wait()
 	}()
 
-	if err := waitForProcessOrShutdown(ctx, done, waitErr); err != nil {
-		return err
-	}
-
-	return nil
+	return waitForProcessOrShutdown(ctx, done, waitErr)
 }
 
 func waitForProcessOrShutdown(ctx context.Context, localDone <-chan struct{}, waitErr <-chan error) error {
