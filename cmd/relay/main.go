@@ -47,7 +47,6 @@ func main() {
 	}
 
 	logger := relay.NewLogger(os.Stderr)
-	logRelayStarted(logger, cfg)
 
 	handler := relay.NewHandler(relay.HandlerConfig{
 		Registry:        relay.NewRegistry(),
@@ -57,11 +56,29 @@ func main() {
 		Logger:          logger,
 	})
 
-	log.Fatal(newHTTPServer(cfg, handler).ListenAndServe())
+	log.Fatal(startRelay(cfg, handler, logger, net.Listen, func(srv *http.Server, ln net.Listener) error {
+		return srv.Serve(ln)
+	}))
 }
 
 func logRelayStarted(logger *relay.Logger, cfg mainConfig) {
 	logger.Info("relay_started", relay.String("listen_addr", cfg.ListenAddr))
+}
+
+func startRelay(
+	cfg mainConfig,
+	handler http.Handler,
+	logger *relay.Logger,
+	listen func(network, address string) (net.Listener, error),
+	serve func(*http.Server, net.Listener) error,
+) error {
+	ln, err := listen("tcp", cfg.ListenAddr)
+	if err != nil {
+		return err
+	}
+
+	logRelayStarted(logger, cfg)
+	return serve(newHTTPServer(cfg, handler), ln)
 }
 
 func newHTTPServer(cfg mainConfig, handler http.Handler) *http.Server {

@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"errors"
+	"net"
 	"net/http"
 	"strings"
 	"testing"
@@ -74,6 +76,29 @@ func TestLogRelayStartedWritesListenAddr(t *testing.T) {
 	}
 	if !strings.Contains(got, `"listen_addr":"0.0.0.0:8586"`) {
 		t.Fatalf("log = %q, want listen_addr 0.0.0.0:8586", got)
+	}
+}
+
+func TestStartRelayDoesNotLogBeforeBind(t *testing.T) {
+	var buf bytes.Buffer
+
+	err := startRelay(
+		mainConfig{ListenAddr: "0.0.0.0:8586"},
+		http.NewServeMux(),
+		relay.NewLogger(&buf),
+		func(string, string) (net.Listener, error) {
+			return nil, errors.New("bind failed")
+		},
+		func(*http.Server, net.Listener) error {
+			t.Fatal("serve should not be called when bind fails")
+			return nil
+		},
+	)
+	if err == nil {
+		t.Fatal("expected bind failure")
+	}
+	if got := buf.String(); got != "" {
+		t.Fatalf("log = %q, want no startup log on bind failure", got)
 	}
 }
 
