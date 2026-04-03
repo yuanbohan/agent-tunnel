@@ -17,7 +17,7 @@ import (
 func setTestEnv(t *testing.T) {
 	t.Helper()
 	for _, kv := range [][2]string{
-		{"AGENTUNNEL_RELAY_URL", "wss://relay.example"},
+		{"AGENTUNNEL_RELAY_ADDR", "127.0.0.1:8586"},
 		{"AGENTUNNEL_RELAY_TOKEN", "test-token"},
 	} {
 		old, existed := os.LookupEnv(kv[0])
@@ -122,8 +122,8 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("runWithArgs error = %v, want %v", err, wantErr)
 	}
-	if gotURL != "wss://relay.example" {
-		t.Fatalf("connector URL = %q, want wss://relay.example", gotURL)
+	if gotURL != "ws://127.0.0.1:8586" {
+		t.Fatalf("connector URL = %q, want ws://127.0.0.1:8586", gotURL)
 	}
 	if gotToken != "test-token" {
 		t.Fatalf("connector Token = %q, want test-token", gotToken)

@@ -23,7 +23,7 @@ export AGENTUNNEL_AGENT_TOKEN=agent-token
 make relay
 ```
 
-The relay listens on `:8586` by default. Override with `--port` or `AGENTUNNEL_RELAY_ADDR`:
+The relay listens on `0.0.0.0:8586` by default. Override the port with `--port`:
 
 ```bash
 go run ./cmd/relay --port 9000
@@ -34,7 +34,7 @@ go run ./cmd/relay --port 9000
 Point the agent at the relay and launch a session:
 
 ```bash
-export AGENTUNNEL_RELAY_URL=ws://localhost:8586
+export AGENTUNNEL_RELAY_ADDR=127.0.0.1:8586
 export AGENTUNNEL_RELAY_TOKEN=agent-token
 go run ./cmd/agentunnel claude
 ```
@@ -42,14 +42,14 @@ go run ./cmd/agentunnel claude
 Or with a label:
 
 ```bash
-go run ./cmd/agentunnel --label api-fix codex
+go run ./cmd/agentunnel --label api-fix --relay-addr 127.0.0.1:9000 codex
 ```
 
 Expected stderr output:
 
 ```text
 ▶ agentunnel — claude
-  relay: ws://localhost:8586
+  relay: 127.0.0.1:8586
   local terminal is interactive
 ```
 
@@ -65,18 +65,18 @@ On the remote host:
 export AGENTUNNEL_BASIC_USER=ops
 export AGENTUNNEL_BASIC_PASSWORD=strong-password
 export AGENTUNNEL_AGENT_TOKEN=shared-agent-token
-./bin/relay --port 443
+./bin/relay --port 8586
 ```
 
 On each developer machine:
 
 ```bash
-export AGENTUNNEL_RELAY_URL=wss://relay.example.com
+export AGENTUNNEL_RELAY_ADDR=relay.example.com:8586
 export AGENTUNNEL_RELAY_TOKEN=shared-agent-token
 ./bin/agentunnel --label "feature-branch" claude
 ```
 
-Then open `https://relay.example.com/` in any browser.
+Then open `http://relay.example.com:8586/` in any browser.
 
 ## Supported Launchers
 

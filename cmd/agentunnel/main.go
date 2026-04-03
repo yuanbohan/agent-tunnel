@@ -42,6 +42,7 @@ func runWithArgs(args []string, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	relayURL := relayWebSocketURL(parsed.RelayAddr)
 
 	command, err := resolveLauncher(parsed.Launcher, parsed.LauncherArgs)
 	if err != nil {
@@ -72,7 +73,7 @@ func runWithArgs(args []string, stderr io.Writer) error {
 		StartedAt:      time.Now().UTC(),
 	}
 
-	relay := newConnector(parsed.RelayURL, parsed.RelayToken, info)
+	relay := newConnector(relayURL, parsed.RelayToken, info)
 
 	initialSinks := map[string]session.OutputSink{
 		sinkID:  sink,
@@ -92,7 +93,7 @@ func runWithArgs(args []string, stderr io.Writer) error {
 		stderr,
 		"▶ agentunnel — %s\n  relay: %s\n  local terminal is interactive\n\n",
 		command.Name,
-		parsed.RelayURL,
+		parsed.RelayAddr,
 	)
 
 	done := local.Start(ctx, running.Hub)

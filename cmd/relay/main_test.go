@@ -29,8 +29,8 @@ func TestLoadMainConfigDefaultsListenAddr(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadMainConfig returned error: %v", err)
 	}
-	if cfg.ListenAddr != ":8586" {
-		t.Fatalf("ListenAddr = %q, want :8586", cfg.ListenAddr)
+	if cfg.ListenAddr != "0.0.0.0:8586" {
+		t.Fatalf("ListenAddr = %q, want 0.0.0.0:8586", cfg.ListenAddr)
 	}
 }
 
@@ -39,31 +39,31 @@ func TestLoadMainConfig_portFlag(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ListenAddr != ":9999" {
-		t.Errorf("ListenAddr = %q, want :9999", cfg.ListenAddr)
+	if cfg.ListenAddr != "0.0.0.0:9999" {
+		t.Errorf("ListenAddr = %q, want 0.0.0.0:9999", cfg.ListenAddr)
 	}
 }
 
-func TestLoadMainConfig_portFlagOverridesEnv(t *testing.T) {
+func TestLoadMainConfigIgnoresLegacyRelayAddrEnv(t *testing.T) {
 	cfg, err := loadMainConfig(func(key string) string {
 		if key == "AGENTUNNEL_RELAY_ADDR" {
-			return ":7777"
+			return "127.0.0.1:7777"
 		}
 		return validEnv(key)
-	}, "9999")
+	}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ListenAddr != ":9999" {
-		t.Errorf("ListenAddr = %q, want :9999 (flag should override env)", cfg.ListenAddr)
+	if cfg.ListenAddr != "0.0.0.0:8586" {
+		t.Errorf("ListenAddr = %q, want 0.0.0.0:8586 (legacy env should be ignored)", cfg.ListenAddr)
 	}
 }
 
 func TestNewHTTPServerConfiguresTimeouts(t *testing.T) {
-	srv := newHTTPServer(mainConfig{ListenAddr: ":8586"}, http.NewServeMux())
+	srv := newHTTPServer(mainConfig{ListenAddr: "0.0.0.0:8586"}, http.NewServeMux())
 
-	if srv.Addr != ":8586" {
-		t.Fatalf("Addr = %q, want :8586", srv.Addr)
+	if srv.Addr != "0.0.0.0:8586" {
+		t.Fatalf("Addr = %q, want 0.0.0.0:8586", srv.Addr)
 	}
 	if srv.ReadHeaderTimeout <= 0 {
 		t.Fatalf("ReadHeaderTimeout = %v, want > 0", srv.ReadHeaderTimeout)

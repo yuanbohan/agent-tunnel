@@ -82,13 +82,13 @@ cmd/relay
 
 ### `cmd/agentunnel` -- Orchestrator
 
-**Entry point.** Wires together all components in the correct startup sequence. The relay connection is mandatory; `agentunnel` will not start without `--relay-url` or `AGENTUNNEL_RELAY_URL` and `AGENTUNNEL_RELAY_TOKEN`.
+**Entry point.** Wires together all components in the correct startup sequence. The relay connection is mandatory; `agentunnel` will not start without `--relay-addr` or `AGENTUNNEL_RELAY_ADDR` and `AGENTUNNEL_RELAY_TOKEN`.
 
 ```
 main()
   └─> runWithArgs(args, stderr)
         │
-        ├─ 1. parseRunArgs(args)                 → runArgs{Label, RelayURL, RelayToken, Launcher, LauncherArgs}
+        ├─ 1. parseRunArgs(args)                 → runArgs{Label, RelayAddr, RelayToken, Launcher, LauncherArgs}
         ├─ 2. launcher.Resolve(name, args)       → launcher.Command
         ├─ 3. session.PrepareLocalTerminal()     → LocalTerminal
         ├─ 4. build initial sink map             → {local stdout, relay connector}
@@ -326,7 +326,7 @@ func Files() fs.FS  // returns the embedded dist/ filesystem
 
 ### `cmd/relay` -- Relay Server Entry Point
 
-`cmd/relay` is the standalone relay server entrypoint. It reads configuration from environment variables (with an optional `--port` flag), creates a relay registry, and serves the dashboard UI plus attach/list endpoints.
+`cmd/relay` is the standalone relay server entrypoint. It reads auth configuration from environment variables, binds to `0.0.0.0` on the requested port, creates a relay registry, and serves the dashboard UI plus attach/list endpoints.
 
 ```go
 type mainConfig struct {
@@ -338,15 +338,14 @@ type mainConfig struct {
 ```
 
 Environment variables:
-- `AGENTUNNEL_RELAY_ADDR` (defaults to `:8586`)
 - `AGENTUNNEL_BASIC_USER` (required)
 - `AGENTUNNEL_BASIC_PASSWORD` (required)
 - `AGENTUNNEL_AGENT_TOKEN` (required)
 
-The `--port` flag overrides `AGENTUNNEL_RELAY_ADDR`:
+Listen address:
 
 ```bash
-go run ./cmd/relay --port 9000   # listens on :9000
+go run ./cmd/relay --port 9000   # listens on 0.0.0.0:9000
 ```
 
 ### `connector/` -- Outbound Relay Connector
@@ -506,13 +505,13 @@ decodeOutput(msg: Message): Uint8Array
 ### Startup Sequence
 
 ```
-User runs: agentunnel --relay-url wss://relay.example claude --resume
+User runs: agentunnel --relay-addr 127.0.0.1:8586 claude --resume
     │
     ▼
 ┌─ cmd/agentunnel ────────────────────────────────────────────┐
 │                                                              │
 │  1. parseRunArgs(args)                                       │
-│     └─ validates relay URL + token are present               │
+│     └─ validates relay addr + token are present              │
 │                                                              │
 │  2. launcher.Resolve("claude", ["--resume"])                 │
 │     └─ validates name, finds /usr/local/bin/claude           │

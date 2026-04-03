@@ -23,7 +23,7 @@ During the brainstorming, spec phases, avoid writing code whenever possible; imp
 ## Current Product Boundaries
 
 - `agentunnel` is the PTY owner. It has no localhost HTTP server; browser access is exclusively through the relay.
-- The relay connection is mandatory. `agentunnel` requires `--relay-url` (or `AGENTUNNEL_RELAY_URL`) and `AGENTUNNEL_RELAY_TOKEN` to start.
+- The relay connection is mandatory. `agentunnel` requires `--relay-addr` (or `AGENTUNNEL_RELAY_ADDR`) and `AGENTUNNEL_RELAY_TOKEN` to start.
 - The relay is `attach-only`. It lists live sessions and lets a browser attach to one; it does not create or stop local sessions.
 - Relay state is live-only and in-memory. If the owning agent socket disappears, the session disappears from the list.
 - Browser session pages start in `Read-only` mode and only send input after the state chip is toggled to `Input on`.
