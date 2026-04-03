@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"net/http"
 	"net/url"
-	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -55,13 +54,18 @@ type wsConn interface {
 	Close() error
 }
 
+type wsOutputFrame struct {
+	seq  uint64
+	data []byte
+}
+
 type wsSink struct {
 	conn         wsConn
 	writeTimeout time.Duration
 
 	mu        sync.RWMutex
 	closed    bool
-	outbound  chan []byte
+	outbound  chan wsOutputFrame
 	closeOnce sync.Once
 }
 
@@ -77,13 +81,17 @@ func newWSSinkWithConfig(conn wsConn, bufferSize int, writeTimeout time.Duration
 	sink := &wsSink{
 		conn:         conn,
 		writeTimeout: writeTimeout,
-		outbound:     make(chan []byte, bufferSize),
+		outbound:     make(chan wsOutputFrame, bufferSize),
 	}
 	go sink.run()
 	return sink
 }
 
 func (s *wsSink) WriteOutput(data []byte) error {
+	return s.WriteOutputFrame(0, data)
+}
+
+func (s *wsSink) WriteOutputFrame(seq uint64, data []byte) error {
 	cp := append([]byte(nil), data...)
 
 	s.mu.RLock()
@@ -93,7 +101,7 @@ func (s *wsSink) WriteOutput(data []byte) error {
 	}
 
 	select {
-	case s.outbound <- cp:
+	case s.outbound <- wsOutputFrame{seq: seq, data: cp}:
 		s.mu.RUnlock()
 		return nil
 	default:
@@ -117,13 +125,17 @@ func (s *wsSink) Close() error {
 func (s *wsSink) run() {
 	defer s.Close()
 
-	for data := range s.outbound {
+	for frame := range s.outbound {
 		if s.writeTimeout > 0 {
 			if err := s.conn.SetWriteDeadline(time.Now().Add(s.writeTimeout)); err != nil {
 				return
 			}
 		}
-		if err := s.conn.WriteJSON(protocol.EncodeOutput(data)); err != nil {
+		if err := s.conn.WriteJSON(protocol.Message{
+			Type: "output",
+			Seq:  frame.seq,
+			Data: base64.StdEncoding.EncodeToString(frame.data),
+		}); err != nil {
 			return
 		}
 	}
@@ -292,17 +304,83 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		if path.Base(r.URL.Path) != "ws" {
+
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		if len(parts) != 4 || parts[0] != "api" || parts[1] != "sessions" {
 			http.NotFound(w, r)
 			return
 		}
 
-		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-		if len(parts) != 4 || parts[0] != "api" || parts[1] != "sessions" || parts[3] != "ws" {
+		sessionID := parts[2]
+		switch parts[3] {
+		case "history":
+			if r.Method != http.MethodGet {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			if !registry.HasSession(sessionID) {
+				http.NotFound(w, r)
+				return
+			}
+			before, err := parseOptionalUintQuery(r, "before")
+			if err != nil {
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			after, err := parseOptionalUintQuery(r, "after")
+			if err != nil {
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			limit, err := parseOptionalIntQuery(r, "limit")
+			if err != nil {
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			maxBytes, err := parseOptionalIntQuery(r, "max_bytes")
+			if err != nil {
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			page, ok := registry.History(sessionID, before, after, limit, maxBytes)
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(page)
+			return
+		case "read":
+			if r.Method != http.MethodPost {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			if !registry.HasSession(sessionID) {
+				http.NotFound(w, r)
+				return
+			}
+			var req struct {
+				Seq uint64 `json:"seq"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			info, ok := registry.MarkRead(sessionID, req.Seq)
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(info)
+			return
+		case "ws":
+			// continue below
+		default:
 			http.NotFound(w, r)
 			return
 		}
-		sessionID := parts[2]
+
 		if !registry.HasSession(sessionID) {
 			http.NotFound(w, r)
 			return
@@ -357,6 +435,29 @@ func sameOriginOrEmpty(r *http.Request) bool {
 		return false
 	}
 	return originURL.Host == r.Host
+}
+
+func parseOptionalUintQuery(r *http.Request, key string) (uint64, error) {
+	value := r.URL.Query().Get(key)
+	if value == "" {
+		return 0, nil
+	}
+	return strconv.ParseUint(value, 10, 64)
+}
+
+func parseOptionalIntQuery(r *http.Request, key string) (int, error) {
+	value := r.URL.Query().Get(key)
+	if value == "" {
+		return 0, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, err
+	}
+	if parsed < 0 {
+		return 0, strconv.ErrSyntax
+	}
+	return parsed, nil
 }
 
 func serveRelayShellAsset(w http.ResponseWriter, r *http.Request, files fs.FS) {

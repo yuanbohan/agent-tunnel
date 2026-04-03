@@ -15,6 +15,23 @@ import (
 	"yuanbohan/tunnel/protocol"
 )
 
+type sessionHistoryResponse struct {
+	Messages []struct {
+		Seq     uint64 `json:"seq"`
+		DataB64 string `json:"data_b64"`
+	} `json:"messages"`
+	HasMore     bool   `json:"has_more"`
+	LatestSeq   uint64 `json:"latest_seq"`
+	LastReadSeq uint64 `json:"last_read_seq"`
+}
+
+type readStateResponse struct {
+	SessionID   string `json:"session_id"`
+	LatestSeq   uint64 `json:"latest_seq"`
+	LastReadSeq uint64 `json:"last_read_seq"`
+	UnreadCount uint64 `json:"unread_count"`
+}
+
 func TestHandlerRejectsDashboardWithoutBasicAuth(t *testing.T) {
 	reg := NewRegistry()
 	handler := NewHandler(HandlerConfig{
@@ -68,6 +85,173 @@ func TestHandlerReturnsLiveSessionsWithBasicAuth(t *testing.T) {
 	}
 	if len(sessions) != 1 || sessions[0].SessionID != "sess-1" {
 		t.Fatalf("sessions = %#v, want sess-1", sessions)
+	}
+	for _, want := range []string{"latest_seq", "last_read_seq", "unread_count", "preview_seq", "preview_b64"} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("body = %s, want field %q", rec.Body.String(), want)
+		}
+	}
+}
+
+func TestHandlerServesSessionHistoryAndReadState(t *testing.T) {
+	reg := NewRegistry()
+	server := httptest.NewServer(NewHandler(HandlerConfig{
+		Registry:        reg,
+		BrowserUser:     "demo",
+		BrowserPassword: "secret",
+		AgentToken:      "agent-token",
+	}))
+	defer server.Close()
+
+	agentConn := dialAndRegisterAgent(t, server.URL, "sess-1")
+	defer agentConn.Close()
+
+	for _, output := range []string{"one", "two", "three"} {
+		if err := agentConn.WriteJSON(protocol.EncodeOutput([]byte(output))); err != nil {
+			t.Fatalf("WriteJSON output returned error: %v", err)
+		}
+	}
+	waitForLatestSeq(t, reg, "sess-1", 3)
+
+	historyReq := httptest.NewRequest(http.MethodGet, "/api/sessions/sess-1/history", nil)
+	historyReq.Header.Set("Authorization", basicAuth("demo", "secret"))
+	historyRec := httptest.NewRecorder()
+	NewHandler(HandlerConfig{
+		Registry:        reg,
+		BrowserUser:     "demo",
+		BrowserPassword: "secret",
+		AgentToken:      "agent-token",
+	}).ServeHTTP(historyRec, historyReq)
+
+	if historyRec.Code != http.StatusOK {
+		t.Fatalf("history status = %d, want 200", historyRec.Code)
+	}
+
+	var history sessionHistoryResponse
+	if err := json.Unmarshal(historyRec.Body.Bytes(), &history); err != nil {
+		t.Fatalf("Unmarshal history returned error: %v", err)
+	}
+	if history.LatestSeq != 3 {
+		t.Fatalf("LatestSeq = %d, want 3", history.LatestSeq)
+	}
+	if history.LastReadSeq != 0 {
+		t.Fatalf("LastReadSeq = %d, want 0", history.LastReadSeq)
+	}
+	if history.HasMore {
+		t.Fatal("HasMore = true, want false")
+	}
+	if len(history.Messages) != 3 {
+		t.Fatalf("len(Messages) = %d, want 3", len(history.Messages))
+	}
+	for i, want := range []string{"one", "two", "three"} {
+		if history.Messages[i].Seq != uint64(i+1) {
+			t.Fatalf("message %d seq = %d, want %d", i, history.Messages[i].Seq, i+1)
+		}
+		data, err := base64.StdEncoding.DecodeString(history.Messages[i].DataB64)
+		if err != nil {
+			t.Fatalf("DecodeString returned error: %v", err)
+		}
+		if string(data) != want {
+			t.Fatalf("message %d data = %q, want %q", i, string(data), want)
+		}
+	}
+
+	historyReq = httptest.NewRequest(http.MethodGet, "/api/sessions/sess-1/history?before=3&limit=1", nil)
+	historyReq.Header.Set("Authorization", basicAuth("demo", "secret"))
+	historyRec = httptest.NewRecorder()
+	NewHandler(HandlerConfig{
+		Registry:        reg,
+		BrowserUser:     "demo",
+		BrowserPassword: "secret",
+		AgentToken:      "agent-token",
+	}).ServeHTTP(historyRec, historyReq)
+
+	if historyRec.Code != http.StatusOK {
+		t.Fatalf("paged history status = %d, want 200", historyRec.Code)
+	}
+	if err := json.Unmarshal(historyRec.Body.Bytes(), &history); err != nil {
+		t.Fatalf("Unmarshal paged history returned error: %v", err)
+	}
+	if !history.HasMore {
+		t.Fatal("HasMore = false, want true for paged history")
+	}
+	if len(history.Messages) != 1 || history.Messages[0].Seq != 2 {
+		t.Fatalf("paged history messages = %#v, want seq 2 only", history.Messages)
+	}
+
+	historyReq = httptest.NewRequest(http.MethodGet, "/api/sessions/sess-1/history?after=2&before=4", nil)
+	historyReq.Header.Set("Authorization", basicAuth("demo", "secret"))
+	historyRec = httptest.NewRecorder()
+	NewHandler(HandlerConfig{
+		Registry:        reg,
+		BrowserUser:     "demo",
+		BrowserPassword: "secret",
+		AgentToken:      "agent-token",
+	}).ServeHTTP(historyRec, historyReq)
+
+	if historyRec.Code != http.StatusOK {
+		t.Fatalf("bounded after history status = %d, want 200", historyRec.Code)
+	}
+	if err := json.Unmarshal(historyRec.Body.Bytes(), &history); err != nil {
+		t.Fatalf("Unmarshal bounded after history returned error: %v", err)
+	}
+	if history.HasMore {
+		t.Fatal("bounded after history HasMore = true, want false")
+	}
+	if len(history.Messages) != 1 || history.Messages[0].Seq != 3 {
+		t.Fatalf("bounded after history messages = %#v, want seq 3 only", history.Messages)
+	}
+
+	readBody := strings.NewReader(`{"seq":2}`)
+	readReq := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-1/read", readBody)
+	readReq.Header.Set("Authorization", basicAuth("demo", "secret"))
+	readReq.Header.Set("Content-Type", "application/json")
+	readRec := httptest.NewRecorder()
+	NewHandler(HandlerConfig{
+		Registry:        reg,
+		BrowserUser:     "demo",
+		BrowserPassword: "secret",
+		AgentToken:      "agent-token",
+	}).ServeHTTP(readRec, readReq)
+
+	if readRec.Code != http.StatusOK {
+		t.Fatalf("read status = %d, want 200", readRec.Code)
+	}
+
+	var afterRead readStateResponse
+	if err := json.Unmarshal(readRec.Body.Bytes(), &afterRead); err != nil {
+		t.Fatalf("Unmarshal read response returned error: %v", err)
+	}
+	if afterRead.LastReadSeq != 2 {
+		t.Fatalf("LastReadSeq = %d, want 2", afterRead.LastReadSeq)
+	}
+	if afterRead.UnreadCount != 1 {
+		t.Fatalf("UnreadCount = %d, want 1", afterRead.UnreadCount)
+	}
+
+	readBody = strings.NewReader(`{"seq":1}`)
+	readReq = httptest.NewRequest(http.MethodPost, "/api/sessions/sess-1/read", readBody)
+	readReq.Header.Set("Authorization", basicAuth("demo", "secret"))
+	readReq.Header.Set("Content-Type", "application/json")
+	readRec = httptest.NewRecorder()
+	NewHandler(HandlerConfig{
+		Registry:        reg,
+		BrowserUser:     "demo",
+		BrowserPassword: "secret",
+		AgentToken:      "agent-token",
+	}).ServeHTTP(readRec, readReq)
+
+	if readRec.Code != http.StatusOK {
+		t.Fatalf("read regression status = %d, want 200", readRec.Code)
+	}
+	if err := json.Unmarshal(readRec.Body.Bytes(), &afterRead); err != nil {
+		t.Fatalf("Unmarshal read regression response returned error: %v", err)
+	}
+	if afterRead.LastReadSeq != 2 {
+		t.Fatalf("LastReadSeq regression = %d, want 2", afterRead.LastReadSeq)
+	}
+	if afterRead.UnreadCount != 1 {
+		t.Fatalf("UnreadCount regression = %d, want 1", afterRead.UnreadCount)
 	}
 }
 
@@ -191,6 +375,41 @@ func TestAgentRegisterAddsLiveSessionAndBrowserAttachReceivesOutput(t *testing.T
 	}
 }
 
+func TestBrowserAttachAddsSequenceNumbersToOutputFrames(t *testing.T) {
+	reg := NewRegistry()
+	server := httptest.NewServer(NewHandler(HandlerConfig{
+		Registry:        reg,
+		BrowserUser:     "demo",
+		BrowserPassword: "secret",
+		AgentToken:      "agent-token",
+	}))
+	defer server.Close()
+
+	agentConn := dialAndRegisterAgent(t, server.URL, "sess-1")
+	defer agentConn.Close()
+
+	browserURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/sessions/sess-1/ws"
+	browserHeaders := http.Header{}
+	browserHeaders.Set("Authorization", basicAuth("demo", "secret"))
+	browserConn, _, err := websocket.DefaultDialer.Dial(browserURL, browserHeaders)
+	if err != nil {
+		t.Fatalf("Dial browser returned error: %v", err)
+	}
+	defer browserConn.Close()
+
+	if err := agentConn.WriteJSON(protocol.EncodeOutput([]byte("hello"))); err != nil {
+		t.Fatalf("WriteJSON output returned error: %v", err)
+	}
+
+	_, raw, err := browserConn.ReadMessage()
+	if err != nil {
+		t.Fatalf("ReadMessage browser returned error: %v", err)
+	}
+	if !strings.Contains(string(raw), `"seq":1`) {
+		t.Fatalf("browser frame = %s, want seq 1", string(raw))
+	}
+}
+
 func TestBrowserAttachRoutesInputToRegisteredAgent(t *testing.T) {
 	reg := NewRegistry()
 	server := httptest.NewServer(NewHandler(HandlerConfig{
@@ -247,6 +466,44 @@ func TestBrowserAttachRoutesInputToRegisteredAgent(t *testing.T) {
 	if string(data) != "hello" {
 		t.Fatalf("input = %q, want hello", string(data))
 	}
+}
+
+func dialAndRegisterAgent(t *testing.T, serverURL, sessionID string) *websocket.Conn {
+	t.Helper()
+
+	agentURL := "ws" + strings.TrimPrefix(serverURL, "http") + "/agent/ws"
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer agent-token")
+	agentConn, _, err := websocket.DefaultDialer.Dial(agentURL, headers)
+	if err != nil {
+		t.Fatalf("Dial agent returned error: %v", err)
+	}
+
+	if err := agentConn.WriteJSON(protocol.RegisterFrame(protocol.SessionInfo{
+		SessionID: sessionID,
+		Launcher:  "codex",
+	})); err != nil {
+		t.Fatalf("WriteJSON register returned error: %v", err)
+	}
+	return agentConn
+}
+
+func waitForLatestSeq(t *testing.T, reg *Registry, sessionID string, want uint64) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		info, ok := reg.Session(sessionID)
+		if ok && info.LatestSeq >= want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	info, ok := reg.Session(sessionID)
+	if !ok {
+		t.Fatalf("session %q disappeared while waiting for latest_seq", sessionID)
+	}
+	t.Fatalf("LatestSeq = %d, want at least %d", info.LatestSeq, want)
 }
 
 func TestBrowserAttachRejectsForeignOrigin(t *testing.T) {
