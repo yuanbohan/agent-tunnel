@@ -2,7 +2,7 @@
 
 Launch a terminal agent locally and stream the live PTY session to a remote relay dashboard.
 
-`agentunnel` starts a real CLI such as `claude`, `codex`, or `gemini`, keeps the launching terminal interactive, and registers the session with a relay server. The relay serves a browser dashboard where authenticated users can list live sessions and attach to any one of them in real time.
+`agentunnel` starts a real CLI such as `claude`, `codex`, or `gemini`, keeps the launching terminal interactive, and registers the session with a relay server. The relay serves a browser dashboard where authenticated users can list live sessions, watch a readable live preview, see unread counts, and open a session page that replays recent live history before attaching to the live stream.
 
 ## Requirements
 
@@ -56,6 +56,14 @@ Expected stderr output:
 ### 3. Open the dashboard
 
 Open `http://localhost:8586/` in a browser, authenticate with the Basic Auth credentials, and choose a live session from the dashboard.
+
+The relay UI now provides:
+- a compact live session list with official Claude, Gemini, and OpenAI launcher favicons
+- a wrapped mini terminal preview that shows the latest output frame without horizontal list scrolling
+- per-session unread badges
+- a session detail page that replays recent live history, lazy-loads older history on upward scroll, and exposes a `Jump to N unread` action
+
+Session history is intentionally live-only and in-memory. If the owning agent disconnects, the session disappears along with its retained history and unread state.
 
 ## VPS Deployment
 
@@ -115,5 +123,10 @@ JSON frames over WebSocket text messages:
 | Type     | Direction        | Payload                        |
 |----------|------------------|--------------------------------|
 | `input`  | browser -> relay -> agent | `data`: base64-encoded stdin |
-| `output` | agent -> relay -> browser | `data`: base64-encoded stdout |
+| `output` | agent -> relay -> browser | `seq`, `data`: base64-encoded PTY output |
 | `resize` | browser -> relay -> agent | `cols`, `rows` as integers   |
+
+The relay also exposes:
+- `GET /api/sessions` for live session metadata, unread counts, and dashboard preview payloads
+- `GET /api/sessions/:id/history` for paged live-session history replay
+- `POST /api/sessions/:id/read` for advancing the shared per-session read marker
