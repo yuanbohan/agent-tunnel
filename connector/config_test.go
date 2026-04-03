@@ -1,4 +1,4 @@
-package relayclient
+package connector
 
 import "testing"
 

@@ -14,7 +14,7 @@ import (
 
 	"yuanbohan/tunnel/launcher"
 	"yuanbohan/tunnel/protocol"
-	"yuanbohan/tunnel/internal/relayclient"
+	"yuanbohan/tunnel/connector"
 	"yuanbohan/tunnel/internal/server"
 	"yuanbohan/tunnel/session"
 )
@@ -24,9 +24,9 @@ var (
 	prepareLocalTerminal = session.PrepareLocalTerminal
 	startSession         = session.StartCommandWithInitialSinks
 	startServer          = server.StartLocal
-	loadRelayConfig      = relayclient.LoadConfig
-	newRelayConnector    = func(cfg relayclient.Config, info protocol.SessionInfo) relaySink {
-		return relayclient.New(cfg, info)
+	loadRelayConfig      = connector.LoadConfig
+	newRelayConnector    = func(cfg connector.Config, info protocol.SessionInfo) relaySink {
+		return connector.New(cfg, info)
 	}
 )
 

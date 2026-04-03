@@ -9,7 +9,7 @@ import (
 
 	"yuanbohan/tunnel/launcher"
 	"yuanbohan/tunnel/protocol"
-	"yuanbohan/tunnel/internal/relayclient"
+	"yuanbohan/tunnel/connector"
 	"yuanbohan/tunnel/internal/server"
 	"yuanbohan/tunnel/session"
 )
@@ -97,13 +97,13 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinksWhenEnabled(t *testing.T) {
 		return &session.LocalTerminal{}, nil
 	}
 
-	loadRelayConfig = func(func(string) string, string) (relayclient.Config, bool, error) {
-		return relayclient.Config{URL: "wss://relay.example", Token: "token"}, true, nil
+	loadRelayConfig = func(func(string) string, string) (connector.Config, bool, error) {
+		return connector.Config{URL: "wss://relay.example", Token: "token"}, true, nil
 	}
 
 	var gotInfo protocol.SessionInfo
 	fakeConnector := fakeRelaySink{}
-	newRelayConnector = func(cfg relayclient.Config, info protocol.SessionInfo) relaySink {
+	newRelayConnector = func(cfg connector.Config, info protocol.SessionInfo) relaySink {
 		gotInfo = info
 		return fakeConnector
 	}
