@@ -34,15 +34,15 @@ func TestConnectorSendsRegisterBeforeStreamingOutput(t *testing.T) {
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
 	hub := session.NewHub(func([]byte) error { return nil }, func(int, int) error { return nil })
-	connector := New(Config{URL: wsURL, Token: "token"}, protocol.SessionInfo{
+	c := New(wsURL, "token", protocol.SessionInfo{
 		SessionID: "sess-1",
 		Launcher:  "codex",
 	})
-	connector.BindHub(hub)
+	c.BindHub(hub)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go connector.Run(ctx)
+	go c.Run(ctx)
 
 	select {
 	case frame := <-received:
@@ -88,15 +88,15 @@ func TestConnectorRoutesInputFrameIntoHub(t *testing.T) {
 	defer server.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
-	connector := New(Config{URL: wsURL, Token: "token"}, protocol.SessionInfo{
+	c := New(wsURL, "token", protocol.SessionInfo{
 		SessionID: "sess-1",
 		Launcher:  "codex",
 	})
-	connector.BindHub(hub)
+	c.BindHub(hub)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go connector.Run(ctx)
+	go c.Run(ctx)
 
 	select {
 	case got := <-inputCh:
@@ -132,16 +132,16 @@ func TestConnectorStreamsOutputFramesToRelay(t *testing.T) {
 	defer server.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
-	connector := New(Config{URL: wsURL, Token: "token"}, protocol.SessionInfo{
+	c := New(wsURL, "token", protocol.SessionInfo{
 		SessionID: "sess-1",
 		Launcher:  "codex",
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go connector.Run(ctx)
+	go c.Run(ctx)
 
-	if err := connector.WriteOutput([]byte("world")); err != nil {
+	if err := c.WriteOutput([]byte("world")); err != nil {
 		t.Fatalf("WriteOutput returned error: %v", err)
 	}
 
@@ -179,7 +179,7 @@ func TestConnectorBuffersOutputAcrossReconnectWithoutLeakingOldWriter(t *testing
 	defer firstServer.Close()
 
 	firstURL := "ws" + strings.TrimPrefix(firstServer.URL, "http")
-	connector := New(Config{URL: firstURL, Token: "token"}, protocol.SessionInfo{
+	c := New(firstURL, "token", protocol.SessionInfo{
 		SessionID: "sess-1",
 		Launcher:  "codex",
 	})
@@ -187,11 +187,11 @@ func TestConnectorBuffersOutputAcrossReconnectWithoutLeakingOldWriter(t *testing
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	if err := connector.runOnce(ctx); err == nil {
+	if err := c.runOnce(ctx); err == nil {
 		t.Fatal("runOnce returned nil after relay disconnect, want error")
 	}
 
-	if err := connector.WriteOutput([]byte("persisted")); err != nil {
+	if err := c.WriteOutput([]byte("persisted")); err != nil {
 		t.Fatalf("WriteOutput returned error: %v", err)
 	}
 
@@ -218,11 +218,11 @@ func TestConnectorBuffersOutputAcrossReconnectWithoutLeakingOldWriter(t *testing
 	}))
 	defer secondServer.Close()
 
-	connector.cfg.URL = "ws" + strings.TrimPrefix(secondServer.URL, "http")
+	c.url = "ws" + strings.TrimPrefix(secondServer.URL, "http")
 
 	done := make(chan error, 1)
 	go func() {
-		done <- connector.runOnce(ctx)
+		done <- c.runOnce(ctx)
 	}()
 
 	select {

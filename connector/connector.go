@@ -12,9 +12,10 @@ import (
 )
 
 type Connector struct {
-	cfg  Config
-	info protocol.SessionInfo
-	hub  *session.Hub
+	url   string
+	token string
+	info  protocol.SessionInfo
+	hub   *session.Hub
 
 	outbound chan []byte
 	dialer   *websocket.Dialer
@@ -25,9 +26,10 @@ type readResult struct {
 	err error
 }
 
-func New(cfg Config, info protocol.SessionInfo) *Connector {
+func New(url, token string, info protocol.SessionInfo) *Connector {
 	return &Connector{
-		cfg:      cfg,
+		url:      url,
+		token:    token,
 		info:     info,
 		outbound: make(chan []byte, 128),
 		dialer:   websocket.DefaultDialer,
@@ -64,9 +66,9 @@ func (c *Connector) Run(ctx context.Context) {
 
 func (c *Connector) runOnce(ctx context.Context) error {
 	headers := http.Header{}
-	headers.Set("Authorization", "Bearer "+c.cfg.Token)
+	headers.Set("Authorization", "Bearer "+c.token)
 
-	conn, _, err := c.dialer.DialContext(ctx, c.cfg.URL+"/agent/ws", headers)
+	conn, _, err := c.dialer.DialContext(ctx, c.url+"/agent/ws", headers)
 	if err != nil {
 		return err
 	}

@@ -4,36 +4,46 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"testing"
 	"time"
 
+	"yuanbohan/tunnel/connector"
 	"yuanbohan/tunnel/launcher"
 	"yuanbohan/tunnel/protocol"
-	"yuanbohan/tunnel/connector"
-	"yuanbohan/tunnel/internal/server"
 	"yuanbohan/tunnel/session"
 )
 
-type fakeRelaySink struct{}
-
-func (fakeRelaySink) WriteOutput([]byte) error { return nil }
-func (fakeRelaySink) BindHub(*session.Hub)     {}
-func (fakeRelaySink) Run(context.Context)      {}
+func setTestEnv(t *testing.T) {
+	t.Helper()
+	for _, kv := range [][2]string{
+		{"AGENTUNNEL_RELAY_URL", "wss://relay.example"},
+		{"AGENTUNNEL_RELAY_TOKEN", "test-token"},
+	} {
+		old, existed := os.LookupEnv(kv[0])
+		os.Setenv(kv[0], kv[1])
+		t.Cleanup(func() {
+			if existed {
+				os.Setenv(kv[0], old)
+			} else {
+				os.Unsetenv(kv[0])
+			}
+		})
+	}
+}
 
 func TestRunWithArgsStopsBeforeStartingSessionWhenLocalTerminalPreparationFails(t *testing.T) {
+	setTestEnv(t)
+
 	oldResolve := resolveLauncher
 	oldPrepare := prepareLocalTerminal
 	oldStartSession := startSession
-	oldStartServer := startServer
-	oldLoadRelayConfig := loadRelayConfig
-	oldNewRelayConnector := newRelayConnector
+	oldNewConnector := newConnector
 	t.Cleanup(func() {
 		resolveLauncher = oldResolve
 		prepareLocalTerminal = oldPrepare
 		startSession = oldStartSession
-		startServer = oldStartServer
-		loadRelayConfig = oldLoadRelayConfig
-		newRelayConnector = oldNewRelayConnector
+		newConnector = oldNewConnector
 	})
 
 	resolveLauncher = func(name string, args []string) (launcher.Command, error) {
@@ -51,10 +61,8 @@ func TestRunWithArgsStopsBeforeStartingSessionWhenLocalTerminalPreparationFails(
 		return nil, nil
 	}
 
-	startedServer := false
-	startServer = func(server.LiveSession) (*server.Running, error) {
-		startedServer = true
-		return nil, nil
+	newConnector = func(url, token string, info protocol.SessionInfo) *connector.Connector {
+		return connector.New(url, token, info)
 	}
 
 	var stderr bytes.Buffer
@@ -65,28 +73,23 @@ func TestRunWithArgsStopsBeforeStartingSessionWhenLocalTerminalPreparationFails(
 	if startedSession {
 		t.Fatal("runWithArgs started the child session before local terminal preparation succeeded")
 	}
-	if startedServer {
-		t.Fatal("runWithArgs started the web server before local terminal preparation succeeded")
-	}
 	if got := stderr.String(); got != "" {
 		t.Fatalf("stderr = %q, want no startup banner on terminal preparation failure", got)
 	}
 }
 
-func TestRunWithArgsAddsRelayConnectorToInitialSinksWhenEnabled(t *testing.T) {
+func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
+	setTestEnv(t)
+
 	oldResolve := resolveLauncher
 	oldPrepare := prepareLocalTerminal
 	oldStartSession := startSession
-	oldStartServer := startServer
-	oldLoadRelayConfig := loadRelayConfig
-	oldNewRelayConnector := newRelayConnector
+	oldNewConnector := newConnector
 	t.Cleanup(func() {
 		resolveLauncher = oldResolve
 		prepareLocalTerminal = oldPrepare
 		startSession = oldStartSession
-		startServer = oldStartServer
-		loadRelayConfig = oldLoadRelayConfig
-		newRelayConnector = oldNewRelayConnector
+		newConnector = oldNewConnector
 	})
 
 	resolveLauncher = func(name string, args []string) (launcher.Command, error) {
@@ -97,13 +100,12 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinksWhenEnabled(t *testing.T) {
 		return &session.LocalTerminal{}, nil
 	}
 
-	loadRelayConfig = func(func(string) string, string) (connector.Config, bool, error) {
-		return connector.Config{URL: "wss://relay.example", Token: "token"}, true, nil
-	}
-
 	var gotInfo protocol.SessionInfo
-	fakeConnector := fakeRelaySink{}
-	newRelayConnector = func(cfg connector.Config, info protocol.SessionInfo) relaySink {
+	var gotURL, gotToken string
+	fakeConnector := connector.New("", "", protocol.SessionInfo{})
+	newConnector = func(url, token string, info protocol.SessionInfo) *connector.Connector {
+		gotURL = url
+		gotToken = token
 		gotInfo = info
 		return fakeConnector
 	}
@@ -115,24 +117,22 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinksWhenEnabled(t *testing.T) {
 		return nil, wantErr
 	}
 
-	startServer = func(server.LiveSession) (*server.Running, error) {
-		t.Fatal("startServer should not be called when startSession fails")
-		return nil, nil
-	}
-
 	var stderr bytes.Buffer
 	err := runWithArgs([]string{"agentunnel", "--label", "api-fix", "codex", "--profile", "prod"}, &stderr)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("runWithArgs error = %v, want %v", err, wantErr)
+	}
+	if gotURL != "wss://relay.example" {
+		t.Fatalf("connector URL = %q, want wss://relay.example", gotURL)
+	}
+	if gotToken != "test-token" {
+		t.Fatalf("connector Token = %q, want test-token", gotToken)
 	}
 	if gotSinks == nil {
 		t.Fatal("startSession did not receive initial sinks")
 	}
 	if _, ok := gotSinks["relay"]; !ok {
 		t.Fatalf("initial sinks = %#v, want relay sink", gotSinks)
-	}
-	if gotSinks["relay"] != fakeConnector {
-		t.Fatalf("relay sink = %#v, want fake connector", gotSinks["relay"])
 	}
 	if gotInfo.Launcher != "codex" {
 		t.Fatalf("Launcher = %q, want codex", gotInfo.Launcher)

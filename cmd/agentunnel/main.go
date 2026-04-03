@@ -12,10 +12,9 @@ import (
 	"syscall"
 	"time"
 
+	"yuanbohan/tunnel/connector"
 	"yuanbohan/tunnel/launcher"
 	"yuanbohan/tunnel/protocol"
-	"yuanbohan/tunnel/connector"
-	"yuanbohan/tunnel/internal/server"
 	"yuanbohan/tunnel/session"
 )
 
@@ -23,18 +22,10 @@ var (
 	resolveLauncher      = launcher.Resolve
 	prepareLocalTerminal = session.PrepareLocalTerminal
 	startSession         = session.StartCommandWithInitialSinks
-	startServer          = server.StartLocal
-	loadRelayConfig      = connector.LoadConfig
-	newRelayConnector    = func(cfg connector.Config, info protocol.SessionInfo) relaySink {
-		return connector.New(cfg, info)
+	newConnector         = func(url, token string, info protocol.SessionInfo) *connector.Connector {
+		return connector.New(url, token, info)
 	}
 )
-
-type relaySink interface {
-	session.OutputSink
-	BindHub(*session.Hub)
-	Run(context.Context)
-}
 
 func main() {
 	if err := run(); err != nil {
@@ -57,11 +48,6 @@ func runWithArgs(args []string, stderr io.Writer) error {
 		return err
 	}
 
-	relayCfg, relayEnabled, err := loadRelayConfig(os.Getenv, parsed.RelayURL)
-	if err != nil {
-		return err
-	}
-
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
@@ -77,21 +63,20 @@ func runWithArgs(args []string, stderr io.Writer) error {
 	defer local.Restore()
 
 	sinkID, sink := local.SinkRegistration()
-	initialSinks := map[string]session.OutputSink{
-		sinkID: sink,
+	info := protocol.SessionInfo{
+		SessionID:      fmt.Sprintf("%d", time.Now().UnixNano()),
+		Launcher:       command.Name,
+		Label:          parsed.Label,
+		CWD:            cwd,
+		CommandPreview: strings.TrimSpace(strings.Join(append([]string{filepath.Base(command.Path)}, command.Args...), " ")),
+		StartedAt:      time.Now().UTC(),
 	}
 
-	var connector relaySink
-	if relayEnabled {
-		connector = newRelayConnector(relayCfg, protocol.SessionInfo{
-			SessionID:      fmt.Sprintf("%d", time.Now().UnixNano()),
-			Launcher:       command.Name,
-			Label:          parsed.Label,
-			CWD:            cwd,
-			CommandPreview: strings.TrimSpace(strings.Join(append([]string{filepath.Base(command.Path)}, command.Args...), " ")),
-			StartedAt:      time.Now().UTC(),
-		})
-		initialSinks["relay"] = connector
+	relay := newConnector(parsed.RelayURL, parsed.RelayToken, info)
+
+	initialSinks := map[string]session.OutputSink{
+		sinkID:  sink,
+		"relay": relay,
 	}
 
 	running, err := startSession(ctx, command.Path, command.Args, initialSinks)
@@ -100,22 +85,14 @@ func runWithArgs(args []string, stderr io.Writer) error {
 	}
 	defer running.Close()
 
-	if connector != nil {
-		connector.BindHub(running.Hub)
-		go connector.Run(ctx)
-	}
-
-	web, err := startServer(running.Hub)
-	if err != nil {
-		return err
-	}
-	defer web.Close(context.Background())
+	relay.BindHub(running.Hub)
+	go relay.Run(ctx)
 
 	fmt.Fprintf(
 		stderr,
-		"▶ agentunnel — %s\n  open %s\n  local terminal and browser share the same live session\n\n",
+		"▶ agentunnel — %s\n  relay %s\n\n",
 		command.Name,
-		web.URL,
+		parsed.RelayURL,
 	)
 
 	done := local.Start(ctx, running.Hub)
