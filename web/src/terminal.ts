@@ -8,6 +8,8 @@ export type DisplayMode = 'scroll' | 'wrap'
 export interface TerminalHandle {
   write(data: Uint8Array): void
   onData(callback: (str: string) => void): void
+  onResize(callback: (cols: number, rows: number) => void): void
+  currentSize(): { cols: number; rows: number }
   setDisplayMode(mode: DisplayMode, ptyCols?: number, ptyRows?: number): void
   dispose(): void
 }
@@ -39,10 +41,14 @@ export function createTerminal(container: HTMLElement): TerminalHandle {
   term.open(container)
 
   let currentMode: DisplayMode = 'scroll'
+  let resizeCallback: ((cols: number, rows: number) => void) | null = null
 
   const observer = new ResizeObserver(() => {
     if (currentMode === 'wrap') {
       fitAddon.fit()
+    }
+    if (resizeCallback) {
+      resizeCallback(term.cols, term.rows)
     }
   })
   observer.observe(container)
@@ -53,6 +59,12 @@ export function createTerminal(container: HTMLElement): TerminalHandle {
     },
     onData(callback: (str: string) => void) {
       term.onData(callback)
+    },
+    onResize(callback: (cols: number, rows: number) => void) {
+      resizeCallback = callback
+    },
+    currentSize() {
+      return { cols: term.cols, rows: term.rows }
     },
     setDisplayMode(mode: DisplayMode, ptyCols?: number, ptyRows?: number) {
       currentMode = mode
