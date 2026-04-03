@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -30,6 +31,7 @@ var (
 	errWSSinkClosed       = errors.New("websocket sink closed")
 	errWSSinkBackpressure = errors.New("websocket sink backpressure")
 	nextSinkID            uint64
+	registryLoggers       sync.Map
 )
 
 type HandlerConfig struct {
@@ -166,6 +168,11 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 	if registry == nil {
 		registry = NewRegistry()
 	}
+	logger := cfg.Logger
+	if logger == nil {
+		logger = NewDiscardLogger()
+	}
+	registry.SetLogger(logger)
 
 	files := cfg.Files
 	if files == nil {
@@ -191,6 +198,7 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 
 	serveRelayShell := func(w http.ResponseWriter, r *http.Request) {
 		if !checkBasicAuth(r, cfg.BrowserUser, cfg.BrowserPassword) {
+			logAuthFailed(logger, r, "basic")
 			w.Header().Set("WWW-Authenticate", `Basic realm="agentunnel relay"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -219,6 +227,7 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 
 	mux.HandleFunc("/api/sessions", func(w http.ResponseWriter, r *http.Request) {
 		if !checkBasicAuth(r, cfg.BrowserUser, cfg.BrowserPassword) {
+			logAuthFailed(logger, r, "basic")
 			w.Header().Set("WWW-Authenticate", `Basic realm="agentunnel relay"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -234,14 +243,20 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 
 	mux.HandleFunc("/agent/ws", func(w http.ResponseWriter, r *http.Request) {
 		if !checkBearer(r, cfg.AgentToken) {
+			logAuthFailed(logger, r, "bearer")
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		conn, err := agentUpgrader.Upgrade(w, r, nil)
 		if err != nil {
+			logWSUpgradeFailed(logger, r, "agent")
 			return
 		}
 		defer conn.Close()
+		logger.Info("agent_ws_connected",
+			String("path", r.URL.Path),
+			String("remote_addr", r.RemoteAddr),
+		)
 		conn.SetReadLimit(1 << 20)
 		_ = conn.SetReadDeadline(time.Now().Add(agentReadTimeout))
 		conn.SetPongHandler(func(string) error {
@@ -256,6 +271,21 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 		peer := newWSAgentPeer(conn)
 		registry.Register(*register.Session, peer)
 		defer registry.RemoveIfOwner(register.Session.SessionID, peer)
+		logger.Info("agent_registered",
+			String("session_id", register.Session.SessionID),
+			String("launcher", register.Session.Launcher),
+			String("label", register.Session.Label),
+			String("cwd", register.Session.CWD),
+		)
+		connectedAt := time.Now()
+		var loopErr error
+		defer func() {
+			logger.Info("agent_disconnected",
+				String("session_id", register.Session.SessionID),
+				Int64("duration_ms", time.Since(connectedAt).Milliseconds()),
+				String("reason", classifyDisconnectReason(loopErr)),
+			)
+		}()
 
 		stopPings := make(chan struct{})
 		defer close(stopPings)
@@ -278,6 +308,7 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 		for {
 			var msg protocol.Message
 			if err := conn.ReadJSON(&msg); err != nil {
+				loopErr = err
 				return
 			}
 			switch msg.Type {
@@ -295,6 +326,7 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 
 	mux.HandleFunc("/api/sessions/", func(w http.ResponseWriter, r *http.Request) {
 		if !checkBasicAuth(r, cfg.BrowserUser, cfg.BrowserPassword) {
+			logAuthFailed(logger, r, "basic")
 			w.Header().Set("WWW-Authenticate", `Basic realm="agentunnel relay"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -383,6 +415,7 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 
 		conn, err := browserUpgrader.Upgrade(w, r, nil)
 		if err != nil {
+			logWSUpgradeFailed(logger, r, "client")
 			return
 		}
 		defer conn.Close()
@@ -393,14 +426,29 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 			_ = sink.Close()
 			return
 		}
+		logger.Info("client_ws_connected",
+			String("session_id", sessionID),
+			String("client_id", sinkID),
+			String("remote_addr", r.RemoteAddr),
+			String("user_agent", r.UserAgent()),
+		)
+		connectedAt := time.Now()
+		var loopErr error
 		defer func() {
 			registry.RemoveSink(sessionID, sinkID)
 			_ = sink.Close()
+			logger.Info("client_disconnected",
+				String("session_id", sessionID),
+				String("client_id", sinkID),
+				Int64("duration_ms", time.Since(connectedAt).Milliseconds()),
+				String("reason", classifyDisconnectReason(loopErr)),
+			)
 		}()
 
 		for {
 			var msg protocol.Message
 			if err := conn.ReadJSON(&msg); err != nil {
+				loopErr = err
 				return
 			}
 
@@ -414,6 +462,51 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 	})
 
 	return mux
+}
+
+func (r *Registry) SetLogger(logger *Logger) {
+	if r == nil {
+		return
+	}
+	registryLoggers.Store(r, logger)
+}
+
+func logAuthFailed(logger *Logger, r *http.Request, authType string) {
+	logger.Warn("auth_failed",
+		String("path", r.URL.Path),
+		String("remote_addr", r.RemoteAddr),
+		String("auth_type", authType),
+	)
+}
+
+func logWSUpgradeFailed(logger *Logger, r *http.Request, role string) {
+	logger.Warn("ws_upgrade_failed",
+		String("path", r.URL.Path),
+		String("remote_addr", r.RemoteAddr),
+		String("role", role),
+	)
+}
+
+func classifyDisconnectReason(err error) string {
+	if err == nil {
+		return "closed"
+	}
+
+	if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+		return "closed"
+	}
+
+	var closeErr *websocket.CloseError
+	if errors.As(err, &closeErr) {
+		return "closed"
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "timeout"
+	}
+
+	return "error"
 }
 
 func sameOriginOrEmpty(r *http.Request) bool {

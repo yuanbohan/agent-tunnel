@@ -1,12 +1,14 @@
 package relay
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -272,6 +274,37 @@ func TestHandlerRejectsAgentWebSocketWithWrongToken(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestHandlerLogsAgentAuthFailure(t *testing.T) {
+	reg := NewRegistry()
+	logs := newLogRecorder()
+	server := httptest.NewServer(NewHandler(HandlerConfig{
+		Registry:        reg,
+		BrowserUser:     "demo",
+		BrowserPassword: "secret",
+		AgentToken:      "agent-token",
+		Logger:          NewLogger(logs),
+		Files:           testFiles(),
+	}))
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/agent/ws")
+	if err != nil {
+		t.Fatalf("Get returned error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", resp.StatusCode)
+	}
+
+	entry := waitForLogEvent(t, logs, "auth_failed", func(entry map[string]any) bool {
+		return entry["path"] == "/agent/ws" && entry["auth_type"] == "bearer"
+	})
+	if entry["remote_addr"] == "" {
+		t.Fatalf("remote_addr = %v, want non-empty", entry["remote_addr"])
 	}
 }
 
@@ -548,12 +581,14 @@ func waitForLatestSeq(t *testing.T, reg *Registry, sessionID string, want uint64
 func TestBrowserAttachRejectsForeignOrigin(t *testing.T) {
 	reg := NewRegistry()
 	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, fakeAgentPeer{})
+	logs := newLogRecorder()
 
 	server := httptest.NewServer(NewHandler(HandlerConfig{
 		Registry:        reg,
 		BrowserUser:     "demo",
 		BrowserPassword: "secret",
 		AgentToken:      "agent-token",
+		Logger:          NewLogger(logs),
 	}))
 	defer server.Close()
 
@@ -568,6 +603,13 @@ func TestBrowserAttachRejectsForeignOrigin(t *testing.T) {
 	}
 	if resp == nil || resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("status = %v, want 403", responseStatusCode(resp))
+	}
+
+	entry := waitForLogEvent(t, logs, "ws_upgrade_failed", func(entry map[string]any) bool {
+		return entry["path"] == "/api/sessions/sess-1/ws" && entry["role"] == "client"
+	})
+	if entry["remote_addr"] == "" {
+		t.Fatalf("remote_addr = %v, want non-empty", entry["remote_addr"])
 	}
 }
 
@@ -725,6 +767,121 @@ func TestAgentDisconnectRemovesSessionFromList(t *testing.T) {
 	waitForSessionCount(t, server.URL, basicAuth("demo", "secret"), 0)
 }
 
+func TestAgentRegisterLogsLifecycle(t *testing.T) {
+	reg := NewRegistry()
+	logs := newLogRecorder()
+	server := httptest.NewServer(NewHandler(HandlerConfig{
+		Registry:        reg,
+		BrowserUser:     "demo",
+		BrowserPassword: "secret",
+		AgentToken:      "agent-token",
+		Logger:          NewLogger(logs),
+	}))
+	defer server.Close()
+
+	agentURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/agent/ws"
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer agent-token")
+	agentConn, _, err := websocket.DefaultDialer.Dial(agentURL, headers)
+	if err != nil {
+		t.Fatalf("Dial returned error: %v", err)
+	}
+
+	connected := waitForLogEvent(t, logs, "agent_ws_connected", func(entry map[string]any) bool {
+		return entry["path"] == "/agent/ws"
+	})
+	if connected["remote_addr"] == "" {
+		t.Fatalf("remote_addr = %v, want non-empty", connected["remote_addr"])
+	}
+
+	if err := agentConn.WriteJSON(protocol.RegisterFrame(protocol.SessionInfo{
+		SessionID: "sess-1",
+		Launcher:  "codex",
+		Label:     "api-fix",
+		CWD:       "/tmp/project",
+	})); err != nil {
+		t.Fatalf("WriteJSON register returned error: %v", err)
+	}
+
+	registered := waitForLogEvent(t, logs, "agent_registered", func(entry map[string]any) bool {
+		return entry["session_id"] == "sess-1"
+	})
+	if registered["launcher"] != "codex" {
+		t.Fatalf("launcher = %v, want codex", registered["launcher"])
+	}
+	if registered["label"] != "api-fix" {
+		t.Fatalf("label = %v, want api-fix", registered["label"])
+	}
+	if registered["cwd"] != "/tmp/project" {
+		t.Fatalf("cwd = %v, want /tmp/project", registered["cwd"])
+	}
+
+	_ = agentConn.Close()
+	waitForSessionCount(t, server.URL, basicAuth("demo", "secret"), 0)
+
+	disconnected := waitForLogEvent(t, logs, "agent_disconnected", func(entry map[string]any) bool {
+		return entry["session_id"] == "sess-1"
+	})
+	if disconnected["reason"] == "" {
+		t.Fatalf("reason = %v, want non-empty", disconnected["reason"])
+	}
+	if _, ok := disconnected["duration_ms"].(float64); !ok {
+		t.Fatalf("duration_ms = %T, want number", disconnected["duration_ms"])
+	}
+}
+
+func TestClientAttachLogsLifecycle(t *testing.T) {
+	reg := NewRegistry()
+	logs := newLogRecorder()
+	server := httptest.NewServer(NewHandler(HandlerConfig{
+		Registry:        reg,
+		BrowserUser:     "demo",
+		BrowserPassword: "secret",
+		AgentToken:      "agent-token",
+		Logger:          NewLogger(logs),
+	}))
+	defer server.Close()
+
+	agentConn := dialAndRegisterAgent(t, server.URL, "sess-1")
+	defer agentConn.Close()
+	waitForLogEvent(t, logs, "agent_registered", func(entry map[string]any) bool {
+		return entry["session_id"] == "sess-1"
+	})
+
+	browserURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/sessions/sess-1/ws"
+	headers := http.Header{}
+	headers.Set("Authorization", basicAuth("demo", "secret"))
+	headers.Set("User-Agent", "relay-test-client/1.0")
+
+	browserConn, _, err := websocket.DefaultDialer.Dial(browserURL, headers)
+	if err != nil {
+		t.Fatalf("Dial browser returned error: %v", err)
+	}
+
+	connected := waitForLogEvent(t, logs, "client_ws_connected", func(entry map[string]any) bool {
+		return entry["session_id"] == "sess-1" && entry["user_agent"] == "relay-test-client/1.0"
+	})
+	clientID, ok := connected["client_id"].(string)
+	if !ok || clientID == "" {
+		t.Fatalf("client_id = %v, want non-empty string", connected["client_id"])
+	}
+	if connected["remote_addr"] == "" {
+		t.Fatalf("remote_addr = %v, want non-empty", connected["remote_addr"])
+	}
+
+	_ = browserConn.Close()
+
+	disconnected := waitForLogEvent(t, logs, "client_disconnected", func(entry map[string]any) bool {
+		return entry["session_id"] == "sess-1" && entry["client_id"] == clientID
+	})
+	if disconnected["reason"] == "" {
+		t.Fatalf("reason = %v, want non-empty", disconnected["reason"])
+	}
+	if _, ok := disconnected["duration_ms"].(float64); !ok {
+		t.Fatalf("duration_ms = %T, want number", disconnected["duration_ms"])
+	}
+}
+
 func TestStaleAgentConnectionTimesOutAndRemovesSessionFromList(t *testing.T) {
 	reg := NewRegistry()
 	server := httptest.NewServer(NewHandler(HandlerConfig{
@@ -808,4 +965,64 @@ func testFiles() fstest.MapFS {
 			Data: []byte("<!doctype html><div id=\"relay-root\">relay-root</div>"),
 		},
 	}
+}
+
+type logRecorder struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func newLogRecorder() *logRecorder {
+	return &logRecorder{}
+}
+
+func (r *logRecorder) Write(p []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.buf.Write(p)
+}
+
+func (r *logRecorder) snapshot() []byte {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]byte(nil), r.buf.Bytes()...)
+}
+
+func waitForLogEvent(t *testing.T, logs *logRecorder, event string, match func(map[string]any) bool) map[string]any {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, entry := range parseLogEntries(t, logs.snapshot()) {
+			if entry["event"] != event {
+				continue
+			}
+			if match == nil || match(entry) {
+				return entry
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("timed out waiting for log event %q in %q", event, string(logs.snapshot()))
+	return nil
+}
+
+func parseLogEntries(t *testing.T, raw []byte) []map[string]any {
+	t.Helper()
+
+	lines := bytes.Split(raw, []byte{'\n'})
+	entries := make([]map[string]any, 0, len(lines))
+	for _, line := range lines {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		var entry map[string]any
+		if err := json.Unmarshal(line, &entry); err != nil {
+			t.Fatalf("unmarshal log line %q: %v", string(line), err)
+		}
+		entries = append(entries, entry)
+	}
+	return entries
 }
