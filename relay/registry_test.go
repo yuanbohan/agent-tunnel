@@ -241,6 +241,136 @@ func TestRegistryTouchOutputIfOwnerSkipsStaleOwnerAfterReplacement(t *testing.T)
 	}
 }
 
+func TestRegistryTouchOutputIfOwnerIgnoresStaleOldOwnerOutputAfterReplacement(t *testing.T) {
+	reg := NewRegistry()
+	oldPeer := &recordingPeer{}
+	newPeer := &recordingPeer{}
+	sink := &recordingSink{}
+
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, oldPeer)
+	if err := reg.AddSink("sess-1", "browser", sink); err != nil {
+		t.Fatalf("AddSink returned error: %v", err)
+	}
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, newPeer)
+
+	if ok := reg.TouchOutputIfOwner("sess-1", oldPeer, []byte("stale"), time.Unix(60, 0)); ok {
+		t.Fatal("TouchOutputIfOwner returned true for stale old owner, want false")
+	}
+
+	info := reg.List()
+	if len(info) != 1 {
+		t.Fatalf("len(List()) = %d, want 1", len(info))
+	}
+	if info[0].LatestSeq != 0 {
+		t.Fatalf("LatestSeq = %d, want 0", info[0].LatestSeq)
+	}
+	if len(sink.chunks) != 0 {
+		t.Fatalf("sink received output = %#v, want none", sink.chunks)
+	}
+}
+
+func TestRegistryMarkReadClampsToLatestSeq(t *testing.T) {
+	reg := NewRegistry()
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, fakeAgentPeer{})
+	reg.TouchOutput("sess-1", []byte("one"), time.Unix(10, 0))
+	reg.TouchOutput("sess-1", []byte("two"), time.Unix(11, 0))
+
+	info, ok := reg.MarkRead("sess-1", 5)
+	if !ok {
+		t.Fatal("MarkRead returned false for live session")
+	}
+	if info.LastReadSeq != 2 {
+		t.Fatalf("LastReadSeq = %d, want 2", info.LastReadSeq)
+	}
+	if info.UnreadCount != 0 {
+		t.Fatalf("UnreadCount = %d, want 0", info.UnreadCount)
+	}
+}
+
+func TestRegistryRetainsFrameAtExactHistoryBudgetBoundary(t *testing.T) {
+	reg := NewRegistry()
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, fakeAgentPeer{})
+
+	first := bytes.Repeat([]byte("a"), maxSessionHistoryBytes/2)
+	second := bytes.Repeat([]byte("b"), maxSessionHistoryBytes/2)
+
+	reg.TouchOutput("sess-1", first, time.Unix(10, 0))
+	reg.TouchOutput("sess-1", second, time.Unix(11, 0))
+
+	page, ok := reg.History("sess-1", 0, 0, 0, maxSessionHistoryBytes*2)
+	if !ok {
+		t.Fatal("History returned false for live session")
+	}
+	if len(page.Messages) != 2 {
+		t.Fatalf("len(Messages) = %d, want 2 at exact budget boundary", len(page.Messages))
+	}
+	if page.Messages[0].Seq != 1 || page.Messages[1].Seq != 2 {
+		t.Fatalf("seqs = [%d %d], want [1 2]", page.Messages[0].Seq, page.Messages[1].Seq)
+	}
+}
+
+func TestRegistryRetainsOnlyWholeFramesWithinHistoryBudget(t *testing.T) {
+	reg := NewRegistry()
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, fakeAgentPeer{})
+
+	half := maxSessionHistoryBytes/2 + 1
+	frame1 := bytes.Repeat([]byte("a"), half)
+	frame2 := bytes.Repeat([]byte("b"), half)
+	frame3 := []byte("c")
+
+	reg.TouchOutput("sess-1", frame1, time.Unix(10, 0))
+	reg.TouchOutput("sess-1", frame2, time.Unix(11, 0))
+	reg.TouchOutput("sess-1", frame3, time.Unix(12, 0))
+
+	page, ok := reg.History("sess-1", 0, 0, 0, maxSessionHistoryBytes*2)
+	if !ok {
+		t.Fatal("History returned false for live session")
+	}
+	if len(page.Messages) != 2 {
+		t.Fatalf("len(Messages) = %d, want 2", len(page.Messages))
+	}
+	if page.Messages[0].Seq != 2 || page.Messages[1].Seq != 3 {
+		t.Fatalf("seqs = [%d %d], want [2 3]", page.Messages[0].Seq, page.Messages[1].Seq)
+	}
+	if len(page.Messages[0].DataB64) == 0 || len(page.Messages[1].DataB64) == 0 {
+		t.Fatal("expected retained messages to keep full frame payloads")
+	}
+}
+
+func TestRegistryHistorySupportsAfterPaging(t *testing.T) {
+	reg := NewRegistry()
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, fakeAgentPeer{})
+
+	for _, output := range []string{"one", "two", "three", "four"} {
+		reg.TouchOutput("sess-1", []byte(output), time.Unix(10, 0))
+	}
+
+	page, ok := reg.History("sess-1", 0, 2, 2, maxSessionHistoryBytes*2)
+	if !ok {
+		t.Fatal("History returned false for live session")
+	}
+	if len(page.Messages) != 2 {
+		t.Fatalf("len(Messages) = %d, want 2", len(page.Messages))
+	}
+	if page.Messages[0].Seq != 3 || page.Messages[1].Seq != 4 {
+		t.Fatalf("seqs = [%d %d], want [3 4]", page.Messages[0].Seq, page.Messages[1].Seq)
+	}
+	if page.HasMore {
+		t.Fatal("HasMore = true, want false at end of bounded after page")
+	}
+
+	page, ok = reg.History("sess-1", 0, 2, 1, maxSessionHistoryBytes*2)
+	if !ok {
+		t.Fatal("History returned false for live session")
+	}
+	if len(page.Messages) != 1 || page.Messages[0].Seq != 3 {
+		t.Fatalf("bounded after page = %#v, want seq 3 only", page.Messages)
+	}
+	if !page.HasMore {
+		t.Fatal("HasMore = false, want true when bounded after page is truncated")
+	}
+}
+
 func TestRegistryWriteInputWaitsForInFlightOldPeerBeforeReplacement(t *testing.T) {
 	reg := NewRegistry()
 	oldPeer := &blockingPeer{

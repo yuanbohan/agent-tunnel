@@ -16,6 +16,8 @@ All WebSocket communication uses JSON text frames. Binary data (terminal I/O) is
 | Endpoint | Role | Auth | Protocol |
 |----------|------|------|----------|
 | `GET /api/sessions` | Browser | Basic Auth | HTTP JSON |
+| `GET /api/sessions/:id/history` | Browser | Basic Auth | HTTP JSON |
+| `POST /api/sessions/:id/read` | Browser | Basic Auth | HTTP JSON |
 | `GET /api/sessions/:id/ws` | Browser | Basic Auth | WebSocket |
 | `GET /agent/ws` | Agent | Bearer token | WebSocket |
 | `GET /healthz` | Any | None | HTTP text |
@@ -63,7 +65,12 @@ Returns a JSON array of `SessionInfo` objects, sorted by most recently active:
     "command_preview": "claude --resume",
     "started_at": "2026-04-03T10:00:00Z",
     "last_preview": "Running tests...",
-    "last_active_at": "2026-04-03T10:05:30Z"
+    "last_active_at": "2026-04-03T10:05:30Z",
+    "latest_seq": 42,
+    "last_read_seq": 37,
+    "unread_count": 5,
+    "preview_seq": 42,
+    "preview_b64": "SGVsbG8gZnJvbSB0aGUgbGF0ZXN0IGNo..."
   }
 ]
 ```
@@ -80,6 +87,92 @@ Returns a JSON array of `SessionInfo` objects, sorted by most recently active:
 | `started_at` | string | yes | ISO 8601 UTC timestamp of session start |
 | `last_preview` | string | no | Rolling text preview of recent terminal output (ANSI stripped) |
 | `last_active_at` | string | no | ISO 8601 UTC timestamp of last output activity |
+| `latest_seq` | integer | yes | Latest retained output-frame sequence number for this live session |
+| `last_read_seq` | integer | yes | Shared read marker for this live session |
+| `unread_count` | integer | yes | `latest_seq - last_read_seq` |
+| `preview_seq` | integer | yes | Sequence number of the latest preview frame |
+| `preview_b64` | string | no | Latest raw output frame for dashboard mini-terminal rendering |
+
+Notes:
+- The dashboard currently renders `codex` sessions with OpenAI branding, but the wire-level launcher value remains `codex`.
+- `last_preview` remains available as a compatibility field, but the browser UI now prefers `preview_b64`.
+
+### Fetch Session History
+
+```
+GET /api/sessions/:id/history?before=<seq>&after=<seq>&limit=<n>&max_bytes=<n>
+Authorization: Basic base64(username:password)
+```
+
+Returns one page of retained live-session history:
+
+```json
+{
+  "messages": [
+    { "seq": 38, "data_b64": "..." },
+    { "seq": 39, "data_b64": "..." },
+    { "seq": 40, "data_b64": "..." }
+  ],
+  "has_more": true,
+  "latest_seq": 42,
+  "last_read_seq": 37
+}
+```
+
+Query parameters:
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `before` | integer | no | Return frames with `seq < before` |
+| `after` | integer | no | Return frames with `seq > after` |
+| `limit` | integer | no | Target maximum number of frames in the page |
+| `max_bytes` | integer | no | Target maximum total raw byte size in the page |
+
+Response fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `messages` | array | History frames in chronological order |
+| `messages[].seq` | integer | Output-frame sequence number |
+| `messages[].data_b64` | string | Raw PTY bytes for that frame |
+| `has_more` | boolean | Whether more frames are available in the requested direction/window |
+| `latest_seq` | integer | Latest live output sequence known to the relay |
+| `last_read_seq` | integer | Current shared read marker |
+
+Semantics:
+- Omitting both `before` and `after` returns the newest page.
+- `before` is used for backward paging in the session detail view.
+- `after` is used to bridge frames emitted between initial history fetch and live WebSocket attach.
+- If the session does not exist, the relay returns `404 Not Found`.
+
+### Mark Session Read
+
+```
+POST /api/sessions/:id/read
+Authorization: Basic base64(username:password)
+Content-Type: application/json
+```
+
+Request body:
+
+```json
+{ "seq": 42 }
+```
+
+Response:
+
+```json
+{
+  "session_id": "1743667200000000000",
+  "latest_seq": 42,
+  "last_read_seq": 42,
+  "unread_count": 0
+}
+```
+
+Semantics:
+- The relay clamps the submitted `seq` to the current `latest_seq`.
+- Read state is monotonic. Posting a lower `seq` does not move `last_read_seq` backward.
 
 ### Health Check
 
@@ -109,6 +202,7 @@ If the session does not exist, the server returns `404 Not Found` before upgrade
 ```json
 {
   "type": "output",
+  "seq": 42,
   "data": "SGVsbG8gV29ybGQ="
 }
 ```
@@ -116,6 +210,7 @@ If the session does not exist, the server returns `404 Not Found` before upgrade
 | Field | Type | Description |
 |-------|------|-------------|
 | `type` | string | Always `"output"` |
+| `seq` | integer | Monotonic output-frame sequence number assigned by the relay |
 | `data` | string | Standard base64-encoded raw PTY bytes |
 
 ### Frames: Browser → Server
@@ -238,7 +333,8 @@ These frames use the same schema as the browser frames described above.
 
 3. Stream output frames as PTY produces bytes
    ← Relay broadcasts to attached browsers
-   ← Relay extracts rolling preview for dashboard
+   ← Relay appends the frame to live in-memory history
+   ← Relay updates unread metadata and latest dashboard preview
 
 4. Receive input frames from relay
    → Forward decoded bytes to PTY stdin
@@ -259,20 +355,26 @@ These frames use the same schema as the browser frames described above.
 
 ```
 1. GET /api/sessions with Basic Auth
-   ← Receive list of live sessions
+   ← Receive list of live sessions, unread counters, and preview frames
 
-2. Open WebSocket to /api/sessions/:id/ws
+2. GET /api/sessions/:id/history
+   ← Receive newest retained history page
+
+3. Open WebSocket to /api/sessions/:id/ws
    Headers: Authorization: Basic base64(user:pass)
 
-3. Receive output frames
+4. Receive output frames
    → Decode base64 → write raw bytes to terminal emulator
 
-4. Optionally send input frames
+5. POST /api/sessions/:id/read
+   → Advance the shared read marker after history replay + live attach are active
+
+6. Optionally send input frames
    → Encode keystrokes as base64 → send as input frame
 
-5. Send resize frame when terminal dimensions change
+7. Send resize frame when terminal dimensions change
 
-6. On WebSocket close
+8. On WebSocket close
    → Return to session list or show disconnected state
 ```
 
@@ -307,13 +409,14 @@ The relay UI is designed primarily for monitoring. Implement an explicit toggle 
 
 ### Reconnection
 
-The relay maintains only live, in-memory state. If the agent disconnects, the session disappears from the registry immediately. There is no session persistence or replay.
+The relay maintains only live, in-memory state. If the agent disconnects, the session disappears from the registry immediately. There is no persistence across relay restarts or disconnected sessions, but live sessions do expose a rolling retained history buffer while they remain online.
 
 Mobile clients should:
 - Handle WebSocket `onclose` gracefully
 - Return to the session list when a session WebSocket closes
 - Re-fetch `/api/sessions` to get updated session list
-- Not attempt automatic reconnection to a specific session (the session may no longer exist)
+- Use `/api/sessions/:id/history` for initial replay before live attach if they want parity with the web UI
+- Not attempt automatic reconnection to a specific session if the relay reports `404` (the session may no longer exist)
 
 ### Input Filtering
 

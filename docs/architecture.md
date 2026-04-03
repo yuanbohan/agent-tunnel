@@ -1,6 +1,6 @@
 # Agent Tunnel Architecture
 
-This document describes the architecture of `agentunnel` -- how Go packages and web client modules interact to launch a terminal agent, keep the local terminal interactive, and stream the live session to a remote relay for browser access.
+This document describes the architecture of `agentunnel` -- how Go packages and web client modules interact to launch a terminal agent, keep the local terminal interactive, and stream the live session to a remote relay for browser access, lightweight live history replay, and shared unread tracking.
 
 ## High-Level Overview
 
@@ -43,13 +43,16 @@ This document describes the architecture of `agentunnel` -- how Go packages and 
                               │  /          ← dashboard            │
                               │  /sessions/:id ← session terminal  │
                               │  /api/sessions ← session list API  │
+                              │  /api/sessions/:id/history         │
+                              │  /api/sessions/:id/read            │
                               │  /api/sessions/:id/ws ← browser WS│
                               │                                   │
                               │  ┌──────────┐   ┌──────────────┐  │
                               │  │ Registry │   │ Basic Auth   │  │
                               │  │ (live    │   │ (browsers)   │  │
-                              │  │ sessions)│   │ Bearer Auth  │  │
-                              │  └──────────┘   │ (agents)     │  │
+                              │  │ sessions,│   │ Bearer Auth  │  │
+                              │  │ history, │   │ (agents)     │  │
+                              │  │ unread)  │   └──────────────┘  │
                               │                 └──────────────┘  │
                               └──────────────────┬────────────────┘
                                                  │
@@ -82,13 +85,13 @@ cmd/relay
 
 ### `cmd/agentunnel` -- Orchestrator
 
-**Entry point.** Wires together all components in the correct startup sequence. The relay connection is mandatory; `agentunnel` will not start without `--relay-url` or `AGENTUNNEL_RELAY_URL` and `AGENTUNNEL_RELAY_TOKEN`.
+**Entry point.** Wires together all components in the correct startup sequence. The relay connection is mandatory; `agentunnel` will not start without `--relay-addr` or `AGENTUNNEL_RELAY_ADDR` and `AGENTUNNEL_RELAY_TOKEN`.
 
 ```
 main()
   └─> runWithArgs(args, stderr)
         │
-        ├─ 1. parseRunArgs(args)                 → runArgs{Label, RelayURL, RelayToken, Launcher, LauncherArgs}
+        ├─ 1. parseRunArgs(args)                 → runArgs{Label, RelayAddr, RelayToken, Launcher, LauncherArgs}
         ├─ 2. launcher.Resolve(name, args)       → launcher.Command
         ├─ 3. session.PrepareLocalTerminal()     → LocalTerminal
         ├─ 4. build initial sink map             → {local stdout, relay connector}
@@ -326,7 +329,7 @@ func Files() fs.FS  // returns the embedded dist/ filesystem
 
 ### `cmd/relay` -- Relay Server Entry Point
 
-`cmd/relay` is the standalone relay server entrypoint. It reads configuration from environment variables (with an optional `--port` flag), creates a relay registry, and serves the dashboard UI plus attach/list endpoints.
+`cmd/relay` is the standalone relay server entrypoint. It reads auth configuration from environment variables, binds to `0.0.0.0` on the requested port, creates a relay registry, and serves the dashboard UI plus list/history/read/attach endpoints.
 
 ```go
 type mainConfig struct {
@@ -338,15 +341,14 @@ type mainConfig struct {
 ```
 
 Environment variables:
-- `AGENTUNNEL_RELAY_ADDR` (defaults to `:8586`)
 - `AGENTUNNEL_BASIC_USER` (required)
 - `AGENTUNNEL_BASIC_PASSWORD` (required)
 - `AGENTUNNEL_AGENT_TOKEN` (required)
 
-The `--port` flag overrides `AGENTUNNEL_RELAY_ADDR`:
+Listen address:
 
 ```bash
-go run ./cmd/relay --port 9000   # listens on :9000
+go run ./cmd/relay --port 9000   # listens on 0.0.0.0:9000
 ```
 
 ### `connector/` -- Outbound Relay Connector
@@ -371,18 +373,24 @@ This package is the relay server's core logic:
   - validates agent bearer token auth
 - `registry.go`
   - stores only live sessions
+  - retains rolling in-memory output history per live session
+  - tracks `latestSeq`, `lastReadSeq`, `unreadCount`, and latest preview frame
   - preserves browser sinks across same-session live replacement
   - sorts list output by `LastActiveAt`
   - serializes input/resize routing safely across peer replacement
+- `history.go`
+  - appends raw PTY output as whole retained frames
+  - evicts oldest whole frames once the 10 MB per-session budget is exceeded
+  - serves newest-page, older-page, and bounded `after` snapshots for gap recovery
 - `preview.go`
   - strips ANSI noise and extracts a rolling textual preview from raw terminal output
 - `server.go`
-  - serves `/`, `/sessions/:id`, `/api/sessions`, `/agent/ws`, and `/api/sessions/:id/ws`
+  - serves `/`, `/sessions/:id`, `/api/sessions`, `/api/sessions/:id/history`, `/api/sessions/:id/read`, `/agent/ws`, and `/api/sessions/:id/ws`
   - applies same-origin checks for browser WebSockets
   - applies heartbeat/read-deadline cleanup for stale agent sockets
   - serves `index.html` from embedded assets
 
-The relay server keeps a strict live-session model: if the owning agent socket goes away, the session disappears from the list.
+The relay server keeps a strict live-session model: if the owning agent socket goes away, the session disappears from the list along with its retained history and shared read state.
 
 ## Web Client Modules
 
@@ -400,7 +408,10 @@ app.ts
   ├─ routes.ts
   ├─ api.ts
   ├─ dashboard.ts
+  ├─ dashboard_preview.ts
+  ├─ dashboard_view.ts
   ├─ session_page.ts
+  ├─ session_runtime.ts
   ├─ input_filter.ts
   └─ style.css
   │
@@ -410,9 +421,11 @@ app.ts
   └─ types.ts
 
 Data flow:
+  dashboard poll       ──> api.fetchSessions()                     ──> dashboard.ts + dashboard_preview.ts
+  detail init          ──> api.fetchSessionHistory()               ──> session_page.ts ──> session_runtime.ts
   terminal.onData      ──> input_filter ──> protocol.encodeInput() ──> connection.send()
   terminal.onResize    ──> JSON resize frame                       ──> connection.send()
-  connection.onMessage ──> protocol.decodeOutput()                 ──> terminal.write()
+  connection.onMessage ──> protocol.decodeOutput()                 ──> session_page.ts ──> session_runtime.ts
 ```
 
 ### `app.ts` -- Application Entry
@@ -420,8 +433,8 @@ Data flow:
 Creates the relay UI and handles routing between dashboard and session detail views.
 
 Route handling:
-- `/` -> fetch `/api/sessions` and render the live dashboard
-- `/sessions/:id` -> attach xterm.js to `/api/sessions/:id/ws`
+- `/` -> poll `/api/sessions` every 5 seconds, render the live dashboard, and remount mini previews as cards change
+- `/sessions/:id` -> fetch recent history, attach xterm.js to `/api/sessions/:id/ws`, then mark the session read once history replay and live attach are active
 
 ### Session Page Behavior
 
@@ -430,6 +443,10 @@ Route handling:
 - browser input is only forwarded when the chip is enabled
 - known xterm auto-response sequences (CPR, DA reports) are filtered before forwarding
 - a resize frame is sent once the socket reaches `connected`
+- the newest retained history page is rendered before live output is attached
+- if output arrives between history fetch and WebSocket attach, the page bridges that gap by fetching bounded history `after` the last loaded frame and deduping overlaps
+- older retained history pages are loaded when the user scrolls near the top
+- unread state is exposed as a floating `Jump to N unread` action targeting the first unread sequence
 
 ### `terminal.ts` -- xterm.js Wrapper
 
@@ -480,8 +497,8 @@ Mirrors the Go `protocol` package:
 
 ```typescript
 type Message =
-  | { type: 'input';  data: string }    // base64
-  | { type: 'output'; data: string }    // base64
+  | { type: 'input';  data: string }                         // base64
+  | { type: 'output'; seq?: number; data: string }          // base64
   | { type: 'resize'; cols: number; rows: number }
 
 encodeInput(str: string): string
@@ -493,11 +510,14 @@ decodeOutput(msg: Message): Uint8Array
 
 ### Frontend Modules
 
-- `types.ts` -- shared TypeScript shape for relay session cards
-- `api.ts` -- fetches `/api/sessions`, builds browser attach URLs for `/api/sessions/:id/ws`
+- `types.ts` -- shared TypeScript shapes for relay session cards, history pages, and read-state responses
+- `api.ts` -- fetches `/api/sessions`, `/api/sessions/:id/history`, posts `/api/sessions/:id/read`, and builds browser attach URLs for `/api/sessions/:id/ws`
 - `routes.ts` -- parses `/` versus `/sessions/:id`
-- `dashboard.ts` -- renders compact session cards with launcher icon, label, command clue, cwd, preview, and last-active hint
-- `session_page.ts` -- owns the state-chip helpers (`Read-only` / `Input on`), wires terminal + connection
+- `dashboard.ts` -- renders compact session cards with launcher favicon, deduplicated identity copy, unread badge, and preview container
+- `dashboard_preview.ts` -- mounts read-only mini xterm previews that render only the latest output frame in wrap mode
+- `dashboard_view.ts` -- owns dashboard polling, rerendering, and preview disposal/remounting
+- `session_page.ts` -- owns history bootstrap, upward paging, unread-jump logic, and the state-chip helpers (`Read-only` / `Input on`)
+- `session_runtime.ts` -- bridges the shared xterm wrapper with session-page frame anchors, scrolling, and unread highlighting
 - `input_filter.ts` -- filters xterm-generated auto-responses such as CPR / DA reports before input forwarding
 - `style.css` -- mobile-first dashboard + terminal-detail styling
 
@@ -506,13 +526,13 @@ decodeOutput(msg: Message): Uint8Array
 ### Startup Sequence
 
 ```
-User runs: agentunnel --relay-url wss://relay.example claude --resume
+User runs: agentunnel --relay-addr 127.0.0.1:8586 claude --resume
     │
     ▼
 ┌─ cmd/agentunnel ────────────────────────────────────────────┐
 │                                                              │
 │  1. parseRunArgs(args)                                       │
-│     └─ validates relay URL + token are present               │
+│     └─ validates relay addr + token are present              │
 │                                                              │
 │  2. launcher.Resolve("claude", ["--resume"])                 │
 │     └─ validates name, finds /usr/local/bin/claude           │

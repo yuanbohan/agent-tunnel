@@ -1,6 +1,6 @@
 export type Message =
   | { type: 'input'; data: string }
-  | { type: 'output'; data: string }
+  | { type: 'output'; seq: number; data: string }
   | { type: 'resize'; cols: number; rows: number }
 
 const encoder = new TextEncoder()

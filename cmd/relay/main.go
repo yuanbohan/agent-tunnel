@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"time"
@@ -20,17 +21,15 @@ type mainConfig struct {
 
 func loadMainConfig(getenv func(string) string, portFlag string) (mainConfig, error) {
 	cfg := mainConfig{
-		ListenAddr:      getenv("AGENTUNNEL_RELAY_ADDR"),
 		BrowserUser:     getenv("AGENTUNNEL_BASIC_USER"),
 		BrowserPassword: getenv("AGENTUNNEL_BASIC_PASSWORD"),
 		AgentToken:      getenv("AGENTUNNEL_AGENT_TOKEN"),
 	}
+	port := "8586"
 	if portFlag != "" {
-		cfg.ListenAddr = ":" + portFlag
+		port = portFlag
 	}
-	if cfg.ListenAddr == "" {
-		cfg.ListenAddr = ":8586"
-	}
+	cfg.ListenAddr = net.JoinHostPort("0.0.0.0", port)
 	if cfg.BrowserUser == "" || cfg.BrowserPassword == "" || cfg.AgentToken == "" {
 		return mainConfig{}, fmt.Errorf("AGENTUNNEL_BASIC_USER, AGENTUNNEL_BASIC_PASSWORD, and AGENTUNNEL_AGENT_TOKEN are required")
 	}
@@ -39,7 +38,7 @@ func loadMainConfig(getenv func(string) string, portFlag string) (mainConfig, er
 }
 
 func main() {
-	port := flag.String("port", "", "listen port (overrides AGENTUNNEL_RELAY_ADDR)")
+	port := flag.String("port", "", "listen port")
 	flag.Parse()
 
 	cfg, err := loadMainConfig(os.Getenv, *port)

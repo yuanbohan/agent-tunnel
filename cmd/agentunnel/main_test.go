@@ -17,7 +17,7 @@ import (
 func setTestEnv(t *testing.T) {
 	t.Helper()
 	for _, kv := range [][2]string{
-		{"AGENTUNNEL_RELAY_URL", "wss://relay.example"},
+		{"AGENTUNNEL_RELAY_ADDR", "127.0.0.1:8586"},
 		{"AGENTUNNEL_RELAY_TOKEN", "test-token"},
 	} {
 		old, existed := os.LookupEnv(kv[0])
@@ -73,8 +73,55 @@ func TestRunWithArgsStopsBeforeStartingSessionWhenLocalTerminalPreparationFails(
 	if startedSession {
 		t.Fatal("runWithArgs started the child session before local terminal preparation succeeded")
 	}
-	if got := stderr.String(); got != "" {
-		t.Fatalf("stderr = %q, want no startup banner on terminal preparation failure", got)
+	if got := stderr.String(); got != "▶ agentunnel — codex\n  relay: 127.0.0.1:8586\n  local terminal is interactive\n\n" {
+		t.Fatalf("stderr = %q, want startup banner before terminal preparation", got)
+	}
+}
+
+func TestRunWithArgsPrintsStartupBannerBeforePreparingLocalTerminal(t *testing.T) {
+	setTestEnv(t)
+
+	oldResolve := resolveLauncher
+	oldPrepare := prepareLocalTerminal
+	oldStartSession := startSession
+	oldNewConnector := newConnector
+	t.Cleanup(func() {
+		resolveLauncher = oldResolve
+		prepareLocalTerminal = oldPrepare
+		startSession = oldStartSession
+		newConnector = oldNewConnector
+	})
+
+	resolveLauncher = func(name string, args []string) (launcher.Command, error) {
+		return launcher.Command{Name: name, Path: "/usr/bin/codex", Args: append([]string(nil), args...)}, nil
+	}
+
+	var stderr bytes.Buffer
+	wantBanner := "▶ agentunnel — codex\n  relay: 127.0.0.1:8586\n  local terminal is interactive\n\n"
+	wantErr := errors.New("inappropriate ioctl for device")
+	prepareLocalTerminal = func() (*session.LocalTerminal, error) {
+		if got := stderr.String(); got != wantBanner {
+			t.Fatalf("stderr at terminal preparation = %q, want %q", got, wantBanner)
+		}
+		return nil, wantErr
+	}
+
+	startedSession := false
+	startSession = func(context.Context, string, []string, map[string]session.OutputSink) (*session.Running, error) {
+		startedSession = true
+		return nil, nil
+	}
+
+	newConnector = func(url, token string, info protocol.SessionInfo) *connector.Connector {
+		return connector.New(url, token, info)
+	}
+
+	err := runWithArgs([]string{"agentunnel", "codex"}, &stderr)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("runWithArgs error = %v, want %v", err, wantErr)
+	}
+	if startedSession {
+		t.Fatal("runWithArgs started the child session before local terminal preparation succeeded")
 	}
 }
 
@@ -122,8 +169,8 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("runWithArgs error = %v, want %v", err, wantErr)
 	}
-	if gotURL != "wss://relay.example" {
-		t.Fatalf("connector URL = %q, want wss://relay.example", gotURL)
+	if gotURL != "ws://127.0.0.1:8586" {
+		t.Fatalf("connector URL = %q, want ws://127.0.0.1:8586", gotURL)
 	}
 	if gotToken != "test-token" {
 		t.Fatalf("connector Token = %q, want test-token", gotToken)
@@ -152,8 +199,8 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
 	if gotInfo.StartedAt.IsZero() {
 		t.Fatal("StartedAt = zero, want current time")
 	}
-	if got := stderr.String(); got != "" {
-		t.Fatalf("stderr = %q, want no startup banner on startSession failure", got)
+	if got := stderr.String(); got != "▶ agentunnel — codex\n  relay: 127.0.0.1:8586\n  local terminal is interactive\n\n" {
+		t.Fatalf("stderr = %q, want startup banner before session start", got)
 	}
 }
 

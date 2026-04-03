@@ -1,10 +1,18 @@
 import './style.css'
-import { ConnectionManager, type ConnectionStatus } from './connection'
-import { decodeOutput, encodeInput, type Message } from './protocol'
-import { fetchSessions, relaySessionWebSocketURL } from './api'
+import type { ConnectionStatus } from './connection'
+import { encodeInput, type Message } from './protocol'
+import { fetchSessionHistory, fetchSessions, markSessionRead, relaySessionWebSocketURL } from './api'
 import { renderSessionCard } from './dashboard'
+import { mountDashboardPreviews } from './dashboard_preview'
+import { startDashboardView } from './dashboard_view'
 import { parseRelayRoute } from './routes'
-import { nextInputState, stateChipClass, stateChipLabel } from './session_page'
+import {
+  createSessionPageController,
+  nextInputState,
+  stateChipClass,
+  stateChipLabel,
+} from './session_page'
+import { createLazyWebSocketConnection, createSessionPageTerminalAdapter } from './session_runtime'
 import { isTerminalAutoResponse } from './input_filter'
 import { createTerminal } from './terminal'
 
@@ -12,12 +20,12 @@ const root = document.getElementById('relay-root')!
 const route = parseRelayRoute(window.location.pathname)
 
 if (route.kind === 'dashboard') {
-  void renderDashboard()
+  renderDashboard()
 } else {
   renderSession(route.sessionId)
 }
 
-async function renderDashboard() {
+function renderDashboard() {
   root.innerHTML = `
     <main class="relay-shell">
       <header class="relay-shell__header">
@@ -33,18 +41,16 @@ async function renderDashboard() {
   `
 
   const list = document.getElementById('relay-list')!
-
-  try {
-    const sessions = await fetchSessions()
-    if (sessions.length === 0) {
-      list.innerHTML = `<div class="relay-placeholder">No live sessions right now.</div>`
-      return
-    }
-    list.innerHTML = sessions.map(renderSessionCard).join('')
-  } catch (error) {
-    list.innerHTML = `<div class="relay-placeholder">Failed to load sessions.</div>`
-    console.error(error)
-  }
+  startDashboardView({
+    root: list,
+    fetchSessions,
+    renderSessionCard,
+    mountDashboardPreviews,
+    intervalMs: 5000,
+    onError: (error) => {
+      console.error(error)
+    },
+  })
 }
 
 function renderSession(sessionId: string) {
@@ -54,20 +60,50 @@ function renderSession(sessionId: string) {
         <a class="back-link" href="/">Live</a>
         <button id="input-chip" class="${stateChipClass(false)}">${stateChipLabel(false)}</button>
       </header>
+      <div id="session-status" class="relay-placeholder relay-placeholder--inline" hidden></div>
+      <button id="jump-unread" class="session-jump" hidden type="button"></button>
       <section id="terminal" class="relay-terminal"></section>
     </main>
   `
 
-  const terminal = createTerminal(document.getElementById('terminal')!)
-  terminal.setDisplayMode('wrap')
-  const conn = new ConnectionManager(relaySessionWebSocketURL(window.location, sessionId))
+  const terminalElement = document.getElementById('terminal')!
+  const status = document.getElementById('session-status') as HTMLDivElement
+  const terminal = createTerminal(terminalElement)
+  terminal.setDisplayMode('scroll')
+  const conn = createLazyWebSocketConnection(relaySessionWebSocketURL(window.location, sessionId))
   const inputChip = document.getElementById('input-chip') as HTMLButtonElement
+  const unreadButton = document.getElementById('jump-unread') as HTMLButtonElement
   let inputEnabled = false
+
+  const terminalAdapter = createSessionPageTerminalAdapter(terminal)
+  const controller = createSessionPageController({
+    sessionId,
+    terminal: terminalAdapter,
+    fetchHistory: fetchSessionHistory,
+    markRead: async (id, seq) => {
+      try {
+        await markSessionRead(id, seq)
+      } catch (error) {
+        showStatus('Failed to update read state. It will retry on refresh.')
+        console.error(error)
+      }
+    },
+    attachLive: () => conn.start(),
+  })
 
   inputChip.addEventListener('click', () => {
     inputEnabled = nextInputState(inputEnabled)
     inputChip.textContent = stateChipLabel(inputEnabled)
     inputChip.className = stateChipClass(inputEnabled)
+  })
+
+  unreadButton.addEventListener('click', () => {
+    void controller.jumpToFirstUnread().then((result) => {
+      if (result === 'oldest') {
+        showStatus('Older unread history is no longer available.')
+      }
+      refreshUnreadButton()
+    })
   })
 
   terminal.onData((value) => {
@@ -82,15 +118,63 @@ function renderSession(sessionId: string) {
 
   conn.onMessage((msg: Message) => {
     if (msg.type === 'output') {
-      terminal.write(decodeOutput(msg))
+      void controller.appendLiveOutput(msg)
     }
   })
 
   conn.onStatusChange((status: ConnectionStatus) => {
-    if (status !== 'connected') {
-      return
+    if (status === 'connected') {
+      const { cols, rows } = terminal.currentSize()
+      conn.send(JSON.stringify({ type: 'resize', cols, rows }))
     }
-    const { cols, rows } = terminal.currentSize()
-    conn.send(JSON.stringify({ type: 'resize', cols, rows }))
   })
+
+  const viewport = terminalElement.querySelector('.xterm-viewport') as HTMLElement | null
+  if (viewport) {
+    let loadingOlder = false
+    viewport.addEventListener(
+      'scroll',
+      () => {
+        if (viewport.scrollTop > 32 || loadingOlder) {
+          return
+        }
+        loadingOlder = true
+        void controller.loadOlderHistory().finally(() => {
+          loadingOlder = false
+        })
+      },
+      { passive: true },
+    )
+  }
+
+  void controller.init()
+    .then(() => {
+      hideStatus()
+      refreshUnreadButton()
+    })
+    .catch((error: unknown) => {
+      unreadButton.hidden = true
+      const message = error instanceof Error && error.message.includes('404')
+        ? 'This session is no longer available.'
+        : 'Failed to load session history. Refresh to try again.'
+      showStatus(message)
+      console.error(error)
+    })
+
+  function refreshUnreadButton() {
+    const state = controller.getUnreadJumpState()
+    unreadButton.hidden = !state.visible
+    unreadButton.textContent = state.label
+    unreadButton.disabled = !state.visible
+  }
+
+  function showStatus(message: string) {
+    status.hidden = false
+    status.textContent = message
+  }
+
+  function hideStatus() {
+    status.hidden = true
+    status.textContent = ''
+  }
 }

@@ -20,6 +20,7 @@ html,
 body {
   margin: 0;
   min-height: 100%;
+  overflow-x: hidden;
   background:
     radial-gradient(circle at top left, rgba(255, 255, 255, 0.6), transparent 28%),
     linear-gradient(180deg, #f5ecdb 0%, var(--bg) 100%);
@@ -38,9 +39,12 @@ button {
 
 #relay-root {
   min-height: 100dvh;
+  overflow-x: hidden;
 }
 
 .relay-shell {
+  max-width: 100%;
+  overflow-x: hidden;
   padding: 12px;
 }
 
@@ -65,6 +69,7 @@ button {
 .relay-list {
   display: grid;
   gap: 10px;
+  min-width: 0;
 }
 
 .relay-placeholder {
@@ -76,6 +81,10 @@ button {
   font-size: 0.92rem;
 }
 
+.relay-placeholder--inline {
+  margin-bottom: 8px;
+}
+
 .session-card {
   display: block;
   color: inherit;
@@ -84,6 +93,7 @@ button {
   border: 1px solid var(--line);
   border-radius: 18px;
   padding: 12px;
+  overflow: hidden;
   box-shadow: 0 10px 24px rgba(37, 31, 22, 0.06);
 }
 
@@ -113,12 +123,8 @@ button {
   align-items: center;
   justify-content: center;
   border-radius: 12px;
-  background:
-    linear-gradient(180deg, var(--accent) 0%, var(--accent-strong) 100%);
-  color: white;
-  font-size: 0.78rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: inset 0 0 0 1px rgba(28, 34, 32, 0.08);
 }
 
 .session-card__title {
@@ -130,10 +136,41 @@ button {
 }
 
 .session-card__launcher,
-.session-card__cwd,
 .session-card__time {
   color: var(--muted);
   font-size: 0.82rem;
+}
+
+.session-card__icon-image,
+.session-card__icon-fallback {
+  width: 100%;
+  height: 100%;
+  border-radius: 12px;
+}
+
+.session-card__icon-image {
+  display: block;
+  object-fit: cover;
+}
+
+.session-card__icon-fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    linear-gradient(180deg, var(--accent) 0%, var(--accent-strong) 100%);
+  color: white;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.session-card__meta {
+  display: flex;
+  flex-shrink: 0;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
 }
 
 .session-card__time {
@@ -141,30 +178,65 @@ button {
   padding-top: 1px;
 }
 
-.session-card__command,
-.session-card__cwd {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.session-card__command {
-  margin-top: 8px;
-  font-family: "IBM Plex Mono", "SF Mono", monospace;
-  font-size: 0.8rem;
-}
-
-.session-card__cwd {
-  margin-top: 2px;
+.session-card__badge {
+  border-radius: 999px;
+  background: rgba(49, 84, 71, 0.1);
+  color: var(--accent-strong);
+  padding: 4px 8px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1;
 }
 
 .session-card__preview {
-  margin-top: 8px;
-  border-radius: 13px;
-  background: rgba(228, 221, 208, 0.72);
-  padding: 8px 10px;
-  font-size: 0.88rem;
-  line-height: 1.32;
+  margin-top: 10px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  border-radius: 14px;
+  background: var(--terminal);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+}
+
+.session-card__preview--empty {
+  display: flex;
+  align-items: center;
+  min-height: 88px;
+  padding: 12px;
+  background: rgba(31, 36, 33, 0.08);
+  box-shadow: none;
+}
+
+.session-card__preview-placeholder {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.session-card__preview-terminal {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  height: 112px;
+  overflow: hidden;
+}
+
+.session-card__preview .xterm {
+  padding: 8px 6px;
+}
+
+.session-card__preview .xterm-viewport {
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+}
+
+.session-card__preview .xterm-screen,
+.session-card__preview .xterm-scroll-area {
+  max-width: 100%;
+}
+
+.session-card__preview .xterm-cursor-layer {
+  display: none;
 }
 
 .relay-shell--session {
@@ -218,4 +290,40 @@ button {
 
 .relay-terminal .xterm {
   padding: 6px 2px;
+}
+
+.session-jump {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 10;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+  background: rgba(18, 20, 32, 0.92);
+  color: white;
+  padding: 10px 14px;
+  box-shadow: 0 14px 34px rgba(10, 14, 28, 0.28);
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.session-jump[hidden] {
+  display: none;
+}
+
+.session-highlight {
+  background: rgba(255, 220, 120, 0.22);
+  box-shadow: inset 0 0 0 1px rgba(255, 220, 120, 0.6);
+  animation: session-highlight-fade 1.2s ease-out forwards;
+}
+
+@keyframes session-highlight-fade {
+  from {
+    opacity: 1;
+  }
+
+  to {
+    opacity: 0;
+  }
 }

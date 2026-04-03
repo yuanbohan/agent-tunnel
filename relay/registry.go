@@ -18,6 +18,10 @@ type AgentPeer interface {
 	Close() error
 }
 
+type seqOutputSink interface {
+	WriteOutputFrame(uint64, []byte) error
+}
+
 type Registry struct {
 	mu       sync.RWMutex
 	sessions map[string]*liveSession
@@ -27,6 +31,13 @@ type liveSession struct {
 	info  protocol.SessionInfo
 	peer  AgentPeer
 	sinks map[string]session.OutputSink
+
+	history      []historyFrame
+	historyBytes int
+	latestSeq    uint64
+	lastReadSeq  uint64
+	previewSeq   uint64
+	previewData  []byte
 }
 
 func NewRegistry() *Registry {
@@ -37,17 +48,40 @@ func (r *Registry) Register(info protocol.SessionInfo, peer AgentPeer) {
 	r.mu.Lock()
 	old := r.sessions[info.SessionID]
 	var sinks map[string]session.OutputSink
+	var history []historyFrame
+	var historyBytes int
+	var latestSeq uint64
+	var lastReadSeq uint64
+	var previewSeq uint64
+	var previewData []byte
+	lastActiveAt := info.LastActiveAt
 	if old != nil {
 		sinks = old.sinks
+		history = old.history
+		historyBytes = old.historyBytes
+		latestSeq = old.latestSeq
+		lastReadSeq = old.lastReadSeq
+		previewSeq = old.previewSeq
+		previewData = old.previewData
+		if old.info.LastActiveAt != nil {
+			lastActiveAt = old.info.LastActiveAt
+		}
 	}
 	if sinks == nil {
 		sinks = make(map[string]session.OutputSink)
 	}
 	r.sessions[info.SessionID] = &liveSession{
-		info:  info,
-		peer:  peer,
-		sinks: sinks,
+		info:         info,
+		peer:         peer,
+		sinks:        sinks,
+		history:      history,
+		historyBytes: historyBytes,
+		latestSeq:    latestSeq,
+		lastReadSeq:  lastReadSeq,
+		previewSeq:   previewSeq,
+		previewData:  previewData,
 	}
+	r.sessions[info.SessionID].info.LastActiveAt = lastActiveAt
 	r.mu.Unlock()
 
 	if old != nil && old.peer != nil {
@@ -87,7 +121,7 @@ func (r *Registry) List() []protocol.SessionInfo {
 
 	out := make([]protocol.SessionInfo, 0, len(r.sessions))
 	for _, live := range r.sessions {
-		out = append(out, live.info)
+		out = append(out, live.snapshot())
 	}
 	sort.Slice(out, func(i, j int) bool {
 		ti := lastActiveTime(out[i])
@@ -120,6 +154,40 @@ func (r *Registry) AddSink(sessionID, sinkID string, sink session.OutputSink) er
 	}
 	live.sinks[sinkID] = sink
 	return nil
+}
+
+func (r *Registry) Session(sessionID string) (protocol.SessionInfo, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	live, ok := r.sessions[sessionID]
+	if !ok {
+		return protocol.SessionInfo{}, false
+	}
+	return live.snapshot(), true
+}
+
+func (r *Registry) History(sessionID string, before, after uint64, limit, maxBytes int) (historyPage, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	live, ok := r.sessions[sessionID]
+	if !ok {
+		return historyPage{}, false
+	}
+	return live.historySnapshot(before, after, limit, maxBytes), true
+}
+
+func (r *Registry) MarkRead(sessionID string, seq uint64) (protocol.SessionInfo, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	live, ok := r.sessions[sessionID]
+	if !ok {
+		return protocol.SessionInfo{}, false
+	}
+	live.markRead(seq)
+	return live.snapshot(), true
 }
 
 func (r *Registry) RemoveSink(sessionID, sinkID string) {
@@ -168,11 +236,9 @@ func (r *Registry) touchOutput(sessionID string, owner AgentPeer, chunk []byte, 
 		r.mu.Unlock()
 		return false
 	}
+	seq := live.appendOutput(chunk)
 	nowCopy := now
 	live.info.LastActiveAt = &nowCopy
-	if preview, ok := ExtractPreview(chunk); ok {
-		live.info.LastPreview = preview
-	}
 	sinks := make([]session.OutputSink, 0, len(live.sinks))
 	for _, sink := range live.sinks {
 		sinks = append(sinks, sink)
@@ -180,6 +246,10 @@ func (r *Registry) touchOutput(sessionID string, owner AgentPeer, chunk []byte, 
 	r.mu.Unlock()
 
 	for _, sink := range sinks {
+		if seqSink, ok := sink.(seqOutputSink); ok {
+			_ = seqSink.WriteOutputFrame(seq, chunk)
+			continue
+		}
 		cp := append([]byte(nil), chunk...)
 		_ = sink.WriteOutput(cp)
 	}

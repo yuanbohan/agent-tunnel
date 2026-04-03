@@ -1,20 +1,37 @@
-import { Terminal } from '@xterm/xterm'
+import { Terminal, type IDecoration, type IDecorationOptions } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 
 export type DisplayMode = 'scroll' | 'wrap'
+export type TerminalMarker = {
+  line: number | undefined
+}
+
+export type TerminalDecoration = Pick<IDecoration, 'onRender' | 'dispose'>
+export type TerminalOptions = {
+  cursorBlink?: boolean
+  disableStdin?: boolean
+  fontSize?: number
+}
+export type TerminalDecorationOptions = Omit<IDecorationOptions, 'marker'> & {
+  marker: TerminalMarker
+}
 
 export interface TerminalHandle {
-  write(data: Uint8Array): void
+  write(data: Uint8Array, callback?: () => void): void
   onData(callback: (str: string) => void): void
   onResize(callback: (cols: number, rows: number) => void): void
   currentSize(): { cols: number; rows: number }
   setDisplayMode(mode: DisplayMode, ptyCols?: number, ptyRows?: number): void
+  clear(): void
+  registerMarker(cursorYOffset?: number): TerminalMarker | undefined
+  registerDecoration(options: TerminalDecorationOptions): TerminalDecoration | undefined
+  scrollToLine(line: number): void
   dispose(): void
 }
 
-export function createTerminal(container: HTMLElement): TerminalHandle {
+export function createTerminal(container: HTMLElement, options: TerminalOptions = {}): TerminalHandle {
   const term = new Terminal({
     theme: {
       background: '#1a1b26',
@@ -31,8 +48,9 @@ export function createTerminal(container: HTMLElement): TerminalHandle {
       white: '#a9b1d6',
     },
     fontFamily: "'JetBrains Mono', 'Fira Code', 'SF Mono', monospace",
-    fontSize: 14,
-    cursorBlink: true,
+    fontSize: options.fontSize ?? 14,
+    cursorBlink: options.cursorBlink ?? true,
+    disableStdin: options.disableStdin ?? false,
   })
 
   const fitAddon = new FitAddon()
@@ -54,8 +72,8 @@ export function createTerminal(container: HTMLElement): TerminalHandle {
   observer.observe(container)
 
   return {
-    write(data: Uint8Array) {
-      term.write(data)
+    write(data: Uint8Array, callback?: () => void) {
+      term.write(data, callback)
     },
     onData(callback: (str: string) => void) {
       term.onData(callback)
@@ -73,6 +91,18 @@ export function createTerminal(container: HTMLElement): TerminalHandle {
       } else if (mode === 'wrap') {
         fitAddon.fit()
       }
+    },
+    clear() {
+      term.clear()
+    },
+    registerMarker(cursorYOffset?: number) {
+      return term.registerMarker(cursorYOffset)
+    },
+    registerDecoration(options: TerminalDecorationOptions) {
+      return term.registerDecoration(options as IDecorationOptions)
+    },
+    scrollToLine(line: number) {
+      term.scrollToLine(line)
     },
     dispose() {
       observer.disconnect()

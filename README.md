@@ -2,7 +2,7 @@
 
 Launch a terminal agent locally and stream the live PTY session to a remote relay dashboard.
 
-`agentunnel` starts a real CLI such as `claude`, `codex`, or `gemini`, keeps the launching terminal interactive, and registers the session with a relay server. The relay serves a browser dashboard where authenticated users can list live sessions and attach to any one of them in real time.
+`agentunnel` starts a real CLI such as `claude`, `codex`, or `gemini`, keeps the launching terminal interactive, and registers the session with a relay server. The relay serves a browser dashboard where authenticated users can list live sessions, watch a readable live preview, see unread counts, and open a session page that replays recent live history before attaching to the live stream.
 
 ## Requirements
 
@@ -23,7 +23,7 @@ export AGENTUNNEL_AGENT_TOKEN=agent-token
 make relay
 ```
 
-The relay listens on `:8586` by default. Override with `--port` or `AGENTUNNEL_RELAY_ADDR`:
+The relay listens on `0.0.0.0:8586` by default. Override the port with `--port`:
 
 ```bash
 go run ./cmd/relay --port 9000
@@ -34,7 +34,7 @@ go run ./cmd/relay --port 9000
 Point the agent at the relay and launch a session:
 
 ```bash
-export AGENTUNNEL_RELAY_URL=ws://localhost:8586
+export AGENTUNNEL_RELAY_ADDR=127.0.0.1:8586
 export AGENTUNNEL_RELAY_TOKEN=agent-token
 go run ./cmd/agentunnel claude
 ```
@@ -42,20 +42,28 @@ go run ./cmd/agentunnel claude
 Or with a label:
 
 ```bash
-go run ./cmd/agentunnel --label api-fix codex
+go run ./cmd/agentunnel --label api-fix --relay-addr 127.0.0.1:9000 codex
 ```
 
 Expected stderr output:
 
 ```text
 ▶ agentunnel — claude
-  relay: ws://localhost:8586
+  relay: 127.0.0.1:8586
   local terminal is interactive
 ```
 
 ### 3. Open the dashboard
 
 Open `http://localhost:8586/` in a browser, authenticate with the Basic Auth credentials, and choose a live session from the dashboard.
+
+The relay UI now provides:
+- a compact live session list with official Claude, Gemini, and OpenAI launcher favicons
+- a wrapped mini terminal preview that shows the latest output frame without horizontal list scrolling
+- per-session unread badges
+- a session detail page that replays recent live history, lazy-loads older history on upward scroll, and exposes a `Jump to N unread` action
+
+Session history is intentionally live-only and in-memory. If the owning agent disconnects, the session disappears along with its retained history and unread state.
 
 ## VPS Deployment
 
@@ -65,18 +73,18 @@ On the remote host:
 export AGENTUNNEL_BASIC_USER=ops
 export AGENTUNNEL_BASIC_PASSWORD=strong-password
 export AGENTUNNEL_AGENT_TOKEN=shared-agent-token
-./bin/relay --port 443
+./bin/relay --port 8586
 ```
 
 On each developer machine:
 
 ```bash
-export AGENTUNNEL_RELAY_URL=wss://relay.example.com
+export AGENTUNNEL_RELAY_ADDR=relay.example.com:8586
 export AGENTUNNEL_RELAY_TOKEN=shared-agent-token
 ./bin/agentunnel --label "feature-branch" claude
 ```
 
-Then open `https://relay.example.com/` in any browser.
+Then open `http://relay.example.com:8586/` in any browser.
 
 ## Supported Launchers
 
@@ -115,5 +123,10 @@ JSON frames over WebSocket text messages:
 | Type     | Direction        | Payload                        |
 |----------|------------------|--------------------------------|
 | `input`  | browser -> relay -> agent | `data`: base64-encoded stdin |
-| `output` | agent -> relay -> browser | `data`: base64-encoded stdout |
+| `output` | agent -> relay -> browser | `seq`, `data`: base64-encoded PTY output |
 | `resize` | browser -> relay -> agent | `cols`, `rows` as integers   |
+
+The relay also exposes:
+- `GET /api/sessions` for live session metadata, unread counts, and dashboard preview payloads
+- `GET /api/sessions/:id/history` for paged live-session history replay
+- `POST /api/sessions/:id/read` for advancing the shared per-session read marker
