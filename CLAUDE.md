@@ -2,7 +2,7 @@
 
 This file provides guidance to Coding Agent(Claude Code, Codex, Gemini) when working with code in this repository.
 
-During the brainstorming, spec, and planning phases, avoid writing code whenever possible; implementation should happen in the subsequent implementation phase.
+During the brainstorming, spec phases, avoid writing code whenever possible; implementation should happen in the subsequent implementation phase.
 
 ## Start Here
 
