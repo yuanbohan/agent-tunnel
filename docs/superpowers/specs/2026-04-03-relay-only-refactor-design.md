@@ -29,24 +29,31 @@ Refactor agent-tunnel to remove all legacy and localhost-only code, making the r
 | `internal/agent/` | Legacy PTY + single-WebSocket handler |
 | `internal/client/` | Legacy WebSocket client + raw terminal |
 | `internal/server/` | Localhost HTTP/WebSocket server for agentunnel |
-| `internal/relayapi/` | Merged into `internal/protocol` |
+| `internal/relayapi/` | Merged into `protocol/` |
+| `internal/` | Entire directory removed — packages promoted to repo root |
 | `web/index.html` | Localhost single-session entrypoint |
 | `web/src/main.ts` | Localhost app bootstrap |
 | `web/src/session_url.ts` | Localhost WebSocket URL derivation |
 | `web/src/input_filter.test.ts` | Test file for deleted `main.ts` import (filter kept as shared module) |
 
-### Rename (Package Restructure)
+### Rename + Move (Package Restructure)
+
+All Go packages move from `internal/` to repo root. Additionally:
 
 | Current | Proposed | Rationale |
 |---------|----------|-----------|
-| `internal/relayclient/` | `internal/connector/` | Relay is the only mode; "connector" is clearer |
-| `internal/relayserver/` | `internal/relay/` | Shorter; no ambiguity with agent-side `connector` |
+| `internal/relayclient/` | `connector/` | Relay is the only mode; "connector" is clearer |
+| `internal/relayserver/` | `relay/` | Shorter; no ambiguity with agent-side `connector` |
+| `internal/session/` | `session/` | Same name, promoted to root |
+| `internal/protocol/` | `protocol/` | Same name, promoted to root |
+| `internal/launcher/` | `launcher/` | Same name, promoted to root |
+| `internal/webui/` | `webui/` | Same name, promoted to root |
 
 ### Merge
 
 | Source | Target | What moves |
 |--------|--------|------------|
-| `internal/relayapi/` | `internal/protocol/` | `SessionInfo`, `AgentFrame`, `RegisterFrame()` — these are wire types that belong alongside `Message` |
+| `internal/relayapi/` | `protocol/` | `SessionInfo`, `AgentFrame`, `RegisterFrame()` — wire types that belong alongside `Message` |
 
 ### Web Module Renames
 
@@ -61,16 +68,12 @@ Refactor agent-tunnel to remove all legacy and localhost-only code, making the r
 | `web/src/relay_types.ts` | `web/src/types.ts` | Drop `relay_` prefix |
 | `web/src/relay.css` | `web/src/style.css` | Drop `relay_` prefix |
 
-### Keep Unchanged
+### Keep (Unchanged Role, New Location)
 
 | Path | Role |
 |------|------|
 | `cmd/agentunnel/` | Agent binary (simplified startup) |
 | `cmd/relay/` | Relay server binary |
-| `internal/session/` | PTY lifecycle, Hub, local terminal |
-| `internal/protocol/` | Wire format (expanded with relay types) |
-| `internal/launcher/` | Launcher registry |
-| `internal/webui/` | Embedded web assets (imported only by `internal/relay`) |
 | `web/src/terminal.ts` | xterm.js wrapper (shared) |
 | `web/src/connection.ts` | WebSocket manager (shared) |
 | `web/src/protocol.ts` | TS-side message encoding (shared) |
@@ -80,24 +83,41 @@ Refactor agent-tunnel to remove all legacy and localhost-only code, making the r
 
 The relay session page (`app.ts`, formerly `relay_app.ts`) forwards `terminal.onData` input without filtering xterm auto-response sequences (CPR, DA reports, etc.). The localhost `main.ts` had this filter but the relay page never got it. As part of this refactor, integrate `input_filter.ts` into the relay input path so that `encodeInput` is only called for real user input. This prevents feedback loops when the relay terminal receives query responses from xterm.js.
 
+## Repo Layout (Post-Refactor)
+
+```
+agent-tunnel/
+  cmd/
+    agentunnel/          # agent binary
+    relay/               # relay server binary
+  protocol/              # wire types (Message, AgentFrame, SessionInfo)
+  session/               # PTY lifecycle, Hub, local terminal
+  connector/             # outbound relay client
+  launcher/              # executable resolution (claude/codex/gemini)
+  relay/                 # relay server logic (auth, registry, handlers)
+  webui/                 # embedded web assets
+  web/                   # TypeScript source
+  docs/
+```
+
 ## Package Dependency Graph (Post-Refactor)
 
 ```
 cmd/agentunnel
-├── internal/connector      ← mandatory outbound relay connection
-├── internal/protocol       ← wire types (Message, AgentFrame, SessionInfo)
-├── internal/launcher       ← resolves executable name to PATH
-├── internal/session        ← PTY lifecycle, Hub, local terminal
+├── connector/      ← mandatory outbound relay connection
+├── protocol/       ← wire types (Message, AgentFrame, SessionInfo)
+├── launcher/       ← resolves executable name to PATH
+├── session/        ← PTY lifecycle, Hub, local terminal
 └── (stdlib: context, os, syscall, signal)
 
 cmd/relay
-├── internal/relay          ← auth, registry, preview, HTTP/WS handlers
-│   ├── internal/protocol   ← wire types
-│   └── internal/webui      ← embedded web assets
+├── relay/          ← auth, registry, preview, HTTP/WS handlers
+│   ├── protocol/   ← wire types
+│   └── webui/      ← embedded web assets
 └── (stdlib: net/http, os, time)
 ```
 
-Note: `cmd/agentunnel` has **no dependency** on `internal/webui` or `internal/relay`.
+Note: `cmd/agentunnel` has **no dependency** on `webui/` or `relay/`.
 
 ## `cmd/agentunnel` Simplified Startup
 
@@ -133,7 +153,7 @@ Precedence (highest to lowest):
 Vite config updated:
 - Single entrypoint: `index.html` (was `relay.html`)
 - Remove multi-page config that referenced old `index.html`
-- `npm run build` produces one set of assets embedded by `internal/webui`
+- `npm run build` produces one set of assets embedded by `webui/`
 
 ## Protocol Documentation
 
