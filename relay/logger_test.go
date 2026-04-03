@@ -80,3 +80,28 @@ func TestLoggerJSONUsesTsKey(t *testing.T) {
 		t.Fatalf("ts present = %v, want present", got["ts"])
 	}
 }
+
+func TestLoggerWarnOmitsFieldsNotPassed(t *testing.T) {
+	var buf bytes.Buffer
+	logger := NewLogger(&buf)
+
+	logger.Warn("agent_timeout", String("launcher", "codex"))
+
+	var got map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal log line: %v\noutput: %q", err, buf.String())
+	}
+
+	if got["level"] != "WARN" {
+		t.Fatalf("level = %v, want WARN", got["level"])
+	}
+	if got["event"] != "agent_timeout" {
+		t.Fatalf("event = %v, want agent_timeout", got["event"])
+	}
+	if _, ok := got["session_id"]; ok {
+		t.Fatalf("session_id present = %v, want absent", got["session_id"])
+	}
+	if got["launcher"] != "codex" {
+		t.Fatalf("launcher = %v, want codex", got["launcher"])
+	}
+}
