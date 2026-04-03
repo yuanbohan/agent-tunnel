@@ -1,4 +1,4 @@
-import type { RelaySession } from './relay_types'
+import type { RelaySession } from './types'
 
 export function renderSessionCard(session: RelaySession): string {
   const title = session.label?.trim() || launcherName(session.launcher)

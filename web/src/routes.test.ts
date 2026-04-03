@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseRelayRoute } from './relay_routes'
+import { parseRelayRoute } from './routes'
 
 describe('parseRelayRoute', () => {
   it('returns dashboard for root', () => {

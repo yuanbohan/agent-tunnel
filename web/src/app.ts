@@ -1,10 +1,11 @@
-import './relay.css'
+import './style.css'
 import { ConnectionManager, type ConnectionStatus } from './connection'
 import { decodeOutput, encodeInput, type Message } from './protocol'
-import { fetchSessions, relaySessionWebSocketURL } from './relay_api'
-import { renderSessionCard } from './relay_dashboard'
-import { parseRelayRoute } from './relay_routes'
-import { nextInputState, stateChipClass, stateChipLabel } from './relay_session_page'
+import { fetchSessions, relaySessionWebSocketURL } from './api'
+import { renderSessionCard } from './dashboard'
+import { parseRelayRoute } from './routes'
+import { nextInputState, stateChipClass, stateChipLabel } from './session_page'
+import { isTerminalAutoResponse } from './input_filter'
 import { createTerminal } from './terminal'
 
 const root = document.getElementById('relay-root')!
@@ -70,7 +71,7 @@ function renderSession(sessionId: string) {
   })
 
   terminal.onData((value) => {
-    if (inputEnabled) {
+    if (inputEnabled && !isTerminalAutoResponse(value)) {
       conn.send(encodeInput(value))
     }
   })

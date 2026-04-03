@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { nextInputState, stateChipLabel } from './relay_session_page'
+import { nextInputState, stateChipLabel } from './session_page'
 
 describe('relay session page state chip', () => {
   it('starts read-only and toggles to input on', () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { renderSessionCard } from './relay_dashboard'
+import { renderSessionCard } from './dashboard'
 
 describe('renderSessionCard', () => {
   it('promotes label and launcher before secondary metadata', () => {

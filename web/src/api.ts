@@ -1,4 +1,4 @@
-import type { RelaySession } from './relay_types'
+import type { RelaySession } from './types'
 
 export async function fetchSessions(): Promise<RelaySession[]> {
   const response = await fetch('/api/sessions', { credentials: 'same-origin' })
