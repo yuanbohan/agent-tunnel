@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -17,12 +18,15 @@ type mainConfig struct {
 	AgentToken      string
 }
 
-func loadMainConfig(getenv func(string) string) (mainConfig, error) {
+func loadMainConfig(getenv func(string) string, portFlag string) (mainConfig, error) {
 	cfg := mainConfig{
 		ListenAddr:      getenv("AGENTUNNEL_RELAY_ADDR"),
 		BrowserUser:     getenv("AGENTUNNEL_BASIC_USER"),
 		BrowserPassword: getenv("AGENTUNNEL_BASIC_PASSWORD"),
 		AgentToken:      getenv("AGENTUNNEL_AGENT_TOKEN"),
+	}
+	if portFlag != "" {
+		cfg.ListenAddr = ":" + portFlag
 	}
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = ":8586"
@@ -35,7 +39,10 @@ func loadMainConfig(getenv func(string) string) (mainConfig, error) {
 }
 
 func main() {
-	cfg, err := loadMainConfig(os.Getenv)
+	port := flag.String("port", "", "listen port (overrides AGENTUNNEL_RELAY_ADDR)")
+	flag.Parse()
+
+	cfg, err := loadMainConfig(os.Getenv, *port)
 	if err != nil {
 		log.Fatal(err)
 	}
