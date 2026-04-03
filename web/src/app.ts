@@ -1,5 +1,4 @@
 import './style.css'
-import type { ConnectionStatus } from './connection'
 import { encodeInput, type Message } from './protocol'
 import { fetchSessionHistory, fetchSessions, markSessionRead, relaySessionWebSocketURL } from './api'
 import { renderSessionCard } from './dashboard'
@@ -11,10 +10,13 @@ import {
   nextInputState,
   stateChipClass,
   stateChipLabel,
+  nextDisplayMode,
+  displayModeChipClass,
+  displayModeChipLabel,
 } from './session_page'
 import { createLazyWebSocketConnection, createSessionPageTerminalAdapter } from './session_runtime'
 import { isTerminalAutoResponse } from './input_filter'
-import { createTerminal } from './terminal'
+import { createTerminal, type DisplayMode } from './terminal'
 
 const root = document.getElementById('relay-root')!
 const route = parseRelayRoute(window.location.pathname)
@@ -58,7 +60,10 @@ function renderSession(sessionId: string) {
     <main class="relay-shell relay-shell--session">
       <header class="session-header">
         <a class="back-link" href="/">Live</a>
-        <button id="input-chip" class="${stateChipClass(false)}">${stateChipLabel(false)}</button>
+        <div class="session-header__controls">
+          <button id="display-chip" class="${displayModeChipClass('wrap')}">${displayModeChipLabel('wrap')}</button>
+          <button id="input-chip" class="${stateChipClass(false)}">${stateChipLabel(false)}</button>
+        </div>
       </header>
       <div id="session-status" class="relay-placeholder relay-placeholder--inline" hidden></div>
       <button id="jump-unread" class="session-jump" hidden type="button"></button>
@@ -72,8 +77,12 @@ function renderSession(sessionId: string) {
   terminal.setDisplayMode('scroll')
   const conn = createLazyWebSocketConnection(relaySessionWebSocketURL(window.location, sessionId))
   const inputChip = document.getElementById('input-chip') as HTMLButtonElement
+  const displayChip = document.getElementById('display-chip') as HTMLButtonElement
   const unreadButton = document.getElementById('jump-unread') as HTMLButtonElement
   let inputEnabled = false
+  let displayMode: DisplayMode = 'wrap'
+  let ptyCols = 0
+  let ptyRows = 0
 
   const terminalAdapter = createSessionPageTerminalAdapter(terminal)
   const controller = createSessionPageController({
@@ -97,6 +106,17 @@ function renderSession(sessionId: string) {
     inputChip.className = stateChipClass(inputEnabled)
   })
 
+  displayChip.addEventListener('click', () => {
+    displayMode = nextDisplayMode(displayMode)
+    displayChip.textContent = displayModeChipLabel(displayMode)
+    displayChip.className = displayModeChipClass(displayMode)
+    if (displayMode === 'scroll' && ptyCols > 0 && ptyRows > 0) {
+      terminal.setDisplayMode('scroll', ptyCols, ptyRows)
+    } else {
+      terminal.setDisplayMode('wrap')
+    }
+  })
+
   unreadButton.addEventListener('click', () => {
     void controller.jumpToFirstUnread().then((result) => {
       if (result === 'oldest') {
@@ -112,20 +132,15 @@ function renderSession(sessionId: string) {
     }
   })
 
-  terminal.onResize((cols, rows) => {
-    conn.send(JSON.stringify({ type: 'resize', cols, rows }))
-  })
-
   conn.onMessage((msg: Message) => {
     if (msg.type === 'output') {
       void controller.appendLiveOutput(msg)
-    }
-  })
-
-  conn.onStatusChange((status: ConnectionStatus) => {
-    if (status === 'connected') {
-      const { cols, rows } = terminal.currentSize()
-      conn.send(JSON.stringify({ type: 'resize', cols, rows }))
+    } else if (msg.type === 'resize') {
+      ptyCols = msg.cols
+      ptyRows = msg.rows
+      if (displayMode === 'scroll') {
+        terminal.setDisplayMode('scroll', ptyCols, ptyRows)
+      }
     }
   })
 

@@ -1,5 +1,6 @@
 import { decodeOutput, type Message } from './protocol'
 import type { HistoryPage, HistoryMessage } from './types'
+import type { DisplayMode } from './terminal'
 
 export function nextInputState(current: boolean): boolean {
   return !current
@@ -271,4 +272,16 @@ class SessionPageController implements SessionPageControllerHandle {
   private isLoaded(seq: number): boolean {
     return this.loadedSeqs.has(seq)
   }
+}
+
+export function nextDisplayMode(current: DisplayMode): DisplayMode {
+  return current === 'wrap' ? 'scroll' : 'wrap'
+}
+
+export function displayModeChipLabel(mode: DisplayMode): string {
+  return mode === 'wrap' ? 'Wrap' : 'Scroll'
+}
+
+export function displayModeChipClass(mode: DisplayMode): string {
+  return mode === 'scroll' ? 'display-chip display-chip--scroll' : 'display-chip'
 }

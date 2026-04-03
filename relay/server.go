@@ -54,18 +54,13 @@ type wsConn interface {
 	Close() error
 }
 
-type wsOutputFrame struct {
-	seq  uint64
-	data []byte
-}
-
 type wsSink struct {
 	conn         wsConn
 	writeTimeout time.Duration
 
 	mu        sync.RWMutex
 	closed    bool
-	outbound  chan wsOutputFrame
+	outbound  chan protocol.Message
 	closeOnce sync.Once
 }
 
@@ -81,7 +76,7 @@ func newWSSinkWithConfig(conn wsConn, bufferSize int, writeTimeout time.Duration
 	sink := &wsSink{
 		conn:         conn,
 		writeTimeout: writeTimeout,
-		outbound:     make(chan wsOutputFrame, bufferSize),
+		outbound:     make(chan protocol.Message, bufferSize),
 	}
 	go sink.run()
 	return sink
@@ -92,8 +87,16 @@ func (s *wsSink) WriteOutput(data []byte) error {
 }
 
 func (s *wsSink) WriteOutputFrame(seq uint64, data []byte) error {
-	cp := append([]byte(nil), data...)
+	msg := protocol.EncodeOutputWithSeq(seq, append([]byte(nil), data...))
+	return s.enqueue(msg)
+}
 
+func (s *wsSink) WriteResize(cols, rows int) error {
+	msg := protocol.Message{Type: "resize", Cols: cols, Rows: rows}
+	return s.enqueue(msg)
+}
+
+func (s *wsSink) enqueue(msg protocol.Message) error {
 	s.mu.RLock()
 	if s.closed {
 		s.mu.RUnlock()
@@ -101,7 +104,7 @@ func (s *wsSink) WriteOutputFrame(seq uint64, data []byte) error {
 	}
 
 	select {
-	case s.outbound <- wsOutputFrame{seq: seq, data: cp}:
+	case s.outbound <- msg:
 		s.mu.RUnlock()
 		return nil
 	default:
@@ -125,17 +128,13 @@ func (s *wsSink) Close() error {
 func (s *wsSink) run() {
 	defer s.Close()
 
-	for frame := range s.outbound {
+	for msg := range s.outbound {
 		if s.writeTimeout > 0 {
 			if err := s.conn.SetWriteDeadline(time.Now().Add(s.writeTimeout)); err != nil {
 				return
 			}
 		}
-		if err := s.conn.WriteJSON(protocol.Message{
-			Type: "output",
-			Seq:  frame.seq,
-			Data: base64.StdEncoding.EncodeToString(frame.data),
-		}); err != nil {
+		if err := s.conn.WriteJSON(msg); err != nil {
 			return
 		}
 	}
@@ -153,12 +152,6 @@ func (p *wsAgentPeer) SendInput(data []byte) error {
 		Type: "input",
 		Data: base64.StdEncoding.EncodeToString(data),
 	})
-}
-
-func (p *wsAgentPeer) Resize(cols, rows int) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.conn.WriteJSON(protocol.Message{Type: "resize", Cols: cols, Rows: rows})
 }
 
 func (p *wsAgentPeer) Close() error {
@@ -286,15 +279,16 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 			if err := conn.ReadJSON(&msg); err != nil {
 				return
 			}
-			if msg.Type != "output" {
-				continue
+			switch msg.Type {
+			case "output":
+				data, err := protocol.DecodeData(msg)
+				if err != nil {
+					continue
+				}
+				registry.TouchOutputIfOwner(register.Session.SessionID, peer, data, time.Now().UTC())
+			case "resize":
+				registry.BroadcastResize(register.Session.SessionID, msg.Cols, msg.Rows)
 			}
-
-			data, err := protocol.DecodeData(msg)
-			if err != nil {
-				continue
-			}
-			registry.TouchOutputIfOwner(register.Session.SessionID, peer, data, time.Now().UTC())
 		}
 	})
 
@@ -409,14 +403,11 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 				return
 			}
 
-			switch msg.Type {
-			case "input":
+			if msg.Type == "input" {
 				data, err := protocol.DecodeData(msg)
 				if err == nil {
 					_ = registry.WriteInput(sessionID, data)
 				}
-			case "resize":
-				_ = registry.Resize(sessionID, msg.Cols, msg.Rows)
 			}
 		}
 	})

@@ -410,6 +410,45 @@ func TestBrowserAttachAddsSequenceNumbersToOutputFrames(t *testing.T) {
 	}
 }
 
+func TestAgentResizeBroadcastsToBrowser(t *testing.T) {
+	reg := NewRegistry()
+	server := httptest.NewServer(NewHandler(HandlerConfig{
+		Registry:        reg,
+		BrowserUser:     "demo",
+		BrowserPassword: "secret",
+		AgentToken:      "agent-token",
+	}))
+	defer server.Close()
+
+	agentConn := dialAndRegisterAgent(t, server.URL, "sess-1")
+	defer agentConn.Close()
+
+	browserURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/sessions/sess-1/ws"
+	browserHeaders := http.Header{}
+	browserHeaders.Set("Authorization", basicAuth("demo", "secret"))
+	browserConn, _, err := websocket.DefaultDialer.Dial(browserURL, browserHeaders)
+	if err != nil {
+		t.Fatalf("Dial browser returned error: %v", err)
+	}
+	defer browserConn.Close()
+
+	if err := agentConn.WriteJSON(protocol.Message{Type: "resize", Cols: 120, Rows: 40}); err != nil {
+		t.Fatalf("WriteJSON resize returned error: %v", err)
+	}
+
+	_ = browserConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var got protocol.Message
+	if err := browserConn.ReadJSON(&got); err != nil {
+		t.Fatalf("ReadJSON browser returned error: %v", err)
+	}
+	if got.Type != "resize" {
+		t.Fatalf("Type = %q, want resize", got.Type)
+	}
+	if got.Cols != 120 || got.Rows != 40 {
+		t.Fatalf("resize = %dx%d, want 120x40", got.Cols, got.Rows)
+	}
+}
+
 func TestBrowserAttachRoutesInputToRegisteredAgent(t *testing.T) {
 	reg := NewRegistry()
 	server := httptest.NewServer(NewHandler(HandlerConfig{

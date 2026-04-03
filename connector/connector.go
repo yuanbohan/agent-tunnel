@@ -17,7 +17,7 @@ type Connector struct {
 	info  protocol.SessionInfo
 	hub   *session.Hub
 
-	outbound chan []byte
+	outbound chan protocol.Message
 	dialer   *websocket.Dialer
 }
 
@@ -31,19 +31,26 @@ func New(url, token string, info protocol.SessionInfo) *Connector {
 		url:      url,
 		token:    token,
 		info:     info,
-		outbound: make(chan []byte, 128),
+		outbound: make(chan protocol.Message, 128),
 		dialer:   websocket.DefaultDialer,
 	}
 }
 
 func (c *Connector) BindHub(hub *session.Hub) {
 	c.hub = hub
+	hub.OnResize(func(cols, rows int) {
+		msg := protocol.Message{Type: "resize", Cols: cols, Rows: rows}
+		select {
+		case c.outbound <- msg:
+		default:
+		}
+	})
 }
 
 func (c *Connector) WriteOutput(data []byte) error {
-	cp := append([]byte(nil), data...)
+	msg := protocol.EncodeOutput(append([]byte(nil), data...))
 	select {
-	case c.outbound <- cp:
+	case c.outbound <- msg:
 	default:
 	}
 	return nil
@@ -93,8 +100,8 @@ func (c *Connector) runOnce(ctx context.Context) error {
 				return result.err
 			}
 			c.handleMessage(result.msg)
-		case chunk := <-c.outbound:
-			if err := conn.WriteJSON(protocol.EncodeOutput(chunk)); err != nil {
+		case msg := <-c.outbound:
+			if err := conn.WriteJSON(msg); err != nil {
 				return err
 			}
 		}
@@ -121,15 +128,10 @@ func (c *Connector) readLoop(conn *websocket.Conn, incoming chan<- readResult) {
 }
 
 func (c *Connector) handleMessage(msg protocol.Message) {
-	switch msg.Type {
-	case "input":
+	if msg.Type == "input" {
 		data, err := protocol.DecodeData(msg)
 		if err == nil && c.hub != nil {
 			_ = c.hub.WriteInput(data)
-		}
-	case "resize":
-		if c.hub != nil {
-			_ = c.hub.Resize(msg.Cols, msg.Rows)
 		}
 	}
 }

@@ -14,12 +14,15 @@ var ErrSessionNotFound = errors.New("relay session not found")
 
 type AgentPeer interface {
 	SendInput([]byte) error
-	Resize(int, int) error
 	Close() error
 }
 
 type seqOutputSink interface {
 	WriteOutputFrame(uint64, []byte) error
+}
+
+type ResizeSink interface {
+	WriteResize(cols, rows int) error
 }
 
 type Registry struct {
@@ -210,16 +213,24 @@ func (r *Registry) WriteInput(sessionID string, data []byte) error {
 	return err
 }
 
-func (r *Registry) Resize(sessionID string, cols, rows int) error {
+func (r *Registry) BroadcastResize(sessionID string, cols, rows int) {
 	r.mu.RLock()
 	live, ok := r.sessions[sessionID]
 	if !ok {
 		r.mu.RUnlock()
-		return ErrSessionNotFound
+		return
 	}
-	err := live.peer.Resize(cols, rows)
+	sinks := make([]session.OutputSink, 0, len(live.sinks))
+	for _, sink := range live.sinks {
+		sinks = append(sinks, sink)
+	}
 	r.mu.RUnlock()
-	return err
+
+	for _, sink := range sinks {
+		if rs, ok := sink.(ResizeSink); ok {
+			_ = rs.WriteResize(cols, rows)
+		}
+	}
 }
 
 func lastActiveTime(info protocol.SessionInfo) time.Time {

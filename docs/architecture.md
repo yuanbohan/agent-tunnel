@@ -359,7 +359,8 @@ Responsibilities:
 - open one outbound WebSocket to `.../agent/ws`
 - send a single registration frame first
 - forward PTY output to the relay as `output`
-- route relay `input` and `resize` messages back into the session Hub
+- route relay `input` messages back into the session Hub
+- forward PTY resize events (from local terminal) to the relay as `resize`
 - reconnect with backoff when the relay connection drops
 
 The connector is also an `OutputSink`, so `cmd/agentunnel` registers it in the initial sink map alongside the local terminal sink.
@@ -377,7 +378,8 @@ This package is the relay server's core logic:
   - tracks `latestSeq`, `lastReadSeq`, `unreadCount`, and latest preview frame
   - preserves browser sinks across same-session live replacement
   - sorts list output by `LastActiveAt`
-  - serializes input/resize routing safely across peer replacement
+  - serializes input routing safely across peer replacement
+  - broadcasts resize events from agents to attached browser sinks
 - `history.go`
   - appends raw PTY output as whole retained frames
   - evicts oldest whole frames once the 10 MB per-session budget is exceeded
@@ -424,8 +426,8 @@ Data flow:
   dashboard poll       ──> api.fetchSessions()                     ──> dashboard.ts + dashboard_preview.ts
   detail init          ──> api.fetchSessionHistory()               ──> session_page.ts ──> session_runtime.ts
   terminal.onData      ──> input_filter ──> protocol.encodeInput() ──> connection.send()
-  terminal.onResize    ──> JSON resize frame                       ──> connection.send()
   connection.onMessage ──> protocol.decodeOutput()                 ──> session_page.ts ──> session_runtime.ts
+  connection.onMessage ──> resize frame                            ──> terminal.setDisplayMode()
 ```
 
 ### `app.ts` -- Application Entry
@@ -438,11 +440,15 @@ Route handling:
 
 ### Session Page Behavior
 
-- terminal starts in read-only mode
-- the compact state chip toggles between `Read-only` and `Input on`
-- browser input is only forwarded when the chip is enabled
+- terminal starts in read-only mode with wrap display
+- the `Read-only` / `Input on` chip toggles input forwarding
+- the `Wrap` / `Scroll` chip toggles display mode:
+  - **Wrap** (default): terminal fits to browser window width
+  - **Scroll**: terminal matches the agent's PTY dimensions exactly
+- browser input is only forwarded when the input chip is enabled
 - known xterm auto-response sequences (CPR, DA reports) are filtered before forwarding
-- a resize frame is sent once the socket reaches `connected`
+- the browser never sends resize frames; resize flows one-way from agent to browser
+- incoming resize frames update the stored PTY size and, in scroll mode, resize the terminal
 - the newest retained history page is rendered before live output is attached
 - if output arrives between history fetch and WebSocket attach, the page bridges that gap by fetching bounded history `after` the last loaded frame and deduping overlaps
 - older retained history pages are loaded when the user scrolls near the top
@@ -630,35 +636,37 @@ Terminal      (via relay)
            receives keystrokes
 ```
 
-### Resize Path
+### Resize Path (Agent → Browser, one-way)
 
 ```
-  Browser window resized
+  Local terminal resized (SIGWINCH)
        │
        ▼
-  FitAddon.fit()
-  xterm recalculates cols/rows
-       │
-       ▼
-  terminal.onResize({cols: 120, rows: 40})
-       │
-       ▼
-  conn.send({type:"resize", cols:120, rows:40})
-       │
-       ▼
-  relay server
-  routes to agent connector
+  forwardLocalTerminalResizes
+  reads new size from os/term
        │
        ▼
   hub.Resize(120, 40)
        │
-       ▼
-  pty.Setsize(ptmx, {Rows: 40, Cols: 120})
+       ├─ resizePTY(120, 40)
+       │    pty.Setsize(ptmx, {Rows:40, Cols:120})
+       │    claude process receives SIGWINCH
        │
-       ▼
-  claude process receives SIGWINCH
-  and redraws at new dimensions
+       └─ onResize callback
+            connector sends {type:"resize", cols:120, rows:40}
+                 │
+                 ▼
+            relay server
+            registry.BroadcastResize("sess-1", 120, 40)
+                 │
+                 ▼
+            each browser wsSink receives resize frame
+                 │
+                 ▼
+            browser updates terminal dimensions (scroll mode)
 ```
+
+The browser never sends resize frames. In wrap mode, the browser terminal fits to its container. In scroll mode, it locks to the agent's PTY dimensions.
 
 ## Concurrency Model
 
@@ -679,9 +687,9 @@ Main goroutine
   │
   └─ [goroutine] connector.Run (connector/connector.go)
        ├─ outbound WS write loop
-       │    reads from outbound chan → WS write
+       │    reads from outbound chan → WS write (output + resize)
        └─ inbound WS read loop
-            reads JSON frames → hub.WriteInput / hub.Resize
+            reads JSON frames → hub.WriteInput
             reconnects with backoff on disconnect
 ```
 

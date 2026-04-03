@@ -162,6 +162,57 @@ func TestConnectorStreamsOutputFramesToRelay(t *testing.T) {
 	}
 }
 
+func TestConnectorSendsResizeFrameWhenHubResizes(t *testing.T) {
+	received := make(chan protocol.Message, 1)
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("Upgrade returned error: %v", err)
+		}
+		defer conn.Close()
+
+		var register protocol.AgentFrame
+		if err := conn.ReadJSON(&register); err != nil {
+			t.Fatalf("ReadJSON register returned error: %v", err)
+		}
+
+		var msg protocol.Message
+		if err := conn.ReadJSON(&msg); err != nil {
+			t.Fatalf("ReadJSON resize returned error: %v", err)
+		}
+		received <- msg
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	hub := session.NewHub(func([]byte) error { return nil }, func(int, int) error { return nil })
+	c := New(wsURL, "token", protocol.SessionInfo{
+		SessionID: "sess-1",
+		Launcher:  "codex",
+	})
+	c.BindHub(hub)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Run(ctx)
+
+	// Trigger a resize through the hub — the connector's OnResize callback should send it upstream
+	_ = hub.Resize(120, 40)
+
+	select {
+	case msg := <-received:
+		if msg.Type != "resize" {
+			t.Fatalf("Type = %q, want resize", msg.Type)
+		}
+		if msg.Cols != 120 || msg.Rows != 40 {
+			t.Fatalf("resize = %dx%d, want 120x40", msg.Cols, msg.Rows)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for resize frame")
+	}
+}
+
 func TestConnectorBuffersOutputAcrossReconnectWithoutLeakingOldWriter(t *testing.T) {
 	firstUpgrader := websocket.Upgrader{}
 	firstServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

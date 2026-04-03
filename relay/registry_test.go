@@ -11,22 +11,15 @@ import (
 type fakeAgentPeer struct{}
 
 func (fakeAgentPeer) SendInput([]byte) error { return nil }
-func (fakeAgentPeer) Resize(int, int) error  { return nil }
 func (fakeAgentPeer) Close() error           { return nil }
 
 type recordingPeer struct {
-	inputs  [][]byte
-	resizes [][2]int
-	closed  int
+	inputs [][]byte
+	closed int
 }
 
 func (p *recordingPeer) SendInput(data []byte) error {
 	p.inputs = append(p.inputs, append([]byte(nil), data...))
-	return nil
-}
-
-func (p *recordingPeer) Resize(cols, rows int) error {
-	p.resizes = append(p.resizes, [2]int{cols, rows})
 	return nil
 }
 
@@ -36,7 +29,8 @@ func (p *recordingPeer) Close() error {
 }
 
 type recordingSink struct {
-	chunks [][]byte
+	chunks  [][]byte
+	resizes [][2]int
 }
 
 func (s *recordingSink) WriteOutput(data []byte) error {
@@ -44,26 +38,21 @@ func (s *recordingSink) WriteOutput(data []byte) error {
 	return nil
 }
 
+func (s *recordingSink) WriteResize(cols, rows int) error {
+	s.resizes = append(s.resizes, [2]int{cols, rows})
+	return nil
+}
+
 type blockingPeer struct {
-	sendStarted   chan struct{}
-	sendRelease   chan struct{}
-	resizeStarted chan struct{}
-	resizeRelease chan struct{}
-	inputs        [][]byte
-	resizes       [][2]int
+	sendStarted chan struct{}
+	sendRelease chan struct{}
+	inputs      [][]byte
 }
 
 func (p *blockingPeer) SendInput(data []byte) error {
 	p.inputs = append(p.inputs, append([]byte(nil), data...))
 	close(p.sendStarted)
 	<-p.sendRelease
-	return nil
-}
-
-func (p *blockingPeer) Resize(cols, rows int) error {
-	p.resizes = append(p.resizes, [2]int{cols, rows})
-	close(p.resizeStarted)
-	<-p.resizeRelease
 	return nil
 }
 
@@ -96,9 +85,6 @@ func TestRegistryMissingSessionErrors(t *testing.T) {
 	}
 	if err := reg.WriteInput("missing", []byte("x")); err != ErrSessionNotFound {
 		t.Fatalf("WriteInput error = %v, want ErrSessionNotFound", err)
-	}
-	if err := reg.Resize("missing", 80, 24); err != ErrSessionNotFound {
-		t.Fatalf("Resize error = %v, want ErrSessionNotFound", err)
 	}
 }
 
@@ -374,10 +360,8 @@ func TestRegistryHistorySupportsAfterPaging(t *testing.T) {
 func TestRegistryWriteInputWaitsForInFlightOldPeerBeforeReplacement(t *testing.T) {
 	reg := NewRegistry()
 	oldPeer := &blockingPeer{
-		sendStarted:   make(chan struct{}),
-		sendRelease:   make(chan struct{}),
-		resizeStarted: make(chan struct{}),
-		resizeRelease: make(chan struct{}),
+		sendStarted: make(chan struct{}),
+		sendRelease: make(chan struct{}),
 	}
 	newPeer := &recordingPeer{}
 
@@ -434,65 +418,25 @@ func TestRegistryWriteInputWaitsForInFlightOldPeerBeforeReplacement(t *testing.T
 	}
 }
 
-func TestRegistryResizeWaitsForInFlightOldPeerBeforeReplacement(t *testing.T) {
+func TestRegistryBroadcastResizeSendsToSinks(t *testing.T) {
 	reg := NewRegistry()
-	oldPeer := &blockingPeer{
-		sendStarted:   make(chan struct{}),
-		sendRelease:   make(chan struct{}),
-		resizeStarted: make(chan struct{}),
-		resizeRelease: make(chan struct{}),
-	}
-	newPeer := &recordingPeer{}
+	peer := &recordingPeer{}
+	sink := &recordingSink{}
 
-	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, oldPeer)
-
-	resizeDone := make(chan error, 1)
-	go func() {
-		resizeDone <- reg.Resize("sess-1", 80, 24)
-	}()
-
-	select {
-	case <-oldPeer.resizeStarted:
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("timed out waiting for old peer Resize to start")
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, peer)
+	if err := reg.AddSink("sess-1", "browser", sink); err != nil {
+		t.Fatalf("AddSink returned error: %v", err)
 	}
 
-	registerDone := make(chan struct{})
-	go func() {
-		reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, newPeer)
-		close(registerDone)
-	}()
+	reg.BroadcastResize("sess-1", 120, 40)
 
-	select {
-	case <-registerDone:
-		t.Fatal("Register completed before in-flight resize finished")
-	case <-time.After(100 * time.Millisecond):
+	if len(sink.resizes) != 1 || sink.resizes[0] != [2]int{120, 40} {
+		t.Fatalf("sink resizes = %#v, want [[120 40]]", sink.resizes)
 	}
+}
 
-	close(oldPeer.resizeRelease)
-
-	select {
-	case err := <-resizeDone:
-		if err != nil {
-			t.Fatalf("Resize returned error: %v", err)
-		}
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("timed out waiting for Resize to finish")
-	}
-
-	select {
-	case <-registerDone:
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("timed out waiting for Register to finish")
-	}
-
-	if err := reg.Resize("sess-1", 100, 40); err != nil {
-		t.Fatalf("Resize after replacement returned error: %v", err)
-	}
-	if len(oldPeer.resizes) != 1 || oldPeer.resizes[0] != [2]int{80, 24} {
-		t.Fatalf("old peer resizes = %#v, want [[80 24]]", oldPeer.resizes)
-	}
-	if len(newPeer.resizes) != 1 || newPeer.resizes[0] != [2]int{100, 40} {
-		t.Fatalf("new peer resizes = %#v, want [[100 40]]", newPeer.resizes)
-	}
+func TestRegistryBroadcastResizeSkipsMissingSession(t *testing.T) {
+	reg := NewRegistry()
+	// Should not panic
+	reg.BroadcastResize("missing", 80, 24)
 }

@@ -5,6 +5,9 @@ import {
   nextInputState,
   stateChipLabel,
   unreadJumpLabel,
+  nextDisplayMode,
+  displayModeChipLabel,
+  displayModeChipClass,
   type SessionPageTerminal,
 } from './session_page'
 import type { HistoryPage } from './types'
@@ -317,5 +320,22 @@ describe('relay session page', () => {
     expect(next).toBe(true)
     expect(stateChipLabel(false)).toBe('Read-only')
     expect(stateChipLabel(true)).toBe('Input on')
+  })
+})
+
+describe('display mode chip', () => {
+  it('toggles between wrap and scroll', () => {
+    expect(nextDisplayMode('wrap')).toBe('scroll')
+    expect(nextDisplayMode('scroll')).toBe('wrap')
+  })
+
+  it('returns correct labels', () => {
+    expect(displayModeChipLabel('wrap')).toBe('Wrap')
+    expect(displayModeChipLabel('scroll')).toBe('Scroll')
+  })
+
+  it('returns correct CSS classes', () => {
+    expect(displayModeChipClass('wrap')).toBe('display-chip')
+    expect(displayModeChipClass('scroll')).toBe('display-chip display-chip--scroll')
   })
 })

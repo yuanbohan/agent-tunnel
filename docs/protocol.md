@@ -6,8 +6,8 @@ This document specifies the WebSocket protocol used between agent-tunnel compone
 
 The relay server is a WebSocket broker with two roles:
 
-- **Agent** — a local `agentunnel` process that owns a PTY session. It connects to the relay, registers the session, and streams terminal output. It receives input and resize commands from attached browsers.
-- **Browser** — a web or native client that lists live sessions and attaches to one for viewing and optional interaction.
+- **Agent** — a local `agentunnel` process that owns a PTY session. It connects to the relay, registers the session, and streams terminal output and resize events. It receives input from attached browsers.
+- **Browser** — a web or native client that lists live sessions and attaches to one for viewing and optional interaction. Browsers never control the terminal size; resize flows one-way from agent to browser.
 
 All WebSocket communication uses JSON text frames. Binary data (terminal I/O) is base64-encoded within JSON fields.
 
@@ -213,6 +213,24 @@ If the session does not exist, the server returns `404 Not Found` before upgrade
 | `seq` | integer | Monotonic output-frame sequence number assigned by the relay |
 | `data` | string | Standard base64-encoded raw PTY bytes |
 
+**Resize frame** — PTY dimensions changed on the agent side:
+
+```json
+{
+  "type": "resize",
+  "cols": 120,
+  "rows": 40
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | string | Always `"resize"` |
+| `cols` | integer | Current terminal width in columns |
+| `rows` | integer | Current terminal height in rows |
+
+The browser should use this to update its terminal emulator dimensions (e.g., in "scroll" display mode). The browser never sends resize frames — terminal size is owned exclusively by the agent's local terminal.
+
 ### Frames: Browser → Server
 
 **Input frame** — keystrokes to forward to the agent's PTY:
@@ -228,22 +246,6 @@ If the session does not exist, the server returns `404 Not Found` before upgrade
 |-------|------|-------------|
 | `type` | string | Always `"input"` |
 | `data` | string | Standard base64-encoded bytes (user keystrokes) |
-
-**Resize frame** — terminal dimension change:
-
-```json
-{
-  "type": "resize",
-  "cols": 120,
-  "rows": 40
-}
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `type` | string | Always `"resize"` |
-| `cols` | integer | New terminal width in columns |
-| `rows` | integer | New terminal height in rows |
 
 ## Agent WebSocket
 
@@ -297,6 +299,24 @@ The `session` object must include at minimum: `session_id`, `launcher`, `cwd`, `
 | `type` | string | Always `"output"` |
 | `data` | string | Standard base64-encoded raw PTY bytes |
 
+**Resize frame** — PTY dimensions changed (local terminal resized):
+
+```json
+{
+  "type": "resize",
+  "cols": 120,
+  "rows": 40
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | string | Always `"resize"` |
+| `cols` | integer | New terminal width in columns |
+| `rows` | integer | New terminal height in rows |
+
+The relay broadcasts resize frames to all attached browser sinks.
+
 ### Frames: Relay → Agent
 
 **Input frame** — keystrokes forwarded from an attached browser:
@@ -308,17 +328,7 @@ The `session` object must include at minimum: `session_id`, `launcher`, `cwd`, `
 }
 ```
 
-**Resize frame** — terminal resize from an attached browser:
-
-```json
-{
-  "type": "resize",
-  "cols": 120,
-  "rows": 40
-}
-```
-
-These frames use the same schema as the browser frames described above.
+This is the only frame type the relay sends to the agent. Resize is one-way: agent → relay → browsers.
 
 ## Connection Lifecycle
 
@@ -336,11 +346,11 @@ These frames use the same schema as the browser frames described above.
    ← Relay appends the frame to live in-memory history
    ← Relay updates unread metadata and latest dashboard preview
 
-4. Receive input frames from relay
-   → Forward decoded bytes to PTY stdin
+4. Send resize frames when local terminal resizes
+   ← Relay broadcasts to attached browsers
 
-5. Receive resize frames from relay
-   → Apply to PTY dimensions
+5. Receive input frames from relay
+   → Forward decoded bytes to PTY stdin
 
 6. Relay sends WebSocket pings every 10s
    → Agent responds with pong (automatic in most libraries)
@@ -366,17 +376,20 @@ These frames use the same schema as the browser frames described above.
 4. Receive output frames
    → Decode base64 → write raw bytes to terminal emulator
 
-5. POST /api/sessions/:id/read
+5. Receive resize frames
+   → Update terminal emulator dimensions to match the agent's PTY
+
+6. POST /api/sessions/:id/read
    → Advance the shared read marker after history replay + live attach are active
 
-6. Optionally send input frames
+7. Optionally send input frames
    → Encode keystrokes as base64 → send as input frame
-
-7. Send resize frame when terminal dimensions change
 
 8. On WebSocket close
    → Return to session list or show disconnected state
 ```
+
+> **Note:** Browsers never send resize frames. Terminal dimensions are owned by the agent's local terminal. The browser can choose how to display the content — either "wrap" mode (fit to browser window) or "scroll" mode (match PTY dimensions exactly).
 
 ## Data Encoding
 

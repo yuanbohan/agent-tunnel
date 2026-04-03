@@ -255,6 +255,12 @@ button {
   min-height: 34px;
 }
 
+.session-header__controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .back-link {
   color: var(--muted);
   text-decoration: none;
@@ -277,6 +283,23 @@ button {
   background: var(--accent);
   border-color: var(--accent);
   color: white;
+}
+
+.display-chip {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(236, 240, 233, 0.96);
+  color: var(--ink);
+  padding: 6px 10px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.display-chip--scroll {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-strong);
 }
 
 .relay-terminal {
