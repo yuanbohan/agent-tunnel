@@ -953,6 +953,88 @@ func TestClientAttachLogsLifecycle(t *testing.T) {
 	}
 }
 
+type backpressureTestSink struct {
+	mu             sync.Mutex
+	onBackpressure func()
+	writes         int
+}
+
+func (s *backpressureTestSink) WriteOutput(data []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.writes++
+	if s.writes == 1 {
+		s.onBackpressure()
+	}
+	return errWSSinkBackpressure
+}
+
+func (s *backpressureTestSink) Close() error { return nil }
+
+func TestClientAttachLogsBackpressureDisconnect(t *testing.T) {
+	origFactory := clientSinkFactory
+	clientSinkFactory = func(conn *websocket.Conn, onBackpressure func()) clientSink {
+		return &backpressureTestSink{onBackpressure: onBackpressure}
+	}
+	defer func() {
+		clientSinkFactory = origFactory
+	}()
+
+	reg := NewRegistry()
+	logs := newLogRecorder()
+	server := httptest.NewServer(NewHandler(HandlerConfig{
+		Registry:        reg,
+		BrowserUser:     "demo",
+		BrowserPassword: "secret",
+		AgentToken:      "agent-token",
+		Logger:          NewLogger(logs),
+	}))
+	defer server.Close()
+
+	agentConn := dialAndRegisterAgent(t, server.URL, "sess-1")
+	defer agentConn.Close()
+	waitForLogEvent(t, logs, "agent_registered", func(entry map[string]any) bool {
+		return entry["session_id"] == "sess-1"
+	})
+
+	browserURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/sessions/sess-1/ws"
+	headers := http.Header{}
+	headers.Set("Authorization", basicAuth("demo", "secret"))
+	headers.Set("User-Agent", "relay-test-client/1.0")
+
+	browserConn, _, err := websocket.DefaultDialer.Dial(browserURL, headers)
+	if err != nil {
+		t.Fatalf("Dial browser returned error: %v", err)
+	}
+	defer browserConn.Close()
+
+	connected := waitForLogEvent(t, logs, "client_ws_connected", func(entry map[string]any) bool {
+		return entry["session_id"] == "sess-1" && entry["user_agent"] == "relay-test-client/1.0"
+	})
+	clientID, ok := connected["client_id"].(string)
+	if !ok || clientID == "" {
+		t.Fatalf("client_id = %v, want non-empty string", connected["client_id"])
+	}
+
+	if err := agentConn.WriteJSON(protocol.EncodeOutput([]byte("trigger backpressure"))); err != nil {
+		t.Fatalf("agent WriteJSON returned error: %v", err)
+	}
+
+	backpressure := waitForLogEvent(t, logs, "sink_backpressure", func(entry map[string]any) bool {
+		return entry["session_id"] == "sess-1" && entry["client_id"] == clientID
+	})
+	if got := backpressure["client_id"]; got != clientID {
+		t.Fatalf("sink_backpressure client_id = %v, want %s", got, clientID)
+	}
+
+	disconnected := waitForLogEvent(t, logs, "client_disconnected", func(entry map[string]any) bool {
+		return entry["session_id"] == "sess-1" && entry["client_id"] == clientID
+	})
+	if got := disconnected["reason"]; got != "backpressure" {
+		t.Fatalf("reason = %v, want backpressure", got)
+	}
+}
+
 func TestStaleAgentConnectionTimesOutAndRemovesSessionFromList(t *testing.T) {
 	reg := NewRegistry()
 	server := httptest.NewServer(NewHandler(HandlerConfig{

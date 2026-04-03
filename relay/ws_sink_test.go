@@ -2,6 +2,7 @@ package relay
 
 import (
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -10,10 +11,13 @@ type blockingWSConn struct {
 	writeStarted chan struct{}
 	releaseWrite chan struct{}
 	closeCalls   int
+	startOnce    sync.Once
 }
 
 func (c *blockingWSConn) WriteJSON(v any) error {
-	close(c.writeStarted)
+	c.startOnce.Do(func() {
+		close(c.writeStarted)
+	})
 	<-c.releaseWrite
 	return nil
 }

@@ -16,6 +16,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"yuanbohan/tunnel/protocol"
+	"yuanbohan/tunnel/session"
 	"yuanbohan/tunnel/webui"
 )
 
@@ -31,6 +32,9 @@ var (
 	errWSSinkClosed       = errors.New("websocket sink closed")
 	errWSSinkBackpressure = errors.New("websocket sink backpressure")
 	nextSinkID            uint64
+	clientSinkFactory     = func(conn *websocket.Conn, onBackpressure func()) clientSink {
+		return newWSSinkWithConfig(conn, defaultWSSinkBufferSize, defaultWSWriteTimeout, onBackpressure)
+	}
 )
 
 type HandlerConfig struct {
@@ -53,6 +57,11 @@ type wsAgentPeer struct {
 type wsConn interface {
 	WriteJSON(v any) error
 	SetWriteDeadline(t time.Time) error
+	Close() error
+}
+
+type clientSink interface {
+	session.OutputSink
 	Close() error
 }
 
@@ -429,7 +438,7 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 
 		sinkID := "browser-" + strconv.FormatUint(atomic.AddUint64(&nextSinkID, 1), 10)
 		var sinkBackpressure atomic.Bool
-		sink := newWSSinkWithConfig(conn, defaultWSSinkBufferSize, defaultWSWriteTimeout, func() {
+		sink := clientSinkFactory(conn, func() {
 			if !sinkBackpressure.CompareAndSwap(false, true) {
 				return
 			}
