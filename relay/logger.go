@@ -23,6 +23,10 @@ type Logger struct {
 func NewLogger(w io.Writer) *Logger {
 	handler := slog.NewJSONHandler(w, &slog.HandlerOptions{
 		ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
+			if a.Key == slog.TimeKey {
+				a.Key = "ts"
+				return a
+			}
 			if a.Key == slog.MessageKey && a.Value.Kind() == slog.KindString && a.Value.String() == "" {
 				return slog.Attr{}
 			}
@@ -54,19 +58,13 @@ func (l *Logger) log(level slog.Level, msg string, fields ...Field) {
 	}
 
 	attrs := make([]slog.Attr, 0, len(fields)+1)
-	if msg != "" {
-		hasEvent := false
-		for _, field := range fields {
-			if field.Key == "event" {
-				hasEvent = true
-				break
-			}
+	attrs = append(attrs, slog.String("event", msg))
+	for _, field := range fields {
+		if field.Key == "event" {
+			continue
 		}
-		if !hasEvent {
-			attrs = append(attrs, slog.String("event", msg))
-		}
+		attrs = append(attrs, field)
 	}
-	attrs = append(attrs, fields...)
 
 	l.logger.LogAttrs(context.Background(), level, "", attrs...)
 }

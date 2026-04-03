@@ -10,8 +10,7 @@ func TestLoggerInfoWritesJSONEvent(t *testing.T) {
 	var buf bytes.Buffer
 	logger := NewLogger(&buf)
 
-	logger.Info("agent registered",
-		String("event", "agent_registered"),
+	logger.Info("agent_registered",
 		String("session_id", "sess-1"),
 		String("launcher", "codex"),
 	)
@@ -27,6 +26,9 @@ func TestLoggerInfoWritesJSONEvent(t *testing.T) {
 	if got["event"] != "agent_registered" {
 		t.Fatalf("event = %v, want agent_registered", got["event"])
 	}
+	if _, ok := got["msg"]; ok {
+		t.Fatalf("msg present = %v, want absent", got["msg"])
+	}
 	if got["session_id"] != "sess-1" {
 		t.Fatalf("session_id = %v, want sess-1", got["session_id"])
 	}
@@ -35,12 +37,13 @@ func TestLoggerInfoWritesJSONEvent(t *testing.T) {
 	}
 }
 
-func TestLoggerWarnOmitsFieldsNotPassed(t *testing.T) {
+func TestLoggerInfoIgnoresCallerEventField(t *testing.T) {
 	var buf bytes.Buffer
 	logger := NewLogger(&buf)
 
-	logger.Warn("",
-		String("event", "agent_timeout"),
+	logger.Info("agent_registered",
+		String("event", "caller_override"),
+		String("session_id", "sess-1"),
 	)
 
 	var got map[string]any
@@ -48,16 +51,32 @@ func TestLoggerWarnOmitsFieldsNotPassed(t *testing.T) {
 		t.Fatalf("unmarshal log line: %v\noutput: %q", err, buf.String())
 	}
 
-	if got["level"] != "WARN" {
-		t.Fatalf("level = %v, want WARN", got["level"])
+	if got["event"] != "agent_registered" {
+		t.Fatalf("event = %v, want agent_registered", got["event"])
 	}
-	if got["event"] != "agent_timeout" {
-		t.Fatalf("event = %v, want agent_timeout", got["event"])
+	if got["session_id"] != "sess-1" {
+		t.Fatalf("session_id = %v, want sess-1", got["session_id"])
 	}
-	if _, ok := got["session_id"]; ok {
-		t.Fatalf("session_id present = %v, want absent", got["session_id"])
+	if got["level"] != "INFO" {
+		t.Fatalf("level = %v, want INFO", got["level"])
 	}
-	if _, ok := got["msg"]; ok {
-		t.Fatalf("msg present = %v, want absent", got["msg"])
+}
+
+func TestLoggerJSONUsesTsKey(t *testing.T) {
+	var buf bytes.Buffer
+	logger := NewLogger(&buf)
+
+	logger.Warn("agent_timeout", String("session_id", "sess-1"))
+
+	var got map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal log line: %v\noutput: %q", err, buf.String())
+	}
+
+	if _, ok := got["time"]; ok {
+		t.Fatalf("time present = %v, want absent", got["time"])
+	}
+	if _, ok := got["ts"]; !ok {
+		t.Fatalf("ts present = %v, want present", got["ts"])
 	}
 }
