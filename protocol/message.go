@@ -22,10 +22,18 @@ func EncodeOutput(b []byte) Message {
 
 // EncodeOutputWithSeq wraps raw PTY bytes and a sequence into an output Message.
 func EncodeOutputWithSeq(seq uint64, b []byte) Message {
+	return EncodeOutputWithSeqAndSize(seq, b, 0, 0)
+}
+
+// EncodeOutputWithSeqAndSize wraps raw PTY bytes, sequence, and terminal size
+// into an output Message.
+func EncodeOutputWithSeqAndSize(seq uint64, b []byte, cols, rows int) Message {
 	return Message{
 		Type: "output",
 		Seq:  seq,
 		Data: base64.StdEncoding.EncodeToString(b),
+		Cols: cols,
+		Rows: rows,
 	}
 }
 

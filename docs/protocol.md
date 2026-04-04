@@ -6,8 +6,8 @@ This document specifies the WebSocket protocol used between agent-tunnel compone
 
 The relay server is a WebSocket broker with two roles:
 
-- **Agent** — a local `agentunnel` process that owns a PTY session. It connects to the relay, registers the session, and streams terminal output and resize events. It receives input from attached browsers.
-- **Browser** — a web or native client that lists live sessions and attaches to one for viewing and optional interaction. Browsers never control the terminal size; resize flows one-way from agent to browser.
+- **Agent** — a local `agentunnel` process that owns a PTY session. It connects to the relay, registers the session, and streams terminal output and resize events. It receives input from attached clients.
+- **Client** — an external client such as a mobile app that lists live sessions and attaches to one for viewing and optional interaction. Clients never control the terminal size. The relay stores the latest PTY size reported by the agent and includes that size on retained and live output frames.
 
 All WebSocket communication uses JSON text frames. Binary data (terminal I/O) is base64-encoded within JSON fields.
 
@@ -15,18 +15,18 @@ All WebSocket communication uses JSON text frames. Binary data (terminal I/O) is
 
 | Endpoint | Role | Auth | Protocol |
 |----------|------|------|----------|
-| `GET /api/sessions` | Browser | Basic Auth | HTTP JSON |
-| `GET /api/sessions/:id/history` | Browser | Basic Auth | HTTP JSON |
-| `POST /api/sessions/:id/read` | Browser | Basic Auth | HTTP JSON |
-| `GET /api/sessions/:id/ws` | Browser | Basic Auth | WebSocket |
+| `GET /api/sessions` | Client | Basic Auth | HTTP JSON |
+| `GET /api/sessions/:id/history` | Client | Basic Auth | HTTP JSON |
+| `POST /api/sessions/:id/read` | Client | Basic Auth | HTTP JSON |
+| `GET /api/sessions/:id/ws` | Client | Basic Auth | WebSocket |
 | `GET /agent/ws` | Agent | Bearer token | WebSocket |
 | `GET /healthz` | Any | None | HTTP text |
 
 ## Authentication
 
-### Browser — Basic Auth
+### Client — Basic Auth
 
-All browser-facing endpoints require HTTP Basic Authentication.
+All client-facing endpoints require HTTP Basic Authentication.
 
 ```
 Authorization: Basic base64(username:password)
@@ -91,31 +91,32 @@ Returns a JSON array of `SessionInfo` objects, sorted by most recently active:
 | `last_read_seq` | integer | yes | Shared read marker for this live session |
 | `unread_count` | integer | yes | `latest_seq - last_read_seq` |
 | `preview_seq` | integer | yes | Sequence number of the latest preview frame |
-| `preview_b64` | string | no | Latest raw output frame for dashboard mini-terminal rendering |
+| `preview_b64` | string | no | Latest raw output frame retained for lightweight client previews |
 
 Notes:
-- The dashboard currently renders `codex` sessions with OpenAI branding, but the wire-level launcher value remains `codex`.
-- `last_preview` remains available as a compatibility field, but the browser UI now prefers `preview_b64`.
+- `last_preview` remains available as a human-readable compatibility field.
+- `preview_b64` is the newest raw output frame retained for lightweight session previews.
 
 ### Fetch Session History
 
 ```
-GET /api/sessions/:id/history?before=<seq>&after=<seq>&limit=<n>&max_bytes=<n>
+GET /api/sessions/:id/history?after=<seq>
 Authorization: Basic base64(username:password)
 ```
 
-Returns one page of retained live-session history:
+Returns all retained output frames with `seq > after` for the current live session:
 
 ```json
 {
   "messages": [
-    { "seq": 38, "data_b64": "..." },
-    { "seq": 39, "data_b64": "..." },
-    { "seq": 40, "data_b64": "..." }
+    { "seq": 38, "data_b64": "...", "cols": 120, "rows": 40 },
+    { "seq": 39, "data_b64": "...", "cols": 120, "rows": 40 },
+    { "seq": 40, "data_b64": "...", "cols": 132, "rows": 43 }
   ],
-  "has_more": true,
   "latest_seq": 42,
-  "last_read_seq": 37
+  "last_read_seq": 37,
+  "current_cols": 132,
+  "current_rows": 43
 }
 ```
 
@@ -123,10 +124,7 @@ Query parameters:
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `before` | integer | no | Return frames with `seq < before` |
-| `after` | integer | no | Return frames with `seq > after` |
-| `limit` | integer | no | Target maximum number of frames in the page |
-| `max_bytes` | integer | no | Target maximum total raw byte size in the page |
+| `after` | integer | yes | Return retained output frames with `seq > after` |
 
 Response fields:
 
@@ -135,14 +133,17 @@ Response fields:
 | `messages` | array | History frames in chronological order |
 | `messages[].seq` | integer | Output-frame sequence number |
 | `messages[].data_b64` | string | Raw PTY bytes for that frame |
-| `has_more` | boolean | Whether more frames are available in the requested direction/window |
+| `messages[].cols` | integer | Terminal width in columns when that output frame was produced |
+| `messages[].rows` | integer | Terminal height in rows when that output frame was produced |
 | `latest_seq` | integer | Latest live output sequence known to the relay |
 | `last_read_seq` | integer | Current shared read marker |
+| `current_cols` | integer | Latest terminal width reported by the agent for this live session |
+| `current_rows` | integer | Latest terminal height reported by the agent for this live session |
 
 Semantics:
-- Omitting both `before` and `after` returns the newest page.
-- `before` is used for backward paging in the session detail view.
-- `after` is used to bridge frames emitted between initial history fetch and live WebSocket attach.
+- `after=0` returns the entire currently retained in-memory output buffer for the live session.
+- Clients are expected to persist the highest applied `seq` locally and request only newer frames later.
+- The relay retains history only while the session is live and the relay process stays up.
 - If the session does not exist, the relay returns `404 Not Found`.
 
 ### Mark Session Read
@@ -182,20 +183,22 @@ GET /healthz
 
 Returns `200 OK` with body `ok`. No authentication required.
 
-## Browser WebSocket
+## Client WebSocket
 
 ### Connect
 
 ```
-GET /api/sessions/:id/ws
+GET /api/sessions/:id/ws?after=<seq>
 Authorization: Basic base64(username:password)
 ```
 
-Upgrades to a WebSocket connection attached to the specified session. The relay enforces a same-origin check on the WebSocket upgrade request.
+Upgrades to a WebSocket connection attached to the specified session. The relay enforces a same-origin check when clients send an `Origin` header; native/mobile clients typically omit `Origin`, which is accepted.
 
 If the session does not exist, the server returns `404 Not Found` before upgrade.
 
-### Frames: Server → Browser
+On connect, the relay replays retained output with `seq > after` through the WebSocket sink first, then continues streaming live output for the same session.
+
+### Frames: Server → Client
 
 **Output frame** — terminal bytes from the agent's PTY:
 
@@ -203,7 +206,9 @@ If the session does not exist, the server returns `404 Not Found` before upgrade
 {
   "type": "output",
   "seq": 42,
-  "data": "SGVsbG8gV29ybGQ="
+  "data": "SGVsbG8gV29ybGQ=",
+  "cols": 132,
+  "rows": 43
 }
 ```
 
@@ -212,26 +217,12 @@ If the session does not exist, the server returns `404 Not Found` before upgrade
 | `type` | string | Always `"output"` |
 | `seq` | integer | Monotonic output-frame sequence number assigned by the relay |
 | `data` | string | Standard base64-encoded raw PTY bytes |
+| `cols` | integer | Terminal width in columns when this output was produced |
+| `rows` | integer | Terminal height in rows when this output was produced |
 
-**Resize frame** — PTY dimensions changed on the agent side:
+Clients that want faithful replay should resize their terminal emulator to `cols` / `rows` immediately before writing that output frame.
 
-```json
-{
-  "type": "resize",
-  "cols": 120,
-  "rows": 40
-}
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `type` | string | Always `"resize"` |
-| `cols` | integer | Current terminal width in columns |
-| `rows` | integer | Current terminal height in rows |
-
-The browser should use this to update its terminal emulator dimensions (e.g., in "scroll" display mode). The browser never sends resize frames — terminal size is owned exclusively by the agent's local terminal.
-
-### Frames: Browser → Server
+### Frames: Client → Server
 
 **Input frame** — keystrokes to forward to the agent's PTY:
 
@@ -315,11 +306,11 @@ The `session` object must include at minimum: `session_id`, `launcher`, `cwd`, `
 | `cols` | integer | New terminal width in columns |
 | `rows` | integer | New terminal height in rows |
 
-The relay broadcasts resize frames to all attached browser sinks.
+The relay updates the session's current PTY size and stamps that size onto subsequent retained and live output frames. It does not forward standalone resize frames to clients.
 
 ### Frames: Relay → Agent
 
-**Input frame** — keystrokes forwarded from an attached browser:
+**Input frame** — keystrokes forwarded from an attached client:
 
 ```json
 {
@@ -328,7 +319,7 @@ The relay broadcasts resize frames to all attached browser sinks.
 }
 ```
 
-This is the only frame type the relay sends to the agent. Resize is one-way: agent → relay → browsers.
+This is the only frame type the relay sends to the agent. Resize remains one-way: agent → relay.
 
 ## Connection Lifecycle
 
@@ -342,12 +333,12 @@ This is the only frame type the relay sends to the agent. Resize is one-way: age
    ← Relay adds session to live registry
 
 3. Stream output frames as PTY produces bytes
-   ← Relay broadcasts to attached browsers
+   ← Relay broadcasts to attached clients
    ← Relay appends the frame to live in-memory history
-   ← Relay updates unread metadata and latest dashboard preview
+   ← Relay updates unread metadata and latest preview frame
 
 4. Send resize frames when local terminal resizes
-   ← Relay broadcasts to attached browsers
+   ← Relay updates the session's current PTY size for future output frames
 
 5. Receive input frames from relay
    → Forward decoded bytes to PTY stdin
@@ -358,29 +349,31 @@ This is the only frame type the relay sends to the agent. Resize is one-way: age
 
 7. On disconnect (network drop, agent exit, etc.)
    ← Relay removes session from registry
-   ← Attached browsers stop receiving output
+   ← Attached clients stop receiving output
 ```
 
-### Browser Lifecycle
+### Client Lifecycle
 
 ```
 1. GET /api/sessions with Basic Auth
    ← Receive list of live sessions, unread counters, and preview frames
 
-2. GET /api/sessions/:id/history
-   ← Receive newest retained history page
+2. GET /api/sessions/:id/history?after=0
+   ← Receive the currently retained output buffer for that live session
 
-3. Open WebSocket to /api/sessions/:id/ws
+3. Persist the highest applied output `seq` locally
+
+4. Open WebSocket to /api/sessions/:id/ws?after=<stored-seq>
    Headers: Authorization: Basic base64(user:pass)
+   ← Relay replays retained output newer than `after`, then continues with live output
 
-4. Receive output frames
+5. Receive output frames
+   → Resize terminal emulator to `cols` / `rows`
    → Decode base64 → write raw bytes to terminal emulator
-
-5. Receive resize frames
-   → Update terminal emulator dimensions to match the agent's PTY
+   → Update stored max `seq`
 
 6. POST /api/sessions/:id/read
-   → Advance the shared read marker after history replay + live attach are active
+   → Advance the shared read marker after replay + attach are active
 
 7. Optionally send input frames
    → Encode keystrokes as base64 → send as input frame
@@ -389,7 +382,7 @@ This is the only frame type the relay sends to the agent. Resize is one-way: age
    → Return to session list or show disconnected state
 ```
 
-> **Note:** Browsers never send resize frames. Terminal dimensions are owned by the agent's local terminal. The browser can choose how to display the content — either "wrap" mode (fit to browser window) or "scroll" mode (match PTY dimensions exactly).
+> **Note:** Clients never send resize frames. Terminal dimensions are owned by the agent's local terminal and are attached to each output frame by the relay.
 
 ## Data Encoding
 
@@ -416,9 +409,16 @@ Recommended terminal emulator libraries for native platforms:
 
 These libraries accept raw byte streams, which is exactly what the base64-decoded `output` data provides.
 
+For replay correctness, treat the relay as a transient cache and your app as the durable owner of terminal history:
+
+1. Load retained history with `after=0` on first attach
+2. Persist output frames and the highest applied `seq` locally
+3. Reconnect with `history?after=<stored-seq>` or `ws?after=<stored-seq>`
+4. Resize to each output frame's `cols` / `rows` before writing its bytes
+
 ### Read-Only by Default
 
-The relay UI is designed primarily for monitoring. Implement an explicit toggle (similar to the web UI's "Read-only" / "Input on" chip) before forwarding input frames. This prevents accidental keystrokes from reaching the agent.
+Clients are encouraged to default to a read-only or explicitly enabled input mode before forwarding keystrokes. This prevents accidental input from reaching the agent.
 
 ### Reconnection
 
@@ -428,12 +428,12 @@ Mobile clients should:
 - Handle WebSocket `onclose` gracefully
 - Return to the session list when a session WebSocket closes
 - Re-fetch `/api/sessions` to get updated session list
-- Use `/api/sessions/:id/history` for initial replay before live attach if they want parity with the web UI
+- Use `/api/sessions/:id/history` for initial replay before live attach
 - Not attempt automatic reconnection to a specific session if the relay reports `404` (the session may no longer exist)
 
 ### Input Filtering
 
-Browser terminal emulators (like xterm.js) can generate automatic response sequences (cursor position reports, device attribute responses) that should NOT be forwarded to the PTY. If your terminal emulator generates these, filter them before sending input frames. Common patterns to filter:
+Terminal emulators can generate automatic response sequences (cursor position reports, device attribute responses) that should NOT be forwarded to the PTY. If your terminal emulator generates these, filter them before sending input frames. Common patterns to filter:
 
 | Sequence | Pattern | Description |
 |----------|---------|-------------|

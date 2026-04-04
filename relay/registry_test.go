@@ -36,6 +36,10 @@ type recordingSink struct {
 	reasons []string
 }
 
+type sequencingSink struct {
+	messages []protocol.Message
+}
+
 func (s *recordingSink) WriteOutput(data []byte) error {
 	s.chunks = append(s.chunks, append([]byte(nil), data...))
 	return nil
@@ -63,6 +67,21 @@ func (s *recordingSink) DisconnectReason() string {
 		return ""
 	}
 	return s.reasons[len(s.reasons)-1]
+}
+
+func (s *sequencingSink) WriteOutput(data []byte) error {
+	s.messages = append(s.messages, protocol.EncodeOutput(data))
+	return nil
+}
+
+func (s *sequencingSink) WriteOutputFrame(seq uint64, data []byte, cols, rows int) error {
+	s.messages = append(s.messages, protocol.EncodeOutputWithSeqAndSize(seq, data, cols, rows))
+	return nil
+}
+
+func (s *sequencingSink) PreloadMessages(msgs []protocol.Message) error {
+	s.messages = append(s.messages, msgs...)
+	return nil
 }
 
 type blockingPeer struct {
@@ -349,7 +368,7 @@ func TestRegistryRetainsFrameAtExactHistoryBudgetBoundary(t *testing.T) {
 	reg.TouchOutput("sess-1", first, time.Unix(10, 0))
 	reg.TouchOutput("sess-1", second, time.Unix(11, 0))
 
-	page, ok := reg.History("sess-1", 0, 0, 0, maxSessionHistoryBytes*2)
+	page, ok := reg.History("sess-1", 0)
 	if !ok {
 		t.Fatal("History returned false for live session")
 	}
@@ -374,7 +393,7 @@ func TestRegistryRetainsOnlyWholeFramesWithinHistoryBudget(t *testing.T) {
 	reg.TouchOutput("sess-1", frame2, time.Unix(11, 0))
 	reg.TouchOutput("sess-1", frame3, time.Unix(12, 0))
 
-	page, ok := reg.History("sess-1", 0, 0, 0, maxSessionHistoryBytes*2)
+	page, ok := reg.History("sess-1", 0)
 	if !ok {
 		t.Fatal("History returned false for live session")
 	}
@@ -389,7 +408,7 @@ func TestRegistryRetainsOnlyWholeFramesWithinHistoryBudget(t *testing.T) {
 	}
 }
 
-func TestRegistryHistorySupportsAfterPaging(t *testing.T) {
+func TestRegistryHistorySupportsAfterSync(t *testing.T) {
 	reg := NewRegistry()
 	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, fakeAgentPeer{})
 
@@ -397,7 +416,7 @@ func TestRegistryHistorySupportsAfterPaging(t *testing.T) {
 		reg.TouchOutput("sess-1", []byte(output), time.Unix(10, 0))
 	}
 
-	page, ok := reg.History("sess-1", 0, 2, 2, maxSessionHistoryBytes*2)
+	page, ok := reg.History("sess-1", 2)
 	if !ok {
 		t.Fatal("History returned false for live session")
 	}
@@ -407,19 +426,45 @@ func TestRegistryHistorySupportsAfterPaging(t *testing.T) {
 	if page.Messages[0].Seq != 3 || page.Messages[1].Seq != 4 {
 		t.Fatalf("seqs = [%d %d], want [3 4]", page.Messages[0].Seq, page.Messages[1].Seq)
 	}
-	if page.HasMore {
-		t.Fatal("HasMore = true, want false at end of bounded after page")
+}
+
+func TestRegistryAttachSinkPreloadsBacklogBeforeLiveOutput(t *testing.T) {
+	reg := NewRegistry()
+	peer := &recordingPeer{}
+	sink := &sequencingSink{}
+
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, peer)
+	if ok := reg.UpdateSizeIfOwner("sess-1", peer, 120, 40); !ok {
+		t.Fatal("UpdateSizeIfOwner returned false for current owner")
+	}
+	if ok := reg.TouchOutputIfOwner("sess-1", peer, []byte("one"), time.Unix(10, 0)); !ok {
+		t.Fatal("TouchOutputIfOwner returned false for output one")
+	}
+	if ok := reg.UpdateSizeIfOwner("sess-1", peer, 132, 43); !ok {
+		t.Fatal("UpdateSizeIfOwner returned false for current owner resize")
+	}
+	if ok := reg.TouchOutputIfOwner("sess-1", peer, []byte("two"), time.Unix(11, 0)); !ok {
+		t.Fatal("TouchOutputIfOwner returned false for output two")
 	}
 
-	page, ok = reg.History("sess-1", 0, 2, 1, maxSessionHistoryBytes*2)
-	if !ok {
-		t.Fatal("History returned false for live session")
+	if err := reg.AttachSink("sess-1", "browser", sink, 1); err != nil {
+		t.Fatalf("AttachSink returned error: %v", err)
 	}
-	if len(page.Messages) != 1 || page.Messages[0].Seq != 3 {
-		t.Fatalf("bounded after page = %#v, want seq 3 only", page.Messages)
+	if ok := reg.TouchOutputIfOwner("sess-1", peer, []byte("three"), time.Unix(12, 0)); !ok {
+		t.Fatal("TouchOutputIfOwner returned false for output three")
 	}
-	if !page.HasMore {
-		t.Fatal("HasMore = false, want true when bounded after page is truncated")
+
+	if len(sink.messages) != 2 {
+		t.Fatalf("len(messages) = %d, want 2", len(sink.messages))
+	}
+	if sink.messages[0].Seq != 2 || sink.messages[1].Seq != 3 {
+		t.Fatalf("seqs = [%d %d], want [2 3]", sink.messages[0].Seq, sink.messages[1].Seq)
+	}
+	if sink.messages[0].Cols != 132 || sink.messages[0].Rows != 43 {
+		t.Fatalf("backlog size = %dx%d, want 132x43", sink.messages[0].Cols, sink.messages[0].Rows)
+	}
+	if sink.messages[1].Cols != 132 || sink.messages[1].Rows != 43 {
+		t.Fatalf("live size = %dx%d, want 132x43", sink.messages[1].Cols, sink.messages[1].Rows)
 	}
 }
 

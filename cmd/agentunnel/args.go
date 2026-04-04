@@ -23,7 +23,7 @@ func parseRunArgs(argv []string) (runArgs, error) {
 	fs.SetOutput(io.Discard)
 
 	var cfg runArgs
-	fs.StringVar(&cfg.Label, "label", "", "optional session label for relay dashboard")
+	fs.StringVar(&cfg.Label, "label", "", "optional session label for relay clients")
 	fs.StringVar(&cfg.RelayAddr, "relay-addr", "", "relay address in host:port form (fallback: AGENTUNNEL_RELAY_ADDR)")
 
 	if err := fs.Parse(argv[1:]); err != nil {

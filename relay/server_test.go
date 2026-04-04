@@ -11,7 +11,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"testing/fstest"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -22,10 +21,13 @@ type sessionHistoryResponse struct {
 	Messages []struct {
 		Seq     uint64 `json:"seq"`
 		DataB64 string `json:"data_b64"`
+		Cols    int    `json:"cols"`
+		Rows    int    `json:"rows"`
 	} `json:"messages"`
-	HasMore     bool   `json:"has_more"`
 	LatestSeq   uint64 `json:"latest_seq"`
 	LastReadSeq uint64 `json:"last_read_seq"`
+	CurrentCols int    `json:"current_cols"`
+	CurrentRows int    `json:"current_rows"`
 }
 
 type readStateResponse struct {
@@ -42,7 +44,6 @@ func TestHandlerRejectsDashboardWithoutBasicAuth(t *testing.T) {
 		BrowserUser:     "demo",
 		BrowserPassword: "secret",
 		AgentToken:      "agent-token",
-		Files:           testFiles(),
 	})
 
 	rec := httptest.NewRecorder()
@@ -70,7 +71,6 @@ func TestHandlerReturnsLiveSessionsWithBasicAuth(t *testing.T) {
 		BrowserUser:     "demo",
 		BrowserPassword: "secret",
 		AgentToken:      "agent-token",
-		Files:           testFiles(),
 	})
 
 	rec := httptest.NewRecorder()
@@ -109,14 +109,25 @@ func TestHandlerServesSessionHistoryAndReadState(t *testing.T) {
 	agentConn := dialAndRegisterAgent(t, server.URL, "sess-1")
 	defer agentConn.Close()
 
-	for _, output := range []string{"one", "two", "three"} {
-		if err := agentConn.WriteJSON(protocol.EncodeOutput([]byte(output))); err != nil {
+	for _, frame := range []struct {
+		cols int
+		rows int
+		data string
+	}{
+		{cols: 120, rows: 40, data: "one"},
+		{cols: 120, rows: 40, data: "two"},
+		{cols: 132, rows: 43, data: "three"},
+	} {
+		if err := agentConn.WriteJSON(protocol.Message{Type: "resize", Cols: frame.cols, Rows: frame.rows}); err != nil {
+			t.Fatalf("WriteJSON resize returned error: %v", err)
+		}
+		if err := agentConn.WriteJSON(protocol.EncodeOutput([]byte(frame.data))); err != nil {
 			t.Fatalf("WriteJSON output returned error: %v", err)
 		}
 	}
 	waitForLatestSeq(t, reg, "sess-1", 3)
 
-	historyReq := httptest.NewRequest(http.MethodGet, "/api/sessions/sess-1/history", nil)
+	historyReq := httptest.NewRequest(http.MethodGet, "/api/sessions/sess-1/history?after=0", nil)
 	historyReq.Header.Set("Authorization", basicAuth("demo", "secret"))
 	historyRec := httptest.NewRecorder()
 	NewHandler(HandlerConfig{
@@ -140,12 +151,10 @@ func TestHandlerServesSessionHistoryAndReadState(t *testing.T) {
 	if history.LastReadSeq != 0 {
 		t.Fatalf("LastReadSeq = %d, want 0", history.LastReadSeq)
 	}
-	if history.HasMore {
-		t.Fatal("HasMore = true, want false")
-	}
 	if len(history.Messages) != 3 {
 		t.Fatalf("len(Messages) = %d, want 3", len(history.Messages))
 	}
+	wantSizes := [][2]int{{120, 40}, {120, 40}, {132, 43}}
 	for i, want := range []string{"one", "two", "three"} {
 		if history.Messages[i].Seq != uint64(i+1) {
 			t.Fatalf("message %d seq = %d, want %d", i, history.Messages[i].Seq, i+1)
@@ -157,32 +166,15 @@ func TestHandlerServesSessionHistoryAndReadState(t *testing.T) {
 		if string(data) != want {
 			t.Fatalf("message %d data = %q, want %q", i, string(data), want)
 		}
+		if history.Messages[i].Cols != wantSizes[i][0] || history.Messages[i].Rows != wantSizes[i][1] {
+			t.Fatalf("message %d size = %dx%d, want %dx%d", i, history.Messages[i].Cols, history.Messages[i].Rows, wantSizes[i][0], wantSizes[i][1])
+		}
+	}
+	if history.CurrentCols != 132 || history.CurrentRows != 43 {
+		t.Fatalf("current size = %dx%d, want 132x43", history.CurrentCols, history.CurrentRows)
 	}
 
-	historyReq = httptest.NewRequest(http.MethodGet, "/api/sessions/sess-1/history?before=3&limit=1", nil)
-	historyReq.Header.Set("Authorization", basicAuth("demo", "secret"))
-	historyRec = httptest.NewRecorder()
-	NewHandler(HandlerConfig{
-		Registry:        reg,
-		BrowserUser:     "demo",
-		BrowserPassword: "secret",
-		AgentToken:      "agent-token",
-	}).ServeHTTP(historyRec, historyReq)
-
-	if historyRec.Code != http.StatusOK {
-		t.Fatalf("paged history status = %d, want 200", historyRec.Code)
-	}
-	if err := json.Unmarshal(historyRec.Body.Bytes(), &history); err != nil {
-		t.Fatalf("Unmarshal paged history returned error: %v", err)
-	}
-	if !history.HasMore {
-		t.Fatal("HasMore = false, want true for paged history")
-	}
-	if len(history.Messages) != 1 || history.Messages[0].Seq != 2 {
-		t.Fatalf("paged history messages = %#v, want seq 2 only", history.Messages)
-	}
-
-	historyReq = httptest.NewRequest(http.MethodGet, "/api/sessions/sess-1/history?after=2&before=4", nil)
+	historyReq = httptest.NewRequest(http.MethodGet, "/api/sessions/sess-1/history?after=2", nil)
 	historyReq.Header.Set("Authorization", basicAuth("demo", "secret"))
 	historyRec = httptest.NewRecorder()
 	NewHandler(HandlerConfig{
@@ -198,11 +190,11 @@ func TestHandlerServesSessionHistoryAndReadState(t *testing.T) {
 	if err := json.Unmarshal(historyRec.Body.Bytes(), &history); err != nil {
 		t.Fatalf("Unmarshal bounded after history returned error: %v", err)
 	}
-	if history.HasMore {
-		t.Fatal("bounded after history HasMore = true, want false")
-	}
 	if len(history.Messages) != 1 || history.Messages[0].Seq != 3 {
 		t.Fatalf("bounded after history messages = %#v, want seq 3 only", history.Messages)
+	}
+	if history.Messages[0].Cols != 132 || history.Messages[0].Rows != 43 {
+		t.Fatalf("bounded after history size = %dx%d, want 132x43", history.Messages[0].Cols, history.Messages[0].Rows)
 	}
 
 	readBody := strings.NewReader(`{"seq":2}`)
@@ -265,7 +257,6 @@ func TestHandlerRejectsAgentWebSocketWithWrongToken(t *testing.T) {
 		BrowserUser:     "demo",
 		BrowserPassword: "secret",
 		AgentToken:      "agent-token",
-		Files:           testFiles(),
 	}))
 	defer server.Close()
 
@@ -345,7 +336,6 @@ func TestNewHandlerWiresInjectedLoggerIntoRegistry(t *testing.T) {
 		BrowserPassword: "secret",
 		AgentToken:      "agent-token",
 		Logger:          logger,
-		Files:           testFiles(),
 	})
 
 	if reg.logger != logger {
@@ -363,7 +353,6 @@ func TestNewHandlerKeepsRegistryLoggerWhenConfigLoggerNil(t *testing.T) {
 		BrowserUser:     "demo",
 		BrowserPassword: "secret",
 		AgentToken:      "agent-token",
-		Files:           testFiles(),
 	})
 
 	if reg.logger != logger {
@@ -380,7 +369,6 @@ func TestHandlerLogsAgentAuthFailure(t *testing.T) {
 		BrowserPassword: "secret",
 		AgentToken:      "agent-token",
 		Logger:          NewLogger(logs),
-		Files:           testFiles(),
 	}))
 	defer server.Close()
 
@@ -402,50 +390,21 @@ func TestHandlerLogsAgentAuthFailure(t *testing.T) {
 	}
 }
 
-func TestHandlerServesRelayShellOnRootAndSessionPath(t *testing.T) {
+func TestHandlerRootReturnsNotFoundWithoutBundledFrontend(t *testing.T) {
 	reg := NewRegistry()
 	handler := NewHandler(HandlerConfig{
 		Registry:        reg,
 		BrowserUser:     "demo",
 		BrowserPassword: "secret",
 		AgentToken:      "agent-token",
-		Files:           testFiles(),
-	})
-
-	for _, path := range []string{"/", "/sessions/sess-1"} {
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, path, nil)
-		req.Header.Set("Authorization", basicAuth("demo", "secret"))
-		handler.ServeHTTP(rec, req)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("%s status = %d, want 200", path, rec.Code)
-		}
-		if !strings.Contains(rec.Body.String(), "relay-root") {
-			t.Fatalf("%s body = %q, want relay-root shell marker", path, rec.Body.String())
-		}
-	}
-}
-
-func TestHandlerServesBuiltInRelayShellWhenIndexHTMLIsMissing(t *testing.T) {
-	reg := NewRegistry()
-	handler := NewHandler(HandlerConfig{
-		Registry:        reg,
-		BrowserUser:     "demo",
-		BrowserPassword: "secret",
-		AgentToken:      "agent-token",
-		Files:           fstest.MapFS{},
 	})
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("Authorization", basicAuth("demo", "secret"))
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "relay-root") {
-		t.Fatalf("body = %q, want built-in relay shell marker", rec.Body.String())
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
 	}
 }
 
@@ -502,7 +461,7 @@ func TestAgentRegisterAddsLiveSessionAndBrowserAttachReceivesOutput(t *testing.T
 	}
 }
 
-func TestBrowserAttachAddsSequenceNumbersToOutputFrames(t *testing.T) {
+func TestBrowserAttachAddsSequenceNumbersAndTerminalSizeToOutputFrames(t *testing.T) {
 	reg := NewRegistry()
 	server := httptest.NewServer(NewHandler(HandlerConfig{
 		Registry:        reg,
@@ -514,6 +473,10 @@ func TestBrowserAttachAddsSequenceNumbersToOutputFrames(t *testing.T) {
 
 	agentConn := dialAndRegisterAgent(t, server.URL, "sess-1")
 	defer agentConn.Close()
+
+	if err := agentConn.WriteJSON(protocol.Message{Type: "resize", Cols: 120, Rows: 40}); err != nil {
+		t.Fatalf("WriteJSON resize returned error: %v", err)
+	}
 
 	browserURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/sessions/sess-1/ws"
 	browserHeaders := http.Header{}
@@ -535,9 +498,12 @@ func TestBrowserAttachAddsSequenceNumbersToOutputFrames(t *testing.T) {
 	if !strings.Contains(string(raw), `"seq":1`) {
 		t.Fatalf("browser frame = %s, want seq 1", string(raw))
 	}
+	if !strings.Contains(string(raw), `"cols":120`) || !strings.Contains(string(raw), `"rows":40`) {
+		t.Fatalf("browser frame = %s, want cols/rows 120x40", string(raw))
+	}
 }
 
-func TestAgentResizeBroadcastsToBrowser(t *testing.T) {
+func TestBrowserAttachWithAfterStreamsBacklogThenLiveOutput(t *testing.T) {
 	reg := NewRegistry()
 	server := httptest.NewServer(NewHandler(HandlerConfig{
 		Registry:        reg,
@@ -550,7 +516,21 @@ func TestAgentResizeBroadcastsToBrowser(t *testing.T) {
 	agentConn := dialAndRegisterAgent(t, server.URL, "sess-1")
 	defer agentConn.Close()
 
-	browserURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/sessions/sess-1/ws"
+	if err := agentConn.WriteJSON(protocol.Message{Type: "resize", Cols: 120, Rows: 40}); err != nil {
+		t.Fatalf("WriteJSON resize returned error: %v", err)
+	}
+	if err := agentConn.WriteJSON(protocol.EncodeOutput([]byte("one"))); err != nil {
+		t.Fatalf("WriteJSON output one returned error: %v", err)
+	}
+	if err := agentConn.WriteJSON(protocol.Message{Type: "resize", Cols: 132, Rows: 43}); err != nil {
+		t.Fatalf("WriteJSON resize returned error: %v", err)
+	}
+	if err := agentConn.WriteJSON(protocol.EncodeOutput([]byte("two"))); err != nil {
+		t.Fatalf("WriteJSON output two returned error: %v", err)
+	}
+	waitForLatestSeq(t, reg, "sess-1", 2)
+
+	browserURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/sessions/sess-1/ws?after=1"
 	browserHeaders := http.Header{}
 	browserHeaders.Set("Authorization", basicAuth("demo", "secret"))
 	browserConn, _, err := websocket.DefaultDialer.Dial(browserURL, browserHeaders)
@@ -559,20 +539,47 @@ func TestAgentResizeBroadcastsToBrowser(t *testing.T) {
 	}
 	defer browserConn.Close()
 
-	if err := agentConn.WriteJSON(protocol.Message{Type: "resize", Cols: 120, Rows: 40}); err != nil {
-		t.Fatalf("WriteJSON resize returned error: %v", err)
-	}
-
 	_ = browserConn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	var got protocol.Message
 	if err := browserConn.ReadJSON(&got); err != nil {
 		t.Fatalf("ReadJSON browser returned error: %v", err)
 	}
-	if got.Type != "resize" {
-		t.Fatalf("Type = %q, want resize", got.Type)
+	if got.Type != "output" {
+		t.Fatalf("Type = %q, want output backlog", got.Type)
 	}
-	if got.Cols != 120 || got.Rows != 40 {
-		t.Fatalf("resize = %dx%d, want 120x40", got.Cols, got.Rows)
+	if got.Seq != 2 {
+		t.Fatalf("Seq = %d, want 2", got.Seq)
+	}
+	if got.Cols != 132 || got.Rows != 43 {
+		t.Fatalf("backlog size = %dx%d, want 132x43", got.Cols, got.Rows)
+	}
+	data, err := protocol.DecodeData(got)
+	if err != nil {
+		t.Fatalf("DecodeData backlog returned error: %v", err)
+	}
+	if string(data) != "two" {
+		t.Fatalf("backlog data = %q, want two", string(data))
+	}
+
+	if err := agentConn.WriteJSON(protocol.EncodeOutput([]byte("three"))); err != nil {
+		t.Fatalf("WriteJSON output three returned error: %v", err)
+	}
+
+	if err := browserConn.ReadJSON(&got); err != nil {
+		t.Fatalf("ReadJSON browser live returned error: %v", err)
+	}
+	if got.Type != "output" || got.Seq != 3 {
+		t.Fatalf("live frame = %+v, want output seq 3", got)
+	}
+	if got.Cols != 132 || got.Rows != 43 {
+		t.Fatalf("live size = %dx%d, want 132x43", got.Cols, got.Rows)
+	}
+	data, err = protocol.DecodeData(got)
+	if err != nil {
+		t.Fatalf("DecodeData live returned error: %v", err)
+	}
+	if string(data) != "three" {
+		t.Fatalf("live data = %q, want three", string(data))
 	}
 }
 
@@ -1058,6 +1065,8 @@ func (s *backpressureTestSink) WriteOutput(data []byte) error {
 
 func (s *backpressureTestSink) Close() error { return nil }
 
+func (s *backpressureTestSink) PreloadMessages([]protocol.Message) error { return nil }
+
 func TestClientAttachLogsBackpressureDisconnect(t *testing.T) {
 	origFactory := clientSinkFactory
 	clientSinkFactory = func(conn *websocket.Conn, onBackpressure func()) clientSink {
@@ -1197,14 +1206,6 @@ func responseStatusCode(resp *http.Response) int {
 		return 0
 	}
 	return resp.StatusCode
-}
-
-func testFiles() fstest.MapFS {
-	return fstest.MapFS{
-		"index.html": {
-			Data: []byte("<!doctype html><div id=\"relay-root\">relay-root</div>"),
-		},
-	}
 }
 
 type logRecorder struct {

@@ -17,18 +17,23 @@ type historyFrame struct {
 	Seq  uint64
 	Data []byte
 	Size int
+	Cols int
+	Rows int
 }
 
 type historyMessage struct {
 	Seq     uint64 `json:"seq"`
 	DataB64 string `json:"data_b64"`
+	Cols    int    `json:"cols"`
+	Rows    int    `json:"rows"`
 }
 
 type historyPage struct {
 	Messages    []historyMessage `json:"messages"`
-	HasMore     bool             `json:"has_more"`
 	LatestSeq   uint64           `json:"latest_seq"`
 	LastReadSeq uint64           `json:"last_read_seq"`
+	CurrentCols int              `json:"current_cols"`
+	CurrentRows int              `json:"current_rows"`
 }
 
 func (s *liveSession) appendOutput(chunk []byte) uint64 {
@@ -42,6 +47,8 @@ func (s *liveSession) appendOutput(chunk []byte) uint64 {
 		Seq:  seq,
 		Data: cp,
 		Size: len(cp),
+		Cols: s.currentCols,
+		Rows: s.currentRows,
 	})
 	s.historyBytes += len(cp)
 
@@ -90,94 +97,54 @@ func (s *liveSession) snapshot() protocol.SessionInfo {
 }
 
 func (s *liveSession) historySnapshot(before, after uint64, limit, maxBytes int) historyPage {
-	if limit <= 0 {
-		limit = defaultHistoryPageLimit
-	}
-	if maxBytes <= 0 {
-		maxBytes = defaultHistoryPageMaxBytes
-	}
-
 	start := 0
 	if after > 0 {
 		start = sort.Search(len(s.history), func(i int) bool {
 			return s.history[i].Seq > after
 		})
 	}
-
-	end := len(s.history)
-	if before > 0 {
-		end = sort.Search(len(s.history), func(i int) bool {
-			return s.history[i].Seq >= before
-		})
-	}
-	if start >= end {
+	if start >= len(s.history) {
 		return historyPage{
 			LatestSeq:   s.latestSeq,
 			LastReadSeq: s.lastReadSeq,
+			CurrentCols: s.currentCols,
+			CurrentRows: s.currentRows,
 		}
 	}
 
-	if after > 0 {
-		stop := start
-		used := 0
-		count := 0
-		for i := start; i < end; i++ {
-			frame := s.history[i]
-			if count > 0 && (count >= limit || used+frame.Size > maxBytes) {
-				break
-			}
-			stop = i + 1
-			count++
-			used += frame.Size
-			if count >= limit || used >= maxBytes {
-				break
-			}
-		}
-
-		messages := make([]historyMessage, 0, stop-start)
-		for _, frame := range s.history[start:stop] {
-			messages = append(messages, historyMessage{
-				Seq:     frame.Seq,
-				DataB64: base64.StdEncoding.EncodeToString(frame.Data),
-			})
-		}
-
-		return historyPage{
-			Messages:    messages,
-			HasMore:     stop < end,
-			LatestSeq:   s.latestSeq,
-			LastReadSeq: s.lastReadSeq,
-		}
-	}
-
-	start = end
-	used := 0
-	count := 0
-	for i := end - 1; i >= 0; i-- {
-		frame := s.history[i]
-		if count > 0 && (count >= limit || used+frame.Size > maxBytes) {
-			break
-		}
-		start = i
-		count++
-		used += frame.Size
-		if count >= limit || used >= maxBytes || i == 0 {
-			break
-		}
-	}
-
-	messages := make([]historyMessage, 0, end-start)
-	for _, frame := range s.history[start:end] {
+	messages := make([]historyMessage, 0, len(s.history)-start)
+	for _, frame := range s.history[start:] {
 		messages = append(messages, historyMessage{
 			Seq:     frame.Seq,
 			DataB64: base64.StdEncoding.EncodeToString(frame.Data),
+			Cols:    frame.Cols,
+			Rows:    frame.Rows,
 		})
 	}
 
 	return historyPage{
 		Messages:    messages,
-		HasMore:     start > 0,
 		LatestSeq:   s.latestSeq,
 		LastReadSeq: s.lastReadSeq,
+		CurrentCols: s.currentCols,
+		CurrentRows: s.currentRows,
 	}
+}
+
+func (s *liveSession) backlogMessages(after uint64) []protocol.Message {
+	start := 0
+	if after > 0 {
+		start = sort.Search(len(s.history), func(i int) bool {
+			return s.history[i].Seq > after
+		})
+	}
+	if start >= len(s.history) {
+		return nil
+	}
+
+	messages := make([]protocol.Message, 0, len(s.history)-start)
+	for _, frame := range s.history[start:] {
+		messages = append(messages, protocol.EncodeOutputWithSeqAndSize(frame.Seq, frame.Data, frame.Cols, frame.Rows))
+	}
+	return messages
 }
