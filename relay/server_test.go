@@ -984,10 +984,60 @@ func TestClientAttachLogsLifecycle(t *testing.T) {
 	if got := disconnected["reason"]; got != "client_closed" {
 		t.Fatalf("reason = %v, want client_closed", got)
 	}
+	if got := disconnected["close_code"]; got != float64(websocket.CloseNormalClosure) {
+		t.Fatalf("close_code = %v, want %d", got, websocket.CloseNormalClosure)
+	}
 	if _, ok := disconnected["duration_ms"].(float64); !ok {
 		t.Fatalf("duration_ms = %T, want number", disconnected["duration_ms"])
 	}
 	_ = browserConn.Close()
+}
+
+func TestAgentDisconnectClosesAttachedClientsAndLogsReason(t *testing.T) {
+	reg := NewRegistry()
+	logs := newLogRecorder()
+	server := httptest.NewServer(NewHandler(HandlerConfig{
+		Registry:        reg,
+		BrowserUser:     "demo",
+		BrowserPassword: "secret",
+		AgentToken:      "agent-token",
+		Logger:          NewLogger(logs),
+	}))
+	defer server.Close()
+
+	agentConn := dialAndRegisterAgent(t, server.URL, "sess-1")
+	waitForLogEvent(t, logs, "agent_registered", func(entry map[string]any) bool {
+		return entry["session_id"] == "sess-1"
+	})
+
+	browserURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/sessions/sess-1/ws"
+	headers := http.Header{}
+	headers.Set("Authorization", basicAuth("demo", "secret"))
+	headers.Set("User-Agent", "relay-test-client/1.0")
+
+	browserConn, _, err := websocket.DefaultDialer.Dial(browserURL, headers)
+	if err != nil {
+		t.Fatalf("Dial browser returned error: %v", err)
+	}
+	defer browserConn.Close()
+
+	connected := waitForLogEvent(t, logs, "client_ws_connected", func(entry map[string]any) bool {
+		return entry["session_id"] == "sess-1"
+	})
+	clientID, ok := connected["client_id"].(string)
+	if !ok || clientID == "" {
+		t.Fatalf("client_id = %v, want non-empty string", connected["client_id"])
+	}
+
+	_ = agentConn.Close()
+	waitForSessionCount(t, server.URL, basicAuth("demo", "secret"), 0)
+
+	disconnected := waitForLogEvent(t, logs, "client_disconnected", func(entry map[string]any) bool {
+		return entry["session_id"] == "sess-1" && entry["client_id"] == clientID
+	})
+	if got := disconnected["reason"]; got != "agent_disconnected" {
+		t.Fatalf("reason = %v, want agent_disconnected", got)
+	}
 }
 
 type backpressureTestSink struct {

@@ -16,6 +16,10 @@ func Int64(key string, value int64) Field {
 	return slog.Int64(key, value)
 }
 
+func Int(key string, value int) Field {
+	return slog.Int(key, value)
+}
+
 type Logger struct {
 	logger *slog.Logger
 }

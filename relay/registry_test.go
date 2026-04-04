@@ -32,6 +32,8 @@ func (p *recordingPeer) Close() error {
 type recordingSink struct {
 	chunks  [][]byte
 	resizes [][2]int
+	closed  int
+	reasons []string
 }
 
 func (s *recordingSink) WriteOutput(data []byte) error {
@@ -42,6 +44,25 @@ func (s *recordingSink) WriteOutput(data []byte) error {
 func (s *recordingSink) WriteResize(cols, rows int) error {
 	s.resizes = append(s.resizes, [2]int{cols, rows})
 	return nil
+}
+
+func (s *recordingSink) Close() error {
+	s.closed++
+	return nil
+}
+
+func (s *recordingSink) CloseWithReason(reason string) error {
+	if reason != "" {
+		s.reasons = append(s.reasons, reason)
+	}
+	return s.Close()
+}
+
+func (s *recordingSink) DisconnectReason() string {
+	if len(s.reasons) == 0 {
+		return ""
+	}
+	return s.reasons[len(s.reasons)-1]
 }
 
 type blockingPeer struct {
@@ -213,6 +234,27 @@ func TestRegistryRemoveIfOwnerSkipsStaleOwnerAfterReplacement(t *testing.T) {
 	}
 	if len(oldPeer.inputs) != 0 {
 		t.Fatalf("old peer received input = %#v, want none", oldPeer.inputs)
+	}
+}
+
+func TestRegistryRemoveIfOwnerClosesAttachedSinks(t *testing.T) {
+	reg := NewRegistry()
+	peer := &recordingPeer{}
+	sink := &recordingSink{}
+
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, peer)
+	if err := reg.AddSink("sess-1", "browser", sink); err != nil {
+		t.Fatalf("AddSink returned error: %v", err)
+	}
+
+	if removed := reg.RemoveIfOwner("sess-1", peer); !removed {
+		t.Fatal("RemoveIfOwner returned false, want true")
+	}
+	if sink.closed != 1 {
+		t.Fatalf("sink closed count = %d, want 1", sink.closed)
+	}
+	if got := sink.DisconnectReason(); got != "agent_disconnected" {
+		t.Fatalf("sink disconnect reason = %q, want agent_disconnected", got)
 	}
 }
 

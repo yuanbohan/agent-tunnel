@@ -25,6 +25,15 @@ type ResizeSink interface {
 	WriteResize(cols, rows int) error
 }
 
+type closeableSink interface {
+	Close() error
+}
+
+type disconnectAwareSink interface {
+	CloseWithReason(reason string) error
+	DisconnectReason() string
+}
+
 type Registry struct {
 	mu       sync.RWMutex
 	sessions map[string]*liveSession
@@ -120,13 +129,21 @@ func (r *Registry) Remove(sessionID string) {
 
 func (r *Registry) RemoveIfOwner(sessionID string, owner AgentPeer) bool {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-
 	live, ok := r.sessions[sessionID]
 	if !ok || owner == nil || live.peer != owner {
+		r.mu.Unlock()
 		return false
 	}
+	sinks := make([]session.OutputSink, 0, len(live.sinks))
+	for _, sink := range live.sinks {
+		sinks = append(sinks, sink)
+	}
 	delete(r.sessions, sessionID)
+	r.mu.Unlock()
+
+	for _, sink := range sinks {
+		closeSinkWithReason(sink, "agent_disconnected")
+	}
 	return true
 }
 
@@ -285,4 +302,14 @@ func (r *Registry) touchOutput(sessionID string, owner AgentPeer, chunk []byte, 
 		_ = sink.WriteOutput(cp)
 	}
 	return true
+}
+
+func closeSinkWithReason(sink session.OutputSink, reason string) {
+	if aware, ok := sink.(disconnectAwareSink); ok {
+		_ = aware.CloseWithReason(reason)
+		return
+	}
+	if closeable, ok := sink.(closeableSink); ok {
+		_ = closeable.Close()
+	}
 }

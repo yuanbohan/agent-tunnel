@@ -20,11 +20,14 @@ import (
 )
 
 const (
-	defaultWSSinkBufferSize      = 64
-	defaultWSWriteTimeout        = 5 * time.Second
-	defaultAgentReadTimeout      = 30 * time.Second
-	defaultAgentPingInterval     = 10 * time.Second
-	defaultAgentPingWriteTimeout = 5 * time.Second
+	defaultWSSinkBufferSize       = 64
+	defaultWSWriteTimeout         = 5 * time.Second
+	defaultAgentReadTimeout       = 30 * time.Second
+	defaultAgentPingInterval      = 10 * time.Second
+	defaultAgentPingWriteTimeout  = 5 * time.Second
+	defaultClientReadTimeout      = 30 * time.Second
+	defaultClientPingInterval     = 10 * time.Second
+	defaultClientPingWriteTimeout = 5 * time.Second
 )
 
 var (
@@ -37,15 +40,18 @@ var (
 )
 
 type HandlerConfig struct {
-	Registry              *Registry
-	BrowserUser           string
-	BrowserPassword       string
-	AgentToken            string
-	Logger                *Logger
-	Files                 fs.FS
-	AgentReadTimeout      time.Duration
-	AgentPingInterval     time.Duration
-	AgentPingWriteTimeout time.Duration
+	Registry               *Registry
+	BrowserUser            string
+	BrowserPassword        string
+	AgentToken             string
+	Logger                 *Logger
+	Files                  fs.FS
+	AgentReadTimeout       time.Duration
+	AgentPingInterval      time.Duration
+	AgentPingWriteTimeout  time.Duration
+	ClientReadTimeout      time.Duration
+	ClientPingInterval     time.Duration
+	ClientPingWriteTimeout time.Duration
 }
 
 type wsAgentPeer struct {
@@ -71,6 +77,7 @@ type wsSink struct {
 
 	mu               sync.RWMutex
 	closed           bool
+	disconnectReason string
 	outbound         chan protocol.Message
 	closeOnce        sync.Once
 	backpressureOnce sync.Once
@@ -133,14 +140,27 @@ func (s *wsSink) enqueue(msg protocol.Message) error {
 }
 
 func (s *wsSink) Close() error {
+	return s.CloseWithReason("")
+}
+
+func (s *wsSink) CloseWithReason(reason string) error {
 	s.closeOnce.Do(func() {
 		s.mu.Lock()
+		if reason != "" && s.disconnectReason == "" {
+			s.disconnectReason = reason
+		}
 		s.closed = true
 		close(s.outbound)
 		s.mu.Unlock()
 		_ = s.conn.Close()
 	})
 	return nil
+}
+
+func (s *wsSink) DisconnectReason() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.disconnectReason
 }
 
 func (s *wsSink) run() {
@@ -211,6 +231,18 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 	agentPingWriteTimeout := cfg.AgentPingWriteTimeout
 	if agentPingWriteTimeout <= 0 {
 		agentPingWriteTimeout = defaultAgentPingWriteTimeout
+	}
+	clientReadTimeout := cfg.ClientReadTimeout
+	if clientReadTimeout <= 0 {
+		clientReadTimeout = defaultClientReadTimeout
+	}
+	clientPingInterval := cfg.ClientPingInterval
+	if clientPingInterval <= 0 {
+		clientPingInterval = defaultClientPingInterval
+	}
+	clientPingWriteTimeout := cfg.ClientPingWriteTimeout
+	if clientPingWriteTimeout <= 0 {
+		clientPingWriteTimeout = defaultClientPingWriteTimeout
 	}
 
 	mux := http.NewServeMux()
@@ -302,30 +334,16 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 		connectedAt := time.Now()
 		var loopErr error
 		defer func() {
-			logger.Info("agent_disconnected",
+			fields := []Field{
 				String("session_id", register.Session.SessionID),
 				Int64("duration_ms", time.Since(connectedAt).Milliseconds()),
-				String("reason", classifyDisconnectReason(loopErr)),
-			)
-		}()
-
-		stopPings := make(chan struct{})
-		defer close(stopPings)
-		go func() {
-			ticker := time.NewTicker(agentPingInterval)
-			defer ticker.Stop()
-
-			for {
-				select {
-				case <-stopPings:
-					return
-				case <-ticker.C:
-					if err := conn.WriteControl(websocket.PingMessage, []byte("ping"), time.Now().Add(agentPingWriteTimeout)); err != nil {
-						return
-					}
-				}
 			}
+			fields = append(fields, disconnectLogFields(loopErr)...)
+			logger.Info("agent_disconnected", fields...)
 		}()
+
+		stopPings := startWSPingLoop(conn, agentPingInterval, agentPingWriteTimeout)
+		defer close(stopPings)
 
 		for {
 			var msg protocol.Message
@@ -441,6 +459,11 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 			return
 		}
 		defer conn.Close()
+		conn.SetReadLimit(1 << 20)
+		_ = conn.SetReadDeadline(time.Now().Add(clientReadTimeout))
+		conn.SetPongHandler(func(string) error {
+			return conn.SetReadDeadline(time.Now().Add(clientReadTimeout))
+		})
 
 		sinkID := "browser-" + strconv.FormatUint(atomic.AddUint64(&nextSinkID, 1), 10)
 		var sinkBackpressure atomic.Bool
@@ -469,17 +492,25 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 		defer func() {
 			registry.RemoveSink(sessionID, sinkID)
 			_ = sink.Close()
-			reason := classifyDisconnectReason(loopErr)
+			fields := disconnectLogFields(loopErr)
 			if sinkBackpressure.Load() {
-				reason = "backpressure"
+				fields = []Field{String("reason", "backpressure")}
+			} else if aware, ok := sink.(disconnectAwareSink); ok {
+				if reason := aware.DisconnectReason(); reason != "" {
+					fields = []Field{String("reason", reason)}
+				}
 			}
-			logger.Info("client_disconnected",
+			logFields := []Field{
 				String("session_id", sessionID),
 				String("client_id", sinkID),
 				Int64("duration_ms", time.Since(connectedAt).Milliseconds()),
-				String("reason", reason),
-			)
+			}
+			logFields = append(logFields, fields...)
+			logger.Info("client_disconnected", logFields...)
 		}()
+
+		stopPings := startWSPingLoop(conn, clientPingInterval, clientPingWriteTimeout)
+		defer close(stopPings)
 
 		for {
 			var msg protocol.Message
@@ -517,13 +548,52 @@ func logWSUpgradeFailed(logger *Logger, r *http.Request, role string) {
 }
 
 func classifyDisconnectReason(err error) string {
+	return disconnectLogFields(err)[0].Value.String()
+}
+
+func disconnectLogFields(err error) []Field {
 	if errors.Is(err, errWSSinkBackpressure) {
-		return "backpressure"
+		return []Field{String("reason", "backpressure")}
 	}
-	if err == nil || websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-		return "client_closed"
+	if err == nil {
+		return []Field{String("reason", "client_closed")}
 	}
-	return "read_error"
+	fields := make([]Field, 0, 4)
+	reason := "read_error"
+	if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+		reason = "client_closed"
+	}
+	fields = append(fields, String("reason", reason))
+
+	var closeErr *websocket.CloseError
+	if errors.As(err, &closeErr) {
+		fields = append(fields, Int("close_code", closeErr.Code))
+		if closeErr.Text != "" {
+			fields = append(fields, String("close_text", closeErr.Text))
+		}
+	}
+	fields = append(fields, String("error", err.Error()))
+	return fields
+}
+
+func startWSPingLoop(conn *websocket.Conn, interval, writeTimeout time.Duration) chan struct{} {
+	stop := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				if err := conn.WriteControl(websocket.PingMessage, []byte("ping"), time.Now().Add(writeTimeout)); err != nil {
+					return
+				}
+			}
+		}
+	}()
+	return stop
 }
 
 func sameOriginOrEmpty(r *http.Request) bool {
