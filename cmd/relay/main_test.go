@@ -1,9 +1,15 @@
 package main
 
 import (
+	"bytes"
+	"errors"
+	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
+
+	"yuanbohan/tunnel/relay"
 )
 
 func validEnv(key string) string {
@@ -56,6 +62,73 @@ func TestLoadMainConfigIgnoresLegacyRelayAddrEnv(t *testing.T) {
 	}
 	if cfg.ListenAddr != "0.0.0.0:8586" {
 		t.Errorf("ListenAddr = %q, want 0.0.0.0:8586 (legacy env should be ignored)", cfg.ListenAddr)
+	}
+}
+
+func TestLogRelayStartedWritesListenAddr(t *testing.T) {
+	var buf bytes.Buffer
+
+	logRelayStarted(relay.NewLogger(&buf), "0.0.0.0:8586")
+
+	got := buf.String()
+	if !strings.Contains(got, `"event":"relay_started"`) {
+		t.Fatalf("log = %q, want event relay_started", got)
+	}
+	if !strings.Contains(got, `"listen_addr":"0.0.0.0:8586"`) {
+		t.Fatalf("log = %q, want listen_addr 0.0.0.0:8586", got)
+	}
+}
+
+func TestStartRelayDoesNotLogBeforeBind(t *testing.T) {
+	var buf bytes.Buffer
+
+	err := startRelay(
+		mainConfig{ListenAddr: "0.0.0.0:8586"},
+		http.NewServeMux(),
+		relay.NewLogger(&buf),
+		func(string, string) (net.Listener, error) {
+			return nil, errors.New("bind failed")
+		},
+		func(*http.Server, net.Listener) error {
+			t.Fatal("serve should not be called when bind fails")
+			return nil
+		},
+	)
+	if err == nil {
+		t.Fatal("expected bind failure")
+	}
+	if got := buf.String(); got != "" {
+		t.Fatalf("log = %q, want no startup log on bind failure", got)
+	}
+}
+
+func TestStartRelayLogsBoundListenerAddr(t *testing.T) {
+	var buf bytes.Buffer
+
+	var servedAddr string
+	err := startRelay(
+		mainConfig{ListenAddr: "127.0.0.1:0"},
+		http.NewServeMux(),
+		relay.NewLogger(&buf),
+		net.Listen,
+		func(_ *http.Server, ln net.Listener) error {
+			servedAddr = ln.Addr().String()
+			return ln.Close()
+		},
+	)
+	if err != nil {
+		t.Fatalf("startRelay returned error: %v", err)
+	}
+	if servedAddr == "" {
+		t.Fatal("servedAddr = empty, want bound listener address")
+	}
+
+	got := buf.String()
+	if !strings.Contains(got, `"listen_addr":"`+servedAddr+`"`) {
+		t.Fatalf("log = %q, want bound listen_addr %q", got, servedAddr)
+	}
+	if strings.Contains(got, `"listen_addr":"127.0.0.1:0"`) {
+		t.Fatalf("log = %q, want actual bound address instead of configured :0 address", got)
 	}
 }
 

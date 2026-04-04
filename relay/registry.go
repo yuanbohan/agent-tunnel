@@ -28,6 +28,7 @@ type ResizeSink interface {
 type Registry struct {
 	mu       sync.RWMutex
 	sessions map[string]*liveSession
+	logger   *Logger
 }
 
 type liveSession struct {
@@ -44,12 +45,28 @@ type liveSession struct {
 }
 
 func NewRegistry() *Registry {
-	return &Registry{sessions: make(map[string]*liveSession)}
+	return &Registry{
+		sessions: make(map[string]*liveSession),
+		logger:   NewDiscardLogger(),
+	}
+}
+
+func (r *Registry) SetLogger(logger *Logger) {
+	if r == nil {
+		return
+	}
+	if logger == nil {
+		logger = NewDiscardLogger()
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.logger = logger
 }
 
 func (r *Registry) Register(info protocol.SessionInfo, peer AgentPeer) {
 	r.mu.Lock()
 	old := r.sessions[info.SessionID]
+	logger := r.logger
 	var sinks map[string]session.OutputSink
 	var history []historyFrame
 	var historyBytes int
@@ -87,6 +104,9 @@ func (r *Registry) Register(info protocol.SessionInfo, peer AgentPeer) {
 	r.sessions[info.SessionID].info.LastActiveAt = lastActiveAt
 	r.mu.Unlock()
 
+	if old != nil {
+		logger.Warn("session_replaced", String("session_id", info.SessionID))
+	}
 	if old != nil && old.peer != nil {
 		_ = old.peer.Close()
 	}

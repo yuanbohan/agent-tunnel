@@ -2,6 +2,7 @@ package relay
 
 import (
 	"bytes"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -162,6 +163,29 @@ func TestRegistryReplaceSessionIDPreservesSinksAndFansOutToThem(t *testing.T) {
 	}
 	if oldPeer.closed != 1 {
 		t.Fatalf("old peer close count = %d, want 1", oldPeer.closed)
+	}
+}
+
+func TestRegistryReplaceSessionIDLogsSessionReplaced(t *testing.T) {
+	reg := NewRegistry()
+	logs := &bytes.Buffer{}
+	reg.SetLogger(NewLogger(logs))
+
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, &recordingPeer{})
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, &recordingPeer{})
+
+	entries := parseRegistryLogEntries(t, logs.Bytes())
+	if len(entries) != 1 {
+		t.Fatalf("log entry count = %d, want 1", len(entries))
+	}
+	if got := entries[0]["event"]; got != "session_replaced" {
+		t.Fatalf("event = %v, want session_replaced", got)
+	}
+	if got := entries[0]["level"]; got != "WARN" {
+		t.Fatalf("level = %v, want WARN", got)
+	}
+	if got := entries[0]["session_id"]; got != "sess-1" {
+		t.Fatalf("session_id = %v, want sess-1", got)
 	}
 }
 
@@ -439,4 +463,23 @@ func TestRegistryBroadcastResizeSkipsMissingSession(t *testing.T) {
 	reg := NewRegistry()
 	// Should not panic
 	reg.BroadcastResize("missing", 80, 24)
+}
+
+func parseRegistryLogEntries(t *testing.T, raw []byte) []map[string]any {
+	t.Helper()
+
+	lines := bytes.Split(raw, []byte{'\n'})
+	entries := make([]map[string]any, 0, len(lines))
+	for _, line := range lines {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		var entry map[string]any
+		if err := json.Unmarshal(line, &entry); err != nil {
+			t.Fatalf("unmarshal log line %q: %v", string(line), err)
+		}
+		entries = append(entries, entry)
+	}
+	return entries
 }

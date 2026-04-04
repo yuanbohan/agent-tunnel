@@ -15,6 +15,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"yuanbohan/tunnel/protocol"
+	"yuanbohan/tunnel/session"
 	"yuanbohan/tunnel/webui"
 )
 
@@ -30,6 +31,9 @@ var (
 	errWSSinkClosed       = errors.New("websocket sink closed")
 	errWSSinkBackpressure = errors.New("websocket sink backpressure")
 	nextSinkID            uint64
+	clientSinkFactory     = func(conn *websocket.Conn, onBackpressure func()) clientSink {
+		return newWSSinkWithConfig(conn, defaultWSSinkBufferSize, defaultWSWriteTimeout, onBackpressure)
+	}
 )
 
 type HandlerConfig struct {
@@ -37,6 +41,7 @@ type HandlerConfig struct {
 	BrowserUser           string
 	BrowserPassword       string
 	AgentToken            string
+	Logger                *Logger
 	Files                 fs.FS
 	AgentReadTimeout      time.Duration
 	AgentPingInterval     time.Duration
@@ -54,29 +59,37 @@ type wsConn interface {
 	Close() error
 }
 
-type wsSink struct {
-	conn         wsConn
-	writeTimeout time.Duration
+type clientSink interface {
+	session.OutputSink
+	Close() error
+}
 
-	mu        sync.RWMutex
-	closed    bool
-	outbound  chan protocol.Message
-	closeOnce sync.Once
+type wsSink struct {
+	conn           wsConn
+	writeTimeout   time.Duration
+	onBackpressure func()
+
+	mu               sync.RWMutex
+	closed           bool
+	outbound         chan protocol.Message
+	closeOnce        sync.Once
+	backpressureOnce sync.Once
 }
 
 func newWSSink(conn wsConn) *wsSink {
-	return newWSSinkWithConfig(conn, defaultWSSinkBufferSize, defaultWSWriteTimeout)
+	return newWSSinkWithConfig(conn, defaultWSSinkBufferSize, defaultWSWriteTimeout, nil)
 }
 
-func newWSSinkWithConfig(conn wsConn, bufferSize int, writeTimeout time.Duration) *wsSink {
+func newWSSinkWithConfig(conn wsConn, bufferSize int, writeTimeout time.Duration, onBackpressure func()) *wsSink {
 	if bufferSize <= 0 {
 		bufferSize = 1
 	}
 
 	sink := &wsSink{
-		conn:         conn,
-		writeTimeout: writeTimeout,
-		outbound:     make(chan protocol.Message, bufferSize),
+		conn:           conn,
+		writeTimeout:   writeTimeout,
+		onBackpressure: onBackpressure,
+		outbound:       make(chan protocol.Message, bufferSize),
 	}
 	go sink.run()
 	return sink
@@ -109,6 +122,11 @@ func (s *wsSink) enqueue(msg protocol.Message) error {
 		return nil
 	default:
 		s.mu.RUnlock()
+		s.backpressureOnce.Do(func() {
+			if s.onBackpressure != nil {
+				s.onBackpressure()
+			}
+		})
 		_ = s.Close()
 		return errWSSinkBackpressure
 	}
@@ -165,6 +183,18 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 	if registry == nil {
 		registry = NewRegistry()
 	}
+	logger := cfg.Logger
+	if logger != nil {
+		registry.SetLogger(logger)
+	} else {
+		registry.mu.RLock()
+		logger = registry.logger
+		registry.mu.RUnlock()
+		if logger == nil {
+			logger = NewDiscardLogger()
+			registry.SetLogger(logger)
+		}
+	}
 
 	files := cfg.Files
 	if files == nil {
@@ -190,6 +220,7 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 
 	serveRelayShell := func(w http.ResponseWriter, r *http.Request) {
 		if !checkBasicAuth(r, cfg.BrowserUser, cfg.BrowserPassword) {
+			logAuthFailed(logger, r, "basic")
 			w.Header().Set("WWW-Authenticate", `Basic realm="agentunnel relay"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -218,6 +249,7 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 
 	mux.HandleFunc("/api/sessions", func(w http.ResponseWriter, r *http.Request) {
 		if !checkBasicAuth(r, cfg.BrowserUser, cfg.BrowserPassword) {
+			logAuthFailed(logger, r, "basic")
 			w.Header().Set("WWW-Authenticate", `Basic realm="agentunnel relay"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -233,14 +265,20 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 
 	mux.HandleFunc("/agent/ws", func(w http.ResponseWriter, r *http.Request) {
 		if !checkBearer(r, cfg.AgentToken) {
+			logAuthFailed(logger, r, "bearer")
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		conn, err := agentUpgrader.Upgrade(w, r, nil)
 		if err != nil {
+			logWSUpgradeFailed(logger, r, "agent")
 			return
 		}
 		defer conn.Close()
+		logger.Info("agent_ws_connected",
+			String("path", r.URL.Path),
+			String("remote_addr", r.RemoteAddr),
+		)
 		conn.SetReadLimit(1 << 20)
 		_ = conn.SetReadDeadline(time.Now().Add(agentReadTimeout))
 		conn.SetPongHandler(func(string) error {
@@ -255,6 +293,21 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 		peer := newWSAgentPeer(conn)
 		registry.Register(*register.Session, peer)
 		defer registry.RemoveIfOwner(register.Session.SessionID, peer)
+		logger.Info("agent_registered",
+			String("session_id", register.Session.SessionID),
+			String("launcher", register.Session.Launcher),
+			String("label", register.Session.Label),
+			String("cwd", register.Session.CWD),
+		)
+		connectedAt := time.Now()
+		var loopErr error
+		defer func() {
+			logger.Info("agent_disconnected",
+				String("session_id", register.Session.SessionID),
+				Int64("duration_ms", time.Since(connectedAt).Milliseconds()),
+				String("reason", classifyDisconnectReason(loopErr)),
+			)
+		}()
 
 		stopPings := make(chan struct{})
 		defer close(stopPings)
@@ -277,6 +330,7 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 		for {
 			var msg protocol.Message
 			if err := conn.ReadJSON(&msg); err != nil {
+				loopErr = err
 				return
 			}
 			switch msg.Type {
@@ -294,6 +348,7 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 
 	mux.HandleFunc("/api/sessions/", func(w http.ResponseWriter, r *http.Request) {
 		if !checkBasicAuth(r, cfg.BrowserUser, cfg.BrowserPassword) {
+			logAuthFailed(logger, r, "basic")
 			w.Header().Set("WWW-Authenticate", `Basic realm="agentunnel relay"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -382,24 +437,54 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 
 		conn, err := browserUpgrader.Upgrade(w, r, nil)
 		if err != nil {
+			logWSUpgradeFailed(logger, r, "client")
 			return
 		}
 		defer conn.Close()
 
 		sinkID := "browser-" + strconv.FormatUint(atomic.AddUint64(&nextSinkID, 1), 10)
-		sink := newWSSink(conn)
+		var sinkBackpressure atomic.Bool
+		sink := clientSinkFactory(conn, func() {
+			if !sinkBackpressure.CompareAndSwap(false, true) {
+				return
+			}
+			logger.Warn("sink_backpressure",
+				String("session_id", sessionID),
+				String("client_id", sinkID),
+			)
+			_ = conn.Close()
+		})
 		if err := registry.AddSink(sessionID, sinkID, sink); err != nil {
 			_ = sink.Close()
 			return
 		}
+		logger.Info("client_ws_connected",
+			String("session_id", sessionID),
+			String("client_id", sinkID),
+			String("remote_addr", r.RemoteAddr),
+			String("user_agent", r.UserAgent()),
+		)
+		connectedAt := time.Now()
+		var loopErr error
 		defer func() {
 			registry.RemoveSink(sessionID, sinkID)
 			_ = sink.Close()
+			reason := classifyDisconnectReason(loopErr)
+			if sinkBackpressure.Load() {
+				reason = "backpressure"
+			}
+			logger.Info("client_disconnected",
+				String("session_id", sessionID),
+				String("client_id", sinkID),
+				Int64("duration_ms", time.Since(connectedAt).Milliseconds()),
+				String("reason", reason),
+			)
 		}()
 
 		for {
 			var msg protocol.Message
 			if err := conn.ReadJSON(&msg); err != nil {
+				loopErr = err
 				return
 			}
 
@@ -413,6 +498,32 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 	})
 
 	return mux
+}
+
+func logAuthFailed(logger *Logger, r *http.Request, authType string) {
+	logger.Warn("auth_failed",
+		String("path", r.URL.Path),
+		String("remote_addr", r.RemoteAddr),
+		String("auth_type", authType),
+	)
+}
+
+func logWSUpgradeFailed(logger *Logger, r *http.Request, role string) {
+	logger.Warn("ws_upgrade_failed",
+		String("path", r.URL.Path),
+		String("remote_addr", r.RemoteAddr),
+		String("role", role),
+	)
+}
+
+func classifyDisconnectReason(err error) string {
+	if errors.Is(err, errWSSinkBackpressure) {
+		return "backpressure"
+	}
+	if err == nil || websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+		return "client_closed"
+	}
+	return "read_error"
 }
 
 func sameOriginOrEmpty(r *http.Request) bool {
