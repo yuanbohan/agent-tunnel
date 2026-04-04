@@ -18,7 +18,11 @@ type AgentPeer interface {
 }
 
 type seqOutputSink interface {
-	WriteOutputFrame(uint64, []byte) error
+	WriteOutputFrame(uint64, []byte, int, int) error
+}
+
+type preloadMessageSink interface {
+	PreloadMessages([]protocol.Message) error
 }
 
 type ResizeSink interface {
@@ -51,6 +55,8 @@ type liveSession struct {
 	lastReadSeq  uint64
 	previewSeq   uint64
 	previewData  []byte
+	currentCols  int
+	currentRows  int
 }
 
 func NewRegistry() *Registry {
@@ -83,6 +89,8 @@ func (r *Registry) Register(info protocol.SessionInfo, peer AgentPeer) {
 	var lastReadSeq uint64
 	var previewSeq uint64
 	var previewData []byte
+	var currentCols int
+	var currentRows int
 	lastActiveAt := info.LastActiveAt
 	if old != nil {
 		sinks = old.sinks
@@ -92,6 +100,8 @@ func (r *Registry) Register(info protocol.SessionInfo, peer AgentPeer) {
 		lastReadSeq = old.lastReadSeq
 		previewSeq = old.previewSeq
 		previewData = old.previewData
+		currentCols = old.currentCols
+		currentRows = old.currentRows
 		if old.info.LastActiveAt != nil {
 			lastActiveAt = old.info.LastActiveAt
 		}
@@ -109,6 +119,8 @@ func (r *Registry) Register(info protocol.SessionInfo, peer AgentPeer) {
 		lastReadSeq:  lastReadSeq,
 		previewSeq:   previewSeq,
 		previewData:  previewData,
+		currentCols:  currentCols,
+		currentRows:  currentRows,
 	}
 	r.sessions[info.SessionID].info.LastActiveAt = lastActiveAt
 	r.mu.Unlock()
@@ -196,6 +208,23 @@ func (r *Registry) AddSink(sessionID, sinkID string, sink session.OutputSink) er
 	return nil
 }
 
+func (r *Registry) AttachSink(sessionID, sinkID string, sink session.OutputSink, after uint64) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	live, ok := r.sessions[sessionID]
+	if !ok {
+		return ErrSessionNotFound
+	}
+	if preload, ok := sink.(preloadMessageSink); ok {
+		if err := preload.PreloadMessages(live.backlogMessages(after)); err != nil {
+			return err
+		}
+	}
+	live.sinks[sinkID] = sink
+	return nil
+}
+
 func (r *Registry) Session(sessionID string) (protocol.SessionInfo, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -207,7 +236,7 @@ func (r *Registry) Session(sessionID string) (protocol.SessionInfo, bool) {
 	return live.snapshot(), true
 }
 
-func (r *Registry) History(sessionID string, before, after uint64, limit, maxBytes int) (historyPage, bool) {
+func (r *Registry) History(sessionID string, after uint64) (historyPage, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -215,7 +244,7 @@ func (r *Registry) History(sessionID string, before, after uint64, limit, maxByt
 	if !ok {
 		return historyPage{}, false
 	}
-	return live.historySnapshot(before, after, limit, maxBytes), true
+	return live.historySnapshot(0, after, 0, 0), true
 }
 
 func (r *Registry) MarkRead(sessionID string, seq uint64) (protocol.SessionInfo, bool) {
@@ -270,6 +299,19 @@ func (r *Registry) BroadcastResize(sessionID string, cols, rows int) {
 	}
 }
 
+func (r *Registry) UpdateSizeIfOwner(sessionID string, owner AgentPeer, cols, rows int) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	live, ok := r.sessions[sessionID]
+	if !ok || live.peer != owner {
+		return false
+	}
+	live.currentCols = cols
+	live.currentRows = rows
+	return true
+}
+
 func lastActiveTime(info protocol.SessionInfo) time.Time {
 	if info.LastActiveAt == nil {
 		return time.Time{}
@@ -285,6 +327,8 @@ func (r *Registry) touchOutput(sessionID string, owner AgentPeer, chunk []byte, 
 		return false
 	}
 	seq := live.appendOutput(chunk)
+	cols := live.currentCols
+	rows := live.currentRows
 	nowCopy := now
 	live.info.LastActiveAt = &nowCopy
 	sinks := make([]session.OutputSink, 0, len(live.sinks))
@@ -295,7 +339,7 @@ func (r *Registry) touchOutput(sessionID string, owner AgentPeer, chunk []byte, 
 
 	for _, sink := range sinks {
 		if seqSink, ok := sink.(seqOutputSink); ok {
-			_ = seqSink.WriteOutputFrame(seq, chunk)
+			_ = seqSink.WriteOutputFrame(seq, chunk, cols, rows)
 			continue
 		}
 		cp := append([]byte(nil), chunk...)

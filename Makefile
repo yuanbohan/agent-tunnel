@@ -1,22 +1,13 @@
-.PHONY: agentunnel relay build clean vet test web web-install web-build
+.PHONY: agentunnel relay build clean vet test
 
 agentunnel:
 	@test -n "$(LAUNCHER)" || (echo "usage: make agentunnel LAUNCHER=claude" && exit 1)
 	go run ./cmd/agentunnel $(LAUNCHER)
 
-relay: web-build
+relay:
 	go run ./cmd/relay
 
-web-install:
-	cd web && npm install
-
-web-build:
-	cd web && npm run build
-
-web:
-	cd web && npm run dev
-
-build: web-build
+build:
 	go build -o bin/agentunnel ./cmd/agentunnel
 	go build -o bin/relay ./cmd/relay
 
@@ -28,4 +19,3 @@ vet:
 
 test:
 	go test ./...
-	cd web && npm test

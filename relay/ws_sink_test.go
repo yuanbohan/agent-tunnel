@@ -43,7 +43,7 @@ func TestWSSinkBackpressureCallsHook(t *testing.T) {
 		_ = sink.Close()
 	}()
 
-	if err := sink.WriteOutputFrame(1, []byte("first")); err != nil {
+	if err := sink.WriteOutputFrame(1, []byte("first"), 0, 0); err != nil {
 		t.Fatalf("first WriteOutputFrame error = %v, want nil", err)
 	}
 
@@ -53,11 +53,11 @@ func TestWSSinkBackpressureCallsHook(t *testing.T) {
 		t.Fatal("timed out waiting for sink writer to start")
 	}
 
-	if err := sink.WriteOutputFrame(2, []byte("second")); err != nil {
+	if err := sink.WriteOutputFrame(2, []byte("second"), 0, 0); err != nil {
 		t.Fatalf("second WriteOutputFrame error = %v, want nil", err)
 	}
 
-	if err := sink.WriteOutputFrame(3, []byte("third")); !errors.Is(err, errWSSinkBackpressure) {
+	if err := sink.WriteOutputFrame(3, []byte("third"), 0, 0); !errors.Is(err, errWSSinkBackpressure) {
 		t.Fatalf("third WriteOutputFrame error = %v, want errWSSinkBackpressure", err)
 	}
 

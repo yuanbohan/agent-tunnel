@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"io/fs"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -16,7 +15,6 @@ import (
 	"github.com/gorilla/websocket"
 	"yuanbohan/tunnel/protocol"
 	"yuanbohan/tunnel/session"
-	"yuanbohan/tunnel/webui"
 )
 
 const (
@@ -45,7 +43,6 @@ type HandlerConfig struct {
 	BrowserPassword        string
 	AgentToken             string
 	Logger                 *Logger
-	Files                  fs.FS
 	AgentReadTimeout       time.Duration
 	AgentPingInterval      time.Duration
 	AgentPingWriteTimeout  time.Duration
@@ -68,6 +65,7 @@ type wsConn interface {
 type clientSink interface {
 	session.OutputSink
 	Close() error
+	PreloadMessages([]protocol.Message) error
 }
 
 type wsSink struct {
@@ -78,6 +76,7 @@ type wsSink struct {
 	mu               sync.RWMutex
 	closed           bool
 	disconnectReason string
+	pending          []protocol.Message
 	outbound         chan protocol.Message
 	closeOnce        sync.Once
 	backpressureOnce sync.Once
@@ -103,17 +102,27 @@ func newWSSinkWithConfig(conn wsConn, bufferSize int, writeTimeout time.Duration
 }
 
 func (s *wsSink) WriteOutput(data []byte) error {
-	return s.WriteOutputFrame(0, data)
+	return s.WriteOutputFrame(0, data, 0, 0)
 }
 
-func (s *wsSink) WriteOutputFrame(seq uint64, data []byte) error {
-	msg := protocol.EncodeOutputWithSeq(seq, append([]byte(nil), data...))
+func (s *wsSink) WriteOutputFrame(seq uint64, data []byte, cols, rows int) error {
+	msg := protocol.EncodeOutputWithSeqAndSize(seq, append([]byte(nil), data...), cols, rows)
 	return s.enqueue(msg)
 }
 
 func (s *wsSink) WriteResize(cols, rows int) error {
 	msg := protocol.Message{Type: "resize", Cols: cols, Rows: rows}
 	return s.enqueue(msg)
+}
+
+func (s *wsSink) PreloadMessages(msgs []protocol.Message) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return errWSSinkClosed
+	}
+	s.pending = append(s.pending, msgs...)
+	return nil
 }
 
 func (s *wsSink) enqueue(msg protocol.Message) error {
@@ -166,7 +175,28 @@ func (s *wsSink) DisconnectReason() string {
 func (s *wsSink) run() {
 	defer s.Close()
 
-	for msg := range s.outbound {
+	for {
+		s.mu.Lock()
+		if len(s.pending) > 0 {
+			msg := s.pending[0]
+			s.pending = s.pending[1:]
+			s.mu.Unlock()
+			if s.writeTimeout > 0 {
+				if err := s.conn.SetWriteDeadline(time.Now().Add(s.writeTimeout)); err != nil {
+					return
+				}
+			}
+			if err := s.conn.WriteJSON(msg); err != nil {
+				return
+			}
+			continue
+		}
+		s.mu.Unlock()
+
+		msg, ok := <-s.outbound
+		if !ok {
+			return
+		}
 		if s.writeTimeout > 0 {
 			if err := s.conn.SetWriteDeadline(time.Now().Add(s.writeTimeout)); err != nil {
 				return
@@ -216,10 +246,6 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 		}
 	}
 
-	files := cfg.Files
-	if files == nil {
-		files = webui.Files()
-	}
 	agentReadTimeout := cfg.AgentReadTimeout
 	if agentReadTimeout <= 0 {
 		agentReadTimeout = defaultAgentReadTimeout
@@ -246,33 +272,8 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 	}
 
 	mux := http.NewServeMux()
-	fileServer := http.FileServer(http.FS(files))
 	agentUpgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	browserUpgrader := websocket.Upgrader{CheckOrigin: sameOriginOrEmpty}
-
-	serveRelayShell := func(w http.ResponseWriter, r *http.Request) {
-		if !checkBasicAuth(r, cfg.BrowserUser, cfg.BrowserPassword) {
-			logAuthFailed(logger, r, "basic")
-			w.Header().Set("WWW-Authenticate", `Basic realm="agentunnel relay"`)
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-
-		serveRelayShellAsset(w, r, files)
-	}
-
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/":
-			serveRelayShell(w, r)
-		case strings.HasPrefix(r.URL.Path, "/sessions/"):
-			serveRelayShell(w, r)
-		case strings.HasPrefix(r.URL.Path, "/assets/"):
-			fileServer.ServeHTTP(w, r)
-		default:
-			http.NotFound(w, r)
-		}
-	})
 
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -359,7 +360,7 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 				}
 				registry.TouchOutputIfOwner(register.Session.SessionID, peer, data, time.Now().UTC())
 			case "resize":
-				registry.BroadcastResize(register.Session.SessionID, msg.Cols, msg.Rows)
+				registry.UpdateSizeIfOwner(register.Session.SessionID, peer, msg.Cols, msg.Rows)
 			}
 		}
 	})
@@ -389,27 +390,12 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 				http.NotFound(w, r)
 				return
 			}
-			before, err := parseOptionalUintQuery(r, "before")
-			if err != nil {
-				http.Error(w, "bad request", http.StatusBadRequest)
-				return
-			}
 			after, err := parseOptionalUintQuery(r, "after")
 			if err != nil {
 				http.Error(w, "bad request", http.StatusBadRequest)
 				return
 			}
-			limit, err := parseOptionalIntQuery(r, "limit")
-			if err != nil {
-				http.Error(w, "bad request", http.StatusBadRequest)
-				return
-			}
-			maxBytes, err := parseOptionalIntQuery(r, "max_bytes")
-			if err != nil {
-				http.Error(w, "bad request", http.StatusBadRequest)
-				return
-			}
-			page, ok := registry.History(sessionID, before, after, limit, maxBytes)
+			page, ok := registry.History(sessionID, after)
 			if !ok {
 				http.NotFound(w, r)
 				return
@@ -465,6 +451,12 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 			return conn.SetReadDeadline(time.Now().Add(clientReadTimeout))
 		})
 
+		after, err := parseOptionalUintQuery(r, "after")
+		if err != nil {
+			_ = conn.Close()
+			return
+		}
+
 		sinkID := "browser-" + strconv.FormatUint(atomic.AddUint64(&nextSinkID, 1), 10)
 		var sinkBackpressure atomic.Bool
 		sink := clientSinkFactory(conn, func() {
@@ -477,7 +469,7 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 			)
 			_ = conn.Close()
 		})
-		if err := registry.AddSink(sessionID, sinkID, sink); err != nil {
+		if err := registry.AttachSink(sessionID, sinkID, sink, after); err != nil {
 			_ = sink.Close()
 			return
 		}
@@ -616,41 +608,3 @@ func parseOptionalUintQuery(r *http.Request, key string) (uint64, error) {
 	}
 	return strconv.ParseUint(value, 10, 64)
 }
-
-func parseOptionalIntQuery(r *http.Request, key string) (int, error) {
-	value := r.URL.Query().Get(key)
-	if value == "" {
-		return 0, nil
-	}
-	parsed, err := strconv.Atoi(value)
-	if err != nil {
-		return 0, err
-	}
-	if parsed < 0 {
-		return 0, strconv.ErrSyntax
-	}
-	return parsed, nil
-}
-
-func serveRelayShellAsset(w http.ResponseWriter, r *http.Request, files fs.FS) {
-	if _, err := fs.Stat(files, "index.html"); err == nil {
-		http.ServeFileFS(w, r, files, "index.html")
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(relayFallbackHTML))
-}
-
-const relayFallbackHTML = `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Agentunnel Relay</title>
-</head>
-<body>
-<main id="relay-root">relay-root</main>
-</body>
-</html>
-`
