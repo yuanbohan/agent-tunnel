@@ -6,11 +6,9 @@ import (
 	"yuanbohan/tunnel/protocol"
 )
 
-type sessionStateSink interface {
-	WriteSessionStateEvent(protocol.SessionStateEvent) error
-	Close() error
-}
-
+// updateSessionState mutates only structured session metadata. Output frames and
+// replay history stay separate, which lets the relay remain content-opaque while
+// still exposing transport-safe lifecycle state such as action_required.
 func (s *liveSession) updateSessionState(state protocol.SessionState, changedAt time.Time, actionRequiredSince *time.Time) (protocol.SessionStateEvent, bool) {
 	changedAtCopy := changedAt.UTC()
 	sinceCopy := cloneTimePtr(actionRequiredSince)
@@ -36,29 +34,8 @@ func (s *liveSession) updateSessionState(state protocol.SessionState, changedAt 
 	}, true
 }
 
-func (s *liveSession) actionRequiredResolvedEvent(changedAt time.Time) (protocol.SessionStateEvent, bool) {
-	if s.info.State != protocol.SessionStateActionRequired {
-		return protocol.SessionStateEvent{}, false
-	}
-	changedAtCopy := changedAt.UTC()
-	return protocol.SessionStateEvent{
-		SessionID: s.info.SessionID,
-		State:     protocol.SessionStateNormal,
-		ChangedAt: changedAtCopy,
-	}, true
-}
-
-func (r *Registry) broadcastSessionState(event protocol.SessionStateEvent) {
-	r.mu.RLock()
-	sinks := make([]sessionStateSink, 0, len(r.stateSinks))
-	for _, sink := range r.stateSinks {
-		sinks = append(sinks, sink)
-	}
-	r.mu.RUnlock()
-
-	for _, sink := range sinks {
-		_ = sink.WriteSessionStateEvent(event)
-	}
+func (r *Registry) broadcastSessionStateUpdate(event protocol.SessionStateEvent) {
+	r.broadcastClientUpdate(protocol.EncodeClientSessionState(event))
 }
 
 func timesEqual(left, right *time.Time) bool {

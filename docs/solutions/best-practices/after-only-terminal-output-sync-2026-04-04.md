@@ -47,13 +47,13 @@ This keeps the relay contract narrow:
 }
 ```
 
-For live attach, the client can also use the same cursor on WebSocket connect:
+For live output after catch-up, the client keeps one global WebSocket:
 
 ```text
-/api/sessions/:id/ws?after=42
+GET /api/updates/ws
 ```
 
-The relay replays retained output with `seq > after`, then continues streaming live output frames.
+and routes incoming `output` frames by `session_id`.
 
 ## Why This Matters
 
@@ -97,10 +97,10 @@ Now the output frame is self-describing. A reconnecting client only needs its la
 1. First sync: GET /api/sessions/:id/history?after=0
 2. Persist outputs locally and store max seq
 3. Reconnect later: GET /api/sessions/:id/history?after=<stored-seq>
-4. On live attach: /api/sessions/:id/ws?after=<stored-seq>
+4. Resume the global `GET /api/updates/ws` connection and continue from live output there
 ```
 
 ## Related
 
-- [docs/protocol.md](../../protocol.md) defines the current `after`-only history and live attach contract.
+- [docs/protocol.md](../../protocol.md) defines the current `after`-only history contract and the global live update stream.
 - [docs/architecture.md](../../architecture.md) describes how the relay stamps `cols` and `rows` onto retained and live output frames.

@@ -14,7 +14,6 @@ import (
 
 	"github.com/gorilla/websocket"
 	"yuanbohan/tunnel/protocol"
-	"yuanbohan/tunnel/session"
 )
 
 const (
@@ -29,11 +28,11 @@ const (
 )
 
 var (
-	errWSSinkClosed       = errors.New("websocket sink closed")
-	errWSSinkBackpressure = errors.New("websocket sink backpressure")
-	nextSinkID            uint64
-	clientSinkFactory     = func(conn *websocket.Conn, onBackpressure func()) clientSink {
-		return newWSSinkWithConfig(conn, defaultWSSinkBufferSize, defaultWSWriteTimeout, onBackpressure)
+	errWSSinkClosed         = errors.New("websocket sink closed")
+	errWSSinkBackpressure   = errors.New("websocket sink backpressure")
+	nextSinkID              uint64
+	clientUpdateSinkFactory = func(conn *websocket.Conn) clientUpdateSink {
+		return newWSClientUpdateSink(conn, defaultWSSinkBufferSize, defaultWSWriteTimeout)
 	}
 )
 
@@ -60,152 +59,6 @@ type wsConn interface {
 	WriteJSON(v any) error
 	SetWriteDeadline(t time.Time) error
 	Close() error
-}
-
-type clientSink interface {
-	session.OutputSink
-	Close() error
-	PreloadMessages([]protocol.Message) error
-}
-
-type wsSink struct {
-	conn           wsConn
-	writeTimeout   time.Duration
-	onBackpressure func()
-
-	mu               sync.RWMutex
-	closed           bool
-	disconnectReason string
-	pending          []protocol.Message
-	outbound         chan protocol.Message
-	closeOnce        sync.Once
-	backpressureOnce sync.Once
-}
-
-func newWSSink(conn wsConn) *wsSink {
-	return newWSSinkWithConfig(conn, defaultWSSinkBufferSize, defaultWSWriteTimeout, nil)
-}
-
-func newWSSinkWithConfig(conn wsConn, bufferSize int, writeTimeout time.Duration, onBackpressure func()) *wsSink {
-	if bufferSize <= 0 {
-		bufferSize = 1
-	}
-
-	sink := &wsSink{
-		conn:           conn,
-		writeTimeout:   writeTimeout,
-		onBackpressure: onBackpressure,
-		outbound:       make(chan protocol.Message, bufferSize),
-	}
-	go sink.run()
-	return sink
-}
-
-func (s *wsSink) WriteOutput(data []byte) error {
-	return s.WriteOutputFrame(0, data, 0, 0)
-}
-
-func (s *wsSink) WriteOutputFrame(seq uint64, data []byte, cols, rows int) error {
-	msg := protocol.EncodeOutputWithSeqAndSize(seq, append([]byte(nil), data...), cols, rows)
-	return s.enqueue(msg)
-}
-
-func (s *wsSink) WriteResize(cols, rows int) error {
-	msg := protocol.Message{Type: "resize", Cols: cols, Rows: rows}
-	return s.enqueue(msg)
-}
-
-func (s *wsSink) PreloadMessages(msgs []protocol.Message) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		return errWSSinkClosed
-	}
-	s.pending = append(s.pending, msgs...)
-	return nil
-}
-
-func (s *wsSink) enqueue(msg protocol.Message) error {
-	s.mu.RLock()
-	if s.closed {
-		s.mu.RUnlock()
-		return errWSSinkClosed
-	}
-
-	select {
-	case s.outbound <- msg:
-		s.mu.RUnlock()
-		return nil
-	default:
-		s.mu.RUnlock()
-		s.backpressureOnce.Do(func() {
-			if s.onBackpressure != nil {
-				s.onBackpressure()
-			}
-		})
-		_ = s.Close()
-		return errWSSinkBackpressure
-	}
-}
-
-func (s *wsSink) Close() error {
-	return s.CloseWithReason("")
-}
-
-func (s *wsSink) CloseWithReason(reason string) error {
-	s.closeOnce.Do(func() {
-		s.mu.Lock()
-		if reason != "" && s.disconnectReason == "" {
-			s.disconnectReason = reason
-		}
-		s.closed = true
-		close(s.outbound)
-		s.mu.Unlock()
-		_ = s.conn.Close()
-	})
-	return nil
-}
-
-func (s *wsSink) DisconnectReason() string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.disconnectReason
-}
-
-func (s *wsSink) run() {
-	defer s.Close()
-
-	for {
-		s.mu.Lock()
-		if len(s.pending) > 0 {
-			msg := s.pending[0]
-			s.pending = s.pending[1:]
-			s.mu.Unlock()
-			if s.writeTimeout > 0 {
-				if err := s.conn.SetWriteDeadline(time.Now().Add(s.writeTimeout)); err != nil {
-					return
-				}
-			}
-			if err := s.conn.WriteJSON(msg); err != nil {
-				return
-			}
-			continue
-		}
-		s.mu.Unlock()
-
-		msg, ok := <-s.outbound
-		if !ok {
-			return
-		}
-		if s.writeTimeout > 0 {
-			if err := s.conn.SetWriteDeadline(time.Now().Add(s.writeTimeout)); err != nil {
-				return
-			}
-		}
-		if err := s.conn.WriteJSON(msg); err != nil {
-			return
-		}
-	}
 }
 
 func newWSAgentPeer(conn *websocket.Conn) *wsAgentPeer {
@@ -296,7 +149,7 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 		_ = json.NewEncoder(w).Encode(registry.List())
 	})
 
-	mux.HandleFunc("/api/session-events/ws", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/updates/ws", func(w http.ResponseWriter, r *http.Request) {
 		if !checkBasicAuth(r, cfg.BrowserUser, cfg.BrowserPassword) {
 			logAuthFailed(logger, r, "basic")
 			w.Header().Set("WWW-Authenticate", `Basic realm="agentunnel relay"`)
@@ -315,11 +168,11 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 			return conn.SetReadDeadline(time.Now().Add(clientReadTimeout))
 		})
 
-		sinkID := "session-events-" + strconv.FormatUint(atomic.AddUint64(&nextSinkID, 1), 10)
-		sink := newWSSessionStateSink(conn, defaultWSSinkBufferSize, defaultWSWriteTimeout)
-		registry.AddStateSink(sinkID, sink)
+		sinkID := "updates-" + strconv.FormatUint(atomic.AddUint64(&nextSinkID, 1), 10)
+		sink := clientUpdateSinkFactory(conn)
+		registry.AddUpdateSink(sinkID, sink)
 		defer func() {
-			registry.RemoveStateSink(sinkID)
+			registry.RemoveUpdateSink(sinkID)
 			_ = sink.Close()
 		}()
 
@@ -327,10 +180,18 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 		defer close(stopPings)
 
 		for {
-			var discard json.RawMessage
-			if err := conn.ReadJSON(&discard); err != nil {
+			var msg protocol.ClientUpdateMessage
+			if err := conn.ReadJSON(&msg); err != nil {
 				return
 			}
+			if msg.Type != "input" || msg.SessionID == "" {
+				continue
+			}
+			data, err := base64.StdEncoding.DecodeString(msg.Data)
+			if err != nil {
+				continue
+			}
+			_ = registry.WriteInput(msg.SessionID, data)
 		}
 	})
 
@@ -362,6 +223,9 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 		}
 
 		peer := newWSAgentPeer(conn)
+		// The relay treats the agent websocket as the owner of this live session.
+		// All later output/resize/session_state mutations are validated against this
+		// owner so stale connections cannot keep mutating a replaced session.
 		registry.Register(*register.Session, peer)
 		defer registry.RemoveIfOwner(register.Session.SessionID, peer)
 		logger.Info("agent_registered",
@@ -396,10 +260,20 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 				if err != nil {
 					continue
 				}
+				// Output flows onto the global multiplexed client stream under
+				// /api/updates/ws. The relay tracks seq/unread metadata for replay, but
+				// it does not interpret terminal content.
 				registry.TouchOutputIfOwner(register.Session.SessionID, peer, data, time.Now().UTC())
 			case "resize":
 				registry.UpdateSizeIfOwner(register.Session.SessionID, peer, msg.Cols, msg.Rows)
 			case "session_state":
+				// This is how Codex action-required information enters the relay.
+				// Upstream chain:
+				//   Codex app-server -> codexapp.MonitorActionRequired
+				//   -> connector.UpdateSessionState -> `/agent/ws`
+				//
+				// The relay keeps the state as structured session metadata instead of
+				// mixing it into terminal history.
 				changedAt := time.Now().UTC()
 				if msg.ChangedAt != nil {
 					changedAt = msg.ChangedAt.UTC()
@@ -471,96 +345,9 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(info)
 			return
-		case "ws":
-			// continue below
 		default:
 			http.NotFound(w, r)
 			return
-		}
-
-		if !registry.HasSession(sessionID) {
-			http.NotFound(w, r)
-			return
-		}
-
-		conn, err := browserUpgrader.Upgrade(w, r, nil)
-		if err != nil {
-			logWSUpgradeFailed(logger, r, "client")
-			return
-		}
-		defer conn.Close()
-		conn.SetReadLimit(1 << 20)
-		_ = conn.SetReadDeadline(time.Now().Add(clientReadTimeout))
-		conn.SetPongHandler(func(string) error {
-			return conn.SetReadDeadline(time.Now().Add(clientReadTimeout))
-		})
-
-		after, err := parseOptionalUintQuery(r, "after")
-		if err != nil {
-			_ = conn.Close()
-			return
-		}
-
-		sinkID := "browser-" + strconv.FormatUint(atomic.AddUint64(&nextSinkID, 1), 10)
-		var sinkBackpressure atomic.Bool
-		sink := clientSinkFactory(conn, func() {
-			if !sinkBackpressure.CompareAndSwap(false, true) {
-				return
-			}
-			logger.Warn("sink_backpressure",
-				String("session_id", sessionID),
-				String("client_id", sinkID),
-			)
-			_ = conn.Close()
-		})
-		if err := registry.AttachSink(sessionID, sinkID, sink, after); err != nil {
-			_ = sink.Close()
-			return
-		}
-		logger.Info("client_ws_connected",
-			String("session_id", sessionID),
-			String("client_id", sinkID),
-			String("remote_addr", r.RemoteAddr),
-			String("user_agent", r.UserAgent()),
-		)
-		connectedAt := time.Now()
-		var loopErr error
-		defer func() {
-			registry.RemoveSink(sessionID, sinkID)
-			_ = sink.Close()
-			fields := disconnectLogFields(loopErr)
-			if sinkBackpressure.Load() {
-				fields = []Field{String("reason", "backpressure")}
-			} else if aware, ok := sink.(disconnectAwareSink); ok {
-				if reason := aware.DisconnectReason(); reason != "" {
-					fields = []Field{String("reason", reason)}
-				}
-			}
-			logFields := []Field{
-				String("session_id", sessionID),
-				String("client_id", sinkID),
-				Int64("duration_ms", time.Since(connectedAt).Milliseconds()),
-			}
-			logFields = append(logFields, fields...)
-			logger.Info("client_disconnected", logFields...)
-		}()
-
-		stopPings := startWSPingLoop(conn, clientPingInterval, clientPingWriteTimeout)
-		defer close(stopPings)
-
-		for {
-			var msg protocol.Message
-			if err := conn.ReadJSON(&msg); err != nil {
-				loopErr = err
-				return
-			}
-
-			if msg.Type == "input" {
-				data, err := protocol.DecodeData(msg)
-				if err == nil {
-					_ = registry.WriteInput(sessionID, data)
-				}
-			}
 		}
 	})
 

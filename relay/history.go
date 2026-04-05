@@ -41,8 +41,6 @@ func (s *liveSession) appendOutput(chunk []byte) uint64 {
 	seq := s.latestSeq + 1
 
 	s.latestSeq = seq
-	s.previewSeq = seq
-	s.previewData = cp
 	s.history = append(s.history, historyFrame{
 		Seq:  seq,
 		Data: cp,
@@ -84,18 +82,6 @@ func (s *liveSession) snapshot() protocol.SessionInfo {
 	info.LatestSeq = s.latestSeq
 	info.LastReadSeq = s.lastReadSeq
 	info.UnreadCount = s.unreadCount()
-	info.PreviewSeq = s.previewSeq
-	if len(s.previewData) > 0 {
-		info.PreviewB64 = base64.StdEncoding.EncodeToString(s.previewData)
-		if preview, ok := ExtractPreview(s.previewData); ok {
-			info.LastPreview = preview
-		} else {
-			info.LastPreview = ""
-		}
-	} else {
-		info.PreviewB64 = ""
-		info.LastPreview = ""
-	}
 	return info
 }
 
@@ -132,22 +118,4 @@ func (s *liveSession) historySnapshot(before, after uint64, limit, maxBytes int)
 		CurrentCols: s.currentCols,
 		CurrentRows: s.currentRows,
 	}
-}
-
-func (s *liveSession) backlogMessages(after uint64) []protocol.Message {
-	start := 0
-	if after > 0 {
-		start = sort.Search(len(s.history), func(i int) bool {
-			return s.history[i].Seq > after
-		})
-	}
-	if start >= len(s.history) {
-		return nil
-	}
-
-	messages := make([]protocol.Message, 0, len(s.history)-start)
-	for _, frame := range s.history[start:] {
-		messages = append(messages, protocol.EncodeOutputWithSeqAndSize(frame.Seq, frame.Data, frame.Cols, frame.Rows))
-	}
-	return messages
 }

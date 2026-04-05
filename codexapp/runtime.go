@@ -29,9 +29,20 @@ const (
 
 var execCommandContext = exec.CommandContext
 
+// Runtime owns the local Codex app-server sidecar. It is responsible for:
+// - starting `codex app-server`
+// - discovering the loopback websocket and readyz endpoints it prints
+// - exposing the rewritten `codex --remote <ws-url>` command for the PTY child
+// - shutting down and reaping the sidecar process
 type Runtime struct {
-	cmd           *exec.Cmd
-	appServerURL  string
+	// cmd is the managed `codex app-server` process, not the PTY-attached
+	// `codex --remote` process that the operator interacts with.
+	cmd *exec.Cmd
+	// appServerURL is used by the action-required monitor to query Codex thread
+	// state over websocket after startup succeeds.
+	appServerURL string
+	// remoteCommand is what `cmd/agentunnel` should actually run under the PTY
+	// once the app-server is ready.
 	remoteCommand launcher.Command
 
 	waitOnce sync.Once
@@ -49,16 +60,24 @@ type appServerEndpoints struct {
 	readyURL string
 }
 
+// Start boots the Codex sidecar and blocks until it is safe to launch the PTY
+// child against it. The returned Runtime is later wired into:
+// - cmd/agentunnel, which runs RemoteCommand() under the PTY
+// - codexapp.MonitorActionRequired, which consumes AppServerURL()
 func Start(ctx context.Context, command launcher.Command) (*Runtime, error) {
 	if command.Name != "codex" {
 		return nil, fmt.Errorf("codexapp runtime only supports codex launcher, got %q", command.Name)
 	}
 
+	// The Codex app-server announces its dynamically chosen websocket and readyz
+	// endpoints on stdout/stderr. We capture that stream through a pipe so startup
+	// can discover the addresses before the PTY child is launched.
 	reader, writer, err := os.Pipe()
 	if err != nil {
 		return nil, err
 	}
 
+	// Listen on loopback only. Port 0 lets Codex pick a free local port.
 	cmd := execCommandContext(ctx, command.Path, "app-server", "--listen", appServerListenAddr)
 	cmd.Stdout = writer
 	cmd.Stderr = writer
@@ -76,6 +95,8 @@ func Start(ctx context.Context, command launcher.Command) (*Runtime, error) {
 	go runtime.waitForProcess()
 
 	endpointsCh := make(chan appServerEndpoints, 1)
+	// Endpoint discovery runs concurrently with process supervision because the
+	// app-server may exit before it prints both endpoint lines.
 	go discoverEndpoints(reader, endpointsCh)
 
 	endpoints, err := waitForEndpoints(ctx, runtime, endpointsCh)
@@ -94,6 +115,8 @@ func Start(ctx context.Context, command launcher.Command) (*Runtime, error) {
 	runtime.remoteCommand = launcher.Command{
 		Name: command.Name,
 		Path: command.Path,
+		// The original launcher args are preserved. We only insert the remote
+		// websocket that tells the PTY child to attach to the local app-server.
 		Args: append([]string{"--remote", endpoints.wsURL}, command.Args...),
 	}
 	runtime.appServerURL = endpoints.wsURL
@@ -112,6 +135,8 @@ func (r *Runtime) AppServerURL() string {
 	return r.appServerURL
 }
 
+// Wait reaps the sidecar process. The normal shutdown path intentionally sends
+// a signal first, so signaled exits are treated as success after Close().
 func (r *Runtime) Wait() error {
 	r.waitOnce.Do(func() {
 		r.waitErr = r.cmd.Wait()
@@ -125,6 +150,10 @@ func (r *Runtime) Wait() error {
 	return r.waitErr
 }
 
+// Close terminates the sidecar process that backs the Codex remote session.
+// This is called from cmd/agentunnel cleanup when either:
+// - the PTY child exits, or
+// - agentunnel itself is shutting down.
 func (r *Runtime) Close() error {
 	r.closeOnce.Do(func() {
 		r.markCloseInitiated()
@@ -149,6 +178,11 @@ func (r *Runtime) Close() error {
 	return r.Wait()
 }
 
+// discoverEndpoints parses the app-server log stream until both of the startup
+// endpoints have been observed. Those values are later used for two different
+// downstream consumers:
+// - wsURL -> RemoteCommand() and MonitorActionRequired()
+// - readyURL -> waitForReady()
 func discoverEndpoints(reader *os.File, endpointsCh chan<- appServerEndpoints) {
 	defer reader.Close()
 
@@ -179,6 +213,10 @@ func discoverEndpoints(reader *os.File, endpointsCh chan<- appServerEndpoints) {
 	close(endpointsCh)
 }
 
+// waitForEndpoints ties together three failure domains during startup:
+// - context cancellation
+// - timeout waiting for the endpoint announcements
+// - early process exit from the sidecar itself
 func waitForEndpoints(ctx context.Context, runtime *Runtime, endpointsCh <-chan appServerEndpoints) (appServerEndpoints, error) {
 	timer := time.NewTimer(startupTimeout)
 	defer timer.Stop()
@@ -206,6 +244,10 @@ func waitForEndpoints(ctx context.Context, runtime *Runtime, endpointsCh <-chan 
 	}
 }
 
+// waitForReady prevents the PTY child from connecting too early. Endpoint
+// discovery only tells us where the sidecar intends to listen; readyz confirms
+// that the websocket API is actually ready to serve `codex --remote` and the
+// action-required monitor.
 func waitForReady(ctx context.Context, runtime *Runtime, readyURL string) error {
 	client := &http.Client{Timeout: readyRequestTimeout}
 	ticker := time.NewTicker(readyPollInterval)
@@ -262,6 +304,8 @@ func (r *Runtime) waitForProcess() {
 	})
 }
 
+// isExpectedShutdownError is shared with Close() so a process that exits because
+// agentunnel intentionally signaled it is not reported as an application error.
 func isExpectedShutdownError(err error) bool {
 	if err == nil {
 		return false

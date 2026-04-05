@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -66,8 +67,7 @@ func TestSessionSummaryJSONUsesStableFieldNames(t *testing.T) {
 		"latest_seq",
 		"last_read_seq",
 		"unread_count",
-		"preview_seq",
-		"preview_b64",
+		"state",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("json = %s, want field %q", got, want)
@@ -90,11 +90,95 @@ func TestSessionSummaryOmittedUnsetOptionalFields(t *testing.T) {
 
 	got := string(raw)
 	for _, unwanted := range []string{
-		"last_preview",
 		"last_active_at",
 	} {
 		if strings.Contains(got, unwanted) {
 			t.Fatalf("json = %s, did not expect field %q", got, unwanted)
 		}
+	}
+}
+
+func TestClientUpdateMessageOutputRoundTrip(t *testing.T) {
+	frame := EncodeClientOutput("sess-1", 42, []byte("hello"), 132, 43)
+
+	raw, err := json.Marshal(frame)
+	if err != nil {
+		t.Fatalf("Marshal returned error: %v", err)
+	}
+
+	var decoded ClientUpdateMessage
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+
+	if decoded.SessionID != "sess-1" || decoded.Type != "output" || decoded.Seq != 42 {
+		t.Fatalf("decoded = %#v, want sess-1 output seq 42", decoded)
+	}
+	data, err := base64.StdEncoding.DecodeString(decoded.Data)
+	if err != nil {
+		t.Fatalf("DecodeString returned error: %v", err)
+	}
+	if string(data) != "hello" {
+		t.Fatalf("data = %q, want hello", string(data))
+	}
+}
+
+func TestClientUpdateMessageSessionStateRoundTrip(t *testing.T) {
+	since := time.Date(2026, 4, 2, 12, 1, 0, 0, time.UTC)
+	changedAt := time.Date(2026, 4, 2, 12, 2, 0, 0, time.UTC)
+	frame := EncodeClientSessionState(SessionStateEvent{
+		SessionID:           "sess-2",
+		State:               SessionStateActionRequired,
+		ChangedAt:           changedAt,
+		ActionRequiredSince: &since,
+	})
+
+	raw, err := json.Marshal(frame)
+	if err != nil {
+		t.Fatalf("Marshal returned error: %v", err)
+	}
+
+	var decoded ClientUpdateMessage
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+
+	if decoded.SessionID != "sess-2" || decoded.Type != "session_state" {
+		t.Fatalf("decoded = %#v, want sess-2 session_state", decoded)
+	}
+	if decoded.State != SessionStateActionRequired {
+		t.Fatalf("State = %q, want %q", decoded.State, SessionStateActionRequired)
+	}
+	if decoded.ActionRequiredSince == nil || !decoded.ActionRequiredSince.Equal(since) {
+		t.Fatalf("ActionRequiredSince = %v, want %v", decoded.ActionRequiredSince, since)
+	}
+}
+
+func TestClientUpdateMessageInputRoundTrip(t *testing.T) {
+	frame := ClientUpdateMessage{
+		SessionID: "sess-3",
+		Type:      "input",
+		Data:      base64.StdEncoding.EncodeToString([]byte("ls\n")),
+	}
+
+	raw, err := json.Marshal(frame)
+	if err != nil {
+		t.Fatalf("Marshal returned error: %v", err)
+	}
+
+	var decoded ClientUpdateMessage
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+
+	if decoded.SessionID != "sess-3" || decoded.Type != "input" {
+		t.Fatalf("decoded = %#v, want sess-3 input", decoded)
+	}
+	data, err := base64.StdEncoding.DecodeString(decoded.Data)
+	if err != nil {
+		t.Fatalf("DecodeString returned error: %v", err)
+	}
+	if string(data) != "ls\n" {
+		t.Fatalf("data = %q, want ls\\n", string(data))
 	}
 }

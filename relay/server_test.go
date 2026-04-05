@@ -90,9 +90,14 @@ func TestHandlerReturnsLiveSessionsWithBasicAuth(t *testing.T) {
 	if len(sessions) != 1 || sessions[0].SessionID != "sess-1" {
 		t.Fatalf("sessions = %#v, want sess-1", sessions)
 	}
-	for _, want := range []string{"latest_seq", "last_read_seq", "unread_count", "preview_seq", "preview_b64", "state"} {
+	for _, want := range []string{"latest_seq", "last_read_seq", "unread_count", "state"} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("body = %s, want field %q", rec.Body.String(), want)
+		}
+	}
+	for _, unwanted := range []string{"preview_seq", "preview_b64", "last_preview"} {
+		if strings.Contains(rec.Body.String(), unwanted) {
+			t.Fatalf("body = %s, did not expect field %q", rec.Body.String(), unwanted)
 		}
 	}
 }
@@ -295,6 +300,31 @@ func TestHandlerServesSessionHistoryAndReadState(t *testing.T) {
 	}
 }
 
+func TestHandlerNoLongerServesSessionScopedWebSocket(t *testing.T) {
+	reg := NewRegistry()
+	server := httptest.NewServer(NewHandler(HandlerConfig{
+		Registry:        reg,
+		BrowserUser:     "demo",
+		BrowserPassword: "secret",
+		AgentToken:      "agent-token",
+	}))
+	defer server.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/sess-1/ws", nil)
+	req.Header.Set("Authorization", basicAuth("demo", "secret"))
+	rec := httptest.NewRecorder()
+	NewHandler(HandlerConfig{
+		Registry:        reg,
+		BrowserUser:     "demo",
+		BrowserPassword: "secret",
+		AgentToken:      "agent-token",
+	}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
 func TestHandlerRejectsAgentWebSocketWithWrongToken(t *testing.T) {
 	reg := NewRegistry()
 	server := httptest.NewServer(NewHandler(HandlerConfig{
@@ -453,7 +483,7 @@ func TestHandlerRootReturnsNotFoundWithoutBundledFrontend(t *testing.T) {
 	}
 }
 
-func TestAgentRegisterAddsLiveSessionAndBrowserAttachReceivesOutput(t *testing.T) {
+func TestAgentRegisterAddsLiveSessionAndUpdatesSocketReceivesOutput(t *testing.T) {
 	reg := NewRegistry()
 	server := httptest.NewServer(NewHandler(HandlerConfig{
 		Registry:        reg,
@@ -483,148 +513,26 @@ func TestAgentRegisterAddsLiveSessionAndBrowserAttachReceivesOutput(t *testing.T
 		t.Fatalf("WriteJSON register returned error: %v", err)
 	}
 
-	browserURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/sessions/sess-1/ws"
-	browserHeaders := http.Header{}
-	browserHeaders.Set("Authorization", basicAuth("demo", "secret"))
-	browserConn, _, err := websocket.DefaultDialer.Dial(browserURL, browserHeaders)
+	updatesURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/updates/ws"
+	updatesHeaders := http.Header{}
+	updatesHeaders.Set("Authorization", basicAuth("demo", "secret"))
+	updatesConn, _, err := websocket.DefaultDialer.Dial(updatesURL, updatesHeaders)
 	if err != nil {
-		t.Fatalf("Dial browser returned error: %v", err)
+		t.Fatalf("Dial updates returned error: %v", err)
 	}
-	defer browserConn.Close()
+	defer updatesConn.Close()
 
 	output := protocol.EncodeOutput([]byte("world"))
 	if err := agentConn.WriteJSON(output); err != nil {
 		t.Fatalf("WriteJSON output returned error: %v", err)
 	}
 
-	var got protocol.Message
-	if err := browserConn.ReadJSON(&got); err != nil {
-		t.Fatalf("ReadJSON browser returned error: %v", err)
+	var got protocol.ClientUpdateMessage
+	if err := updatesConn.ReadJSON(&got); err != nil {
+		t.Fatalf("ReadJSON updates returned error: %v", err)
 	}
-	if got.Type != "output" {
-		t.Fatalf("Type = %q, want output", got.Type)
-	}
-}
-
-func TestBrowserAttachAddsSequenceNumbersAndTerminalSizeToOutputFrames(t *testing.T) {
-	reg := NewRegistry()
-	server := httptest.NewServer(NewHandler(HandlerConfig{
-		Registry:        reg,
-		BrowserUser:     "demo",
-		BrowserPassword: "secret",
-		AgentToken:      "agent-token",
-	}))
-	defer server.Close()
-
-	agentConn := dialAndRegisterAgent(t, server.URL, "sess-1")
-	defer agentConn.Close()
-
-	if err := agentConn.WriteJSON(protocol.Message{Type: "resize", Cols: 120, Rows: 40}); err != nil {
-		t.Fatalf("WriteJSON resize returned error: %v", err)
-	}
-
-	browserURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/sessions/sess-1/ws"
-	browserHeaders := http.Header{}
-	browserHeaders.Set("Authorization", basicAuth("demo", "secret"))
-	browserConn, _, err := websocket.DefaultDialer.Dial(browserURL, browserHeaders)
-	if err != nil {
-		t.Fatalf("Dial browser returned error: %v", err)
-	}
-	defer browserConn.Close()
-
-	if err := agentConn.WriteJSON(protocol.EncodeOutput([]byte("hello"))); err != nil {
-		t.Fatalf("WriteJSON output returned error: %v", err)
-	}
-
-	_, raw, err := browserConn.ReadMessage()
-	if err != nil {
-		t.Fatalf("ReadMessage browser returned error: %v", err)
-	}
-	if !strings.Contains(string(raw), `"seq":1`) {
-		t.Fatalf("browser frame = %s, want seq 1", string(raw))
-	}
-	if !strings.Contains(string(raw), `"cols":120`) || !strings.Contains(string(raw), `"rows":40`) {
-		t.Fatalf("browser frame = %s, want cols/rows 120x40", string(raw))
-	}
-}
-
-func TestBrowserAttachWithAfterStreamsBacklogThenLiveOutput(t *testing.T) {
-	reg := NewRegistry()
-	server := httptest.NewServer(NewHandler(HandlerConfig{
-		Registry:        reg,
-		BrowserUser:     "demo",
-		BrowserPassword: "secret",
-		AgentToken:      "agent-token",
-	}))
-	defer server.Close()
-
-	agentConn := dialAndRegisterAgent(t, server.URL, "sess-1")
-	defer agentConn.Close()
-
-	if err := agentConn.WriteJSON(protocol.Message{Type: "resize", Cols: 120, Rows: 40}); err != nil {
-		t.Fatalf("WriteJSON resize returned error: %v", err)
-	}
-	if err := agentConn.WriteJSON(protocol.EncodeOutput([]byte("one"))); err != nil {
-		t.Fatalf("WriteJSON output one returned error: %v", err)
-	}
-	if err := agentConn.WriteJSON(protocol.Message{Type: "resize", Cols: 132, Rows: 43}); err != nil {
-		t.Fatalf("WriteJSON resize returned error: %v", err)
-	}
-	if err := agentConn.WriteJSON(protocol.EncodeOutput([]byte("two"))); err != nil {
-		t.Fatalf("WriteJSON output two returned error: %v", err)
-	}
-	waitForLatestSeq(t, reg, "sess-1", 2)
-
-	browserURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/sessions/sess-1/ws?after=1"
-	browserHeaders := http.Header{}
-	browserHeaders.Set("Authorization", basicAuth("demo", "secret"))
-	browserConn, _, err := websocket.DefaultDialer.Dial(browserURL, browserHeaders)
-	if err != nil {
-		t.Fatalf("Dial browser returned error: %v", err)
-	}
-	defer browserConn.Close()
-
-	_ = browserConn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	var got protocol.Message
-	if err := browserConn.ReadJSON(&got); err != nil {
-		t.Fatalf("ReadJSON browser returned error: %v", err)
-	}
-	if got.Type != "output" {
-		t.Fatalf("Type = %q, want output backlog", got.Type)
-	}
-	if got.Seq != 2 {
-		t.Fatalf("Seq = %d, want 2", got.Seq)
-	}
-	if got.Cols != 132 || got.Rows != 43 {
-		t.Fatalf("backlog size = %dx%d, want 132x43", got.Cols, got.Rows)
-	}
-	data, err := protocol.DecodeData(got)
-	if err != nil {
-		t.Fatalf("DecodeData backlog returned error: %v", err)
-	}
-	if string(data) != "two" {
-		t.Fatalf("backlog data = %q, want two", string(data))
-	}
-
-	if err := agentConn.WriteJSON(protocol.EncodeOutput([]byte("three"))); err != nil {
-		t.Fatalf("WriteJSON output three returned error: %v", err)
-	}
-
-	if err := browserConn.ReadJSON(&got); err != nil {
-		t.Fatalf("ReadJSON browser live returned error: %v", err)
-	}
-	if got.Type != "output" || got.Seq != 3 {
-		t.Fatalf("live frame = %+v, want output seq 3", got)
-	}
-	if got.Cols != 132 || got.Rows != 43 {
-		t.Fatalf("live size = %dx%d, want 132x43", got.Cols, got.Rows)
-	}
-	data, err = protocol.DecodeData(got)
-	if err != nil {
-		t.Fatalf("DecodeData live returned error: %v", err)
-	}
-	if string(data) != "three" {
-		t.Fatalf("live data = %q, want three", string(data))
+	if got.SessionID != "sess-1" || got.Type != "output" || got.Seq != 1 {
+		t.Fatalf("got = %#v, want sess-1 output seq 1", got)
 	}
 }
 
@@ -671,7 +579,63 @@ func TestAgentSessionStateUpdatesAppearInListAPI(t *testing.T) {
 	}
 }
 
-func TestSessionEventsWebSocketStreamsStateTransitions(t *testing.T) {
+func TestUpdatesWebSocketStreamsOutputAcrossSessions(t *testing.T) {
+	reg := NewRegistry()
+	server := httptest.NewServer(NewHandler(HandlerConfig{
+		Registry:        reg,
+		BrowserUser:     "demo",
+		BrowserPassword: "secret",
+		AgentToken:      "agent-token",
+	}))
+	defer server.Close()
+
+	agentOne := dialAndRegisterAgent(t, server.URL, "sess-1")
+	defer agentOne.Close()
+	agentTwo := dialAndRegisterAgent(t, server.URL, "sess-2")
+	defer agentTwo.Close()
+
+	updatesURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/updates/ws"
+	headers := http.Header{}
+	headers.Set("Authorization", basicAuth("demo", "secret"))
+	updatesConn, _, err := websocket.DefaultDialer.Dial(updatesURL, headers)
+	if err != nil {
+		t.Fatalf("Dial updates returned error: %v", err)
+	}
+	defer updatesConn.Close()
+
+	if err := agentOne.WriteJSON(protocol.EncodeOutput([]byte("one"))); err != nil {
+		t.Fatalf("WriteJSON output one returned error: %v", err)
+	}
+	if err := agentTwo.WriteJSON(protocol.EncodeOutput([]byte("two"))); err != nil {
+		t.Fatalf("WriteJSON output two returned error: %v", err)
+	}
+
+	var first protocol.ClientUpdateMessage
+	if err := updatesConn.ReadJSON(&first); err != nil {
+		t.Fatalf("ReadJSON first update returned error: %v", err)
+	}
+	var second protocol.ClientUpdateMessage
+	if err := updatesConn.ReadJSON(&second); err != nil {
+		t.Fatalf("ReadJSON second update returned error: %v", err)
+	}
+
+	got := map[string]string{}
+	for _, frame := range []protocol.ClientUpdateMessage{first, second} {
+		if frame.Type != "output" {
+			t.Fatalf("frame.Type = %q, want output", frame.Type)
+		}
+		data, err := base64.StdEncoding.DecodeString(frame.Data)
+		if err != nil {
+			t.Fatalf("DecodeString returned error: %v", err)
+		}
+		got[frame.SessionID] = string(data)
+	}
+	if got["sess-1"] != "one" || got["sess-2"] != "two" {
+		t.Fatalf("updates = %#v, want sess-1=one sess-2=two", got)
+	}
+}
+
+func TestUpdatesWebSocketStreamsSessionStateAndRemoval(t *testing.T) {
 	reg := NewRegistry()
 	server := httptest.NewServer(NewHandler(HandlerConfig{
 		Registry:        reg,
@@ -682,16 +646,15 @@ func TestSessionEventsWebSocketStreamsStateTransitions(t *testing.T) {
 	defer server.Close()
 
 	agentConn := dialAndRegisterAgent(t, server.URL, "sess-1")
-	defer agentConn.Close()
 
-	eventsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/session-events/ws"
+	updatesURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/updates/ws"
 	headers := http.Header{}
 	headers.Set("Authorization", basicAuth("demo", "secret"))
-	eventsConn, _, err := websocket.DefaultDialer.Dial(eventsURL, headers)
+	updatesConn, _, err := websocket.DefaultDialer.Dial(updatesURL, headers)
 	if err != nil {
-		t.Fatalf("Dial session-events returned error: %v", err)
+		t.Fatalf("Dial updates returned error: %v", err)
 	}
-	defer eventsConn.Close()
+	defer updatesConn.Close()
 
 	changedAt := time.Unix(123, 0).UTC()
 	since := time.Unix(122, 0).UTC()
@@ -699,19 +662,52 @@ func TestSessionEventsWebSocketStreamsStateTransitions(t *testing.T) {
 		t.Fatalf("WriteJSON session_state returned error: %v", err)
 	}
 
-	var event protocol.SessionStateEvent
-	if err := eventsConn.ReadJSON(&event); err != nil {
-		t.Fatalf("ReadJSON event returned error: %v", err)
+	var stateFrame protocol.ClientUpdateMessage
+	if err := updatesConn.ReadJSON(&stateFrame); err != nil {
+		t.Fatalf("ReadJSON state update returned error: %v", err)
 	}
-	if event.SessionID != "sess-1" {
-		t.Fatalf("SessionID = %q, want sess-1", event.SessionID)
+	if stateFrame.SessionID != "sess-1" || stateFrame.Type != "session_state" {
+		t.Fatalf("stateFrame = %#v, want sess-1 session_state", stateFrame)
 	}
-	if event.State != protocol.SessionStateActionRequired {
-		t.Fatalf("State = %q, want %q", event.State, protocol.SessionStateActionRequired)
+	if stateFrame.State != protocol.SessionStateActionRequired {
+		t.Fatalf("state = %q, want %q", stateFrame.State, protocol.SessionStateActionRequired)
+	}
+
+	_ = agentConn.Close()
+	waitForSessionCount(t, server.URL, basicAuth("demo", "secret"), 0)
+
+	var removed protocol.ClientUpdateMessage
+	if err := updatesConn.ReadJSON(&removed); err != nil {
+		t.Fatalf("ReadJSON removal update returned error: %v", err)
+	}
+	if removed.SessionID != "sess-1" || removed.Type != "session_removed" {
+		t.Fatalf("removed = %#v, want sess-1 session_removed", removed)
+	}
+	if removed.Reason != "agent_disconnected" {
+		t.Fatalf("Reason = %q, want agent_disconnected", removed.Reason)
 	}
 }
 
-func TestBrowserAttachRoutesInputToRegisteredAgent(t *testing.T) {
+func TestLegacySessionEventsWebSocketNoLongerExists(t *testing.T) {
+	reg := NewRegistry()
+	handler := NewHandler(HandlerConfig{
+		Registry:        reg,
+		BrowserUser:     "demo",
+		BrowserPassword: "secret",
+		AgentToken:      "agent-token",
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/session-events/ws", nil)
+	req.Header.Set("Authorization", basicAuth("demo", "secret"))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestUpdatesWebSocketRoutesInputToRegisteredAgent(t *testing.T) {
 	reg := NewRegistry()
 	server := httptest.NewServer(NewHandler(HandlerConfig{
 		Registry:        reg,
@@ -737,20 +733,21 @@ func TestBrowserAttachRoutesInputToRegisteredAgent(t *testing.T) {
 		t.Fatalf("WriteJSON register returned error: %v", err)
 	}
 
-	browserURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/sessions/sess-1/ws"
-	browserHeaders := http.Header{}
-	browserHeaders.Set("Authorization", basicAuth("demo", "secret"))
-	browserConn, _, err := websocket.DefaultDialer.Dial(browserURL, browserHeaders)
+	updatesURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/updates/ws"
+	updatesHeaders := http.Header{}
+	updatesHeaders.Set("Authorization", basicAuth("demo", "secret"))
+	updatesConn, _, err := websocket.DefaultDialer.Dial(updatesURL, updatesHeaders)
 	if err != nil {
-		t.Fatalf("Dial browser returned error: %v", err)
+		t.Fatalf("Dial updates returned error: %v", err)
 	}
-	defer browserConn.Close()
+	defer updatesConn.Close()
 
-	if err := browserConn.WriteJSON(protocol.Message{
-		Type: "input",
-		Data: base64.StdEncoding.EncodeToString([]byte("hello")),
+	if err := updatesConn.WriteJSON(protocol.ClientUpdateMessage{
+		SessionID: "sess-1",
+		Type:      "input",
+		Data:      base64.StdEncoding.EncodeToString([]byte("hello")),
 	}); err != nil {
-		t.Fatalf("WriteJSON browser input returned error: %v", err)
+		t.Fatalf("WriteJSON updates input returned error: %v", err)
 	}
 
 	var got protocol.Message
@@ -825,9 +822,8 @@ func waitForSessionState(t *testing.T, reg *Registry, sessionID string, want pro
 	t.Fatalf("State = %q, want %q", info.State, want)
 }
 
-func TestBrowserAttachRejectsForeignOrigin(t *testing.T) {
+func TestUpdatesWebSocketRejectsForeignOrigin(t *testing.T) {
 	reg := NewRegistry()
-	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, fakeAgentPeer{})
 	logs := newLogRecorder()
 
 	server := httptest.NewServer(NewHandler(HandlerConfig{
@@ -839,30 +835,29 @@ func TestBrowserAttachRejectsForeignOrigin(t *testing.T) {
 	}))
 	defer server.Close()
 
-	browserURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/sessions/sess-1/ws"
+	updatesURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/updates/ws"
 	headers := http.Header{}
 	headers.Set("Authorization", basicAuth("demo", "secret"))
 	headers.Set("Origin", "https://evil.example")
 
-	_, resp, err := websocket.DefaultDialer.Dial(browserURL, headers)
+	_, resp, err := websocket.DefaultDialer.Dial(updatesURL, headers)
 	if err == nil {
-		t.Fatal("Dial browser succeeded with foreign origin, want failure")
+		t.Fatal("Dial updates succeeded with foreign origin, want failure")
 	}
 	if resp == nil || resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("status = %v, want 403", responseStatusCode(resp))
 	}
 
 	entry := waitForLogEvent(t, logs, "ws_upgrade_failed", func(entry map[string]any) bool {
-		return entry["path"] == "/api/sessions/sess-1/ws" && entry["role"] == "client"
+		return entry["path"] == "/api/updates/ws" && entry["role"] == "client"
 	})
 	if entry["remote_addr"] == "" {
 		t.Fatalf("remote_addr = %v, want non-empty", entry["remote_addr"])
 	}
 }
 
-func TestBrowserAttachAllowsSameOrigin(t *testing.T) {
+func TestUpdatesWebSocketAllowsSameOrigin(t *testing.T) {
 	reg := NewRegistry()
-	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, fakeAgentPeer{})
 
 	server := httptest.NewServer(NewHandler(HandlerConfig{
 		Registry:        reg,
@@ -877,19 +872,19 @@ func TestBrowserAttachAllowsSameOrigin(t *testing.T) {
 		t.Fatalf("Parse returned error: %v", err)
 	}
 
-	browserURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/sessions/sess-1/ws"
+	updatesURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/updates/ws"
 	headers := http.Header{}
 	headers.Set("Authorization", basicAuth("demo", "secret"))
 	headers.Set("Origin", parsedURL.Scheme+"://"+parsedURL.Host)
 
-	browserConn, _, err := websocket.DefaultDialer.Dial(browserURL, headers)
+	updatesConn, _, err := websocket.DefaultDialer.Dial(updatesURL, headers)
 	if err != nil {
-		t.Fatalf("Dial browser returned error: %v", err)
+		t.Fatalf("Dial updates returned error: %v", err)
 	}
-	defer browserConn.Close()
+	defer updatesConn.Close()
 }
 
-func TestBrowserAttachStaysLiveAcrossSameSessionReplacementAndRoutesToNewAgent(t *testing.T) {
+func TestUpdatesWebSocketStaysLiveAcrossSameSessionReplacementAndRoutesToNewAgent(t *testing.T) {
 	reg := NewRegistry()
 	server := httptest.NewServer(NewHandler(HandlerConfig{
 		Registry:        reg,
@@ -900,12 +895,12 @@ func TestBrowserAttachStaysLiveAcrossSameSessionReplacementAndRoutesToNewAgent(t
 	defer server.Close()
 
 	agentURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/agent/ws"
-	browserURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/sessions/sess-1/ws"
+	updatesURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/updates/ws"
 
 	agentHeaders := http.Header{}
 	agentHeaders.Set("Authorization", "Bearer agent-token")
-	browserHeaders := http.Header{}
-	browserHeaders.Set("Authorization", basicAuth("demo", "secret"))
+	updatesHeaders := http.Header{}
+	updatesHeaders.Set("Authorization", basicAuth("demo", "secret"))
 
 	oldAgentConn, _, err := websocket.DefaultDialer.Dial(agentURL, agentHeaders)
 	if err != nil {
@@ -920,11 +915,11 @@ func TestBrowserAttachStaysLiveAcrossSameSessionReplacementAndRoutesToNewAgent(t
 		t.Fatalf("WriteJSON register returned error: %v", err)
 	}
 
-	browserConn, _, err := websocket.DefaultDialer.Dial(browserURL, browserHeaders)
+	updatesConn, _, err := websocket.DefaultDialer.Dial(updatesURL, updatesHeaders)
 	if err != nil {
-		t.Fatalf("Dial browser returned error: %v", err)
+		t.Fatalf("Dial updates returned error: %v", err)
 	}
-	defer browserConn.Close()
+	defer updatesConn.Close()
 
 	newAgentConn, _, err := websocket.DefaultDialer.Dial(agentURL, agentHeaders)
 	if err != nil {
@@ -943,27 +938,28 @@ func TestBrowserAttachStaysLiveAcrossSameSessionReplacementAndRoutesToNewAgent(t
 		t.Fatalf("WriteJSON output returned error: %v", err)
 	}
 
-	_ = browserConn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	var output protocol.Message
-	if err := browserConn.ReadJSON(&output); err != nil {
-		t.Fatalf("ReadJSON browser returned error: %v", err)
+	_ = updatesConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var output protocol.ClientUpdateMessage
+	if err := updatesConn.ReadJSON(&output); err != nil {
+		t.Fatalf("ReadJSON updates returned error: %v", err)
 	}
-	if output.Type != "output" {
-		t.Fatalf("Type = %q, want output", output.Type)
+	if output.SessionID != "sess-1" || output.Type != "output" {
+		t.Fatalf("output = %#v, want sess-1 output", output)
 	}
-	outputData, err := protocol.DecodeData(output)
+	outputData, err := base64.StdEncoding.DecodeString(output.Data)
 	if err != nil {
-		t.Fatalf("DecodeData output returned error: %v", err)
+		t.Fatalf("DecodeString output returned error: %v", err)
 	}
 	if string(outputData) != "after-replace" {
 		t.Fatalf("output = %q, want after-replace", string(outputData))
 	}
 
-	if err := browserConn.WriteJSON(protocol.Message{
-		Type: "input",
-		Data: base64.StdEncoding.EncodeToString([]byte("hello-new")),
+	if err := updatesConn.WriteJSON(protocol.ClientUpdateMessage{
+		SessionID: "sess-1",
+		Type:      "input",
+		Data:      base64.StdEncoding.EncodeToString([]byte("hello-new")),
 	}); err != nil {
-		t.Fatalf("WriteJSON browser input returned error: %v", err)
+		t.Fatalf("WriteJSON updates input returned error: %v", err)
 	}
 
 	_ = newAgentConn.SetReadDeadline(time.Now().Add(2 * time.Second))
@@ -1082,199 +1078,6 @@ func TestAgentRegisterLogsLifecycle(t *testing.T) {
 		t.Fatalf("duration_ms = %T, want number", disconnected["duration_ms"])
 	}
 	_ = agentConn.Close()
-}
-
-func TestClientAttachLogsLifecycle(t *testing.T) {
-	reg := NewRegistry()
-	logs := newLogRecorder()
-	server := httptest.NewServer(NewHandler(HandlerConfig{
-		Registry:        reg,
-		BrowserUser:     "demo",
-		BrowserPassword: "secret",
-		AgentToken:      "agent-token",
-		Logger:          NewLogger(logs),
-	}))
-	defer server.Close()
-
-	agentConn := dialAndRegisterAgent(t, server.URL, "sess-1")
-	defer agentConn.Close()
-	waitForLogEvent(t, logs, "agent_registered", func(entry map[string]any) bool {
-		return entry["session_id"] == "sess-1"
-	})
-
-	browserURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/sessions/sess-1/ws"
-	headers := http.Header{}
-	headers.Set("Authorization", basicAuth("demo", "secret"))
-	headers.Set("User-Agent", "relay-test-client/1.0")
-
-	browserConn, _, err := websocket.DefaultDialer.Dial(browserURL, headers)
-	if err != nil {
-		t.Fatalf("Dial browser returned error: %v", err)
-	}
-
-	connected := waitForLogEvent(t, logs, "client_ws_connected", func(entry map[string]any) bool {
-		return entry["session_id"] == "sess-1" && entry["user_agent"] == "relay-test-client/1.0"
-	})
-	clientID, ok := connected["client_id"].(string)
-	if !ok || clientID == "" {
-		t.Fatalf("client_id = %v, want non-empty string", connected["client_id"])
-	}
-	if connected["remote_addr"] == "" {
-		t.Fatalf("remote_addr = %v, want non-empty", connected["remote_addr"])
-	}
-
-	if err := browserConn.WriteControl(
-		websocket.CloseMessage,
-		websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
-		time.Now().Add(time.Second),
-	); err != nil {
-		t.Fatalf("WriteControl close returned error: %v", err)
-	}
-
-	disconnected := waitForLogEvent(t, logs, "client_disconnected", func(entry map[string]any) bool {
-		return entry["session_id"] == "sess-1" && entry["client_id"] == clientID
-	})
-	if got := disconnected["reason"]; got != "client_closed" {
-		t.Fatalf("reason = %v, want client_closed", got)
-	}
-	if got := disconnected["close_code"]; got != float64(websocket.CloseNormalClosure) {
-		t.Fatalf("close_code = %v, want %d", got, websocket.CloseNormalClosure)
-	}
-	if _, ok := disconnected["duration_ms"].(float64); !ok {
-		t.Fatalf("duration_ms = %T, want number", disconnected["duration_ms"])
-	}
-	_ = browserConn.Close()
-}
-
-func TestAgentDisconnectClosesAttachedClientsAndLogsReason(t *testing.T) {
-	reg := NewRegistry()
-	logs := newLogRecorder()
-	server := httptest.NewServer(NewHandler(HandlerConfig{
-		Registry:        reg,
-		BrowserUser:     "demo",
-		BrowserPassword: "secret",
-		AgentToken:      "agent-token",
-		Logger:          NewLogger(logs),
-	}))
-	defer server.Close()
-
-	agentConn := dialAndRegisterAgent(t, server.URL, "sess-1")
-	waitForLogEvent(t, logs, "agent_registered", func(entry map[string]any) bool {
-		return entry["session_id"] == "sess-1"
-	})
-
-	browserURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/sessions/sess-1/ws"
-	headers := http.Header{}
-	headers.Set("Authorization", basicAuth("demo", "secret"))
-	headers.Set("User-Agent", "relay-test-client/1.0")
-
-	browserConn, _, err := websocket.DefaultDialer.Dial(browserURL, headers)
-	if err != nil {
-		t.Fatalf("Dial browser returned error: %v", err)
-	}
-	defer browserConn.Close()
-
-	connected := waitForLogEvent(t, logs, "client_ws_connected", func(entry map[string]any) bool {
-		return entry["session_id"] == "sess-1"
-	})
-	clientID, ok := connected["client_id"].(string)
-	if !ok || clientID == "" {
-		t.Fatalf("client_id = %v, want non-empty string", connected["client_id"])
-	}
-
-	_ = agentConn.Close()
-	waitForSessionCount(t, server.URL, basicAuth("demo", "secret"), 0)
-
-	disconnected := waitForLogEvent(t, logs, "client_disconnected", func(entry map[string]any) bool {
-		return entry["session_id"] == "sess-1" && entry["client_id"] == clientID
-	})
-	if got := disconnected["reason"]; got != "agent_disconnected" {
-		t.Fatalf("reason = %v, want agent_disconnected", got)
-	}
-}
-
-type backpressureTestSink struct {
-	mu             sync.Mutex
-	onBackpressure func()
-	writes         int
-}
-
-func (s *backpressureTestSink) WriteOutput(data []byte) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.writes++
-	if s.writes == 1 {
-		s.onBackpressure()
-	}
-	return errWSSinkBackpressure
-}
-
-func (s *backpressureTestSink) Close() error { return nil }
-
-func (s *backpressureTestSink) PreloadMessages([]protocol.Message) error { return nil }
-
-func TestClientAttachLogsBackpressureDisconnect(t *testing.T) {
-	origFactory := clientSinkFactory
-	clientSinkFactory = func(conn *websocket.Conn, onBackpressure func()) clientSink {
-		return &backpressureTestSink{onBackpressure: onBackpressure}
-	}
-	defer func() {
-		clientSinkFactory = origFactory
-	}()
-
-	reg := NewRegistry()
-	logs := newLogRecorder()
-	server := httptest.NewServer(NewHandler(HandlerConfig{
-		Registry:        reg,
-		BrowserUser:     "demo",
-		BrowserPassword: "secret",
-		AgentToken:      "agent-token",
-		Logger:          NewLogger(logs),
-	}))
-	defer server.Close()
-
-	agentConn := dialAndRegisterAgent(t, server.URL, "sess-1")
-	defer agentConn.Close()
-	waitForLogEvent(t, logs, "agent_registered", func(entry map[string]any) bool {
-		return entry["session_id"] == "sess-1"
-	})
-
-	browserURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/sessions/sess-1/ws"
-	headers := http.Header{}
-	headers.Set("Authorization", basicAuth("demo", "secret"))
-	headers.Set("User-Agent", "relay-test-client/1.0")
-
-	browserConn, _, err := websocket.DefaultDialer.Dial(browserURL, headers)
-	if err != nil {
-		t.Fatalf("Dial browser returned error: %v", err)
-	}
-	defer browserConn.Close()
-
-	connected := waitForLogEvent(t, logs, "client_ws_connected", func(entry map[string]any) bool {
-		return entry["session_id"] == "sess-1" && entry["user_agent"] == "relay-test-client/1.0"
-	})
-	clientID, ok := connected["client_id"].(string)
-	if !ok || clientID == "" {
-		t.Fatalf("client_id = %v, want non-empty string", connected["client_id"])
-	}
-
-	if err := agentConn.WriteJSON(protocol.EncodeOutput([]byte("trigger backpressure"))); err != nil {
-		t.Fatalf("agent WriteJSON returned error: %v", err)
-	}
-
-	backpressure := waitForLogEvent(t, logs, "sink_backpressure", func(entry map[string]any) bool {
-		return entry["session_id"] == "sess-1" && entry["client_id"] == clientID
-	})
-	if got := backpressure["client_id"]; got != clientID {
-		t.Fatalf("sink_backpressure client_id = %v, want %s", got, clientID)
-	}
-
-	disconnected := waitForLogEvent(t, logs, "client_disconnected", func(entry map[string]any) bool {
-		return entry["session_id"] == "sess-1" && entry["client_id"] == clientID
-	})
-	if got := disconnected["reason"]; got != "backpressure" {
-		t.Fatalf("reason = %v, want backpressure", got)
-	}
 }
 
 func TestStaleAgentConnectionTimesOutAndRemovesSessionFromList(t *testing.T) {

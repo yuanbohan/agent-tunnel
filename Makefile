@@ -1,4 +1,4 @@
-.PHONY: agentunnel relay build clean vet test test-real-hitl
+.PHONY: agentunnel relay build clean vet test test-relay test-real-hitl
 
 agentunnel:
 	@test -n "$(LAUNCHER)" || (echo "usage: make agentunnel LAUNCHER=claude" && exit 1)
@@ -19,6 +19,9 @@ vet:
 
 test:
 	go test ./...
+
+test-relay:
+	go test ./protocol ./relay
 
 test-real-hitl:
 	go build -o bin/relay ./cmd/relay

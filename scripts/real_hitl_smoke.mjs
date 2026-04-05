@@ -34,7 +34,7 @@ async function main() {
   await waitForHttp(`http://127.0.0.1:${relayPort}/healthz`, 15000, authHeader());
   console.log(`relay started on 127.0.0.1:${relayPort}`);
 
-  const events = await openEventSocket(`ws://${authUser}:${authPassword}@127.0.0.1:${relayPort}/api/session-events/ws`);
+  const updates = await openEventSocket(`ws://${authUser}:${authPassword}@127.0.0.1:${relayPort}/api/updates/ws`);
 
   const filename = `.agentunnel-hitl-smoke-${Date.now()}.txt`;
   const filePath = path.join(repoRoot, filename);
@@ -52,7 +52,10 @@ async function main() {
   );
 
   try {
-    const actionRequired = await events.waitFor((event) => event.state === "action_required", 90000);
+    const actionRequired = await updates.waitFor(
+      (event) => event.type === "session_state" && event.state === "action_required",
+      90000,
+    );
     console.log("entered action_required:", actionRequired.session_id);
 
     const snapshotActionRequired = await waitForSessionInfo(
@@ -63,17 +66,19 @@ async function main() {
     );
     console.log("snapshot action_required_since:", snapshotActionRequired.action_required_since);
 
-    const sessionWS = await openEventSocket(
-      `ws://${authUser}:${authPassword}@127.0.0.1:${relayPort}/api/sessions/${actionRequired.session_id}/ws?after=0`,
-    );
-    await assertTerminalFramesOnly(sessionWS, 3, 10000);
-    sessionWS.close();
-    console.log("session websocket carried terminal frames only");
-
     await agent.send("y");
 
-    const backToNormal = await events.waitFor(
-      (event) => event.session_id === actionRequired.session_id && event.state === "normal",
+    const resumedOutput = await updates.waitFor(
+      (event) => event.session_id === actionRequired.session_id && event.type === "output",
+      30000,
+    );
+    console.log("received multiplexed output seq:", resumedOutput.seq);
+
+    const backToNormal = await updates.waitFor(
+      (event) =>
+        event.session_id === actionRequired.session_id &&
+        event.type === "session_state" &&
+        event.state === "normal",
       90000,
     );
     console.log("returned to normal:", backToNormal.changed_at);
@@ -95,7 +100,7 @@ async function main() {
       `${error.message}\n\nrelay tail:\n${relayTail.read()}\n\nagentunnel tail:\n${agentTail}`,
     );
   } finally {
-    events.close();
+    updates.close();
     await cleanupFile(filePath);
     await agent.stop();
     await stopProcess(relay);
@@ -410,24 +415,6 @@ async function waitForSessionInfo(relayPort, sessionId, predicate, timeoutMs) {
     await sleep(250);
   }
   throw new Error(`timed out waiting for session snapshot ${sessionId}`);
-}
-
-async function assertTerminalFramesOnly(socket, wantFrames, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  let seen = 0;
-  while (seen < wantFrames && Date.now() < deadline) {
-    const frame = await socket.next(Math.max(1, deadline - Date.now()));
-    if (frame.type === "session_state") {
-      throw new Error(`session websocket unexpectedly carried session_state frame: ${JSON.stringify(frame)}`);
-    }
-    if (frame.type !== "output" && frame.type !== "resize") {
-      throw new Error(`session websocket returned unexpected frame type ${frame.type}`);
-    }
-    seen += 1;
-  }
-  if (seen < wantFrames) {
-    throw new Error(`session websocket yielded ${seen} terminal frames, want at least ${wantFrames}`);
-  }
 }
 
 async function waitForFileContent(filePath, want, timeoutMs) {

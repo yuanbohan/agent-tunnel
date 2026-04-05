@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"yuanbohan/tunnel/protocol"
-	"yuanbohan/tunnel/session"
 )
 
 var ErrSessionNotFound = errors.New("relay session not found")
@@ -17,54 +16,30 @@ type AgentPeer interface {
 	Close() error
 }
 
-type seqOutputSink interface {
-	WriteOutputFrame(uint64, []byte, int, int) error
-}
-
-type preloadMessageSink interface {
-	PreloadMessages([]protocol.Message) error
-}
-
-type ResizeSink interface {
-	WriteResize(cols, rows int) error
-}
-
-type closeableSink interface {
-	Close() error
-}
-
-type disconnectAwareSink interface {
-	CloseWithReason(reason string) error
-	DisconnectReason() string
-}
-
 type Registry struct {
-	mu         sync.RWMutex
-	sessions   map[string]*liveSession
-	stateSinks map[string]sessionStateSink
-	logger     *Logger
+	mu          sync.RWMutex
+	sessions    map[string]*liveSession
+	updateSinks map[string]clientUpdateSink
+	logger      *Logger
 }
 
 type liveSession struct {
-	info  protocol.SessionInfo
-	peer  AgentPeer
-	sinks map[string]session.OutputSink
+	info protocol.SessionInfo
+	peer AgentPeer
 
 	history      []historyFrame
 	historyBytes int
 	latestSeq    uint64
 	lastReadSeq  uint64
-	previewSeq   uint64
-	previewData  []byte
 	currentCols  int
 	currentRows  int
 }
 
 func NewRegistry() *Registry {
 	return &Registry{
-		sessions:   make(map[string]*liveSession),
-		stateSinks: make(map[string]sessionStateSink),
-		logger:     NewDiscardLogger(),
+		sessions:    make(map[string]*liveSession),
+		updateSinks: make(map[string]clientUpdateSink),
+		logger:      NewDiscardLogger(),
 	}
 }
 
@@ -84,13 +59,10 @@ func (r *Registry) Register(info protocol.SessionInfo, peer AgentPeer) {
 	r.mu.Lock()
 	old := r.sessions[info.SessionID]
 	logger := r.logger
-	var sinks map[string]session.OutputSink
 	var history []historyFrame
 	var historyBytes int
 	var latestSeq uint64
 	var lastReadSeq uint64
-	var previewSeq uint64
-	var previewData []byte
 	var currentCols int
 	var currentRows int
 	var state protocol.SessionState
@@ -98,13 +70,10 @@ func (r *Registry) Register(info protocol.SessionInfo, peer AgentPeer) {
 	var actionRequiredSince *time.Time
 	lastActiveAt := info.LastActiveAt
 	if old != nil {
-		sinks = old.sinks
 		history = old.history
 		historyBytes = old.historyBytes
 		latestSeq = old.latestSeq
 		lastReadSeq = old.lastReadSeq
-		previewSeq = old.previewSeq
-		previewData = old.previewData
 		currentCols = old.currentCols
 		currentRows = old.currentRows
 		state = old.info.State
@@ -113,9 +82,6 @@ func (r *Registry) Register(info protocol.SessionInfo, peer AgentPeer) {
 		if old.info.LastActiveAt != nil {
 			lastActiveAt = old.info.LastActiveAt
 		}
-	}
-	if sinks == nil {
-		sinks = make(map[string]session.OutputSink)
 	}
 	if info.State == "" {
 		info.State = protocol.SessionStateNormal
@@ -128,13 +94,10 @@ func (r *Registry) Register(info protocol.SessionInfo, peer AgentPeer) {
 	r.sessions[info.SessionID] = &liveSession{
 		info:         info,
 		peer:         peer,
-		sinks:        sinks,
 		history:      history,
 		historyBytes: historyBytes,
 		latestSeq:    latestSeq,
 		lastReadSeq:  lastReadSeq,
-		previewSeq:   previewSeq,
-		previewData:  previewData,
 		currentCols:  currentCols,
 		currentRows:  currentRows,
 	}
@@ -151,19 +114,16 @@ func (r *Registry) Register(info protocol.SessionInfo, peer AgentPeer) {
 
 func (r *Registry) Remove(sessionID string) {
 	r.mu.Lock()
-	live, ok := r.sessions[sessionID]
+	_, ok := r.sessions[sessionID]
 	if ok {
 		delete(r.sessions, sessionID)
 	}
 	r.mu.Unlock()
 
-	if ok && live.info.State == protocol.SessionStateActionRequired {
-		r.broadcastSessionState(protocol.SessionStateEvent{
-			SessionID: sessionID,
-			State:     protocol.SessionStateNormal,
-			ChangedAt: time.Now().UTC(),
-		})
+	if !ok {
+		return
 	}
+	r.broadcastClientUpdate(protocol.EncodeClientSessionRemoved(sessionID, "session_removed"))
 }
 
 func (r *Registry) RemoveIfOwner(sessionID string, owner AgentPeer) bool {
@@ -173,20 +133,10 @@ func (r *Registry) RemoveIfOwner(sessionID string, owner AgentPeer) bool {
 		r.mu.Unlock()
 		return false
 	}
-	sinks := make([]session.OutputSink, 0, len(live.sinks))
-	for _, sink := range live.sinks {
-		sinks = append(sinks, sink)
-	}
-	stateEvent, ok := live.actionRequiredResolvedEvent(time.Now().UTC())
 	delete(r.sessions, sessionID)
 	r.mu.Unlock()
 
-	for _, sink := range sinks {
-		closeSinkWithReason(sink, "agent_disconnected")
-	}
-	if ok {
-		r.broadcastSessionState(stateEvent)
-	}
+	r.broadcastClientUpdate(protocol.EncodeClientSessionRemoved(sessionID, "agent_disconnected"))
 	return true
 }
 
@@ -227,35 +177,6 @@ func (r *Registry) TouchOutputIfOwner(sessionID string, owner AgentPeer, chunk [
 	return r.touchOutput(sessionID, owner, chunk, now, true)
 }
 
-func (r *Registry) AddSink(sessionID, sinkID string, sink session.OutputSink) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	live, ok := r.sessions[sessionID]
-	if !ok {
-		return ErrSessionNotFound
-	}
-	live.sinks[sinkID] = sink
-	return nil
-}
-
-func (r *Registry) AttachSink(sessionID, sinkID string, sink session.OutputSink, after uint64) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	live, ok := r.sessions[sessionID]
-	if !ok {
-		return ErrSessionNotFound
-	}
-	if preload, ok := sink.(preloadMessageSink); ok {
-		if err := preload.PreloadMessages(live.backlogMessages(after)); err != nil {
-			return err
-		}
-	}
-	live.sinks[sinkID] = sink
-	return nil
-}
-
 func (r *Registry) Session(sessionID string) (protocol.SessionInfo, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -290,26 +211,9 @@ func (r *Registry) MarkRead(sessionID string, seq uint64) (protocol.SessionInfo,
 	return live.snapshot(), true
 }
 
-func (r *Registry) RemoveSink(sessionID, sinkID string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if live, ok := r.sessions[sessionID]; ok {
-		delete(live.sinks, sinkID)
-	}
-}
-
-func (r *Registry) AddStateSink(sinkID string, sink sessionStateSink) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.stateSinks[sinkID] = sink
-}
-
-func (r *Registry) RemoveStateSink(sinkID string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	delete(r.stateSinks, sinkID)
-}
-
+// UpdateSessionStateIfOwner updates the live session snapshot and then broadcasts
+// the derived event on the separate session-state stream. This is intentionally
+// parallel to output handling, not part of terminal replay history.
 func (r *Registry) UpdateSessionStateIfOwner(sessionID string, owner AgentPeer, state protocol.SessionState, changedAt time.Time, actionRequiredSince *time.Time) bool {
 	r.mu.Lock()
 	live, ok := r.sessions[sessionID]
@@ -321,7 +225,7 @@ func (r *Registry) UpdateSessionStateIfOwner(sessionID string, owner AgentPeer, 
 	r.mu.Unlock()
 
 	if changed {
-		r.broadcastSessionState(event)
+		r.broadcastSessionStateUpdate(event)
 	}
 	return changed
 }
@@ -336,26 +240,6 @@ func (r *Registry) WriteInput(sessionID string, data []byte) error {
 	err := live.peer.SendInput(data)
 	r.mu.RUnlock()
 	return err
-}
-
-func (r *Registry) BroadcastResize(sessionID string, cols, rows int) {
-	r.mu.RLock()
-	live, ok := r.sessions[sessionID]
-	if !ok {
-		r.mu.RUnlock()
-		return
-	}
-	sinks := make([]session.OutputSink, 0, len(live.sinks))
-	for _, sink := range live.sinks {
-		sinks = append(sinks, sink)
-	}
-	r.mu.RUnlock()
-
-	for _, sink := range sinks {
-		if rs, ok := sink.(ResizeSink); ok {
-			_ = rs.WriteResize(cols, rows)
-		}
-	}
 }
 
 func (r *Registry) UpdateSizeIfOwner(sessionID string, owner AgentPeer, cols, rows int) bool {
@@ -398,29 +282,8 @@ func (r *Registry) touchOutput(sessionID string, owner AgentPeer, chunk []byte, 
 	rows := live.currentRows
 	nowCopy := now
 	live.info.LastActiveAt = &nowCopy
-	sinks := make([]session.OutputSink, 0, len(live.sinks))
-	for _, sink := range live.sinks {
-		sinks = append(sinks, sink)
-	}
 	r.mu.Unlock()
 
-	for _, sink := range sinks {
-		if seqSink, ok := sink.(seqOutputSink); ok {
-			_ = seqSink.WriteOutputFrame(seq, chunk, cols, rows)
-			continue
-		}
-		cp := append([]byte(nil), chunk...)
-		_ = sink.WriteOutput(cp)
-	}
+	r.broadcastClientUpdate(protocol.EncodeClientOutput(sessionID, seq, chunk, cols, rows))
 	return true
-}
-
-func closeSinkWithReason(sink session.OutputSink, reason string) {
-	if aware, ok := sink.(disconnectAwareSink); ok {
-		_ = aware.CloseWithReason(reason)
-		return
-	}
-	if closeable, ok := sink.(closeableSink); ok {
-		_ = closeable.Close()
-	}
 }

@@ -2,6 +2,7 @@ package relay
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"testing"
 	"time"
@@ -29,71 +30,16 @@ func (p *recordingPeer) Close() error {
 	return nil
 }
 
-type recordingSink struct {
-	chunks  [][]byte
-	resizes [][2]int
-	closed  int
-	reasons []string
+type recordingClientUpdateSink struct {
+	updates []protocol.ClientUpdateMessage
 }
 
-type sequencingSink struct {
-	messages []protocol.Message
-}
-
-type recordingSessionStateSink struct {
-	events []protocol.SessionStateEvent
-}
-
-func (s *recordingSink) WriteOutput(data []byte) error {
-	s.chunks = append(s.chunks, append([]byte(nil), data...))
+func (s *recordingClientUpdateSink) WriteClientUpdate(msg protocol.ClientUpdateMessage) error {
+	s.updates = append(s.updates, msg)
 	return nil
 }
 
-func (s *recordingSink) WriteResize(cols, rows int) error {
-	s.resizes = append(s.resizes, [2]int{cols, rows})
-	return nil
-}
-
-func (s *recordingSink) Close() error {
-	s.closed++
-	return nil
-}
-
-func (s *recordingSink) CloseWithReason(reason string) error {
-	if reason != "" {
-		s.reasons = append(s.reasons, reason)
-	}
-	return s.Close()
-}
-
-func (s *recordingSink) DisconnectReason() string {
-	if len(s.reasons) == 0 {
-		return ""
-	}
-	return s.reasons[len(s.reasons)-1]
-}
-
-func (s *sequencingSink) WriteOutput(data []byte) error {
-	s.messages = append(s.messages, protocol.EncodeOutput(data))
-	return nil
-}
-
-func (s *sequencingSink) WriteOutputFrame(seq uint64, data []byte, cols, rows int) error {
-	s.messages = append(s.messages, protocol.EncodeOutputWithSeqAndSize(seq, data, cols, rows))
-	return nil
-}
-
-func (s *sequencingSink) PreloadMessages(msgs []protocol.Message) error {
-	s.messages = append(s.messages, msgs...)
-	return nil
-}
-
-func (s *recordingSessionStateSink) WriteSessionStateEvent(event protocol.SessionStateEvent) error {
-	s.events = append(s.events, event)
-	return nil
-}
-
-func (s *recordingSessionStateSink) Close() error { return nil }
+func (s *recordingClientUpdateSink) Close() error { return nil }
 
 type blockingPeer struct {
 	sendStarted chan struct{}
@@ -132,15 +78,12 @@ func TestRegistryRegisterAndListSortedByLastActive(t *testing.T) {
 func TestRegistryMissingSessionErrors(t *testing.T) {
 	reg := NewRegistry()
 
-	if err := reg.AddSink("missing", "sink", &recordingSink{}); err != ErrSessionNotFound {
-		t.Fatalf("AddSink error = %v, want ErrSessionNotFound", err)
-	}
 	if err := reg.WriteInput("missing", []byte("x")); err != ErrSessionNotFound {
 		t.Fatalf("WriteInput error = %v, want ErrSessionNotFound", err)
 	}
 }
 
-func TestRegistryTouchOutputUpdatesPreviewAndLastActive(t *testing.T) {
+func TestRegistryTouchOutputUpdatesSeqAndLastActive(t *testing.T) {
 	reg := NewRegistry()
 	info := protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex", StartedAt: time.Unix(10, 0)}
 	reg.Register(info, fakeAgentPeer{})
@@ -152,8 +95,8 @@ func TestRegistryTouchOutputUpdatesPreviewAndLastActive(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("len(List()) = %d, want 1", len(got))
 	}
-	if got[0].LastPreview != "PASS focused test" {
-		t.Fatalf("LastPreview = %q, want PASS focused test", got[0].LastPreview)
+	if got[0].LatestSeq != 1 {
+		t.Fatalf("LatestSeq = %d, want 1", got[0].LatestSeq)
 	}
 	if got[0].LastActiveAt == nil {
 		t.Fatal("LastActiveAt = nil, want 40")
@@ -163,15 +106,11 @@ func TestRegistryTouchOutputUpdatesPreviewAndLastActive(t *testing.T) {
 	}
 }
 
-func TestRegistryTouchOutputIfOwnerUpdatesPreviewAndFanoutForCurrentOwner(t *testing.T) {
+func TestRegistryTouchOutputIfOwnerUpdatesSeqForCurrentOwner(t *testing.T) {
 	reg := NewRegistry()
 	peer := &recordingPeer{}
-	sink := &recordingSink{}
 
 	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, peer)
-	if err := reg.AddSink("sess-1", "browser", sink); err != nil {
-		t.Fatalf("AddSink returned error: %v", err)
-	}
 
 	now := time.Unix(45, 0)
 	if ok := reg.TouchOutputIfOwner("sess-1", peer, []byte("\x1b[32mPASS\x1b[0m current owner\n"), now); !ok {
@@ -182,38 +121,52 @@ func TestRegistryTouchOutputIfOwnerUpdatesPreviewAndFanoutForCurrentOwner(t *tes
 	if len(got) != 1 {
 		t.Fatalf("len(List()) = %d, want 1", len(got))
 	}
-	if got[0].LastPreview != "PASS current owner" {
-		t.Fatalf("LastPreview = %q, want PASS current owner", got[0].LastPreview)
+	if got[0].LatestSeq != 1 {
+		t.Fatalf("LatestSeq = %d, want 1", got[0].LatestSeq)
 	}
 	if got[0].LastActiveAt == nil || !got[0].LastActiveAt.Equal(now) {
 		t.Fatalf("LastActiveAt = %v, want 45", got[0].LastActiveAt)
 	}
-	if got := string(bytes.Join(sink.chunks, nil)); got != "\x1b[32mPASS\x1b[0m current owner\n" {
-		t.Fatalf("sink output = %q, want raw chunk", got)
-	}
 }
 
-func TestRegistryReplaceSessionIDPreservesSinksAndFansOutToThem(t *testing.T) {
+func TestRegistryReplaceSessionIDPreservesHistoryAndClosesOldPeer(t *testing.T) {
 	reg := NewRegistry()
 	oldPeer := &recordingPeer{}
 	newPeer := &recordingPeer{}
-	sink := &recordingSink{}
 
 	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, oldPeer)
-	if err := reg.AddSink("sess-1", "browser", sink); err != nil {
-		t.Fatalf("AddSink returned error: %v", err)
-	}
 	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, newPeer)
 	reg.TouchOutput("sess-1", []byte("\x1b[32mPASS\x1b[0m focused test\n"), time.Unix(40, 0))
 
-	if got := string(bytes.Join(sink.chunks, nil)); got != "\x1b[32mPASS\x1b[0m focused test\n" {
-		t.Fatalf("sink output = %q, want raw chunk", got)
-	}
-	if got := reg.List(); len(got) != 1 || got[0].LastPreview != "PASS focused test" {
-		t.Fatalf("registered session = %#v, want preview PASS focused test", got)
+	if got := reg.List(); len(got) != 1 || got[0].LatestSeq != 1 {
+		t.Fatalf("registered session = %#v, want latest_seq 1", got)
 	}
 	if oldPeer.closed != 1 {
 		t.Fatalf("old peer close count = %d, want 1", oldPeer.closed)
+	}
+}
+
+func TestRegistryTouchOutputBroadcastsGlobalClientUpdate(t *testing.T) {
+	reg := NewRegistry()
+	updateSink := &recordingClientUpdateSink{}
+	reg.AddUpdateSink("updates-1", updateSink)
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, fakeAgentPeer{})
+
+	reg.TouchOutput("sess-1", []byte("hello"), time.Unix(40, 0))
+
+	if len(updateSink.updates) != 1 {
+		t.Fatalf("update count = %d, want 1", len(updateSink.updates))
+	}
+	got := updateSink.updates[0]
+	if got.SessionID != "sess-1" || got.Type != "output" || got.Seq != 1 {
+		t.Fatalf("update = %#v, want sess-1 output seq 1", got)
+	}
+	data, err := base64.StdEncoding.DecodeString(got.Data)
+	if err != nil {
+		t.Fatalf("DecodeString returned error: %v", err)
+	}
+	if string(data) != "hello" {
+		t.Fatalf("data = %q, want hello", string(data))
 	}
 }
 
@@ -243,8 +196,8 @@ func TestRegistryReplaceSessionIDLogsSessionReplaced(t *testing.T) {
 func TestRegistryUpdateSessionStateIfOwnerUpdatesSnapshotAndBroadcasts(t *testing.T) {
 	reg := NewRegistry()
 	peer := &recordingPeer{}
-	stateSink := &recordingSessionStateSink{}
-	reg.AddStateSink("sink-1", stateSink)
+	updateSink := &recordingClientUpdateSink{}
+	reg.AddUpdateSink("updates-1", updateSink)
 
 	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, peer)
 
@@ -267,19 +220,19 @@ func TestRegistryUpdateSessionStateIfOwnerUpdatesSnapshotAndBroadcasts(t *testin
 	if info.ActionRequiredSince == nil || !info.ActionRequiredSince.Equal(since) {
 		t.Fatalf("ActionRequiredSince = %v, want %v", info.ActionRequiredSince, since)
 	}
-	if len(stateSink.events) != 1 {
-		t.Fatalf("state event count = %d, want 1", len(stateSink.events))
+	if len(updateSink.updates) != 1 {
+		t.Fatalf("client update count = %d, want 1", len(updateSink.updates))
 	}
-	if stateSink.events[0].State != protocol.SessionStateActionRequired {
-		t.Fatalf("state event = %#v, want action_required", stateSink.events[0])
+	if updateSink.updates[0].Type != "session_state" || updateSink.updates[0].State != protocol.SessionStateActionRequired {
+		t.Fatalf("client update = %#v, want session_state action_required", updateSink.updates[0])
 	}
 }
 
 func TestRegistryRemoveIfOwnerBroadcastsResolvedNormalEvent(t *testing.T) {
 	reg := NewRegistry()
 	peer := &recordingPeer{}
-	stateSink := &recordingSessionStateSink{}
-	reg.AddStateSink("sink-1", stateSink)
+	updateSink := &recordingClientUpdateSink{}
+	reg.AddUpdateSink("updates-1", updateSink)
 
 	reg.Register(protocol.SessionInfo{
 		SessionID:           "sess-1",
@@ -291,11 +244,11 @@ func TestRegistryRemoveIfOwnerBroadcastsResolvedNormalEvent(t *testing.T) {
 	if removed := reg.RemoveIfOwner("sess-1", peer); !removed {
 		t.Fatal("RemoveIfOwner returned false, want true")
 	}
-	if len(stateSink.events) != 1 {
-		t.Fatalf("state event count = %d, want 1", len(stateSink.events))
+	if len(updateSink.updates) != 1 {
+		t.Fatalf("client update count = %d, want 1", len(updateSink.updates))
 	}
-	if stateSink.events[0].State != protocol.SessionStateNormal {
-		t.Fatalf("final state = %q, want %q", stateSink.events[0].State, protocol.SessionStateNormal)
+	if updateSink.updates[0].Type != "session_removed" {
+		t.Fatalf("client updates = %#v, want removal only", updateSink.updates)
 	}
 }
 
@@ -330,37 +283,12 @@ func TestRegistryRemoveIfOwnerSkipsStaleOwnerAfterReplacement(t *testing.T) {
 	}
 }
 
-func TestRegistryRemoveIfOwnerClosesAttachedSinks(t *testing.T) {
-	reg := NewRegistry()
-	peer := &recordingPeer{}
-	sink := &recordingSink{}
-
-	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, peer)
-	if err := reg.AddSink("sess-1", "browser", sink); err != nil {
-		t.Fatalf("AddSink returned error: %v", err)
-	}
-
-	if removed := reg.RemoveIfOwner("sess-1", peer); !removed {
-		t.Fatal("RemoveIfOwner returned false, want true")
-	}
-	if sink.closed != 1 {
-		t.Fatalf("sink closed count = %d, want 1", sink.closed)
-	}
-	if got := sink.DisconnectReason(); got != "agent_disconnected" {
-		t.Fatalf("sink disconnect reason = %q, want agent_disconnected", got)
-	}
-}
-
 func TestRegistryTouchOutputIfOwnerSkipsStaleOwnerAfterReplacement(t *testing.T) {
 	reg := NewRegistry()
 	oldPeer := &recordingPeer{}
 	newPeer := &recordingPeer{}
-	sink := &recordingSink{}
 
 	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, oldPeer)
-	if err := reg.AddSink("sess-1", "browser", sink); err != nil {
-		t.Fatalf("AddSink returned error: %v", err)
-	}
 	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, newPeer)
 
 	now := time.Unix(50, 0)
@@ -372,14 +300,8 @@ func TestRegistryTouchOutputIfOwnerSkipsStaleOwnerAfterReplacement(t *testing.T)
 	if len(got) != 1 {
 		t.Fatalf("len(List()) = %d, want 1", len(got))
 	}
-	if got[0].LastPreview != "" {
-		t.Fatalf("LastPreview = %q, want empty", got[0].LastPreview)
-	}
 	if got[0].LastActiveAt != nil {
 		t.Fatalf("LastActiveAt = %v, want nil", got[0].LastActiveAt)
-	}
-	if len(sink.chunks) != 0 {
-		t.Fatalf("sink received output = %#v, want none", sink.chunks)
 	}
 	if len(newPeer.inputs) != 0 {
 		t.Fatalf("new peer received input-like output = %#v, want none", newPeer.inputs)
@@ -390,12 +312,8 @@ func TestRegistryTouchOutputIfOwnerIgnoresStaleOldOwnerOutputAfterReplacement(t 
 	reg := NewRegistry()
 	oldPeer := &recordingPeer{}
 	newPeer := &recordingPeer{}
-	sink := &recordingSink{}
 
 	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, oldPeer)
-	if err := reg.AddSink("sess-1", "browser", sink); err != nil {
-		t.Fatalf("AddSink returned error: %v", err)
-	}
 	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, newPeer)
 
 	if ok := reg.TouchOutputIfOwner("sess-1", oldPeer, []byte("stale"), time.Unix(60, 0)); ok {
@@ -408,9 +326,6 @@ func TestRegistryTouchOutputIfOwnerIgnoresStaleOldOwnerOutputAfterReplacement(t 
 	}
 	if info[0].LatestSeq != 0 {
 		t.Fatalf("LatestSeq = %d, want 0", info[0].LatestSeq)
-	}
-	if len(sink.chunks) != 0 {
-		t.Fatalf("sink received output = %#v, want none", sink.chunks)
 	}
 }
 
@@ -502,46 +417,6 @@ func TestRegistryHistorySupportsAfterSync(t *testing.T) {
 	}
 }
 
-func TestRegistryAttachSinkPreloadsBacklogBeforeLiveOutput(t *testing.T) {
-	reg := NewRegistry()
-	peer := &recordingPeer{}
-	sink := &sequencingSink{}
-
-	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, peer)
-	if ok := reg.UpdateSizeIfOwner("sess-1", peer, 120, 40); !ok {
-		t.Fatal("UpdateSizeIfOwner returned false for current owner")
-	}
-	if ok := reg.TouchOutputIfOwner("sess-1", peer, []byte("one"), time.Unix(10, 0)); !ok {
-		t.Fatal("TouchOutputIfOwner returned false for output one")
-	}
-	if ok := reg.UpdateSizeIfOwner("sess-1", peer, 132, 43); !ok {
-		t.Fatal("UpdateSizeIfOwner returned false for current owner resize")
-	}
-	if ok := reg.TouchOutputIfOwner("sess-1", peer, []byte("two"), time.Unix(11, 0)); !ok {
-		t.Fatal("TouchOutputIfOwner returned false for output two")
-	}
-
-	if err := reg.AttachSink("sess-1", "browser", sink, 1); err != nil {
-		t.Fatalf("AttachSink returned error: %v", err)
-	}
-	if ok := reg.TouchOutputIfOwner("sess-1", peer, []byte("three"), time.Unix(12, 0)); !ok {
-		t.Fatal("TouchOutputIfOwner returned false for output three")
-	}
-
-	if len(sink.messages) != 2 {
-		t.Fatalf("len(messages) = %d, want 2", len(sink.messages))
-	}
-	if sink.messages[0].Seq != 2 || sink.messages[1].Seq != 3 {
-		t.Fatalf("seqs = [%d %d], want [2 3]", sink.messages[0].Seq, sink.messages[1].Seq)
-	}
-	if sink.messages[0].Cols != 132 || sink.messages[0].Rows != 43 {
-		t.Fatalf("backlog size = %dx%d, want 132x43", sink.messages[0].Cols, sink.messages[0].Rows)
-	}
-	if sink.messages[1].Cols != 132 || sink.messages[1].Rows != 43 {
-		t.Fatalf("live size = %dx%d, want 132x43", sink.messages[1].Cols, sink.messages[1].Rows)
-	}
-}
-
 func TestRegistryWriteInputWaitsForInFlightOldPeerBeforeReplacement(t *testing.T) {
 	reg := NewRegistry()
 	oldPeer := &blockingPeer{
@@ -601,29 +476,6 @@ func TestRegistryWriteInputWaitsForInFlightOldPeerBeforeReplacement(t *testing.T
 	if got := string(bytes.Join(newPeer.inputs, nil)); got != "pong" {
 		t.Fatalf("new peer input = %q, want pong", got)
 	}
-}
-
-func TestRegistryBroadcastResizeSendsToSinks(t *testing.T) {
-	reg := NewRegistry()
-	peer := &recordingPeer{}
-	sink := &recordingSink{}
-
-	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, peer)
-	if err := reg.AddSink("sess-1", "browser", sink); err != nil {
-		t.Fatalf("AddSink returned error: %v", err)
-	}
-
-	reg.BroadcastResize("sess-1", 120, 40)
-
-	if len(sink.resizes) != 1 || sink.resizes[0] != [2]int{120, 40} {
-		t.Fatalf("sink resizes = %#v, want [[120 40]]", sink.resizes)
-	}
-}
-
-func TestRegistryBroadcastResizeSkipsMissingSession(t *testing.T) {
-	reg := NewRegistry()
-	// Should not panic
-	reg.BroadcastResize("missing", 80, 24)
 }
 
 func parseRegistryLogEntries(t *testing.T, raw []byte) []map[string]any {

@@ -29,7 +29,7 @@ Treat `action_required` as structured session metadata derived from Codex App Se
 - Run Codex as `codex app-server` plus `codex --remote`, with the wrapper owning both processes.
 - Detect waiting from App Server state such as `waitingOnApproval` and `waitingOnUserInput`.
 - Publish a session-level state model only: `normal` or `action_required`.
-- Carry the current state in the session snapshot API and emit transitions on a separate session-state stream.
+- Carry the current state in the session snapshot API and emit transitions on the global client update stream.
 - Keep terminal history clean: do not inject state frames into PTY output history.
 - Clear `action_required` only when the structured runtime says waiting is resolved, not when the local client merely typed something.
 
@@ -38,7 +38,7 @@ The resulting boundary looks like this:
 ```text
 codex app-server -> structured waiting lifecycle
                 -> agentunnel session_state frame
-                -> relay snapshot + /api/session-events/ws
+                -> relay snapshot + /api/updates/ws
                 -> Android session list + notification logic
 ```
 
@@ -56,7 +56,7 @@ Using App Server lifecycle solves the right problem:
 
 - Session List can expose current `state` and `action_required_since`.
 - Android can notify only when the session actually enters waiting.
-- Reconnects can restore the current state without replaying the terminal transcript heuristically.
+- Reconnect recovery can rely on structured state instead of replaying the terminal transcript heuristically, but it still depends on the connector re-registering the latest session state correctly.
 
 ## When to Apply
 
@@ -97,7 +97,7 @@ The wrapper derives session state from the App Server and forwards it separately
 Terminal history remains output-only, while live state transitions go through:
 
 ```text
-GET /api/session-events/ws
+GET /api/updates/ws
 ```
 
 ## Related

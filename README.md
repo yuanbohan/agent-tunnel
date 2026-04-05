@@ -4,6 +4,8 @@ Launch a terminal agent locally and stream the live PTY session to a remote rela
 
 `agentunnel` starts a real CLI such as `claude`, `codex`, or `gemini`, keeps the launching terminal interactive, and registers the session with a relay server. The relay is API-only: it exposes authenticated HTTP and WebSocket endpoints for external clients such as a mobile app to list live sessions, replay retained output, attach to a live stream, and send input.
 
+The relay is intentionally content-opaque. It forwards and retains output bytes for replay, but it does not derive previews or other content semantics from terminal data.
+
 ## Requirements
 
 - Go 1.25+
@@ -57,9 +59,8 @@ Expected stderr output:
 Point your client at the relay with HTTP Basic Auth and use the relay APIs:
 
 - `GET /api/sessions` to list live sessions
+- `GET /api/updates/ws` to receive global live updates for all sessions on one foreground socket
 - `GET /api/sessions/:id/history?after=0` to fetch the currently retained in-memory output buffer
-- `GET /api/sessions/:id/ws?after=<seq>` to replay newer retained output and continue with the live stream
-- `GET /api/session-events/ws` to stream session-level `action_required` transitions
 - `POST /api/sessions/:id/read` to advance the shared read marker
 
 Session history is intentionally live-only and in-memory. If the owning agent disconnects, the session disappears along with its retained history and unread state.
@@ -98,6 +99,7 @@ Then connect your mobile or other external client to `relay.example.com:8586`.
 ```bash
 make build             # builds bin/agentunnel and bin/relay
 make test              # go test ./...
+make test-relay        # focused relay/protocol contract tests
 make test-real-hitl    # builds relay + agentunnel, then runs the real Codex approval smoke test
 make agentunnel LAUNCHER=claude   # run agentunnel directly
 make relay             # run relay server
@@ -106,8 +108,8 @@ make relay             # run relay server
 The real human-in-the-loop smoke test uses a real `codex` session with `-a untrusted` to force an approval pause. It verifies that:
 
 - relay session state flips to `action_required`
-- `/api/session-events/ws` emits the transition outside terminal output
-- `/api/sessions/:id/ws` still carries only terminal frames
+- `/api/updates/ws` emits the transition outside terminal output
+- `/api/updates/ws` also carries multiplexed terminal output for the same session
 - approving the request clears the session back to `normal`
 
 It runs via [scripts/real_hitl_smoke.mjs](scripts/real_hitl_smoke.mjs) with [scripts/pty_driver.py](scripts/pty_driver.py) and requires a local `codex` install, an authenticated Codex environment, `node`, and `python3` on `PATH`.
@@ -125,7 +127,7 @@ JSON frames over WebSocket text messages:
 | `resize` | agent -> relay | `cols`, `rows` as integers   |
 
 The relay also exposes:
-- `GET /api/sessions` for live session metadata, unread counts, preview payloads, and current session state
+- `GET /api/sessions` for live session metadata, unread counters, and current session state
+- `GET /api/updates/ws` for global multiplexed live updates keyed by `session_id`, and for client input frames back to one session
 - `GET /api/sessions/:id/history` for `after`-based live-session history sync
-- `GET /api/session-events/ws` for live session-state transitions outside terminal output
 - `POST /api/sessions/:id/read` for advancing the shared per-session read marker

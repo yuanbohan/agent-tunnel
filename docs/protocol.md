@@ -1,164 +1,178 @@
 # Agent Tunnel Relay Protocol
 
-This document specifies the WebSocket protocol used between agent-tunnel components. It is intended for developers building native clients (iOS, Android, or other platforms) that connect to the relay server.
+This document describes the relay-facing contract for native or web clients.
 
-## Overview
+The key boundary is simple:
 
-The relay server is a WebSocket broker with two roles:
+- the relay is content-opaque
+- output bytes may be forwarded and retained for replay
+- structured metadata such as `action_required` is tracked separately from terminal content
 
-- **Agent** — a local `agentunnel` process that owns a PTY session. It connects to the relay, registers the session, and streams terminal output and resize events. It receives input from attached clients.
-- **Client** — an external client such as a mobile app that lists live sessions and attaches to one for viewing and optional interaction. Clients never control the terminal size. The relay stores the latest PTY size reported by the agent and includes that size on retained and live output frames.
+Clients should never depend on relay-generated previews or on terminal text parsing to infer session state.
 
-All WebSocket communication uses JSON text frames. Binary data (terminal I/O) is base64-encoded within JSON fields.
+## Relay API Reference
 
-## Endpoints
+This section is the compact interface inventory for the current relay server. It is meant to answer:
 
-| Endpoint | Role | Auth | Protocol |
-|----------|------|------|----------|
-| `GET /api/sessions` | Client | Basic Auth | HTTP JSON |
-| `GET /api/sessions/:id/history` | Client | Basic Auth | HTTP JSON |
-| `POST /api/sessions/:id/read` | Client | Basic Auth | HTTP JSON |
-| `GET /api/sessions/:id/ws` | Client | Basic Auth | WebSocket |
-| `GET /api/session-events/ws` | Client | Basic Auth | WebSocket |
-| `GET /agent/ws` | Agent | Bearer token | WebSocket |
-| `GET /healthz` | Any | None | HTTP text |
+- what endpoints exist
+- which auth each one requires
+- what parameters they accept
+- what the success payload looks like
 
-## Authentication
+The later sections explain semantics and recommended client behavior in more detail.
 
-### Client — Basic Auth
+### Endpoint Inventory
 
-All client-facing endpoints require HTTP Basic Authentication.
+| Endpoint | Role | Auth | Kind | Purpose |
+|----------|------|------|------|---------|
+| `GET /healthz` | Any | None | HTTP | Health check |
+| `GET /api/sessions` | Client | Basic Auth | HTTP | Current live session snapshot |
+| `GET /api/sessions/:id/history?after=<seq>` | Client | Basic Auth | HTTP | Retained output replay for one session |
+| `POST /api/sessions/:id/read` | Client | Basic Auth | HTTP | Advance shared read marker |
+| `GET /api/updates/ws` | Client | Basic Auth | WebSocket | Global multiplexed live updates and client input |
+| `GET /agent/ws` | Agent | Bearer | WebSocket | Agent registration plus relay forwarding |
 
-```
+### Auth Headers
+
+Client endpoints use Basic Auth:
+
+```text
 Authorization: Basic base64(username:password)
 ```
 
-The credentials are configured on the relay server via `AGENTUNNEL_BASIC_USER` and `AGENTUNNEL_BASIC_PASSWORD` environment variables.
+Agent registration uses a bearer token:
 
-### Agent — Bearer Token
-
-The agent WebSocket endpoint requires a bearer token in the `Authorization` header.
-
-```
+```text
 Authorization: Bearer <token>
 ```
 
-The token is configured on the relay server via `AGENTUNNEL_AGENT_TOKEN` and on the agent via `AGENTUNNEL_RELAY_TOKEN`.
+### HTTP Endpoints
 
-## REST API
+#### `GET /healthz`
 
-### List Live Sessions
+Purpose: simple liveness probe.
 
-```
-GET /api/sessions
-Authorization: Basic base64(username:password)
-```
+Request parameters:
 
-Returns a JSON array of `SessionInfo` objects, sorted by most recently active:
+| Name | Location | Required | Type | Notes |
+|------|----------|----------|------|-------|
+| none | - | - | - | No auth and no request body |
+
+Success response:
+
+| Status | Content-Type | Body |
+|--------|--------------|------|
+| `200 OK` | `text/plain` | `ok` |
+
+#### `GET /api/sessions`
+
+Purpose: fetch the current snapshot of every live session.
+
+Request parameters:
+
+| Name | Location | Required | Type | Notes |
+|------|----------|----------|------|-------|
+| `Authorization` | header | yes | string | HTTP Basic Auth |
+
+Success response:
+
+| Status | Content-Type | Body |
+|--------|--------------|------|
+| `200 OK` | `application/json` | JSON array of `SessionInfo` |
+
+`SessionInfo` shape:
 
 ```json
-[
-  {
-    "session_id": "1743667200000000000",
-    "launcher": "claude",
-    "label": "api-fix",
-    "cwd": "/home/user/project",
-    "command_preview": "claude --resume",
-    "started_at": "2026-04-03T10:00:00Z",
-    "last_preview": "Running tests...",
-    "last_active_at": "2026-04-03T10:05:30Z",
-    "latest_seq": 42,
-    "last_read_seq": 37,
-    "unread_count": 5,
-    "preview_seq": 42,
-    "preview_b64": "SGVsbG8gZnJvbSB0aGUgbGF0ZXN0IGNo...",
-    "state": "normal"
-  }
-]
+{
+  "session_id": "sess-1",
+  "launcher": "codex",
+  "label": "api-fix",
+  "cwd": "/repo",
+  "command_preview": "codex --profile prod",
+  "started_at": "2026-04-05T08:00:00Z",
+  "last_active_at": "2026-04-05T08:03:00Z",
+  "latest_seq": 42,
+  "last_read_seq": 40,
+  "unread_count": 2,
+  "state": "action_required",
+  "state_changed_at": "2026-04-05T08:02:00Z",
+  "action_required_since": "2026-04-05T08:02:00Z"
+}
 ```
 
-**SessionInfo fields:**
+| Field | Type | Meaning |
+|-------|------|---------|
+| `session_id` | string | Stable session identifier |
+| `launcher` | string | `claude`, `codex`, or `gemini` |
+| `label` | string | Optional operator label |
+| `cwd` | string | Launch working directory |
+| `command_preview` | string | Human-readable command summary |
+| `started_at` | RFC3339 string | Session start time |
+| `last_active_at` | RFC3339 string | Time of most recent output activity |
+| `latest_seq` | integer | Latest retained output sequence |
+| `last_read_seq` | integer | Shared read marker |
+| `unread_count` | integer | `latest_seq - last_read_seq` |
+| `state` | string | `normal` or `action_required` |
+| `state_changed_at` | RFC3339 string | When current state was entered |
+| `action_required_since` | RFC3339 string | Start of current unresolved waiting episode |
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `session_id` | string | yes | Unique session identifier (nanosecond timestamp) |
-| `launcher` | string | yes | Agent CLI name: `claude`, `codex`, or `gemini` |
-| `label` | string | no | Optional human-readable label set by the operator |
-| `cwd` | string | yes | Working directory where the agent was launched |
-| `command_preview` | string | yes | Command line preview (e.g., `claude --resume`) |
-| `started_at` | string | yes | ISO 8601 UTC timestamp of session start |
-| `last_preview` | string | no | Rolling text preview of recent terminal output (ANSI stripped) |
-| `last_active_at` | string | no | ISO 8601 UTC timestamp of last output activity |
-| `latest_seq` | integer | yes | Latest retained output-frame sequence number for this live session |
-| `last_read_seq` | integer | yes | Shared read marker for this live session |
-| `unread_count` | integer | yes | `latest_seq - last_read_seq` |
-| `preview_seq` | integer | yes | Sequence number of the latest preview frame |
-| `preview_b64` | string | no | Latest raw output frame retained for lightweight client previews |
-| `state` | string | yes | Current session state: `normal` or `action_required` |
-| `state_changed_at` | string | no | ISO 8601 UTC timestamp when `state` last changed |
-| `action_required_since` | string | no | ISO 8601 UTC timestamp when the current unresolved action-required episode began |
+#### `GET /api/sessions/:id/history?after=<seq>`
 
-Notes:
-- `last_preview` remains available as a human-readable compatibility field.
-- `preview_b64` is the newest raw output frame retained for lightweight session previews.
-- `action_required_since` remains stable for one unresolved waiting episode and changes only when a new episode begins.
+Purpose: fetch retained output frames for one live session.
 
-### Fetch Session History
+Request parameters:
 
-```
-GET /api/sessions/:id/history?after=<seq>
-Authorization: Basic base64(username:password)
-```
+| Name | Location | Required | Type | Notes |
+|------|----------|----------|------|-------|
+| `id` | path | yes | string | Session ID |
+| `after` | query | no | integer | Return frames with `seq > after`; defaults to `0` |
+| `Authorization` | header | yes | string | HTTP Basic Auth |
 
-Returns all retained output frames with `seq > after` for the current live session:
+Success response:
+
+| Status | Content-Type | Body |
+|--------|--------------|------|
+| `200 OK` | `application/json` | `HistoryPage` |
+
+`HistoryPage` shape:
 
 ```json
 {
   "messages": [
-    { "seq": 38, "data_b64": "...", "cols": 120, "rows": 40 },
-    { "seq": 39, "data_b64": "...", "cols": 120, "rows": 40 },
-    { "seq": 40, "data_b64": "...", "cols": 132, "rows": 43 }
+    { "seq": 41, "data_b64": "b25l", "cols": 120, "rows": 40 },
+    { "seq": 42, "data_b64": "dHdv", "cols": 132, "rows": 43 }
   ],
   "latest_seq": 42,
-  "last_read_seq": 37,
+  "last_read_seq": 40,
   "current_cols": 132,
   "current_rows": 43
 }
 ```
 
-Query parameters:
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `after` | integer | yes | Return retained output frames with `seq > after` |
-
-Response fields:
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `messages` | array | History frames in chronological order |
-| `messages[].seq` | integer | Output-frame sequence number |
-| `messages[].data_b64` | string | Raw PTY bytes for that frame |
-| `messages[].cols` | integer | Terminal width in columns when that output frame was produced |
-| `messages[].rows` | integer | Terminal height in rows when that output frame was produced |
+| Field | Type | Meaning |
+|-------|------|---------|
+| `messages` | array | Chronological retained output frames |
+| `messages[].seq` | integer | Output sequence number |
+| `messages[].data_b64` | string | Base64-encoded opaque PTY bytes |
+| `messages[].cols` | integer | Terminal width when that output was produced |
+| `messages[].rows` | integer | Terminal height when that output was produced |
 | `latest_seq` | integer | Latest live output sequence known to the relay |
 | `last_read_seq` | integer | Current shared read marker |
-| `current_cols` | integer | Latest terminal width reported by the agent for this live session |
-| `current_rows` | integer | Latest terminal height reported by the agent for this live session |
+| `current_cols` | integer | Latest terminal width reported by the agent |
+| `current_rows` | integer | Latest terminal height reported by the agent |
 
-Semantics:
-- `after=0` returns the entire currently retained in-memory output buffer for the live session.
-- Clients are expected to persist the highest applied `seq` locally and request only newer frames later.
-- The relay retains history only while the session is live and the relay process stays up.
-- If the session does not exist, the relay returns `404 Not Found`.
+#### `POST /api/sessions/:id/read`
 
-### Mark Session Read
+Purpose: advance the shared read marker for one session.
 
-```
-POST /api/sessions/:id/read
-Authorization: Basic base64(username:password)
-Content-Type: application/json
-```
+Request parameters:
+
+| Name | Location | Required | Type | Notes |
+|------|----------|----------|------|-------|
+| `id` | path | yes | string | Session ID |
+| `Authorization` | header | yes | string | HTTP Basic Auth |
+| `Content-Type` | header | yes | string | Must be `application/json` |
+| `seq` | JSON body | yes | integer | Requested read watermark |
 
 Request body:
 
@@ -166,334 +180,192 @@ Request body:
 { "seq": 42 }
 ```
 
-Response:
+Success response:
+
+| Status | Content-Type | Body |
+|--------|--------------|------|
+| `200 OK` | `application/json` | Updated read-state snapshot |
+
+Response shape:
 
 ```json
 {
-  "session_id": "1743667200000000000",
+  "session_id": "sess-1",
   "latest_seq": 42,
   "last_read_seq": 42,
   "unread_count": 0
 }
 ```
 
-Semantics:
-- The relay clamps the submitted `seq` to the current `latest_seq`.
-- Read state is monotonic. Posting a lower `seq` does not move `last_read_seq` backward.
+### WebSocket Endpoints
 
-### Health Check
+#### `GET /api/updates/ws`
 
-```
-GET /healthz
-```
+Purpose: the primary client connection. One WebSocket carries live updates for all sessions and also accepts client input routed by `session_id`.
 
-Returns `200 OK` with body `ok`. No authentication required.
+Handshake parameters:
 
-## Client WebSocket
+| Name | Location | Required | Type | Notes |
+|------|----------|----------|------|-------|
+| `Authorization` | header | yes | string | HTTP Basic Auth |
+| `Origin` | header | no | string | If present, must pass same-origin check |
 
-### Connect
+Server -> client frame types:
 
-```
-GET /api/sessions/:id/ws?after=<seq>
-Authorization: Basic base64(username:password)
-```
-
-Upgrades to a WebSocket connection attached to the specified session. The relay enforces a same-origin check when clients send an `Origin` header; native/mobile clients typically omit `Origin`, which is accepted.
-
-If the session does not exist, the server returns `404 Not Found` before upgrade.
-
-On connect, the relay replays retained output with `seq > after` through the WebSocket sink first, then continues streaming live output for the same session.
-
-### Frames: Server → Client
-
-**Output frame** — terminal bytes from the agent's PTY:
+`output`
 
 ```json
 {
+  "session_id": "sess-1",
   "type": "output",
   "seq": 42,
-  "data": "SGVsbG8gV29ybGQ=",
+  "data": "SGVsbG8=",
   "cols": 132,
   "rows": 43
 }
 ```
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `type` | string | Always `"output"` |
-| `seq` | integer | Monotonic output-frame sequence number assigned by the relay |
-| `data` | string | Standard base64-encoded raw PTY bytes |
-| `cols` | integer | Terminal width in columns when this output was produced |
-| `rows` | integer | Terminal height in rows when this output was produced |
-
-Clients that want faithful replay should resize their terminal emulator to `cols` / `rows` immediately before writing that output frame.
-
-### Session State Events
-
-```
-GET /api/session-events/ws
-Authorization: Basic base64(username:password)
-```
-
-Upgrades to a WebSocket that streams session-level state transitions outside the terminal-output stream.
-
-**Session state event**:
+`session_state`
 
 ```json
 {
-  "session_id": "1743667200000000000",
+  "session_id": "sess-1",
+  "type": "session_state",
   "state": "action_required",
-  "changed_at": "2026-04-04T11:22:33Z",
-  "action_required_since": "2026-04-04T11:22:33Z"
+  "changed_at": "2026-04-05T08:02:00Z",
+  "action_required_since": "2026-04-05T08:02:00Z"
 }
 ```
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `session_id` | string | Session whose state changed |
-| `state` | string | New session state: `normal` or `action_required` |
-| `changed_at` | string | ISO 8601 UTC timestamp when the state transition occurred |
-| `action_required_since` | string | Present only while the current state is `action_required` |
-
-### Frames: Client → Server
-
-**Input frame** — keystrokes to forward to the agent's PTY:
+`session_removed`
 
 ```json
 {
+  "session_id": "sess-1",
+  "type": "session_removed",
+  "reason": "agent_disconnected"
+}
+```
+
+Client -> server frame type:
+
+`input`
+
+```json
+{
+  "session_id": "sess-1",
   "type": "input",
   "data": "bHMK"
 }
 ```
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `type` | string | Always `"input"` |
-| `data` | string | Standard base64-encoded bytes (user keystrokes) |
+Shared frame fields:
 
-## Agent WebSocket
+| Field | Present on | Meaning |
+|-------|------------|---------|
+| `session_id` | all | Session routing key |
+| `type` | all | Frame discriminator |
+| `seq` | `output` | Monotonic output sequence for that session |
+| `data` | `output`, `input` | Base64-encoded opaque PTY bytes or stdin bytes |
+| `cols` / `rows` | `output` | Terminal size when that output was produced |
+| `state` | `session_state` | `normal` or `action_required` |
+| `changed_at` | `session_state` | Transition timestamp |
+| `action_required_since` | `session_state` | Present only while unresolved |
+| `reason` | `session_removed` | Removal hint such as `agent_disconnected` |
 
-### Connect
+#### `GET /agent/ws`
 
-```
-GET /agent/ws
-Authorization: Bearer <token>
-```
+Purpose: agent registration plus bidirectional relay transport between `agentunnel` and the relay.
 
-Upgrades to a WebSocket connection. The agent must send a `register` frame as its first message.
+Handshake parameters:
 
-The relay sets a read limit of 1 MB per message and a read deadline of 30 seconds. The relay sends WebSocket ping frames every 10 seconds; the agent must respond with pong frames (handled automatically by most WebSocket libraries). Each pong resets the read deadline.
+| Name | Location | Required | Type | Notes |
+|------|----------|----------|------|-------|
+| `Authorization` | header | yes | string | Bearer token |
 
-### Frames: Agent → Relay
-
-**Register frame** — must be the first message after connection:
+First client -> server frame must be agent registration:
 
 ```json
 {
   "type": "register",
   "session": {
-    "session_id": "1743667200000000000",
-    "launcher": "claude",
-    "label": "api-fix",
-    "cwd": "/home/user/project",
-    "command_preview": "claude --resume",
-    "started_at": "2026-04-03T10:00:00Z"
+    "session_id": "sess-1",
+    "launcher": "codex",
+    "cwd": "/repo",
+    "command_preview": "codex",
+    "started_at": "2026-04-05T08:00:00Z"
   }
 }
 ```
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `type` | string | Always `"register"` |
-| `session` | SessionInfo | Session metadata (see SessionInfo fields above) |
+Later frame types:
 
-The `session` object must include at minimum: `session_id`, `launcher`, `cwd`, `command_preview`, and `started_at`. The `label` field is optional.
+| Type | Direction | Meaning |
+|------|-----------|---------|
+| `input` | relay -> agent | Forward client input bytes |
+| `output` | agent -> relay | Forward PTY output bytes |
+| `resize` | agent -> relay | Update terminal size metadata |
+| `session_state` | agent -> relay | Update structured session state |
 
-**Output frame** — terminal bytes from the PTY:
-
-```json
-{
-  "type": "output",
-  "data": "SGVsbG8gV29ybGQ="
-}
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `type` | string | Always `"output"` |
-| `data` | string | Standard base64-encoded raw PTY bytes |
-
-**Resize frame** — PTY dimensions changed (local terminal resized):
-
-```json
-{
-  "type": "resize",
-  "cols": 120,
-  "rows": 40
-}
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `type` | string | Always `"resize"` |
-| `cols` | integer | New terminal width in columns |
-| `rows` | integer | New terminal height in rows |
-
-The relay updates the session's current PTY size and stamps that size onto subsequent retained and live output frames. It does not forward standalone resize frames to clients.
-
-**Session state frame** — structured session-level waiting state:
+Representative `session_state` frame:
 
 ```json
 {
   "type": "session_state",
   "state": "action_required",
-  "changed_at": "2026-04-04T11:22:33Z",
-  "action_required_since": "2026-04-04T11:22:33Z"
+  "changed_at": "2026-04-05T08:02:00Z",
+  "action_required_since": "2026-04-05T08:02:00Z"
 }
 ```
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `type` | string | Always `"session_state"` |
-| `state` | string | New session state: `normal` or `action_required` |
-| `changed_at` | string | ISO 8601 UTC timestamp when the session state changed |
-| `action_required_since` | string | Present only while the current state is `action_required` |
+## Detailed Semantics
 
-The relay treats this as structured session metadata. It updates session snapshots and forwards the resulting transition through `/api/session-events/ws`, but it does not store these frames in terminal history.
+### Session Snapshot
 
-### Frames: Relay → Agent
+- `GET /api/sessions` is the canonical source of truth for the current state of every live session.
+- There is intentionally no preview field in the session snapshot.
+- `action_required` is structured session metadata, not something clients should infer from PTY text.
 
-**Input frame** — keystrokes forwarded from an attached client:
+### Global Live Stream
 
-```json
-{
-  "type": "input",
-  "data": "bHMK"
-}
-```
+- `GET /api/updates/ws` is the preferred foreground client channel.
+- One socket carries live updates for every session, distinguished by `session_id`.
+- The same socket is also used for client `input` frames back to one session.
+- `output` frames are opaque transport payloads. The relay forwards them but does not interpret them.
+- The global stream is live-only. It does not replay old frames on connect.
 
-This is the only frame type the relay sends to the agent. Resize remains one-way: agent → relay.
+### Per-Session History
 
-## Connection Lifecycle
+- `GET /api/sessions/:id/history?after=<seq>` returns retained output frames with `seq > after`.
+- `after=0` returns the currently retained in-memory buffer.
+- History is live-only and disappears when the session disappears.
+- History is output-only; it does not contain `session_state` transitions.
 
-### Agent Lifecycle
+### Read Marker
 
-```
-1. Open WebSocket to /agent/ws
-   Headers: Authorization: Bearer <token>
+- `POST /api/sessions/:id/read` advances a shared per-session read marker.
+- The relay clamps the submitted `seq` to `latest_seq`.
+- The marker is monotonic; posting a lower value does not move it backward.
 
-2. Send register frame with session metadata
-   ← Relay adds session to live registry
+### Agent Session State
 
-3. Stream output frames as PTY produces bytes
-   ← Relay broadcasts to attached clients
-   ← Relay appends the frame to live in-memory history
-   ← Relay updates unread metadata and latest preview frame
+- Agents send `session_state` over `GET /agent/ws`.
+- The relay stores that as structured session metadata.
+- The relay republishes it on the global client stream.
+- Session-state transitions are not inserted into output history.
 
-4. Send resize frames when local terminal resizes
-   ← Relay updates the session's current PTY size for future output frames
+## Recommended Client Strategy
 
-5. Receive input frames from relay
-   → Forward decoded bytes to PTY stdin
+Foreground client flow:
 
-6. Relay sends WebSocket pings every 10s
-   → Agent responds with pong (automatic in most libraries)
-   → Each pong resets the 30s read deadline
+1. Call `GET /api/sessions` on launch or foreground resume.
+2. Open one global `GET /api/updates/ws` connection.
+3. Route every frame by `session_id`.
+4. If a session needs catch-up, compare local seq watermarks with `latest_seq` and fetch `GET /api/sessions/:id/history?after=<seq>`.
+5. If the user sends input to one session, write an `input` frame on the same global WebSocket with that `session_id`.
 
-7. On disconnect (network drop, agent exit, etc.)
-   ← Relay removes session from registry
-   ← Attached clients stop receiving output
-```
+Why this works:
 
-### Client Lifecycle
-
-```
-1. GET /api/sessions with Basic Auth
-   ← Receive list of live sessions, unread counters, and preview frames
-
-2. GET /api/sessions/:id/history?after=0
-   ← Receive the currently retained output buffer for that live session
-
-3. Persist the highest applied output `seq` locally
-
-4. Open WebSocket to /api/sessions/:id/ws?after=<stored-seq>
-   Headers: Authorization: Basic base64(user:pass)
-   ← Relay replays retained output newer than `after`, then continues with live output
-
-5. Receive output frames
-   → Resize terminal emulator to `cols` / `rows`
-   → Decode base64 → write raw bytes to terminal emulator
-   → Update stored max `seq`
-
-6. POST /api/sessions/:id/read
-   → Advance the shared read marker after replay + attach are active
-
-7. Optionally send input frames
-   → Encode keystrokes as base64 → send as input frame
-
-8. On WebSocket close
-   → Return to session list or show disconnected state
-```
-
-> **Note:** Clients never send resize frames. Terminal dimensions are owned by the agent's local terminal and are attached to each output frame by the relay.
-
-## Data Encoding
-
-All `data` fields use standard base64 encoding (RFC 4648, alphabet `A-Z a-z 0-9 + /`, padding with `=`). This is **not** base64url.
-
-To send the string `ls\n` as input:
-1. UTF-8 encode: `[0x6C, 0x73, 0x0A]`
-2. Base64 encode: `bHMK`
-3. Send: `{"type":"input","data":"bHMK"}`
-
-To process received output:
-1. Parse JSON, extract `data` field
-2. Base64 decode to raw bytes
-3. Write bytes directly to terminal emulator
-
-## Mobile Implementation Notes
-
-### Terminal Rendering
-
-Recommended terminal emulator libraries for native platforms:
-
-- **iOS**: [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) — a mature xterm-compatible terminal emulator for Swift
-- **Android**: [TerminalView](https://github.com/niclas-pfeifer/TerminalView) or the terminal emulator component from [Termux](https://github.com/termux/termux-app)
-
-These libraries accept raw byte streams, which is exactly what the base64-decoded `output` data provides.
-
-For replay correctness, treat the relay as a transient cache and your app as the durable owner of terminal history:
-
-1. Load retained history with `after=0` on first attach
-2. Persist output frames and the highest applied `seq` locally
-3. Reconnect with `history?after=<stored-seq>` or `ws?after=<stored-seq>`
-4. Resize to each output frame's `cols` / `rows` before writing its bytes
-
-### Read-Only by Default
-
-Clients are encouraged to default to a read-only or explicitly enabled input mode before forwarding keystrokes. This prevents accidental input from reaching the agent.
-
-### Reconnection
-
-The relay maintains only live, in-memory state. If the agent disconnects, the session disappears from the registry immediately. There is no persistence across relay restarts or disconnected sessions, but live sessions do expose a rolling retained history buffer while they remain online.
-
-Mobile clients should:
-- Handle WebSocket `onclose` gracefully
-- Return to the session list when a session WebSocket closes
-- Re-fetch `/api/sessions` to get updated session list
-- Use `/api/sessions/:id/history` for initial replay before live attach
-- Not attempt automatic reconnection to a specific session if the relay reports `404` (the session may no longer exist)
-
-### Client Input Handling
-
-The relay protocol treats `input` payloads as opaque bytes. The relay and agent do not inspect, rewrite, or filter terminal input content before it reaches PTY stdin.
-
-Clients should send the exact keystrokes or pasted bytes they intend to deliver to the agent. If a specific terminal UI or emulator chooses to suppress locally generated sequences, that is client-specific behavior rather than part of the relay protocol contract.
-
-### WebSocket Libraries
-
-Any standard WebSocket library works. The protocol uses only text frames with JSON payloads. Recommended:
-
-- **iOS**: `URLSessionWebSocketTask` (built-in) or [Starscream](https://github.com/niclas-pfeifer/Starscream)
-- **Android**: [OkHttp WebSocket](https://square.github.io/okhttp/) (built-in support)
-- **Cross-platform**: Any library that supports text frames, custom headers (for auth), and automatic pong responses
+- list freshness comes from the global stream
+- terminal fidelity comes from global live output plus per-session history replay
+- preview generation, if any, belongs to the client because the relay is content-opaque

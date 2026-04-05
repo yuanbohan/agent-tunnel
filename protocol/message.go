@@ -12,7 +12,7 @@ const (
 	SessionStateActionRequired SessionState = "action_required"
 )
 
-// Message is the JSON frame exchanged over WebSocket.
+// Message is the agent-side JSON frame exchanged over session-scoped WebSockets.
 // Type is one of "input", "output", "resize", or "session_state".
 type Message struct {
 	Type                string       `json:"type"`
@@ -75,13 +75,10 @@ type SessionInfo struct {
 	CWD                 string       `json:"cwd"`
 	CommandPreview      string       `json:"command_preview"`
 	StartedAt           time.Time    `json:"started_at"`
-	LastPreview         string       `json:"last_preview,omitempty"`
 	LastActiveAt        *time.Time   `json:"last_active_at,omitempty"`
 	LatestSeq           uint64       `json:"latest_seq"`
 	LastReadSeq         uint64       `json:"last_read_seq"`
 	UnreadCount         uint64       `json:"unread_count"`
-	PreviewSeq          uint64       `json:"preview_seq"`
-	PreviewB64          string       `json:"preview_b64"`
 	State               SessionState `json:"state"`
 	StateChangedAt      *time.Time   `json:"state_changed_at,omitempty"`
 	ActionRequiredSince *time.Time   `json:"action_required_since,omitempty"`
@@ -109,4 +106,59 @@ type SessionStateEvent struct {
 	State               SessionState `json:"state"`
 	ChangedAt           time.Time    `json:"changed_at"`
 	ActionRequiredSince *time.Time   `json:"action_required_since,omitempty"`
+}
+
+// ClientUpdateMessage is the client-facing multiplexed envelope used by the
+// global relay stream. Unlike Message, it always carries session identity so a
+// single foreground connection can route both live output and client input for
+// many sessions.
+type ClientUpdateMessage struct {
+	SessionID           string       `json:"session_id"`
+	Type                string       `json:"type"`
+	Seq                 uint64       `json:"seq,omitempty"`
+	Data                string       `json:"data,omitempty"`
+	Cols                int          `json:"cols,omitempty"`
+	Rows                int          `json:"rows,omitempty"`
+	State               SessionState `json:"state,omitempty"`
+	ChangedAt           *time.Time   `json:"changed_at,omitempty"`
+	ActionRequiredSince *time.Time   `json:"action_required_since,omitempty"`
+	Reason              string       `json:"reason,omitempty"`
+}
+
+func EncodeClientOutput(sessionID string, seq uint64, b []byte, cols, rows int) ClientUpdateMessage {
+	return ClientUpdateMessage{
+		SessionID: sessionID,
+		Type:      "output",
+		Seq:       seq,
+		Data:      base64.StdEncoding.EncodeToString(b),
+		Cols:      cols,
+		Rows:      rows,
+	}
+}
+
+func EncodeClientSessionState(event SessionStateEvent) ClientUpdateMessage {
+	changedAtCopy := event.ChangedAt.UTC()
+	return ClientUpdateMessage{
+		SessionID:           event.SessionID,
+		Type:                "session_state",
+		State:               event.State,
+		ChangedAt:           &changedAtCopy,
+		ActionRequiredSince: cloneUTC(event.ActionRequiredSince),
+	}
+}
+
+func EncodeClientSessionRemoved(sessionID, reason string) ClientUpdateMessage {
+	return ClientUpdateMessage{
+		SessionID: sessionID,
+		Type:      "session_removed",
+		Reason:    reason,
+	}
+}
+
+func cloneUTC(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	copy := value.UTC()
+	return &copy
 }

@@ -7,38 +7,38 @@ import (
 	"yuanbohan/tunnel/protocol"
 )
 
-type wsSessionStateSink struct {
+type wsClientUpdateSink struct {
 	conn         wsConn
 	writeTimeout time.Duration
 
 	mu        sync.RWMutex
 	closed    bool
-	outbound  chan protocol.SessionStateEvent
+	outbound  chan protocol.ClientUpdateMessage
 	closeOnce sync.Once
 }
 
-func newWSSessionStateSink(conn wsConn, bufferSize int, writeTimeout time.Duration) *wsSessionStateSink {
+func newWSClientUpdateSink(conn wsConn, bufferSize int, writeTimeout time.Duration) *wsClientUpdateSink {
 	if bufferSize <= 0 {
 		bufferSize = 1
 	}
 
-	sink := &wsSessionStateSink{
+	sink := &wsClientUpdateSink{
 		conn:         conn,
 		writeTimeout: writeTimeout,
-		outbound:     make(chan protocol.SessionStateEvent, bufferSize),
+		outbound:     make(chan protocol.ClientUpdateMessage, bufferSize),
 	}
 	go sink.run()
 	return sink
 }
 
-func (s *wsSessionStateSink) WriteSessionStateEvent(event protocol.SessionStateEvent) error {
+func (s *wsClientUpdateSink) WriteClientUpdate(msg protocol.ClientUpdateMessage) error {
 	s.mu.RLock()
 	if s.closed {
 		s.mu.RUnlock()
 		return errWSSinkClosed
 	}
 	select {
-	case s.outbound <- event:
+	case s.outbound <- msg:
 		s.mu.RUnlock()
 		return nil
 	default:
@@ -48,7 +48,7 @@ func (s *wsSessionStateSink) WriteSessionStateEvent(event protocol.SessionStateE
 	}
 }
 
-func (s *wsSessionStateSink) Close() error {
+func (s *wsClientUpdateSink) Close() error {
 	s.closeOnce.Do(func() {
 		s.mu.Lock()
 		s.closed = true
@@ -59,16 +59,16 @@ func (s *wsSessionStateSink) Close() error {
 	return nil
 }
 
-func (s *wsSessionStateSink) run() {
+func (s *wsClientUpdateSink) run() {
 	defer s.Close()
 
-	for event := range s.outbound {
+	for msg := range s.outbound {
 		if s.writeTimeout > 0 {
 			if err := s.conn.SetWriteDeadline(time.Now().Add(s.writeTimeout)); err != nil {
 				return
 			}
 		}
-		if err := s.conn.WriteJSON(event); err != nil {
+		if err := s.conn.WriteJSON(msg); err != nil {
 			return
 		}
 	}

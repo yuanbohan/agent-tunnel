@@ -1,333 +1,201 @@
 # Agent Tunnel Architecture
 
-This document describes the current `agentunnel` architecture: a local PTY owner process connects to a remote relay, and external clients consume the relay's HTTP and WebSocket APIs. The relay does not ship a bundled frontend.
+This document explains the stable shape of the system. It stays intentionally high level so small transport or package changes do not force constant rewrites.
 
-## High-Level Model
+## System Shape
 
-```
-                         agentunnel process
- ┌──────────────────────────────────────────────────────────────┐
- │                                                              │
- │  launcher.Resolve()                                          │
- │         │                                                    │
- │         ▼                                                    │
- │    exec.Command()                                            │
- │         │                                                    │
- │         ▼                                                    │
- │     PTY child  <───────>  PTY master                         │
- │         │                     │                              │
- │         │                     ▼                              │
- │         │                 session.Hub                        │
- │         │              ┌───────────────┐                     │
- │         │              │ output fanout │                     │
- │         │              │ input routing │                     │
- │         │              │ resize hook   │                     │
- │         │              └──────┬────────┘                     │
- │         │                     │                              │
- │         │          ┌──────────┴──────────┐                   │
- │         │          │                     │                   │
- │         ▼          ▼                     ▼                   │
- │    local terminal stdout sink      relay connector          │
- │    local terminal stdin/input      outbound /agent/ws       │
- └──────────────────────────────────────────────┬───────────────┘
-                                                │
-                                                ▼
-                                ┌─────────────────────────────┐
-                                │         relay server        │
-                                │                             │
-                                │  auth + HTTP/WS handlers    │
-                                │  live session registry      │
-                                │  in-memory output history   │
-                                │  unread + preview tracking  │
-                                └──────────────┬──────────────┘
-                                               │
-                          ┌────────────────────┴────────────────────┐
-                          ▼                                         ▼
-                external client A                          external client B
-                list / history / ws                        list / history / ws
-```
-
-## Runtime Boundaries
-
-- `agentunnel` owns the PTY, local terminal raw mode, and local resize/input forwarding.
-- The relay owns only live in-memory session state. It is not durable storage.
-- External clients own presentation, terminal rendering, and any durable local history.
-- Terminal size is owned by the agent side. Clients never send resize frames.
-
-## Package Layout
-
-```
-cmd/agentunnel
-├── connector
-├── launcher
-├── protocol
-└── session
-
-cmd/relay
-├── protocol
-└── relay
-```
-
-## Package Responsibilities
-
-### `cmd/agentunnel`
-
-Entry point for launching a supported terminal agent and binding it to the relay.
-
-Startup flow:
-
-1. Parse CLI args and required relay env.
-2. Resolve the launcher executable with `launcher.Resolve`.
-3. Put the local terminal into raw mode with `session.PrepareLocalTerminal`.
-4. For `codex`, start a dedicated local `codex app-server`, discover its loopback WebSocket URL, and change the PTY child command to `codex --remote <app-server-url> ...`.
-5. Start the child process under a PTY with `session.StartCommandWithInitialSinks`.
-6. Register both the local stdout sink and relay connector sink before output starts.
-7. Run the outbound relay connector.
-8. For `codex`, run a sidecar app-server monitor that derives session-level `action_required` state from structured thread status.
-9. Forward local stdin and local resize events through the session hub.
-
-Important constraint:
-
-- Relay connectivity is mandatory. There is no localhost fallback UI or standalone mode.
-
-### `launcher/`
-
-Resolves the supported launcher name to a real executable on `PATH`.
-
-Supported launchers:
-
-- `claude`
-- `codex`
-- `gemini`
-
-### `session/`
-
-Owns the PTY and local terminal behavior.
-
-Main pieces:
-
-- `process.go`: starts the child command under a PTY and reads PTY output.
-- `hub.go`: fans PTY output out to sinks and routes input/resize back to the PTY.
-- `local_terminal.go`: manages raw mode, stdin forwarding, stdout writing, and SIGWINCH handling.
-
-Key behavior:
-
-- PTY output is read once and copied defensively to each sink.
-- Local terminal resize updates the PTY immediately.
-- The relay connector receives both PTY output and resize notifications from the same hub.
-
-### `connector/`
-
-Maintains the mandatory outbound WebSocket from `agentunnel` to the relay at `/agent/ws`.
-
-Responsibilities:
-
-- Connect and authenticate with bearer token auth.
-- Send one `register` frame when connected.
-- Forward PTY output as relay `output` frames.
-- Forward local resize changes as relay `resize` frames.
-- Forward structured session-state changes as relay `session_state` frames.
-- Accept relay `input` frames and push them into the PTY via the hub.
-- Reconnect with backoff if the relay connection drops.
-
-### `protocol/`
-
-Defines the wire structures shared by the agent side and relay.
-
-Important types:
-
-- `Message`
-  - `input`
-  - `output`
-  - `resize`
-  - `session_state`
-- `SessionInfo`
-- `AgentFrame`
-
-Relay-specific contract:
-
-- Client-visible `output` frames carry `seq`, `cols`, and `rows`.
-- Agent-originated `resize` frames are relay-internal state updates; they are not forwarded to clients as standalone history items.
-
-### `cmd/relay`
-
-Standalone relay entrypoint.
-
-Responsibilities:
-
-- Read auth configuration from environment variables.
-- Listen on `0.0.0.0:<port>`.
-- Construct the registry and HTTP handler.
-- Expose client APIs and the agent WebSocket.
-
-### `relay/`
-
-Core relay server implementation.
-
-Primary modules:
-
-- `auth.go`
-  - Basic Auth for client endpoints
-  - Bearer token auth for `/agent/ws`
-- `registry.go`
-  - live session ownership
-  - current PTY size
-  - latest sequence number
-  - shared read marker
-  - preview metadata
-  - attached client sinks
-  - atomic backlog preload plus live attach
-- `history.go`
-  - retained in-memory output frames
-  - `after`-only history snapshots
-  - per-output `cols` / `rows`
-- `preview.go`
-  - ANSI-stripped preview extraction from recent output
-- `server.go`
-  - `/api/sessions`
-  - `/api/sessions/:id/history`
-  - `/api/sessions/:id/read`
-  - `/api/sessions/:id/ws`
-  - `/agent/ws`
-  - `/healthz`
-
-## Relay State Model
-
-The relay keeps only live, in-memory state per session:
-
-- session metadata from the initial `register`
-- current PTY size from the latest agent `resize`
-- rolling retained output frames
-- monotonic `latestSeq`
-- shared `lastReadSeq`
-- unread count derived from `latestSeq - lastReadSeq`
-- latest text preview and raw preview frame
-- current session state (`normal` or `action_required`)
-- optional `action_required_since` timestamp for the current unresolved waiting episode
-
-If the owning agent disconnects:
-
-- the session is removed
-- retained history is dropped
-- unread state is dropped
-- session-state snapshot is dropped
-- attached clients stop receiving output
-
-## History And Replay Model
-
-The current replay model is intentionally narrow:
-
-- history sync uses only `after`
-- `after=0` means "return the entire currently retained buffer"
-- only output frames get sequence numbers
-- each retained output frame carries the PTY size active when that output was produced
-
-Example history frame:
-
-```json
-{
-  "seq": 42,
-  "data_b64": "SGVsbG8=",
-  "cols": 132,
-  "rows": 43
-}
-```
-
-Why the size lives on each output:
-
-- clients can replay output correctly even if a prior resize signal was missed
-- pagination anchors or replay-time resize lookups are unnecessary
-- the client needs only one durable cursor: highest applied `seq`
-
-## Client Attach Semantics
-
-Client attach uses:
+`agentunnel` owns the real local agent process and its PTY. The relay exposes authenticated APIs so external clients can observe or interact with that live session.
 
 ```text
-GET /api/sessions/:id/ws?after=<seq>
+local machine
+┌──────────────────────────────────────────────────────────────┐
+│                          agentunnel                          │
+│                                                              │
+│  launcher resolve                                            │
+│        │                                                     │
+│        ▼                                                     │
+│  local runtime                                               │
+│  - claude / gemini: PTY child                                │
+│  - codex: app-server sidecar + codex --remote PTY child      │
+│        │                                                     │
+│        ▼                                                     │
+│     session hub                                              │
+│  - PTY output fanout                                         │
+│  - PTY input routing                                         │
+│  - resize propagation                                        │
+│        │                           │                         │
+│        ▼                           ▼                         │
+│  local terminal sink         relay connector                 │
+│                              - register                      │
+│                              - output                        │
+│                              - resize                        │
+│                              - session_state                 │
+└──────────────────────────────────┬───────────────────────────┘
+                                   │
+                                   ▼
+                    ┌────────────────────────────────┐
+                    │          relay server          │
+                    │  - auth                        │
+                    │  - live session registry       │
+                    │  - output replay buffer        │
+                    │  - unread / seq metadata       │
+                    │  - global client update fanout │
+                    └───────────────┬────────────────┘
+                                    │
+                   ┌────────────────┴────────────────┐
+                   ▼                                 ▼
+            mobile / web client A             mobile / web client B
 ```
 
-The relay guarantees this order:
+## Major Responsibilities
 
-1. load retained output with `seq > after`
-2. preload those frames into the client sink
-3. register that sink with the live session
-4. start streaming new live output
+### `agentunnel`
 
-This avoids the classic gap where output produced between "history fetch" and "live attach" could be lost.
+`agentunnel` is the local supervisor.
 
-Session-state transitions use a separate client WebSocket:
+It owns:
+
+- launcher resolution
+- PTY lifecycle and local terminal raw mode
+- fanout of PTY output to the local terminal and relay connector
+- forwarding remote input back into the PTY
+- forwarding resize metadata
+- Codex sidecar management when the launcher is `codex`
+
+### Relay
+
+The relay is a live broker, not durable storage and not a semantic interpreter of terminal content.
+
+It owns:
+
+- client and agent authentication
+- current live-session snapshots
+- rolling in-memory output history for replay
+- unread and sequence metadata
+- structured session-state tracking such as `action_required`
+- global update fanout for connected clients
+
+The relay does not own:
+
+- session creation beyond registration by an agent
+- durable history
+- preview rendering
+- content interpretation of terminal output
+
+### External Clients
+
+External clients own presentation and local persistence.
+
+They are responsible for:
+
+- listing live sessions
+- maintaining a foreground global WebSocket if they want cross-session freshness
+- rendering terminal output
+- computing or persisting local previews if their product needs them
+- optionally sending input into one live session
+
+## Runtime Variants
+
+### Standard Launchers
+
+For `claude` and `gemini`, `agentunnel` runs one PTY child:
 
 ```text
-GET /api/session-events/ws
+agentunnel
+└─ PTY child process
 ```
 
-This stream carries machine-readable `normal` / `action_required` transitions and is intentionally not mixed into terminal replay history.
+### Codex
 
-## End-To-End Data Flows
+For `codex`, `agentunnel` supervises two children:
 
-### Output Path
+```text
+agentunnel
+├─ codex app-server --listen ws://127.0.0.1:0
+└─ codex --remote ws://127.0.0.1:<dynamic-port> ...
+```
+
+The app-server provides structured runtime state. `agentunnel` monitors it and emits `session_state` updates without parsing PTY text.
+
+## Main Data Flows
+
+### Output
 
 ```text
 PTY output
-→ session read loop
-→ session.Hub.BroadcastOutput
-→ local stdout sink
+→ session hub
+→ local terminal sink
 → relay connector
 → relay registry
-→ retained history + preview + unread update
-→ attached client sinks
+→ retained output history + seq/unread update
+→ global client updates
 ```
 
-### Input Path
+### Input
 
 ```text
-external client input frame
-→ relay WebSocket handler
-→ registry route-to-agent
-→ connector inbound loop
-→ session.Hub.WriteInput
+client input frame
+→ relay
+→ owning agent websocket
+→ agentunnel connector
 → PTY stdin
 ```
 
-The input path is byte-transparent. Relay and agent components do not perform content-level filtering on input frames.
-
-### Resize Path
+### Resize
 
 ```text
-local SIGWINCH
-→ session local terminal handler
-→ session.Hub.Resize
-→ PTY resize
-→ connector sends resize frame
-→ relay updates current PTY size
-→ future output frames inherit updated cols/rows
+local PTY resize
+→ relay connector resize frame
+→ relay current terminal size metadata
+→ future output frames carry updated cols / rows
 ```
 
-Clients do not receive standalone resize events. They apply the size attached to each output frame.
+### Session State
 
-## Concurrency Notes
+```text
+Codex app-server thread state
+→ codexapp monitor
+→ connector session_state frame
+→ relay live session snapshot
+→ global client update stream
+```
 
-Important concurrent loops:
+This state path is intentionally separate from terminal output and replay.
 
-- PTY read loop in `session/process.go`
-- local stdin polling loop in `session/local_terminal.go`
-- local resize signal loop in `session/local_terminal.go`
-- connector outbound and inbound WebSocket loops
-- relay heartbeat / read-deadline management for agent sockets
+## Client Model
 
-Safety properties:
+The preferred client topology is:
 
-- session hub uses a mutex-protected sink map
-- registry serializes session mutation under lock
-- live attach preloads backlog before sink registration under the same registry critical section
-- retained history stores complete output frames rather than partial byte slices
+- one foreground `GET /api/updates/ws` connection for all sessions
+- `GET /api/sessions` for bootstrap and reconnect correction
+- `GET /api/sessions/:id/history` for per-session catch-up
 
-## External Dependencies
+This keeps list freshness, terminal output, and cross-session notifications on one global channel while leaving history catch-up as an HTTP concern.
 
-| Dependency | Purpose |
-|---|---|
-| `github.com/creack/pty` | PTY creation and resize |
-| `github.com/gorilla/websocket` | WebSocket transport |
-| `golang.org/x/sys/unix` | non-blocking stdin polling |
-| `golang.org/x/term` | raw mode and terminal size |
+## Stable Boundaries
+
+The architecture depends on a few long-lived boundaries:
+
+- PTY output is an opaque presentation stream.
+- Session state is structured metadata.
+- The relay may retain output bytes for replay, but it should not interpret them.
+- Relay history is live-only and in-memory.
+- External clients may persist richer local state than the relay does.
+- Terminal size is agent-owned metadata, not client-owned state.
+
+As long as those boundaries hold, the internal package structure can evolve without changing the mental model.
+
+## Package Map
+
+- `cmd/agentunnel`: local launcher entrypoint
+- `session/`: PTY ownership, local terminal handling, output/input hub
+- `connector/`: outbound relay connection and message forwarding
+- `codexapp/`: Codex app-server lifecycle and structured waiting-state monitor
+- `cmd/relay`: relay entrypoint
+- `relay/`: live session registry and HTTP / WebSocket handlers
+- `protocol/`: shared wire types
+
+## Related Documents
+
+- [docs/protocol.md](./protocol.md)
+- [docs/codex-action-required.md](./codex-action-required.md)
