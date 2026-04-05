@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -12,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"yuanbohan/tunnel/codexapp"
 	"yuanbohan/tunnel/connector"
 	"yuanbohan/tunnel/launcher"
 	"yuanbohan/tunnel/protocol"
@@ -22,10 +24,23 @@ var (
 	resolveLauncher      = launcher.Resolve
 	prepareLocalTerminal = session.PrepareLocalTerminal
 	startSession         = session.StartCommandWithInitialSinks
-	newConnector         = func(url, token string, info protocol.SessionInfo) *connector.Connector {
+	startCodexRuntime    = func(ctx context.Context, command launcher.Command) (codexRuntime, error) {
+		return codexapp.Start(ctx, command)
+	}
+	startCodexStateMonitor = func(ctx context.Context, wsURL string, relay *connector.Connector) {
+		codexapp.MonitorActionRequired(ctx, wsURL, relay)
+	}
+	newConnector = func(url, token string, info protocol.SessionInfo) *connector.Connector {
 		return connector.New(url, token, info)
 	}
 )
+
+type codexRuntime interface {
+	RemoteCommand() launcher.Command
+	AppServerURL() string
+	Wait() error
+	Close() error
+}
 
 func main() {
 	if err := run(); err != nil {
@@ -70,17 +85,33 @@ func runWithArgs(args []string, stderr io.Writer) error {
 	}
 	defer local.Restore()
 
+	commandPreview := strings.TrimSpace(strings.Join(append([]string{filepath.Base(command.Path)}, command.Args...), " "))
+
+	var sidecar codexRuntime
+	if command.Name == "codex" {
+		sidecar, err = startCodexRuntime(ctx, command)
+		if err != nil {
+			return err
+		}
+		defer sidecar.Close()
+		command = sidecar.RemoteCommand()
+	}
+
 	sinkID, sink := local.SinkRegistration()
 	info := protocol.SessionInfo{
 		SessionID:      fmt.Sprintf("%d", time.Now().UnixNano()),
 		Launcher:       command.Name,
 		Label:          parsed.Label,
 		CWD:            cwd,
-		CommandPreview: strings.TrimSpace(strings.Join(append([]string{filepath.Base(command.Path)}, command.Args...), " ")),
+		CommandPreview: commandPreview,
 		StartedAt:      time.Now().UTC(),
+		State:          protocol.SessionStateNormal,
 	}
 
 	relay := newConnector(relayURL, parsed.RelayToken, info)
+	if sidecar != nil {
+		go startCodexStateMonitor(ctx, sidecar.AppServerURL(), relay)
+	}
 
 	initialSinks := map[string]session.OutputSink{
 		sinkID:  sink,
@@ -103,7 +134,20 @@ func runWithArgs(args []string, stderr io.Writer) error {
 		waitErr <- running.Wait()
 	}()
 
-	return waitForProcessOrShutdown(ctx, done, waitErr)
+	var sidecarWaitErr <-chan error
+	if sidecar != nil {
+		ch := make(chan error, 1)
+		go func() {
+			err := sidecar.Wait()
+			if err == nil {
+				err = errors.New("codex app-server exited unexpectedly")
+			}
+			ch <- err
+		}()
+		sidecarWaitErr = ch
+	}
+
+	return waitForSessionOrShutdown(ctx, done, waitErr, sidecarWaitErr)
 }
 
 func waitForProcessOrShutdown(ctx context.Context, localDone <-chan struct{}, waitErr <-chan error) error {
@@ -114,6 +158,21 @@ func waitForProcessOrShutdown(ctx context.Context, localDone <-chan struct{}, wa
 		case <-localDone:
 			localDone = nil
 		case err := <-waitErr:
+			return err
+		}
+	}
+}
+
+func waitForSessionOrShutdown(ctx context.Context, localDone <-chan struct{}, waitErr <-chan error, sidecarWaitErr <-chan error) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-localDone:
+			localDone = nil
+		case err := <-waitErr:
+			return err
+		case err := <-sidecarWaitErr:
 			return err
 		}
 	}

@@ -38,11 +38,15 @@ func TestRunWithArgsStopsBeforeStartingSessionWhenLocalTerminalPreparationFails(
 	oldResolve := resolveLauncher
 	oldPrepare := prepareLocalTerminal
 	oldStartSession := startSession
+	oldStartCodexRuntime := startCodexRuntime
+	oldStartCodexStateMonitor := startCodexStateMonitor
 	oldNewConnector := newConnector
 	t.Cleanup(func() {
 		resolveLauncher = oldResolve
 		prepareLocalTerminal = oldPrepare
 		startSession = oldStartSession
+		startCodexRuntime = oldStartCodexRuntime
+		startCodexStateMonitor = oldStartCodexStateMonitor
 		newConnector = oldNewConnector
 	})
 
@@ -84,11 +88,15 @@ func TestRunWithArgsPrintsStartupBannerBeforePreparingLocalTerminal(t *testing.T
 	oldResolve := resolveLauncher
 	oldPrepare := prepareLocalTerminal
 	oldStartSession := startSession
+	oldStartCodexRuntime := startCodexRuntime
+	oldStartCodexStateMonitor := startCodexStateMonitor
 	oldNewConnector := newConnector
 	t.Cleanup(func() {
 		resolveLauncher = oldResolve
 		prepareLocalTerminal = oldPrepare
 		startSession = oldStartSession
+		startCodexRuntime = oldStartCodexRuntime
+		startCodexStateMonitor = oldStartCodexStateMonitor
 		newConnector = oldNewConnector
 	})
 
@@ -131,11 +139,15 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
 	oldResolve := resolveLauncher
 	oldPrepare := prepareLocalTerminal
 	oldStartSession := startSession
+	oldStartCodexRuntime := startCodexRuntime
+	oldStartCodexStateMonitor := startCodexStateMonitor
 	oldNewConnector := newConnector
 	t.Cleanup(func() {
 		resolveLauncher = oldResolve
 		prepareLocalTerminal = oldPrepare
 		startSession = oldStartSession
+		startCodexRuntime = oldStartCodexRuntime
+		startCodexStateMonitor = oldStartCodexStateMonitor
 		newConnector = oldNewConnector
 	})
 
@@ -146,6 +158,18 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
 	prepareLocalTerminal = func() (*session.LocalTerminal, error) {
 		return &session.LocalTerminal{}, nil
 	}
+
+	startCodexRuntime = func(context.Context, launcher.Command) (codexRuntime, error) {
+		return fakeCodexRuntime{
+			command: launcher.Command{
+				Name: "codex",
+				Path: "/usr/bin/codex",
+				Args: []string{"--remote", "ws://127.0.0.1:51723", "--profile", "prod"},
+			},
+			appServerURL: "ws://127.0.0.1:51723",
+		}, nil
+	}
+	startCodexStateMonitor = func(context.Context, string, *connector.Connector) {}
 
 	var gotInfo protocol.SessionInfo
 	var gotURL, gotToken string
@@ -204,6 +228,49 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
 	}
 }
 
+func TestRunWithArgsReturnsCodexRuntimeErrorBeforeStartingSession(t *testing.T) {
+	setTestEnv(t)
+
+	oldResolve := resolveLauncher
+	oldPrepare := prepareLocalTerminal
+	oldStartSession := startSession
+	oldStartCodexRuntime := startCodexRuntime
+	oldStartCodexStateMonitor := startCodexStateMonitor
+	t.Cleanup(func() {
+		resolveLauncher = oldResolve
+		prepareLocalTerminal = oldPrepare
+		startSession = oldStartSession
+		startCodexRuntime = oldStartCodexRuntime
+		startCodexStateMonitor = oldStartCodexStateMonitor
+	})
+
+	resolveLauncher = func(name string, args []string) (launcher.Command, error) {
+		return launcher.Command{Name: name, Path: "/usr/bin/codex", Args: append([]string(nil), args...)}, nil
+	}
+	prepareLocalTerminal = func() (*session.LocalTerminal, error) {
+		return &session.LocalTerminal{}, nil
+	}
+
+	wantErr := errors.New("app-server failed")
+	startCodexRuntime = func(context.Context, launcher.Command) (codexRuntime, error) {
+		return nil, wantErr
+	}
+
+	startedSession := false
+	startSession = func(context.Context, string, []string, map[string]session.OutputSink) (*session.Running, error) {
+		startedSession = true
+		return nil, nil
+	}
+
+	err := runWithArgs([]string{"agentunnel", "codex"}, &bytes.Buffer{})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("runWithArgs error = %v, want %v", err, wantErr)
+	}
+	if startedSession {
+		t.Fatal("runWithArgs started the child session after codex runtime failed")
+	}
+}
+
 func TestWaitForProcessOrShutdownIgnoresLocalTerminalCompletion(t *testing.T) {
 	localDone := make(chan struct{})
 	close(localDone)
@@ -255,3 +322,36 @@ func TestWaitForProcessOrShutdownReturnsOnContextCancellation(t *testing.T) {
 		t.Fatal("did not return after context cancellation")
 	}
 }
+
+func TestWaitForSessionOrShutdownReturnsOnSidecarExit(t *testing.T) {
+	sidecarWait := make(chan error, 1)
+	want := errors.New("app-server exited")
+
+	result := make(chan error, 1)
+	go func() {
+		result <- waitForSessionOrShutdown(context.Background(), make(chan struct{}), make(chan error), sidecarWait)
+	}()
+
+	sidecarWait <- want
+
+	select {
+	case err := <-result:
+		if !errors.Is(err, want) {
+			t.Fatalf("error = %v, want %v", err, want)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("did not return after sidecar exit")
+	}
+}
+
+type fakeCodexRuntime struct {
+	command      launcher.Command
+	appServerURL string
+	waitErr      error
+	closeErr     error
+}
+
+func (f fakeCodexRuntime) RemoteCommand() launcher.Command { return f.command }
+func (f fakeCodexRuntime) AppServerURL() string            { return f.appServerURL }
+func (f fakeCodexRuntime) Wait() error                     { return f.waitErr }
+func (f fakeCodexRuntime) Close() error                    { return f.closeErr }

@@ -78,6 +78,9 @@ func (s *liveSession) unreadCount() uint64 {
 
 func (s *liveSession) snapshot() protocol.SessionInfo {
 	info := s.info
+	if info.State == "" {
+		info.State = protocol.SessionStateNormal
+	}
 	info.LatestSeq = s.latestSeq
 	info.LastReadSeq = s.lastReadSeq
 	info.UnreadCount = s.unreadCount()

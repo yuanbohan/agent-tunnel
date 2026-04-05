@@ -59,6 +59,7 @@ Point your client at the relay with HTTP Basic Auth and use the relay APIs:
 - `GET /api/sessions` to list live sessions
 - `GET /api/sessions/:id/history?after=0` to fetch the currently retained in-memory output buffer
 - `GET /api/sessions/:id/ws?after=<seq>` to replay newer retained output and continue with the live stream
+- `GET /api/session-events/ws` to stream session-level `action_required` transitions
 - `POST /api/sessions/:id/read` to advance the shared read marker
 
 Session history is intentionally live-only and in-memory. If the owning agent disconnects, the session disappears along with its retained history and unread state.
@@ -97,9 +98,19 @@ Then connect your mobile or other external client to `relay.example.com:8586`.
 ```bash
 make build             # builds bin/agentunnel and bin/relay
 make test              # go test ./...
+make test-real-hitl    # builds relay + agentunnel, then runs the real Codex approval smoke test
 make agentunnel LAUNCHER=claude   # run agentunnel directly
 make relay             # run relay server
 ```
+
+The real human-in-the-loop smoke test uses a real `codex` session with `-a untrusted` to force an approval pause. It verifies that:
+
+- relay session state flips to `action_required`
+- `/api/session-events/ws` emits the transition outside terminal output
+- `/api/sessions/:id/ws` still carries only terminal frames
+- approving the request clears the session back to `normal`
+
+It runs via [scripts/real_hitl_smoke.mjs](scripts/real_hitl_smoke.mjs) with [scripts/pty_driver.py](scripts/pty_driver.py) and requires a local `codex` install, an authenticated Codex environment, `node`, and `python3` on `PATH`.
 
 ## Protocol
 
@@ -114,6 +125,7 @@ JSON frames over WebSocket text messages:
 | `resize` | agent -> relay | `cols`, `rows` as integers   |
 
 The relay also exposes:
-- `GET /api/sessions` for live session metadata, unread counts, and preview payloads
+- `GET /api/sessions` for live session metadata, unread counts, preview payloads, and current session state
 - `GET /api/sessions/:id/history` for `after`-based live-session history sync
+- `GET /api/session-events/ws` for live session-state transitions outside terminal output
 - `POST /api/sessions/:id/read` for advancing the shared per-session read marker

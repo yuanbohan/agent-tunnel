@@ -39,9 +39,10 @@ type disconnectAwareSink interface {
 }
 
 type Registry struct {
-	mu       sync.RWMutex
-	sessions map[string]*liveSession
-	logger   *Logger
+	mu         sync.RWMutex
+	sessions   map[string]*liveSession
+	stateSinks map[string]sessionStateSink
+	logger     *Logger
 }
 
 type liveSession struct {
@@ -61,8 +62,9 @@ type liveSession struct {
 
 func NewRegistry() *Registry {
 	return &Registry{
-		sessions: make(map[string]*liveSession),
-		logger:   NewDiscardLogger(),
+		sessions:   make(map[string]*liveSession),
+		stateSinks: make(map[string]sessionStateSink),
+		logger:     NewDiscardLogger(),
 	}
 }
 
@@ -91,6 +93,9 @@ func (r *Registry) Register(info protocol.SessionInfo, peer AgentPeer) {
 	var previewData []byte
 	var currentCols int
 	var currentRows int
+	var state protocol.SessionState
+	var stateChangedAt *time.Time
+	var actionRequiredSince *time.Time
 	lastActiveAt := info.LastActiveAt
 	if old != nil {
 		sinks = old.sinks
@@ -102,12 +107,23 @@ func (r *Registry) Register(info protocol.SessionInfo, peer AgentPeer) {
 		previewData = old.previewData
 		currentCols = old.currentCols
 		currentRows = old.currentRows
+		state = old.info.State
+		stateChangedAt = cloneTimePtr(old.info.StateChangedAt)
+		actionRequiredSince = cloneTimePtr(old.info.ActionRequiredSince)
 		if old.info.LastActiveAt != nil {
 			lastActiveAt = old.info.LastActiveAt
 		}
 	}
 	if sinks == nil {
 		sinks = make(map[string]session.OutputSink)
+	}
+	if info.State == "" {
+		info.State = protocol.SessionStateNormal
+	}
+	if state != "" {
+		info.State = state
+		info.StateChangedAt = stateChangedAt
+		info.ActionRequiredSince = actionRequiredSince
 	}
 	r.sessions[info.SessionID] = &liveSession{
 		info:         info,
@@ -135,8 +151,19 @@ func (r *Registry) Register(info protocol.SessionInfo, peer AgentPeer) {
 
 func (r *Registry) Remove(sessionID string) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	delete(r.sessions, sessionID)
+	live, ok := r.sessions[sessionID]
+	if ok {
+		delete(r.sessions, sessionID)
+	}
+	r.mu.Unlock()
+
+	if ok && live.info.State == protocol.SessionStateActionRequired {
+		r.broadcastSessionState(protocol.SessionStateEvent{
+			SessionID: sessionID,
+			State:     protocol.SessionStateNormal,
+			ChangedAt: time.Now().UTC(),
+		})
+	}
 }
 
 func (r *Registry) RemoveIfOwner(sessionID string, owner AgentPeer) bool {
@@ -150,11 +177,15 @@ func (r *Registry) RemoveIfOwner(sessionID string, owner AgentPeer) bool {
 	for _, sink := range live.sinks {
 		sinks = append(sinks, sink)
 	}
+	stateEvent, ok := live.actionRequiredResolvedEvent(time.Now().UTC())
 	delete(r.sessions, sessionID)
 	r.mu.Unlock()
 
 	for _, sink := range sinks {
 		closeSinkWithReason(sink, "agent_disconnected")
+	}
+	if ok {
+		r.broadcastSessionState(stateEvent)
 	}
 	return true
 }
@@ -267,6 +298,34 @@ func (r *Registry) RemoveSink(sessionID, sinkID string) {
 	}
 }
 
+func (r *Registry) AddStateSink(sinkID string, sink sessionStateSink) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.stateSinks[sinkID] = sink
+}
+
+func (r *Registry) RemoveStateSink(sinkID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.stateSinks, sinkID)
+}
+
+func (r *Registry) UpdateSessionStateIfOwner(sessionID string, owner AgentPeer, state protocol.SessionState, changedAt time.Time, actionRequiredSince *time.Time) bool {
+	r.mu.Lock()
+	live, ok := r.sessions[sessionID]
+	if !ok || live.peer != owner {
+		r.mu.Unlock()
+		return false
+	}
+	event, changed := live.updateSessionState(state, changedAt, actionRequiredSince)
+	r.mu.Unlock()
+
+	if changed {
+		r.broadcastSessionState(event)
+	}
+	return changed
+}
+
 func (r *Registry) WriteInput(sessionID string, data []byte) error {
 	r.mu.RLock()
 	live, ok := r.sessions[sessionID]
@@ -317,6 +376,14 @@ func lastActiveTime(info protocol.SessionInfo) time.Time {
 		return time.Time{}
 	}
 	return *info.LastActiveAt
+}
+
+func cloneTimePtr(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	copy := value.UTC()
+	return &copy
 }
 
 func (r *Registry) touchOutput(sessionID string, owner AgentPeer, chunk []byte, now time.Time, requireOwner bool) bool {

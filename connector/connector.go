@@ -56,6 +56,14 @@ func (c *Connector) WriteOutput(data []byte) error {
 	return nil
 }
 
+func (c *Connector) UpdateSessionState(state protocol.SessionState, changedAt time.Time, actionRequiredSince *time.Time) {
+	msg := protocol.EncodeSessionState(state, changedAt, actionRequiredSince)
+	select {
+	case c.outbound <- msg:
+	default:
+	}
+}
+
 func (c *Connector) Run(ctx context.Context) {
 	for {
 		if ctx.Err() != nil {

@@ -19,6 +19,7 @@ All WebSocket communication uses JSON text frames. Binary data (terminal I/O) is
 | `GET /api/sessions/:id/history` | Client | Basic Auth | HTTP JSON |
 | `POST /api/sessions/:id/read` | Client | Basic Auth | HTTP JSON |
 | `GET /api/sessions/:id/ws` | Client | Basic Auth | WebSocket |
+| `GET /api/session-events/ws` | Client | Basic Auth | WebSocket |
 | `GET /agent/ws` | Agent | Bearer token | WebSocket |
 | `GET /healthz` | Any | None | HTTP text |
 
@@ -70,7 +71,8 @@ Returns a JSON array of `SessionInfo` objects, sorted by most recently active:
     "last_read_seq": 37,
     "unread_count": 5,
     "preview_seq": 42,
-    "preview_b64": "SGVsbG8gZnJvbSB0aGUgbGF0ZXN0IGNo..."
+    "preview_b64": "SGVsbG8gZnJvbSB0aGUgbGF0ZXN0IGNo...",
+    "state": "normal"
   }
 ]
 ```
@@ -92,10 +94,14 @@ Returns a JSON array of `SessionInfo` objects, sorted by most recently active:
 | `unread_count` | integer | yes | `latest_seq - last_read_seq` |
 | `preview_seq` | integer | yes | Sequence number of the latest preview frame |
 | `preview_b64` | string | no | Latest raw output frame retained for lightweight client previews |
+| `state` | string | yes | Current session state: `normal` or `action_required` |
+| `state_changed_at` | string | no | ISO 8601 UTC timestamp when `state` last changed |
+| `action_required_since` | string | no | ISO 8601 UTC timestamp when the current unresolved action-required episode began |
 
 Notes:
 - `last_preview` remains available as a human-readable compatibility field.
 - `preview_b64` is the newest raw output frame retained for lightweight session previews.
+- `action_required_since` remains stable for one unresolved waiting episode and changes only when a new episode begins.
 
 ### Fetch Session History
 
@@ -222,6 +228,33 @@ On connect, the relay replays retained output with `seq > after` through the Web
 
 Clients that want faithful replay should resize their terminal emulator to `cols` / `rows` immediately before writing that output frame.
 
+### Session State Events
+
+```
+GET /api/session-events/ws
+Authorization: Basic base64(username:password)
+```
+
+Upgrades to a WebSocket that streams session-level state transitions outside the terminal-output stream.
+
+**Session state event**:
+
+```json
+{
+  "session_id": "1743667200000000000",
+  "state": "action_required",
+  "changed_at": "2026-04-04T11:22:33Z",
+  "action_required_since": "2026-04-04T11:22:33Z"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `session_id` | string | Session whose state changed |
+| `state` | string | New session state: `normal` or `action_required` |
+| `changed_at` | string | ISO 8601 UTC timestamp when the state transition occurred |
+| `action_required_since` | string | Present only while the current state is `action_required` |
+
 ### Frames: Client → Server
 
 **Input frame** — keystrokes to forward to the agent's PTY:
@@ -307,6 +340,26 @@ The `session` object must include at minimum: `session_id`, `launcher`, `cwd`, `
 | `rows` | integer | New terminal height in rows |
 
 The relay updates the session's current PTY size and stamps that size onto subsequent retained and live output frames. It does not forward standalone resize frames to clients.
+
+**Session state frame** — structured session-level waiting state:
+
+```json
+{
+  "type": "session_state",
+  "state": "action_required",
+  "changed_at": "2026-04-04T11:22:33Z",
+  "action_required_since": "2026-04-04T11:22:33Z"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | string | Always `"session_state"` |
+| `state` | string | New session state: `normal` or `action_required` |
+| `changed_at` | string | ISO 8601 UTC timestamp when the session state changed |
+| `action_required_since` | string | Present only while the current state is `action_required` |
+
+The relay treats this as structured session metadata. It updates session snapshots and forwards the resulting transition through `/api/session-events/ws`, but it does not store these frames in terminal history.
 
 ### Frames: Relay → Agent
 

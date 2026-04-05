@@ -296,6 +296,44 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 		_ = json.NewEncoder(w).Encode(registry.List())
 	})
 
+	mux.HandleFunc("/api/session-events/ws", func(w http.ResponseWriter, r *http.Request) {
+		if !checkBasicAuth(r, cfg.BrowserUser, cfg.BrowserPassword) {
+			logAuthFailed(logger, r, "basic")
+			w.Header().Set("WWW-Authenticate", `Basic realm="agentunnel relay"`)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		conn, err := browserUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			logWSUpgradeFailed(logger, r, "client")
+			return
+		}
+		defer conn.Close()
+		conn.SetReadLimit(1 << 20)
+		_ = conn.SetReadDeadline(time.Now().Add(clientReadTimeout))
+		conn.SetPongHandler(func(string) error {
+			return conn.SetReadDeadline(time.Now().Add(clientReadTimeout))
+		})
+
+		sinkID := "session-events-" + strconv.FormatUint(atomic.AddUint64(&nextSinkID, 1), 10)
+		sink := newWSSessionStateSink(conn, defaultWSSinkBufferSize, defaultWSWriteTimeout)
+		registry.AddStateSink(sinkID, sink)
+		defer func() {
+			registry.RemoveStateSink(sinkID)
+			_ = sink.Close()
+		}()
+
+		stopPings := startWSPingLoop(conn, clientPingInterval, clientPingWriteTimeout)
+		defer close(stopPings)
+
+		for {
+			var discard json.RawMessage
+			if err := conn.ReadJSON(&discard); err != nil {
+				return
+			}
+		}
+	})
+
 	mux.HandleFunc("/agent/ws", func(w http.ResponseWriter, r *http.Request) {
 		if !checkBearer(r, cfg.AgentToken) {
 			logAuthFailed(logger, r, "bearer")
@@ -361,6 +399,12 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 				registry.TouchOutputIfOwner(register.Session.SessionID, peer, data, time.Now().UTC())
 			case "resize":
 				registry.UpdateSizeIfOwner(register.Session.SessionID, peer, msg.Cols, msg.Rows)
+			case "session_state":
+				changedAt := time.Now().UTC()
+				if msg.ChangedAt != nil {
+					changedAt = msg.ChangedAt.UTC()
+				}
+				registry.UpdateSessionStateIfOwner(register.Session.SessionID, peer, msg.State, changedAt, msg.ActionRequiredSince)
 			}
 		}
 	})

@@ -64,6 +64,7 @@ func TestHandlerReturnsLiveSessionsWithBasicAuth(t *testing.T) {
 		CommandPreview: "codex --profile prod",
 		CWD:            "/tmp/project",
 		StartedAt:      time.Unix(10, 0),
+		State:          protocol.SessionStateNormal,
 	}, fakeAgentPeer{})
 
 	handler := NewHandler(HandlerConfig{
@@ -89,10 +90,54 @@ func TestHandlerReturnsLiveSessionsWithBasicAuth(t *testing.T) {
 	if len(sessions) != 1 || sessions[0].SessionID != "sess-1" {
 		t.Fatalf("sessions = %#v, want sess-1", sessions)
 	}
-	for _, want := range []string{"latest_seq", "last_read_seq", "unread_count", "preview_seq", "preview_b64"} {
+	for _, want := range []string{"latest_seq", "last_read_seq", "unread_count", "preview_seq", "preview_b64", "state"} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("body = %s, want field %q", rec.Body.String(), want)
 		}
+	}
+}
+
+func TestHandlerReturnsSessionStateInListAPI(t *testing.T) {
+	reg := NewRegistry()
+	since := time.Unix(100, 0).UTC()
+	changedAt := time.Unix(101, 0).UTC()
+	reg.Register(protocol.SessionInfo{
+		SessionID:           "sess-1",
+		Launcher:            "codex",
+		CWD:                 "/tmp/project",
+		CommandPreview:      "codex",
+		StartedAt:           time.Unix(10, 0),
+		State:               protocol.SessionStateActionRequired,
+		StateChangedAt:      &changedAt,
+		ActionRequiredSince: &since,
+	}, fakeAgentPeer{})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+	req.Header.Set("Authorization", basicAuth("demo", "secret"))
+	NewHandler(HandlerConfig{
+		Registry:        reg,
+		BrowserUser:     "demo",
+		BrowserPassword: "secret",
+		AgentToken:      "agent-token",
+	}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var sessions []protocol.SessionInfo
+	if err := json.Unmarshal(rec.Body.Bytes(), &sessions); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("len(sessions) = %d, want 1", len(sessions))
+	}
+	if sessions[0].State != protocol.SessionStateActionRequired {
+		t.Fatalf("State = %q, want %q", sessions[0].State, protocol.SessionStateActionRequired)
+	}
+	if sessions[0].ActionRequiredSince == nil || !sessions[0].ActionRequiredSince.Equal(since) {
+		t.Fatalf("ActionRequiredSince = %v, want %v", sessions[0].ActionRequiredSince, since)
 	}
 }
 
@@ -583,6 +628,89 @@ func TestBrowserAttachWithAfterStreamsBacklogThenLiveOutput(t *testing.T) {
 	}
 }
 
+func TestAgentSessionStateUpdatesAppearInListAPI(t *testing.T) {
+	reg := NewRegistry()
+	server := httptest.NewServer(NewHandler(HandlerConfig{
+		Registry:        reg,
+		BrowserUser:     "demo",
+		BrowserPassword: "secret",
+		AgentToken:      "agent-token",
+	}))
+	defer server.Close()
+
+	agentConn := dialAndRegisterAgent(t, server.URL, "sess-1")
+	defer agentConn.Close()
+
+	changedAt := time.Unix(123, 0).UTC()
+	since := time.Unix(122, 0).UTC()
+	if err := agentConn.WriteJSON(protocol.EncodeSessionState(protocol.SessionStateActionRequired, changedAt, &since)); err != nil {
+		t.Fatalf("WriteJSON session_state returned error: %v", err)
+	}
+
+	waitForSessionState(t, reg, "sess-1", protocol.SessionStateActionRequired)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+	req.Header.Set("Authorization", basicAuth("demo", "secret"))
+	rec := httptest.NewRecorder()
+	NewHandler(HandlerConfig{
+		Registry:        reg,
+		BrowserUser:     "demo",
+		BrowserPassword: "secret",
+		AgentToken:      "agent-token",
+	}).ServeHTTP(rec, req)
+
+	var sessions []protocol.SessionInfo
+	if err := json.Unmarshal(rec.Body.Bytes(), &sessions); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("len(sessions) = %d, want 1", len(sessions))
+	}
+	if sessions[0].State != protocol.SessionStateActionRequired {
+		t.Fatalf("State = %q, want %q", sessions[0].State, protocol.SessionStateActionRequired)
+	}
+}
+
+func TestSessionEventsWebSocketStreamsStateTransitions(t *testing.T) {
+	reg := NewRegistry()
+	server := httptest.NewServer(NewHandler(HandlerConfig{
+		Registry:        reg,
+		BrowserUser:     "demo",
+		BrowserPassword: "secret",
+		AgentToken:      "agent-token",
+	}))
+	defer server.Close()
+
+	agentConn := dialAndRegisterAgent(t, server.URL, "sess-1")
+	defer agentConn.Close()
+
+	eventsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/session-events/ws"
+	headers := http.Header{}
+	headers.Set("Authorization", basicAuth("demo", "secret"))
+	eventsConn, _, err := websocket.DefaultDialer.Dial(eventsURL, headers)
+	if err != nil {
+		t.Fatalf("Dial session-events returned error: %v", err)
+	}
+	defer eventsConn.Close()
+
+	changedAt := time.Unix(123, 0).UTC()
+	since := time.Unix(122, 0).UTC()
+	if err := agentConn.WriteJSON(protocol.EncodeSessionState(protocol.SessionStateActionRequired, changedAt, &since)); err != nil {
+		t.Fatalf("WriteJSON session_state returned error: %v", err)
+	}
+
+	var event protocol.SessionStateEvent
+	if err := eventsConn.ReadJSON(&event); err != nil {
+		t.Fatalf("ReadJSON event returned error: %v", err)
+	}
+	if event.SessionID != "sess-1" {
+		t.Fatalf("SessionID = %q, want sess-1", event.SessionID)
+	}
+	if event.State != protocol.SessionStateActionRequired {
+		t.Fatalf("State = %q, want %q", event.State, protocol.SessionStateActionRequired)
+	}
+}
+
 func TestBrowserAttachRoutesInputToRegisteredAgent(t *testing.T) {
 	reg := NewRegistry()
 	server := httptest.NewServer(NewHandler(HandlerConfig{
@@ -677,6 +805,24 @@ func waitForLatestSeq(t *testing.T, reg *Registry, sessionID string, want uint64
 		t.Fatalf("session %q disappeared while waiting for latest_seq", sessionID)
 	}
 	t.Fatalf("LatestSeq = %d, want at least %d", info.LatestSeq, want)
+}
+
+func waitForSessionState(t *testing.T, reg *Registry, sessionID string, want protocol.SessionState) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		info, ok := reg.Session(sessionID)
+		if ok && info.State == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	info, ok := reg.Session(sessionID)
+	if !ok {
+		t.Fatalf("session %q disappeared while waiting for state", sessionID)
+	}
+	t.Fatalf("State = %q, want %q", info.State, want)
 }
 
 func TestBrowserAttachRejectsForeignOrigin(t *testing.T) {

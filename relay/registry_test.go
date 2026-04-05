@@ -40,6 +40,10 @@ type sequencingSink struct {
 	messages []protocol.Message
 }
 
+type recordingSessionStateSink struct {
+	events []protocol.SessionStateEvent
+}
+
 func (s *recordingSink) WriteOutput(data []byte) error {
 	s.chunks = append(s.chunks, append([]byte(nil), data...))
 	return nil
@@ -83,6 +87,13 @@ func (s *sequencingSink) PreloadMessages(msgs []protocol.Message) error {
 	s.messages = append(s.messages, msgs...)
 	return nil
 }
+
+func (s *recordingSessionStateSink) WriteSessionStateEvent(event protocol.SessionStateEvent) error {
+	s.events = append(s.events, event)
+	return nil
+}
+
+func (s *recordingSessionStateSink) Close() error { return nil }
 
 type blockingPeer struct {
 	sendStarted chan struct{}
@@ -227,6 +238,69 @@ func TestRegistryReplaceSessionIDLogsSessionReplaced(t *testing.T) {
 	if got := entries[0]["session_id"]; got != "sess-1" {
 		t.Fatalf("session_id = %v, want sess-1", got)
 	}
+}
+
+func TestRegistryUpdateSessionStateIfOwnerUpdatesSnapshotAndBroadcasts(t *testing.T) {
+	reg := NewRegistry()
+	peer := &recordingPeer{}
+	stateSink := &recordingSessionStateSink{}
+	reg.AddStateSink("sink-1", stateSink)
+
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, peer)
+
+	since := time.Unix(100, 0).UTC()
+	changedAt := time.Unix(101, 0).UTC()
+	if ok := reg.UpdateSessionStateIfOwner("sess-1", peer, protocol.SessionStateActionRequired, changedAt, &since); !ok {
+		t.Fatal("UpdateSessionStateIfOwner returned false, want true")
+	}
+
+	info, ok := reg.Session("sess-1")
+	if !ok {
+		t.Fatal("Session returned false, want true")
+	}
+	if info.State != protocol.SessionStateActionRequired {
+		t.Fatalf("State = %q, want %q", info.State, protocol.SessionStateActionRequired)
+	}
+	if info.StateChangedAt == nil || !info.StateChangedAt.Equal(changedAt) {
+		t.Fatalf("StateChangedAt = %v, want %v", info.StateChangedAt, changedAt)
+	}
+	if info.ActionRequiredSince == nil || !info.ActionRequiredSince.Equal(since) {
+		t.Fatalf("ActionRequiredSince = %v, want %v", info.ActionRequiredSince, since)
+	}
+	if len(stateSink.events) != 1 {
+		t.Fatalf("state event count = %d, want 1", len(stateSink.events))
+	}
+	if stateSink.events[0].State != protocol.SessionStateActionRequired {
+		t.Fatalf("state event = %#v, want action_required", stateSink.events[0])
+	}
+}
+
+func TestRegistryRemoveIfOwnerBroadcastsResolvedNormalEvent(t *testing.T) {
+	reg := NewRegistry()
+	peer := &recordingPeer{}
+	stateSink := &recordingSessionStateSink{}
+	reg.AddStateSink("sink-1", stateSink)
+
+	reg.Register(protocol.SessionInfo{
+		SessionID:           "sess-1",
+		Launcher:            "codex",
+		State:               protocol.SessionStateActionRequired,
+		ActionRequiredSince: cloneTimePtr(ptrTime(time.Unix(100, 0).UTC())),
+	}, peer)
+
+	if removed := reg.RemoveIfOwner("sess-1", peer); !removed {
+		t.Fatal("RemoveIfOwner returned false, want true")
+	}
+	if len(stateSink.events) != 1 {
+		t.Fatalf("state event count = %d, want 1", len(stateSink.events))
+	}
+	if stateSink.events[0].State != protocol.SessionStateNormal {
+		t.Fatalf("final state = %q, want %q", stateSink.events[0].State, protocol.SessionStateNormal)
+	}
+}
+
+func ptrTime(value time.Time) *time.Time {
+	return &value
 }
 
 func TestRegistryRemoveIfOwnerSkipsStaleOwnerAfterReplacement(t *testing.T) {

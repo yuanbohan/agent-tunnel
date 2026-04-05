@@ -5,14 +5,24 @@ import (
 	"time"
 )
 
+type SessionState string
+
+const (
+	SessionStateNormal         SessionState = "normal"
+	SessionStateActionRequired SessionState = "action_required"
+)
+
 // Message is the JSON frame exchanged over WebSocket.
-// Type is one of "input", "output", or "resize".
+// Type is one of "input", "output", "resize", or "session_state".
 type Message struct {
-	Type string `json:"type"`
-	Seq  uint64 `json:"seq,omitempty"`
-	Data string `json:"data,omitempty"` // base64-encoded bytes
-	Cols int    `json:"cols,omitempty"`
-	Rows int    `json:"rows,omitempty"`
+	Type                string       `json:"type"`
+	Seq                 uint64       `json:"seq,omitempty"`
+	Data                string       `json:"data,omitempty"` // base64-encoded bytes
+	Cols                int          `json:"cols,omitempty"`
+	Rows                int          `json:"rows,omitempty"`
+	State               SessionState `json:"state,omitempty"`
+	ChangedAt           *time.Time   `json:"changed_at,omitempty"`
+	ActionRequiredSince *time.Time   `json:"action_required_since,omitempty"`
 }
 
 // EncodeOutput wraps raw PTY bytes into an output Message.
@@ -42,21 +52,39 @@ func DecodeData(m Message) ([]byte, error) {
 	return base64.StdEncoding.DecodeString(m.Data)
 }
 
+func EncodeSessionState(state SessionState, changedAt time.Time, actionRequiredSince *time.Time) Message {
+	changedAtCopy := changedAt.UTC()
+	var sinceCopy *time.Time
+	if actionRequiredSince != nil {
+		value := actionRequiredSince.UTC()
+		sinceCopy = &value
+	}
+	return Message{
+		Type:                "session_state",
+		State:               state,
+		ChangedAt:           &changedAtCopy,
+		ActionRequiredSince: sinceCopy,
+	}
+}
+
 // SessionInfo describes a live agent session registered with the relay.
 type SessionInfo struct {
-	SessionID      string     `json:"session_id"`
-	Launcher       string     `json:"launcher"`
-	Label          string     `json:"label,omitempty"`
-	CWD            string     `json:"cwd"`
-	CommandPreview string     `json:"command_preview"`
-	StartedAt      time.Time  `json:"started_at"`
-	LastPreview    string     `json:"last_preview,omitempty"`
-	LastActiveAt   *time.Time `json:"last_active_at,omitempty"`
-	LatestSeq      uint64     `json:"latest_seq"`
-	LastReadSeq    uint64     `json:"last_read_seq"`
-	UnreadCount    uint64     `json:"unread_count"`
-	PreviewSeq     uint64     `json:"preview_seq"`
-	PreviewB64     string     `json:"preview_b64"`
+	SessionID           string       `json:"session_id"`
+	Launcher            string       `json:"launcher"`
+	Label               string       `json:"label,omitempty"`
+	CWD                 string       `json:"cwd"`
+	CommandPreview      string       `json:"command_preview"`
+	StartedAt           time.Time    `json:"started_at"`
+	LastPreview         string       `json:"last_preview,omitempty"`
+	LastActiveAt        *time.Time   `json:"last_active_at,omitempty"`
+	LatestSeq           uint64       `json:"latest_seq"`
+	LastReadSeq         uint64       `json:"last_read_seq"`
+	UnreadCount         uint64       `json:"unread_count"`
+	PreviewSeq          uint64       `json:"preview_seq"`
+	PreviewB64          string       `json:"preview_b64"`
+	State               SessionState `json:"state"`
+	StateChangedAt      *time.Time   `json:"state_changed_at,omitempty"`
+	ActionRequiredSince *time.Time   `json:"action_required_since,omitempty"`
 }
 
 // AgentFrame is the JSON envelope sent over the agent WebSocket to the relay.
@@ -74,4 +102,11 @@ func RegisterFrame(info SessionInfo) AgentFrame {
 		Type:    "register",
 		Session: &info,
 	}
+}
+
+type SessionStateEvent struct {
+	SessionID           string       `json:"session_id"`
+	State               SessionState `json:"state"`
+	ChangedAt           time.Time    `json:"changed_at"`
+	ActionRequiredSince *time.Time   `json:"action_required_since,omitempty"`
 }

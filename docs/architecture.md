@@ -79,10 +79,12 @@ Startup flow:
 1. Parse CLI args and required relay env.
 2. Resolve the launcher executable with `launcher.Resolve`.
 3. Put the local terminal into raw mode with `session.PrepareLocalTerminal`.
-4. Start the child process under a PTY with `session.StartCommandWithInitialSinks`.
-5. Register both the local stdout sink and relay connector sink before output starts.
-6. Run the outbound relay connector.
-7. Forward local stdin and local resize events through the session hub.
+4. For `codex`, start a dedicated local `codex app-server`, discover its loopback WebSocket URL, and change the PTY child command to `codex --remote <app-server-url> ...`.
+5. Start the child process under a PTY with `session.StartCommandWithInitialSinks`.
+6. Register both the local stdout sink and relay connector sink before output starts.
+7. Run the outbound relay connector.
+8. For `codex`, run a sidecar app-server monitor that derives session-level `action_required` state from structured thread status.
+9. Forward local stdin and local resize events through the session hub.
 
 Important constraint:
 
@@ -124,6 +126,7 @@ Responsibilities:
 - Send one `register` frame when connected.
 - Forward PTY output as relay `output` frames.
 - Forward local resize changes as relay `resize` frames.
+- Forward structured session-state changes as relay `session_state` frames.
 - Accept relay `input` frames and push them into the PTY via the hub.
 - Reconnect with backoff if the relay connection drops.
 
@@ -137,6 +140,7 @@ Important types:
   - `input`
   - `output`
   - `resize`
+  - `session_state`
 - `SessionInfo`
 - `AgentFrame`
 
@@ -198,12 +202,15 @@ The relay keeps only live, in-memory state per session:
 - shared `lastReadSeq`
 - unread count derived from `latestSeq - lastReadSeq`
 - latest text preview and raw preview frame
+- current session state (`normal` or `action_required`)
+- optional `action_required_since` timestamp for the current unresolved waiting episode
 
 If the owning agent disconnects:
 
 - the session is removed
 - retained history is dropped
 - unread state is dropped
+- session-state snapshot is dropped
 - attached clients stop receiving output
 
 ## History And Replay Model
@@ -248,6 +255,14 @@ The relay guarantees this order:
 4. start streaming new live output
 
 This avoids the classic gap where output produced between "history fetch" and "live attach" could be lost.
+
+Session-state transitions use a separate client WebSocket:
+
+```text
+GET /api/session-events/ws
+```
+
+This stream carries machine-readable `normal` / `action_required` transitions and is intentionally not mixed into terminal replay history.
 
 ## End-To-End Data Flows
 
