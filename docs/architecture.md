@@ -275,6 +275,8 @@ external client input frame
 → PTY stdin
 ```
 
+The input path is byte-transparent. Relay and agent components do not perform content-level filtering on input frames.
+
 ### Resize Path
 
 ```text

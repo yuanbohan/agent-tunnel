@@ -431,17 +431,11 @@ Mobile clients should:
 - Use `/api/sessions/:id/history` for initial replay before live attach
 - Not attempt automatic reconnection to a specific session if the relay reports `404` (the session may no longer exist)
 
-### Input Filtering
+### Client Input Handling
 
-Terminal emulators can generate automatic response sequences (cursor position reports, device attribute responses) that should NOT be forwarded to the PTY. If your terminal emulator generates these, filter them before sending input frames. Common patterns to filter:
+The relay protocol treats `input` payloads as opaque bytes. The relay and agent do not inspect, rewrite, or filter terminal input content before it reaches PTY stdin.
 
-| Sequence | Pattern | Description |
-|----------|---------|-------------|
-| CPR | `\x1b[<digits>;<digits>R` | Cursor Position Report |
-| DECXCPR | `\x1b[?<digits>;<digits>R` | Extended Cursor Position Report |
-| DA1 | `\x1b[?<digits>(;<digits>)*c` | Primary Device Attributes |
-| DA2 | `\x1b[><digits>(;<digits>)*c` | Secondary Device Attributes |
-| OSC color | `\x1b]1<0|1>;rgb:...<ST>` | OSC color query response |
+Clients should send the exact keystrokes or pasted bytes they intend to deliver to the agent. If a specific terminal UI or emulator chooses to suppress locally generated sequences, that is client-specific behavior rather than part of the relay protocol contract.
 
 ### WebSocket Libraries
 

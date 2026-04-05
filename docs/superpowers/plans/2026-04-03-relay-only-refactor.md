@@ -878,7 +878,6 @@ Remove localhost-only web files, rename relay-prefixed modules, and update Vite 
 - Delete: `web/src/main.ts`
 - Delete: `web/src/session_url.ts`
 - Delete: `web/src/session_url.test.ts` (if exists)
-- Delete: `web/src/input_filter.test.ts`
 - Rename: `web/relay.html` → `web/index.html`
 - Rename: `web/src/relay_app.ts` → `web/src/app.ts`
 - Rename: `web/src/relay_routes.ts` → `web/src/routes.ts`
@@ -892,7 +891,7 @@ Remove localhost-only web files, rename relay-prefixed modules, and update Vite 
 - [ ] **Step 1: Delete localhost-only files**
 
 ```bash
-rm -f web/index.html web/src/main.ts web/src/session_url.ts web/src/session_url.test.ts web/src/input_filter.test.ts
+rm -f web/index.html web/src/main.ts web/src/session_url.ts web/src/session_url.test.ts
 ```
 
 - [ ] **Step 2: Rename relay.html to index.html**
@@ -957,25 +956,7 @@ import type { RelaySession } from './types'
 import type { RelaySession } from './types'
 ```
 
-- [ ] **Step 8: Integrate input_filter into app.ts**
-
-Add the auto-response filter to the relay session input path. In the `renderSession` function in `app.ts`, add the import and filter:
-
-```typescript
-import { isTerminalAutoResponse } from './input_filter'
-```
-
-And update the onData handler:
-
-```typescript
-  terminal.onData((value) => {
-    if (inputEnabled && !isTerminalAutoResponse(value)) {
-      conn.send(encodeInput(value))
-    }
-  })
-```
-
-- [ ] **Step 9: Simplify vite.config.ts**
+- [ ] **Step 8: Simplify vite.config.ts**
 
 ```typescript
 import { defineConfig } from 'vite'

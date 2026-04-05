@@ -34,7 +34,6 @@ Refactor agent-tunnel to remove all legacy and localhost-only code, making the r
 | `web/index.html` | Localhost single-session entrypoint |
 | `web/src/main.ts` | Localhost app bootstrap |
 | `web/src/session_url.ts` | Localhost WebSocket URL derivation |
-| `web/src/input_filter.test.ts` | Test file for deleted `main.ts` import (filter kept as shared module) |
 
 ### Rename + Move (Package Restructure)
 
@@ -77,11 +76,6 @@ All Go packages move from `internal/` to repo root. Additionally:
 | `web/src/terminal.ts` | xterm.js wrapper (shared) |
 | `web/src/connection.ts` | WebSocket manager (shared) |
 | `web/src/protocol.ts` | TS-side message encoding (shared) |
-| `web/src/input_filter.ts` | xterm auto-response filter (shared; was only used by localhost but relay input also needs it) |
-
-## Targeted Improvement: Relay Input Filtering
-
-The relay session page (`app.ts`, formerly `relay_app.ts`) forwards `terminal.onData` input without filtering xterm auto-response sequences (CPR, DA reports, etc.). The localhost `main.ts` had this filter but the relay page never got it. As part of this refactor, integrate `input_filter.ts` into the relay input path so that `encodeInput` is only called for real user input. This prevents feedback loops when the relay terminal receives query responses from xterm.js.
 
 ## Repo Layout (Post-Refactor)
 
