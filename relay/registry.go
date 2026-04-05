@@ -196,7 +196,7 @@ func (r *Registry) History(sessionID string, after uint64) (historyPage, bool) {
 	if !ok {
 		return historyPage{}, false
 	}
-	return live.historySnapshot(0, after, 0, 0), true
+	return live.historySnapshot(after), true
 }
 
 func (r *Registry) MarkRead(sessionID string, seq uint64) (protocol.SessionInfo, bool) {

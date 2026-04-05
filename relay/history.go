@@ -85,7 +85,7 @@ func (s *liveSession) snapshot() protocol.SessionInfo {
 	return info
 }
 
-func (s *liveSession) historySnapshot(before, after uint64, limit, maxBytes int) historyPage {
+func (s *liveSession) historySnapshot(after uint64) historyPage {
 	start := 0
 	if after > 0 {
 		start = sort.Search(len(s.history), func(i int) bool {
