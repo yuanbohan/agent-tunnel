@@ -4,6 +4,8 @@ Launch a terminal agent locally and stream the live PTY session to a remote rela
 
 `agentunnel` starts a real CLI such as `claude`, `codex`, or `gemini`, keeps the launching terminal interactive, and registers the session with a relay server. Every launcher follows the same direct PTY path. The relay is API-only: it exposes authenticated HTTP and WebSocket endpoints for external clients to list live sessions, replay retained output, attach to a live stream, and send input.
 
+On startup, `agentunnel` gives relay registration a short first chance to succeed. If that startup window expires, local terminal work still begins and `agentunnel` continues reconnecting to the relay in the background. Runtime relay outages do not interrupt the local terminal session.
+
 The relay is intentionally content-opaque. It forwards and retains output bytes for replay, but it does not derive previews or other content semantics from terminal data.
 
 Client input uses structured events:
@@ -53,13 +55,19 @@ Or with a label:
 go run ./cmd/agentunnel --label api-fix --relay-addr 127.0.0.1:9000 codex
 ```
 
-Expected stderr output:
+Expected stderr output when relay is available during startup:
 
 ```text
-▶ agentunnel — claude
-  relay: 127.0.0.1:8586
-  local terminal is interactive
+▶ agentunnel claude — relay connected (127.0.0.1:8586)
 ```
+
+If relay startup registration does not succeed within the startup wait window, `agentunnel` still enters the local terminal session and shows:
+
+```text
+▶ agentunnel claude — relay reconnecting (127.0.0.1:8586)
+```
+
+While reconnecting, `agentunnel` keeps retrying in the background and shows a compact terminal status that local work continues.
 
 ### 3. Connect a client
 

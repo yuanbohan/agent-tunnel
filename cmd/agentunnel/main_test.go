@@ -14,6 +14,53 @@ import (
 	"yuanbohan/tunnel/session"
 )
 
+type fakeRelayConnector struct {
+	waitConnected bool
+	state         connector.State
+	runCalled     bool
+	boundHub      *session.Hub
+	initialCols   int
+	initialRows   int
+	connectTTL    time.Duration
+	stateCh       chan connector.State
+}
+
+func (f *fakeRelayConnector) SetInitialSize(cols, rows int) {
+	f.initialCols = cols
+	f.initialRows = rows
+}
+
+func (f *fakeRelayConnector) SetInitialConnectTimeout(timeout time.Duration) {
+	f.connectTTL = timeout
+}
+
+func (f *fakeRelayConnector) BindHub(hub *session.Hub) {
+	f.boundHub = hub
+}
+
+func (f *fakeRelayConnector) Run(context.Context) {
+	f.runCalled = true
+}
+
+func (f *fakeRelayConnector) WaitUntilConnected(context.Context, time.Duration) bool {
+	return f.waitConnected
+}
+
+func (f *fakeRelayConnector) SubscribeStateChanges() (<-chan connector.State, func()) {
+	if f.stateCh == nil {
+		f.stateCh = make(chan connector.State, 1)
+	}
+	return f.stateCh, func() {}
+}
+
+func (f *fakeRelayConnector) CurrentState() connector.State {
+	return f.state
+}
+
+func (f *fakeRelayConnector) WriteOutput([]byte) error {
+	return nil
+}
+
 func setTestEnv(t *testing.T) {
 	t.Helper()
 	for _, kv := range [][2]string{
@@ -38,11 +85,13 @@ func TestRunWithArgsStopsBeforeStartingSessionWhenLocalTerminalPreparationFails(
 	oldResolve := resolveLauncher
 	oldPrepare := prepareLocalTerminal
 	oldStartSession := startSession
+	oldWaitForExit := waitForExit
 	oldNewConnector := newConnector
 	t.Cleanup(func() {
 		resolveLauncher = oldResolve
 		prepareLocalTerminal = oldPrepare
 		startSession = oldStartSession
+		waitForExit = oldWaitForExit
 		newConnector = oldNewConnector
 	})
 
@@ -61,8 +110,8 @@ func TestRunWithArgsStopsBeforeStartingSessionWhenLocalTerminalPreparationFails(
 		return nil, nil
 	}
 
-	newConnector = func(url, token string, info protocol.SessionInfo) *connector.Connector {
-		return connector.New(url, token, info)
+	newConnector = func(url, token string, info protocol.SessionInfo) relayConnector {
+		return &fakeRelayConnector{waitConnected: true, state: connector.StateConnected}
 	}
 
 	var stderr bytes.Buffer
@@ -81,11 +130,13 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
 	oldResolve := resolveLauncher
 	oldPrepare := prepareLocalTerminal
 	oldStartSession := startSession
+	oldWaitForExit := waitForExit
 	oldNewConnector := newConnector
 	t.Cleanup(func() {
 		resolveLauncher = oldResolve
 		prepareLocalTerminal = oldPrepare
 		startSession = oldStartSession
+		waitForExit = oldWaitForExit
 		newConnector = oldNewConnector
 	})
 
@@ -99,8 +150,8 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
 
 	var gotInfo protocol.SessionInfo
 	var gotURL, gotToken string
-	fakeConnector := connector.New("", "", protocol.SessionInfo{})
-	newConnector = func(url, token string, info protocol.SessionInfo) *connector.Connector {
+	fakeConnector := &fakeRelayConnector{waitConnected: true, state: connector.StateConnected}
+	newConnector = func(url, token string, info protocol.SessionInfo) relayConnector {
 		gotURL = url
 		gotToken = token
 		gotInfo = info
@@ -116,6 +167,10 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
 		gotArgs = append([]string(nil), args...)
 		gotSinks = sinks
 		return nil, wantErr
+	}
+
+	waitForExit = func(context.Context, <-chan struct{}, <-chan error) error {
+		return nil
 	}
 
 	var stderr bytes.Buffer
@@ -159,8 +214,23 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
 	if gotInfo.StartedAt.IsZero() {
 		t.Fatal("StartedAt = zero, want current time")
 	}
-	if got := stderr.String(); got != "▶ agentunnel — codex\n  relay: 127.0.0.1:8586\n  local terminal is interactive\n\n" {
-		t.Fatalf("stderr = %q, want startup banner before session start", got)
+	if fakeConnector.runCalled != true {
+		t.Fatal("connector Run was not called")
+	}
+	if fakeConnector.connectTTL != startupRelayWait {
+		t.Fatalf("initial connect timeout = %v, want %v", fakeConnector.connectTTL, startupRelayWait)
+	}
+	if got := stderr.String(); got != "" {
+		t.Fatalf("stderr = %q, want no startup banner when session start fails", got)
+	}
+}
+
+func TestStartupBannerUsesRelayState(t *testing.T) {
+	if got := startupBanner("codex", "127.0.0.1:8586", connector.StateConnected); got != "▶ agentunnel codex — relay connected (127.0.0.1:8586)\n\n" {
+		t.Fatalf("connected banner = %q", got)
+	}
+	if got := startupBanner("codex", "127.0.0.1:8586", connector.StateReconnecting); got != "▶ agentunnel codex — relay reconnecting (127.0.0.1:8586)\n\n" {
+		t.Fatalf("reconnecting banner = %q", got)
 	}
 }
 

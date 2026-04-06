@@ -6,7 +6,7 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 
 ## Start Here
 
-- The main product is `agentunnel` with a mandatory relay connection.
+- The main product is `agentunnel` with relay-first startup semantics and background reconnect after local session start.
 - `cmd/agentunnel` launches `claude`, `codex`, or `gemini`, keeps the local terminal interactive, and registers the PTY session with a remote relay server.
 - `cmd/relay` is the standalone relay server. It exposes authenticated HTTP and WebSocket APIs for external clients, authenticates clients with Basic Auth, authenticates agents with a bearer token, and maintains a live in-memory session registry plus rolling retained output frames. Supports `--port` flag to override listen address.
 - `session/` owns PTY lifecycle, Hub fanout, local terminal attach, and resize/input forwarding.
@@ -19,7 +19,9 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 ## Current Product Boundaries
 
 - `agentunnel` is the PTY owner. It has no localhost HTTP server; all remote client access goes through the relay.
-- The relay connection is mandatory. `agentunnel` requires `--relay-addr` (or `AGENTUNNEL_RELAY_ADDR`) and `AGENTUNNEL_RELAY_TOKEN` to start.
+- `agentunnel` requires `--relay-addr` (or `AGENTUNNEL_RELAY_ADDR`) and `AGENTUNNEL_RELAY_TOKEN` to start.
+- On launch, `agentunnel` gives relay registration a bounded first chance to succeed. If that startup window expires, the local terminal session still starts and the relay reconnect loop continues in the background.
+- After the local terminal session has begun, relay unavailability must not interrupt local terminal work; it only affects remote visibility and interaction until reconnect succeeds.
 - The relay is live-only and monitoring-focused. It lists live sessions, retains a rolling in-memory output frame buffer per live session, and forwards multiplexed live updates on one global client socket; it does not create or stop local sessions.
 - The relay is content-opaque. It may forward or retain output bytes for replay, but it must not derive previews or other message semantics from terminal content.
 - Relay state is live-only and in-memory. If the owning agent socket disappears, the session disappears from the list along with its retained output frames.

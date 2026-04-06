@@ -6,6 +6,11 @@ This document explains the stable shape of the system.
 
 `agentunnel` owns the real local agent process and its PTY. Every supported launcher follows the same path: one local PTY child, one relay connector, no launcher-specific sidecar. The relay exposes authenticated APIs so external clients can observe or interact with that live session, replay retained output frames, and send input back to the PTY.
 
+`agentunnel` treats relay availability in two phases:
+
+- startup gating: it gives relay registration a bounded first chance before entering the local terminal session
+- post-startup continuity: once the local session has begun, relay outages only affect remote visibility and control; local terminal work continues while the connector retries in the background
+
 ```text
 local machine
 ┌──────────────────────────────────────────────────────────────┐
@@ -54,10 +59,12 @@ It owns:
 
 - launcher resolution
 - PTY lifecycle and local terminal raw mode
+- startup relay wait and background reconnect policy
 - fanout of PTY output to the local terminal and relay connector
 - forwarding remote input back into the PTY
 - translating structured remote key input into PTY bytes
 - attaching current terminal `cols` and `rows` to every uploaded output frame
+- low-noise local relay-status presentation during reconnecting periods
 
 ### Relay
 
@@ -103,6 +110,21 @@ client input frame
 → agentunnel connector
 → key translation for supported `input_key` events
 → PTY stdin
+```
+
+### Startup and Reconnect
+
+```text
+agentunnel launch
+→ connector starts trying `/agent/ws`
+→ if registration succeeds during the startup wait window:
+     local session starts in connected mode
+→ if the startup wait window expires first:
+     local session still starts
+     connector keeps retrying in the background
+→ if a later relay disconnect happens:
+     local PTY session continues uninterrupted
+     connector retries with backoff until connected again
 ```
 
 ### Size Metadata

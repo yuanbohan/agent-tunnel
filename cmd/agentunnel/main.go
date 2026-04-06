@@ -18,11 +18,25 @@ import (
 	"yuanbohan/tunnel/session"
 )
 
+const startupRelayWait = 10 * time.Second
+
+type relayConnector interface {
+	session.OutputSink
+	SetInitialSize(cols, rows int)
+	SetInitialConnectTimeout(timeout time.Duration)
+	BindHub(hub *session.Hub)
+	Run(ctx context.Context)
+	WaitUntilConnected(ctx context.Context, timeout time.Duration) bool
+	SubscribeStateChanges() (<-chan connector.State, func())
+	CurrentState() connector.State
+}
+
 var (
 	resolveLauncher      = launcher.Resolve
 	prepareLocalTerminal = session.PrepareLocalTerminal
 	startSession         = session.StartCommandWithInitialSinks
-	newConnector         = func(url, token string, info protocol.SessionInfo) *connector.Connector {
+	waitForExit          = waitForProcessOrShutdown
+	newConnector         = func(url, token string, info protocol.SessionInfo) relayConnector {
 		return connector.New(url, token, info)
 	}
 )
@@ -57,23 +71,8 @@ func runWithArgs(args []string, stderr io.Writer) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	fmt.Fprintf(
-		stderr,
-		"▶ agentunnel — %s\n  relay: %s\n  local terminal is interactive\n\n",
-		command.Name,
-		parsed.RelayAddr,
-	)
-
-	local, err := prepareLocalTerminal()
-	if err != nil {
-		return err
-	}
-	defer local.Restore()
-
 	commandPreview := strings.TrimSpace(strings.Join(append([]string{filepath.Base(command.Path)}, command.Args...), " "))
 	sessionID := fmt.Sprintf("%d", time.Now().UnixNano())
-
-	sinkID, sink := local.SinkRegistration()
 	info := protocol.SessionInfo{
 		SessionID:      sessionID,
 		Launcher:       command.Name,
@@ -84,6 +83,20 @@ func runWithArgs(args []string, stderr io.Writer) error {
 	}
 
 	relay := newConnector(relayURL, parsed.RelayToken, info)
+	relay.SetInitialConnectTimeout(startupRelayWait)
+	go relay.Run(ctx)
+	_ = relay.WaitUntilConnected(ctx, startupRelayWait)
+	if ctx.Err() != nil {
+		return nil
+	}
+
+	local, err := prepareLocalTerminal()
+	if err != nil {
+		return err
+	}
+	defer local.Restore()
+
+	sinkID, sink := local.SinkRegistration()
 	if cols, rows, sizeErr := local.CurrentSize(); sizeErr == nil {
 		relay.SetInitialSize(cols, rows)
 	}
@@ -99,7 +112,20 @@ func runWithArgs(args []string, stderr io.Writer) error {
 	defer running.Close()
 
 	relay.BindHub(running.Hub)
-	go relay.Run(ctx)
+
+	statusLine := session.NewStatusLine(stderr)
+	if cols, rows, sizeErr := local.CurrentSize(); sizeErr == nil {
+		statusLine.SetSize(cols, rows)
+		running.Hub.OnResize(func(cols, rows int) {
+			statusLine.SetSize(cols, rows)
+		})
+	}
+
+	fmt.Fprint(stderr, startupBanner(command.Name, parsed.RelayAddr, relay.CurrentState()))
+
+	stateCh, cancelStates := relay.SubscribeStateChanges()
+	defer cancelStates()
+	go followRelayState(ctx, statusLine, stateCh)
 
 	done := local.Start(ctx, running.Hub)
 
@@ -108,7 +134,7 @@ func runWithArgs(args []string, stderr io.Writer) error {
 		waitErr <- running.Wait()
 	}()
 
-	return waitForProcessOrShutdown(ctx, done, waitErr)
+	return waitForExit(ctx, done, waitErr)
 }
 
 func waitForProcessOrShutdown(ctx context.Context, localDone <-chan struct{}, waitErr <-chan error) error {
@@ -120,6 +146,37 @@ func waitForProcessOrShutdown(ctx context.Context, localDone <-chan struct{}, wa
 			localDone = nil
 		case err := <-waitErr:
 			return err
+		}
+	}
+}
+
+func startupBanner(launcherName, relayAddr string, state connector.State) string {
+	status := "connected"
+	if state != connector.StateConnected {
+		status = "reconnecting"
+	}
+	return fmt.Sprintf("▶ agentunnel %s — relay %s (%s)\n\n", launcherName, status, relayAddr)
+}
+
+func followRelayState(ctx context.Context, statusLine *session.StatusLine, stateCh <-chan connector.State) {
+	for {
+		select {
+		case <-ctx.Done():
+			statusLine.Clear()
+			return
+		case state, ok := <-stateCh:
+			if !ok {
+				statusLine.Clear()
+				return
+			}
+			switch state {
+			case connector.StateConnected:
+				statusLine.Clear()
+			case connector.StateConnecting, connector.StateReconnecting:
+				statusLine.Show("relay reconnecting; local session continues")
+			case connector.StateDisconnected:
+				statusLine.Clear()
+			}
 		}
 	}
 }
