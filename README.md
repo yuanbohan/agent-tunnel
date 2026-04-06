@@ -6,6 +6,8 @@ Launch a terminal agent locally and stream the live PTY session to a remote rela
 
 On startup, `agentunnel` gives relay registration a short first chance to succeed. If that startup window expires, local terminal work still begins and `agentunnel` continues reconnecting to the relay in the background. Runtime relay outages do not interrupt the local terminal session.
 
+On macOS, once startup succeeds, `agentunnel` also attempts default-on idle sleep prevention for the lifetime of the `agentunnel` process. If that helper cannot be started, the session still starts and the startup line reports the failure.
+
 The relay is intentionally content-opaque. It forwards and retains output bytes for replay, but it does not derive previews or other content semantics from terminal data.
 
 Remote/mobile clients can observe and interact with live sessions and are suitable for real remote work, but the remote output path is currently best-effort. The local terminal remains the most complete view of the session output in the current revision.
@@ -57,19 +59,23 @@ Or with a label:
 go run ./cmd/agentunnel --label api-fix --relay-addr 127.0.0.1:9000 codex
 ```
 
-Expected stderr output when relay is available during startup:
+Expected stderr output on macOS when relay is available during startup:
 
 ```text
-▶ agentunnel claude — relay connected (127.0.0.1:8586)
+▶ agentunnel claude — relay connected (127.0.0.1:8586); sleep prevented
 ```
 
-If relay startup registration does not succeed within the startup wait window, `agentunnel` still enters the local terminal session and shows:
+If relay startup registration does not succeed within the startup wait window, `agentunnel` still enters the local terminal session and shows this on macOS:
 
 ```text
-▶ agentunnel claude — relay reconnecting (127.0.0.1:8586)
+▶ agentunnel claude — relay reconnecting (127.0.0.1:8586); sleep prevented
 ```
 
 While reconnecting, `agentunnel` keeps retrying in the background and shows a compact terminal status that local work continues.
+
+If macOS sleep prevention cannot be enabled, startup still continues and the startup line reports `sleep prevention failed` instead of `sleep prevented`.
+
+On non-macOS platforms, startup still succeeds but the banner reports `sleep unsupported` because this phase only implements idle sleep prevention on macOS.
 
 ### 3. Connect a client
 

@@ -35,8 +35,11 @@ var (
 	resolveLauncher      = launcher.Resolve
 	prepareLocalTerminal = session.PrepareLocalTerminal
 	startSession         = session.StartCommandWithInitialSinks
-	waitForExit          = waitForProcessOrShutdown
-	newConnector         = func(url, token string, info protocol.SessionInfo) relayConnector {
+	startLocalTerminal   = func(ctx context.Context, local *session.LocalTerminal, hub *session.Hub) <-chan struct{} {
+		return local.Start(ctx, hub)
+	}
+	waitForExit  = waitForProcessOrShutdown
+	newConnector = func(url, token string, info protocol.SessionInfo) relayConnector {
 		return connector.New(url, token, info)
 	}
 )
@@ -121,13 +124,16 @@ func runWithArgs(args []string, stderr io.Writer) error {
 		})
 	}
 
-	fmt.Fprint(stderr, startupBanner(command.Name, parsed.RelayAddr, relay.CurrentState()))
+	sleep := startSleepPrevention(os.Getpid())
+	defer sleep.Stop()
+
+	fmt.Fprint(stderr, startupBanner(command.Name, parsed.RelayAddr, relay.CurrentState(), sleep.status))
 
 	stateCh, cancelStates := relay.SubscribeStateChanges()
 	defer cancelStates()
 	go followRelayState(ctx, statusLine, stateCh)
 
-	done := local.Start(ctx, running.Hub)
+	done := startLocalTerminal(ctx, local, running.Hub)
 
 	waitErr := make(chan error, 1)
 	go func() {
@@ -150,12 +156,12 @@ func waitForProcessOrShutdown(ctx context.Context, localDone <-chan struct{}, wa
 	}
 }
 
-func startupBanner(launcherName, relayAddr string, state connector.State) string {
+func startupBanner(launcherName, relayAddr string, state connector.State, sleepStatus sleepPreventionStatus) string {
 	status := "connected"
 	if state != connector.StateConnected {
 		status = "reconnecting"
 	}
-	return fmt.Sprintf("▶ agentunnel %s — relay %s (%s)\n\n", launcherName, status, relayAddr)
+	return fmt.Sprintf("▶ agentunnel %s — relay %s (%s); %s\n\n", launcherName, status, relayAddr, sleepStatus)
 }
 
 func followRelayState(ctx context.Context, statusLine *session.StatusLine, stateCh <-chan connector.State) {
