@@ -65,8 +65,6 @@ func TestSessionSummaryJSONUsesStableFieldNames(t *testing.T) {
 		"cwd",
 		"command_preview",
 		"latest_seq",
-		"last_read_seq",
-		"unread_count",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("json = %s, want field %q", got, want)

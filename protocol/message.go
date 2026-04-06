@@ -52,8 +52,6 @@ type SessionInfo struct {
 	StartedAt      time.Time  `json:"started_at"`
 	LastActiveAt   *time.Time `json:"last_active_at,omitempty"`
 	LatestSeq      uint64     `json:"latest_seq"`
-	LastReadSeq    uint64     `json:"last_read_seq"`
-	UnreadCount    uint64     `json:"unread_count"`
 }
 
 // AgentFrame is the JSON envelope sent over the agent WebSocket to the relay.

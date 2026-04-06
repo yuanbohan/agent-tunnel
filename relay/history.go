@@ -8,12 +8,10 @@ import (
 )
 
 const (
-	maxSessionHistoryBytes     = 10 << 20
-	defaultHistoryPageLimit    = 5
-	defaultHistoryPageMaxBytes = 64 << 10
+	maxSessionHistoryBytes = 10 << 20
 )
 
-type historyFrame struct {
+type outputFrame struct {
 	Seq  uint64
 	Data []byte
 	Size int
@@ -21,19 +19,11 @@ type historyFrame struct {
 	Rows int
 }
 
-type historyMessage struct {
+type outputFrameMessage struct {
 	Seq     uint64 `json:"seq"`
 	DataB64 string `json:"data_b64"`
 	Cols    int    `json:"cols"`
 	Rows    int    `json:"rows"`
-}
-
-type historyPage struct {
-	Messages    []historyMessage `json:"messages"`
-	LatestSeq   uint64           `json:"latest_seq"`
-	LastReadSeq uint64           `json:"last_read_seq"`
-	CurrentCols int              `json:"current_cols"`
-	CurrentRows int              `json:"current_rows"`
 }
 
 func (s *liveSession) appendOutput(chunk []byte) uint64 {
@@ -41,78 +31,56 @@ func (s *liveSession) appendOutput(chunk []byte) uint64 {
 	seq := s.latestSeq + 1
 
 	s.latestSeq = seq
-	s.history = append(s.history, historyFrame{
+	s.frames = append(s.frames, outputFrame{
 		Seq:  seq,
 		Data: cp,
 		Size: len(cp),
 		Cols: s.currentCols,
 		Rows: s.currentRows,
 	})
-	s.historyBytes += len(cp)
+	s.frameBytes += len(cp)
 
-	for s.historyBytes > maxSessionHistoryBytes && len(s.history) > 1 {
-		s.historyBytes -= s.history[0].Size
-		s.history = s.history[1:]
+	for s.frameBytes > maxSessionHistoryBytes && len(s.frames) > 1 {
+		s.frameBytes -= s.frames[0].Size
+		s.frames = s.frames[1:]
 	}
 
 	return seq
 }
 
-func (s *liveSession) markRead(seq uint64) {
-	if seq > s.latestSeq {
-		seq = s.latestSeq
-	}
-	if seq > s.lastReadSeq {
-		s.lastReadSeq = seq
-	}
-}
-
-func (s *liveSession) unreadCount() uint64 {
-	if s.latestSeq <= s.lastReadSeq {
-		return 0
-	}
-	return s.latestSeq - s.lastReadSeq
-}
-
 func (s *liveSession) snapshot() protocol.SessionInfo {
 	info := s.info
 	info.LatestSeq = s.latestSeq
-	info.LastReadSeq = s.lastReadSeq
-	info.UnreadCount = s.unreadCount()
 	return info
 }
 
-func (s *liveSession) historySnapshot(after uint64) historyPage {
+func (s *liveSession) frameSnapshot(from uint64, hasFrom bool, to uint64, hasTo bool) []outputFrameMessage {
 	start := 0
-	if after > 0 {
-		start = sort.Search(len(s.history), func(i int) bool {
-			return s.history[i].Seq > after
+	if hasFrom {
+		start = sort.Search(len(s.frames), func(i int) bool {
+			return s.frames[i].Seq >= from
 		})
 	}
-	if start >= len(s.history) {
-		return historyPage{
-			LatestSeq:   s.latestSeq,
-			LastReadSeq: s.lastReadSeq,
-			CurrentCols: s.currentCols,
-			CurrentRows: s.currentRows,
-		}
+
+	end := len(s.frames)
+	if hasTo {
+		end = sort.Search(len(s.frames), func(i int) bool {
+			return s.frames[i].Seq > to
+		})
 	}
 
-	messages := make([]historyMessage, 0, len(s.history)-start)
-	for _, frame := range s.history[start:] {
-		messages = append(messages, historyMessage{
+	if start >= len(s.frames) || start >= end {
+		return []outputFrameMessage{}
+	}
+
+	frames := make([]outputFrameMessage, 0, end-start)
+	for _, frame := range s.frames[start:end] {
+		frames = append(frames, outputFrameMessage{
 			Seq:     frame.Seq,
 			DataB64: base64.StdEncoding.EncodeToString(frame.Data),
 			Cols:    frame.Cols,
 			Rows:    frame.Rows,
 		})
 	}
-
-	return historyPage{
-		Messages:    messages,
-		LatestSeq:   s.latestSeq,
-		LastReadSeq: s.lastReadSeq,
-		CurrentCols: s.currentCols,
-		CurrentRows: s.currentRows,
-	}
+	return frames
 }

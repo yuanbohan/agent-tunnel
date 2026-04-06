@@ -14,8 +14,7 @@ The key boundary is simple:
 |----------|------|------|------|---------|
 | `GET /healthz` | Any | None | HTTP | Health check |
 | `GET /api/sessions` | Client | Basic Auth | HTTP | Current live session snapshot |
-| `GET /api/sessions/:id/history?after=<seq>` | Client | Basic Auth | HTTP | Retained output replay for one session |
-| `POST /api/sessions/:id/read` | Client | Basic Auth | HTTP | Advance shared read marker |
+| `GET /api/sessions/:id/frames?from=<seq>&to=<seq>` | Client | Basic Auth | HTTP | Retained output replay for one session |
 | `GET /api/updates/ws` | Client | Basic Auth | WebSocket | Global multiplexed live output updates and client input |
 | `GET /agent/ws` | Agent | Bearer | WebSocket | Agent registration plus relay forwarding |
 
@@ -46,38 +45,27 @@ Authorization: Bearer <token>
   "command_preview": "codex --profile prod",
   "started_at": "2026-04-05T08:00:00Z",
   "last_active_at": "2026-04-05T08:03:00Z",
-  "latest_seq": 42,
-  "last_read_seq": 40,
-  "unread_count": 2
+  "latest_seq": 42
 }
 ```
 
-## History Replay
+## Output Frames
 
-`GET /api/sessions/:id/history?after=<seq>` returns:
-
-```json
-{
-  "messages": [
-    { "seq": 41, "data_b64": "b25l", "cols": 120, "rows": 40 },
-    { "seq": 42, "data_b64": "dHdv", "cols": 132, "rows": 43 }
-  ],
-  "latest_seq": 42,
-  "last_read_seq": 40,
-  "current_cols": 132,
-  "current_rows": 43
-}
-```
-
-## Mark Read
-
-`POST /api/sessions/:id/read` accepts:
+`GET /api/sessions/:id/frames?from=<seq>&to=<seq>` returns a JSON array. Both query parameters are optional and inclusive.
 
 ```json
-{ "seq": 42 }
+[
+  { "seq": 41, "data_b64": "b25l", "cols": 120, "rows": 40 },
+  { "seq": 42, "data_b64": "dHdv", "cols": 132, "rows": 43 }
+]
 ```
 
-and returns the updated session snapshot.
+Query behavior:
+
+- no `from` or `to`: return every retained output frame
+- only `from`: return frames with `seq >= from`
+- only `to`: return frames with `seq <= to`
+- both `from` and `to`: return frames in the closed range `[from, to]`
 
 ## WebSocket Frames
 

@@ -35,8 +35,8 @@ local machine
                     │          relay server          │
                     │  - auth                        │
                     │  - live session registry       │
-                    │  - output replay buffer        │
-                    │  - unread / seq metadata       │
+                    │  - output frame buffer         │
+                    │  - output seq metadata         │
                     │  - global client update fanout │
                     └───────────────┬────────────────┘
                                     │
@@ -67,8 +67,8 @@ It owns:
 
 - client and agent authentication
 - current live-session snapshots
-- rolling in-memory output history for replay
-- unread and sequence metadata
+- rolling in-memory output frames for replay
+- output sequence metadata
 - global update fanout for connected clients
 
 The relay does not own:
@@ -88,7 +88,7 @@ PTY output
 → local terminal sink
 → relay connector
 → relay registry
-→ retained output history + seq/unread update
+→ retained output frames + seq update
 → global client updates
 ```
 

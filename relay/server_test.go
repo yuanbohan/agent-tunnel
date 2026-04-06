@@ -14,24 +14,11 @@ import (
 	"yuanbohan/tunnel/protocol"
 )
 
-type sessionHistoryResponse struct {
-	Messages []struct {
-		Seq     uint64 `json:"seq"`
-		DataB64 string `json:"data_b64"`
-		Cols    int    `json:"cols"`
-		Rows    int    `json:"rows"`
-	} `json:"messages"`
-	LatestSeq   uint64 `json:"latest_seq"`
-	LastReadSeq uint64 `json:"last_read_seq"`
-	CurrentCols int    `json:"current_cols"`
-	CurrentRows int    `json:"current_rows"`
-}
-
-type readStateResponse struct {
-	SessionID   string `json:"session_id"`
-	LatestSeq   uint64 `json:"latest_seq"`
-	LastReadSeq uint64 `json:"last_read_seq"`
-	UnreadCount uint64 `json:"unread_count"`
+type sessionFramesResponse []struct {
+	Seq     uint64 `json:"seq"`
+	DataB64 string `json:"data_b64"`
+	Cols    int    `json:"cols"`
+	Rows    int    `json:"rows"`
 }
 
 func TestHandlerRejectsDashboardWithoutBasicAuth(t *testing.T) {
@@ -86,14 +73,12 @@ func TestHandlerReturnsLiveSessionsWithBasicAuth(t *testing.T) {
 	if len(sessions) != 1 || sessions[0].SessionID != "sess-1" {
 		t.Fatalf("sessions = %#v, want sess-1", sessions)
 	}
-	for _, want := range []string{"latest_seq", "last_read_seq", "unread_count"} {
-		if !strings.Contains(rec.Body.String(), want) {
-			t.Fatalf("body = %s, want field %q", rec.Body.String(), want)
-		}
+	if !strings.Contains(rec.Body.String(), "latest_seq") {
+		t.Fatalf("body = %s, want field %q", rec.Body.String(), "latest_seq")
 	}
 }
 
-func TestHandlerServesSessionHistoryAndReadState(t *testing.T) {
+func TestHandlerServesSessionFrames(t *testing.T) {
 	reg := NewRegistry()
 	server := httptest.NewServer(NewHandler(HandlerConfig{
 		Registry:        reg,
@@ -123,7 +108,7 @@ func TestHandlerServesSessionHistoryAndReadState(t *testing.T) {
 		}
 	}
 
-	req, err := http.NewRequest(http.MethodGet, server.URL+"/api/sessions/sess-1/history?after=1", nil)
+	req, err := http.NewRequest(http.MethodGet, server.URL+"/api/sessions/sess-1/frames?from=2&to=3", nil)
 	if err != nil {
 		t.Fatalf("NewRequest returned error: %v", err)
 	}
@@ -138,39 +123,35 @@ func TestHandlerServesSessionHistoryAndReadState(t *testing.T) {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 
-	var history sessionHistoryResponse
-	if err := json.NewDecoder(resp.Body).Decode(&history); err != nil {
+	var frames sessionFramesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&frames); err != nil {
 		t.Fatalf("Decode returned error: %v", err)
 	}
-	if history.LatestSeq != 3 {
-		t.Fatalf("LatestSeq = %d, want 3", history.LatestSeq)
+	if len(frames) != 2 {
+		t.Fatalf("len(Frames) = %d, want 2", len(frames))
 	}
-	if len(history.Messages) != 2 {
-		t.Fatalf("len(Messages) = %d, want 2", len(history.Messages))
+	if frames[0].Seq != 2 || frames[1].Seq != 3 {
+		t.Fatalf("seqs = %#v, want 2 then 3", frames)
 	}
+}
 
-	markReadReq, err := http.NewRequest(http.MethodPost, server.URL+"/api/sessions/sess-1/read", strings.NewReader(`{"seq":2}`))
-	if err != nil {
-		t.Fatalf("NewRequest returned error: %v", err)
-	}
-	markReadReq.Header.Set("Authorization", basicAuth("demo", "secret"))
-	markReadReq.Header.Set("Content-Type", "application/json")
+func TestHandlerRejectsInvalidFrameRange(t *testing.T) {
+	reg := NewRegistry()
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, fakeAgentPeer{})
+	handler := NewHandler(HandlerConfig{
+		Registry:        reg,
+		BrowserUser:     "demo",
+		BrowserPassword: "secret",
+		AgentToken:      "agent-token",
+	})
 
-	markReadResp, err := http.DefaultClient.Do(markReadReq)
-	if err != nil {
-		t.Fatalf("Do mark read returned error: %v", err)
-	}
-	defer markReadResp.Body.Close()
-	if markReadResp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", markReadResp.StatusCode)
-	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/sess-1/frames?from=3&to=2", nil)
+	req.Header.Set("Authorization", basicAuth("demo", "secret"))
+	handler.ServeHTTP(rec, req)
 
-	var state readStateResponse
-	if err := json.NewDecoder(markReadResp.Body).Decode(&state); err != nil {
-		t.Fatalf("Decode returned error: %v", err)
-	}
-	if state.LastReadSeq != 2 {
-		t.Fatalf("LastReadSeq = %d, want 2", state.LastReadSeq)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
 	}
 }
 

@@ -261,8 +261,8 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 					continue
 				}
 				// Output flows onto the global multiplexed client stream under
-				// /api/updates/ws. The relay tracks seq/unread metadata for replay, but
-				// it does not interpret terminal content.
+				// /api/updates/ws. The relay tracks output sequence metadata for replay,
+				// but it does not interpret terminal content.
 				registry.TouchOutputIfOwner(register.Session.SessionID, peer, data, time.Now().UTC())
 			case "resize":
 				registry.UpdateSizeIfOwner(register.Session.SessionID, peer, msg.Cols, msg.Rows)
@@ -286,7 +286,7 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 
 		sessionID := parts[2]
 		switch parts[3] {
-		case "history":
+		case "frames":
 			if r.Method != http.MethodGet {
 				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 				return
@@ -295,42 +295,27 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 				http.NotFound(w, r)
 				return
 			}
-			after, err := parseOptionalUintQuery(r, "after")
+			from, hasFrom, err := parseOptionalUintQuery(r, "from")
 			if err != nil {
 				http.Error(w, "bad request", http.StatusBadRequest)
 				return
 			}
-			page, ok := registry.History(sessionID, after)
-			if !ok {
-				http.NotFound(w, r)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(page)
-			return
-		case "read":
-			if r.Method != http.MethodPost {
-				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-				return
-			}
-			if !registry.HasSession(sessionID) {
-				http.NotFound(w, r)
-				return
-			}
-			var req struct {
-				Seq uint64 `json:"seq"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			to, hasTo, err := parseOptionalUintQuery(r, "to")
+			if err != nil {
 				http.Error(w, "bad request", http.StatusBadRequest)
 				return
 			}
-			info, ok := registry.MarkRead(sessionID, req.Seq)
+			if hasFrom && hasTo && from > to {
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			frames, ok := registry.Frames(sessionID, from, hasFrom, to, hasTo)
 			if !ok {
 				http.NotFound(w, r)
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(info)
+			_ = json.NewEncoder(w).Encode(frames)
 			return
 		default:
 			http.NotFound(w, r)
@@ -415,10 +400,14 @@ func sameOriginOrEmpty(r *http.Request) bool {
 	return originURL.Host == r.Host
 }
 
-func parseOptionalUintQuery(r *http.Request, key string) (uint64, error) {
-	value := r.URL.Query().Get(key)
-	if value == "" {
-		return 0, nil
+func parseOptionalUintQuery(r *http.Request, key string) (uint64, bool, error) {
+	if !r.URL.Query().Has(key) {
+		return 0, false, nil
 	}
-	return strconv.ParseUint(value, 10, 64)
+	value := r.URL.Query().Get(key)
+	parsed, err := strconv.ParseUint(value, 10, 64)
+	if err != nil {
+		return 0, false, err
+	}
+	return parsed, true, nil
 }

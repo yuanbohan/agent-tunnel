@@ -27,12 +27,11 @@ type liveSession struct {
 	info protocol.SessionInfo
 	peer AgentPeer
 
-	history      []historyFrame
-	historyBytes int
-	latestSeq    uint64
-	lastReadSeq  uint64
-	currentCols  int
-	currentRows  int
+	frames      []outputFrame
+	frameBytes  int
+	latestSeq   uint64
+	currentCols int
+	currentRows int
 }
 
 func NewRegistry() *Registry {
@@ -59,18 +58,16 @@ func (r *Registry) Register(info protocol.SessionInfo, peer AgentPeer) {
 	r.mu.Lock()
 	old := r.sessions[info.SessionID]
 	logger := r.logger
-	var history []historyFrame
-	var historyBytes int
+	var frames []outputFrame
+	var frameBytes int
 	var latestSeq uint64
-	var lastReadSeq uint64
 	var currentCols int
 	var currentRows int
 	lastActiveAt := info.LastActiveAt
 	if old != nil {
-		history = old.history
-		historyBytes = old.historyBytes
+		frames = old.frames
+		frameBytes = old.frameBytes
 		latestSeq = old.latestSeq
-		lastReadSeq = old.lastReadSeq
 		currentCols = old.currentCols
 		currentRows = old.currentRows
 		if old.info.LastActiveAt != nil {
@@ -78,14 +75,13 @@ func (r *Registry) Register(info protocol.SessionInfo, peer AgentPeer) {
 		}
 	}
 	r.sessions[info.SessionID] = &liveSession{
-		info:         info,
-		peer:         peer,
-		history:      history,
-		historyBytes: historyBytes,
-		latestSeq:    latestSeq,
-		lastReadSeq:  lastReadSeq,
-		currentCols:  currentCols,
-		currentRows:  currentRows,
+		info:        info,
+		peer:        peer,
+		frames:      frames,
+		frameBytes:  frameBytes,
+		latestSeq:   latestSeq,
+		currentCols: currentCols,
+		currentRows: currentRows,
 	}
 	r.sessions[info.SessionID].info.LastActiveAt = lastActiveAt
 	r.mu.Unlock()
@@ -168,27 +164,15 @@ func (r *Registry) Session(sessionID string) (protocol.SessionInfo, bool) {
 	return live.snapshot(), true
 }
 
-func (r *Registry) History(sessionID string, after uint64) (historyPage, bool) {
+func (r *Registry) Frames(sessionID string, from uint64, hasFrom bool, to uint64, hasTo bool) ([]outputFrameMessage, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	live, ok := r.sessions[sessionID]
 	if !ok {
-		return historyPage{}, false
+		return nil, false
 	}
-	return live.historySnapshot(after), true
-}
-
-func (r *Registry) MarkRead(sessionID string, seq uint64) (protocol.SessionInfo, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	live, ok := r.sessions[sessionID]
-	if !ok {
-		return protocol.SessionInfo{}, false
-	}
-	live.markRead(seq)
-	return live.snapshot(), true
+	return live.frameSnapshot(from, hasFrom, to, hasTo), true
 }
 
 func (r *Registry) WriteInput(sessionID string, data []byte) error {

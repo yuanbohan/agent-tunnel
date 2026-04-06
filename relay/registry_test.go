@@ -118,6 +118,39 @@ func TestRegistryTouchOutputBroadcastsGlobalClientUpdate(t *testing.T) {
 	}
 }
 
+func TestRegistryFramesFilterByInclusiveRange(t *testing.T) {
+	reg := NewRegistry()
+	peer := fakeAgentPeer{}
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, peer)
+
+	if !reg.UpdateSizeIfOwner("sess-1", peer, 120, 40) {
+		t.Fatal("UpdateSizeIfOwner returned false, want true")
+	}
+	if !reg.TouchOutputIfOwner("sess-1", peer, []byte("one"), time.Unix(40, 0)) {
+		t.Fatal("TouchOutputIfOwner returned false for frame 1")
+	}
+	if !reg.TouchOutputIfOwner("sess-1", peer, []byte("two"), time.Unix(41, 0)) {
+		t.Fatal("TouchOutputIfOwner returned false for frame 2")
+	}
+	if !reg.TouchOutputIfOwner("sess-1", peer, []byte("three"), time.Unix(42, 0)) {
+		t.Fatal("TouchOutputIfOwner returned false for frame 3")
+	}
+
+	frames, ok := reg.Frames("sess-1", 2, true, 2, true)
+	if !ok {
+		t.Fatal("Frames returned false, want true")
+	}
+	if len(frames) != 1 {
+		t.Fatalf("len(Frames) = %d, want 1", len(frames))
+	}
+	if frames[0].Seq != 2 {
+		t.Fatalf("Seq = %d, want 2", frames[0].Seq)
+	}
+	if frames[0].Cols != 120 || frames[0].Rows != 40 {
+		t.Fatalf("size = %dx%d, want 120x40", frames[0].Cols, frames[0].Rows)
+	}
+}
+
 func TestRegistryReplaceSessionIDLogsSessionReplaced(t *testing.T) {
 	reg := NewRegistry()
 	logs := &bytes.Buffer{}
