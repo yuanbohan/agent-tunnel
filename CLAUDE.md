@@ -21,6 +21,7 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 - `agentunnel` is the PTY owner. It has no localhost HTTP server; all remote client access goes through the relay.
 - `agentunnel` requires `--relay-addr` (or `AGENTUNNEL_RELAY_ADDR`) and `AGENTUNNEL_RELAY_TOKEN` to start.
 - On launch, `agentunnel` gives relay registration a bounded first chance to succeed. If that startup window expires, the local terminal session still starts and the relay reconnect loop continues in the background.
+- On macOS, after local session startup succeeds, `agentunnel` attempts default-on idle sleep prevention for the lifetime of the `agentunnel` process. If that helper cannot be started, startup still continues and the startup banner must say so explicitly.
 - After the local terminal session has begun, relay unavailability must not interrupt local terminal work; it only affects remote visibility and interaction until reconnect succeeds.
 - The relay is live-only and monitoring-focused. It lists live sessions, retains a rolling in-memory output frame buffer per live session, and forwards multiplexed live updates on one global client socket; it does not create or stop local sessions.
 - The preferred client foreground receive channel is `GET /api/updates/ws`, and it is a best-effort live channel rather than a guaranteed lossless transcript.
