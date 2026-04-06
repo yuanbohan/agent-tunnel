@@ -6,6 +6,13 @@ Launch a terminal agent locally and stream the live PTY session to a remote rela
 
 The relay is intentionally content-opaque. It forwards and retains output bytes for replay, but it does not derive previews or other content semantics from terminal data.
 
+Client input uses structured events:
+
+- `input_text` for normal typing, pasted text, and IME-committed text
+- `input_key` for special keys and supported key combinations
+
+The relay forwards those events to the owning `agentunnel` session, and `agentunnel` translates supported key events into PTY bytes locally.
+
 ## Requirements
 
 - Go 1.25+
@@ -62,6 +69,11 @@ Point your client at the relay with HTTP Basic Auth and use the relay APIs:
 - `GET /api/updates/ws` to receive global live output updates for all sessions on one foreground socket
 - `GET /api/sessions/:id/frames` to fetch the currently retained in-memory output frames
 - `GET /api/sessions/:id/frames?from=101&to=120` to fetch an inclusive output sequence range
+
+Each output frame, whether fetched from retained history or received live over websocket, includes:
+
+- `cols` and `rows`
+- relay-assigned UTC `ts`
 
 Retained output frames are intentionally live-only and in-memory. If the owning agent disconnects, the session disappears along with its retained frames.
 

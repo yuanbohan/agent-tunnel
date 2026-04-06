@@ -6,13 +6,18 @@ import (
 )
 
 // Message is the agent-side JSON frame exchanged over session-scoped WebSockets.
-// Type is one of "input", "output", or "resize".
+// Type is one of "input", "input_text", "input_key", or "output".
 type Message struct {
-	Type string `json:"type"`
-	Seq  uint64 `json:"seq,omitempty"`
-	Data string `json:"data,omitempty"` // base64-encoded bytes
-	Cols int    `json:"cols,omitempty"`
-	Rows int    `json:"rows,omitempty"`
+	Type  string `json:"type"`
+	Seq   uint64 `json:"seq,omitempty"`
+	Data  string `json:"data,omitempty"` // base64-encoded bytes
+	Text  string `json:"text,omitempty"`
+	Key   string `json:"key,omitempty"`
+	Cols  int    `json:"cols,omitempty"`
+	Rows  int    `json:"rows,omitempty"`
+	Ctrl  bool   `json:"ctrl,omitempty"`
+	Alt   bool   `json:"alt,omitempty"`
+	Shift bool   `json:"shift,omitempty"`
 }
 
 // EncodeOutput wraps raw PTY bytes into an output Message.
@@ -34,6 +39,30 @@ func EncodeOutputWithSeqAndSize(seq uint64, b []byte, cols, rows int) Message {
 		Data: base64.StdEncoding.EncodeToString(b),
 		Cols: cols,
 		Rows: rows,
+	}
+}
+
+func EncodeInput(b []byte) Message {
+	return Message{
+		Type: "input",
+		Data: base64.StdEncoding.EncodeToString(b),
+	}
+}
+
+func EncodeInputText(text string) Message {
+	return Message{
+		Type: "input_text",
+		Text: text,
+	}
+}
+
+func EncodeInputKey(key string, ctrl, alt, shift bool) Message {
+	return Message{
+		Type:  "input_key",
+		Key:   key,
+		Ctrl:  ctrl,
+		Alt:   alt,
+		Shift: shift,
 	}
 }
 
@@ -71,21 +100,79 @@ func RegisterFrame(info SessionInfo) AgentFrame {
 	}
 }
 
-// ClientUpdateMessage is the client-facing multiplexed envelope used by the
-// global relay stream. Unlike Message, it always carries session identity so a
-// single foreground connection can route both live output and client input for
-// many sessions.
-type ClientUpdateMessage struct {
+// ClientInputMessage is the client-to-relay envelope used by /api/updates/ws.
+type ClientInputMessage struct {
 	SessionID string `json:"session_id"`
 	Type      string `json:"type"`
-	Seq       uint64 `json:"seq,omitempty"`
-	Data      string `json:"data,omitempty"`
-	Cols      int    `json:"cols,omitempty"`
-	Rows      int    `json:"rows,omitempty"`
-	Reason    string `json:"reason,omitempty"`
+	Data      string `json:"data,omitempty"` // legacy raw bytes during migration
+	Text      string `json:"text,omitempty"`
+	Key       string `json:"key,omitempty"`
+	Ctrl      bool   `json:"ctrl,omitempty"`
+	Alt       bool   `json:"alt,omitempty"`
+	Shift     bool   `json:"shift,omitempty"`
 }
 
-func EncodeClientOutput(sessionID string, seq uint64, b []byte, cols, rows int) ClientUpdateMessage {
+func EncodeClientInput(sessionID string, b []byte) ClientInputMessage {
+	return ClientInputMessage{
+		SessionID: sessionID,
+		Type:      "input",
+		Data:      base64.StdEncoding.EncodeToString(b),
+	}
+}
+
+func EncodeClientInputText(sessionID, text string) ClientInputMessage {
+	return ClientInputMessage{
+		SessionID: sessionID,
+		Type:      "input_text",
+		Text:      text,
+	}
+}
+
+func EncodeClientInputKey(sessionID, key string, ctrl, alt, shift bool) ClientInputMessage {
+	return ClientInputMessage{
+		SessionID: sessionID,
+		Type:      "input_key",
+		Key:       key,
+		Ctrl:      ctrl,
+		Alt:       alt,
+		Shift:     shift,
+	}
+}
+
+func (m ClientInputMessage) AgentMessage() Message {
+	switch m.Type {
+	case "input_text":
+		return EncodeInputText(m.Text)
+	case "input_key":
+		return EncodeInputKey(m.Key, m.Ctrl, m.Alt, m.Shift)
+	default:
+		return EncodeInputFromBase64(m.Data)
+	}
+}
+
+func EncodeInputFromBase64(data string) Message {
+	return Message{
+		Type: "input",
+		Data: data,
+	}
+}
+
+// ClientUpdateMessage is the client-facing multiplexed envelope used by the
+// global relay stream. Unlike Message, it always carries session identity so a
+// single foreground connection can route live output for many sessions.
+type ClientUpdateMessage struct {
+	SessionID string     `json:"session_id"`
+	Type      string     `json:"type"`
+	Seq       uint64     `json:"seq,omitempty"`
+	Data      string     `json:"data,omitempty"`
+	Cols      int        `json:"cols,omitempty"`
+	Rows      int        `json:"rows,omitempty"`
+	Reason    string     `json:"reason,omitempty"`
+	TS        *time.Time `json:"ts,omitempty"`
+}
+
+func EncodeClientOutput(sessionID string, seq uint64, b []byte, cols, rows int, ts time.Time) ClientUpdateMessage {
+	tsCopy := ts
 	return ClientUpdateMessage{
 		SessionID: sessionID,
 		Type:      "output",
@@ -93,6 +180,7 @@ func EncodeClientOutput(sessionID string, seq uint64, b []byte, cols, rows int) 
 		Data:      base64.StdEncoding.EncodeToString(b),
 		Cols:      cols,
 		Rows:      rows,
+		TS:        &tsCopy,
 	}
 }
 

@@ -2,7 +2,6 @@ package connector
 
 import (
 	"context"
-	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -77,10 +76,7 @@ func TestConnectorRoutesInputFrameIntoHub(t *testing.T) {
 			t.Fatalf("ReadJSON returned error: %v", err)
 		}
 
-		msg := protocol.Message{
-			Type: "input",
-			Data: base64.StdEncoding.EncodeToString([]byte("hello")),
-		}
+		msg := protocol.EncodeInput([]byte("hello"))
 		if err := conn.WriteJSON(msg); err != nil {
 			t.Fatalf("WriteJSON returned error: %v", err)
 		}
@@ -132,10 +128,15 @@ func TestConnectorStreamsOutputFramesToRelay(t *testing.T) {
 	defer server.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	hub := session.NewHub(func([]byte) error { return nil }, func(int, int) error { return nil })
 	c := New(wsURL, "token", protocol.SessionInfo{
 		SessionID: "sess-1",
 		Launcher:  "codex",
 	})
+	c.BindHub(hub)
+	if err := hub.Resize(120, 40); err != nil {
+		t.Fatalf("Resize returned error: %v", err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -157,12 +158,15 @@ func TestConnectorStreamsOutputFramesToRelay(t *testing.T) {
 		if string(data) != "world" {
 			t.Fatalf("output = %q, want world", string(data))
 		}
+		if msg.Cols != 120 || msg.Rows != 40 {
+			t.Fatalf("size = %dx%d, want 120x40", msg.Cols, msg.Rows)
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for output")
 	}
 }
 
-func TestConnectorSendsResizeFrameWhenHubResizes(t *testing.T) {
+func TestConnectorUsesInitialSizeBeforeHubBind(t *testing.T) {
 	received := make(chan protocol.Message, 1)
 	upgrader := websocket.Upgrader{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -179,37 +183,97 @@ func TestConnectorSendsResizeFrameWhenHubResizes(t *testing.T) {
 
 		var msg protocol.Message
 		if err := conn.ReadJSON(&msg); err != nil {
-			t.Fatalf("ReadJSON resize returned error: %v", err)
+			t.Fatalf("ReadJSON output returned error: %v", err)
 		}
 		received <- msg
 	}))
 	defer server.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
-	hub := session.NewHub(func([]byte) error { return nil }, func(int, int) error { return nil })
 	c := New(wsURL, "token", protocol.SessionInfo{
 		SessionID: "sess-1",
 		Launcher:  "codex",
 	})
-	c.BindHub(hub)
+	c.SetInitialSize(120, 40)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go c.Run(ctx)
 
-	// Trigger a resize through the hub — the connector's OnResize callback should send it upstream
-	_ = hub.Resize(120, 40)
+	if err := c.WriteOutput([]byte("hello")); err != nil {
+		t.Fatalf("WriteOutput returned error: %v", err)
+	}
 
 	select {
 	case msg := <-received:
-		if msg.Type != "resize" {
-			t.Fatalf("Type = %q, want resize", msg.Type)
+		if msg.Type != "output" {
+			t.Fatalf("Type = %q, want output", msg.Type)
 		}
 		if msg.Cols != 120 || msg.Rows != 40 {
-			t.Fatalf("resize = %dx%d, want 120x40", msg.Cols, msg.Rows)
+			t.Fatalf("size = %dx%d, want 120x40", msg.Cols, msg.Rows)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for resize frame")
+		t.Fatal("timed out waiting for output frame")
+	}
+}
+
+func TestConnectorRoutesStructuredInputFramesIntoHub(t *testing.T) {
+	tests := []struct {
+		name    string
+		message protocol.Message
+		want    string
+	}{
+		{name: "input text", message: protocol.EncodeInputText("hello"), want: "hello"},
+		{name: "input key", message: protocol.EncodeInputKey("TAB", false, false, false), want: "\t"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			inputCh := make(chan string, 1)
+			hub := session.NewHub(func(data []byte) error {
+				inputCh <- string(data)
+				return nil
+			}, func(int, int) error { return nil })
+
+			upgrader := websocket.Upgrader{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				conn, err := upgrader.Upgrade(w, r, nil)
+				if err != nil {
+					t.Fatalf("Upgrade returned error: %v", err)
+				}
+				defer conn.Close()
+
+				var register protocol.AgentFrame
+				if err := conn.ReadJSON(&register); err != nil {
+					t.Fatalf("ReadJSON returned error: %v", err)
+				}
+
+				if err := conn.WriteJSON(tc.message); err != nil {
+					t.Fatalf("WriteJSON returned error: %v", err)
+				}
+			}))
+			defer server.Close()
+
+			wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+			c := New(wsURL, "token", protocol.SessionInfo{
+				SessionID: "sess-1",
+				Launcher:  "codex",
+			})
+			c.BindHub(hub)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go c.Run(ctx)
+
+			select {
+			case got := <-inputCh:
+				if got != tc.want {
+					t.Fatalf("input = %q, want %q", got, tc.want)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("timed out waiting for input")
+			}
+		})
 	}
 }
 

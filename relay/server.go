@@ -65,14 +65,11 @@ func newWSAgentPeer(conn *websocket.Conn) *wsAgentPeer {
 	return &wsAgentPeer{conn: conn}
 }
 
-func (p *wsAgentPeer) SendInput(data []byte) error {
+func (p *wsAgentPeer) Send(msg protocol.Message) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	return p.conn.WriteJSON(protocol.Message{
-		Type: "input",
-		Data: base64.StdEncoding.EncodeToString(data),
-	})
+	return p.conn.WriteJSON(msg)
 }
 
 func (p *wsAgentPeer) Close() error {
@@ -180,18 +177,27 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 		defer close(stopPings)
 
 		for {
-			var msg protocol.ClientUpdateMessage
+			var msg protocol.ClientInputMessage
 			if err := conn.ReadJSON(&msg); err != nil {
 				return
 			}
-			if msg.Type != "input" || msg.SessionID == "" {
+			if msg.SessionID == "" {
 				continue
 			}
-			data, err := base64.StdEncoding.DecodeString(msg.Data)
-			if err != nil {
+			switch msg.Type {
+			case "input":
+				if _, err := base64.StdEncoding.DecodeString(msg.Data); err != nil {
+					continue
+				}
+			case "input_text":
+			case "input_key":
+				if msg.Key == "" {
+					continue
+				}
+			default:
 				continue
 			}
-			_ = registry.WriteInput(msg.SessionID, data)
+			_ = registry.WriteInput(msg.SessionID, msg.AgentMessage())
 		}
 	})
 
@@ -224,7 +230,7 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 
 		peer := newWSAgentPeer(conn)
 		// The relay treats the agent websocket as the owner of this live session.
-		// All later output/resize mutations are validated against this
+		// All later output mutations are validated against this
 		// owner so stale connections cannot keep mutating a replaced session.
 		registry.Register(*register.Session, peer)
 		defer registry.RemoveIfOwner(register.Session.SessionID, peer)
@@ -263,9 +269,7 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 				// Output flows onto the global multiplexed client stream under
 				// /api/updates/ws. The relay tracks output sequence metadata for replay,
 				// but it does not interpret terminal content.
-				registry.TouchOutputIfOwner(register.Session.SessionID, peer, data, time.Now().UTC())
-			case "resize":
-				registry.UpdateSizeIfOwner(register.Session.SessionID, peer, msg.Cols, msg.Rows)
+				registry.TouchOutputIfOwner(register.Session.SessionID, peer, data, msg.Cols, msg.Rows, time.Now().UTC())
 			}
 		}
 	})

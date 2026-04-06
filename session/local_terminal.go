@@ -54,6 +54,10 @@ func (t *LocalTerminal) SinkRegistration() (string, OutputSink) {
 	return t.sinkID, t.sink
 }
 
+func (t *LocalTerminal) CurrentSize() (int, int, error) {
+	return getLocalTerminalSize()
+}
+
 func (t *LocalTerminal) Start(ctx context.Context, hub *Hub) <-chan struct{} {
 	resizeSignals := make(chan os.Signal, 1)
 	signal.Notify(resizeSignals, syscall.SIGWINCH)

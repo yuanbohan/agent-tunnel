@@ -1,7 +1,6 @@
 package relay
 
 import (
-	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -15,10 +14,11 @@ import (
 )
 
 type sessionFramesResponse []struct {
-	Seq     uint64 `json:"seq"`
-	DataB64 string `json:"data_b64"`
-	Cols    int    `json:"cols"`
-	Rows    int    `json:"rows"`
+	Seq     uint64    `json:"seq"`
+	DataB64 string    `json:"data_b64"`
+	Cols    int       `json:"cols"`
+	Rows    int       `json:"rows"`
+	TS      time.Time `json:"ts"`
 }
 
 func TestHandlerRejectsDashboardWithoutBasicAuth(t *testing.T) {
@@ -100,10 +100,7 @@ func TestHandlerServesSessionFrames(t *testing.T) {
 		{cols: 120, rows: 40, data: "two"},
 		{cols: 132, rows: 43, data: "three"},
 	} {
-		if err := agentConn.WriteJSON(protocol.Message{Type: "resize", Cols: frame.cols, Rows: frame.rows}); err != nil {
-			t.Fatalf("WriteJSON resize returned error: %v", err)
-		}
-		if err := agentConn.WriteJSON(protocol.EncodeOutput([]byte(frame.data))); err != nil {
+		if err := agentConn.WriteJSON(protocol.EncodeOutputWithSeqAndSize(0, []byte(frame.data), frame.cols, frame.rows)); err != nil {
 			t.Fatalf("WriteJSON output returned error: %v", err)
 		}
 	}
@@ -132,6 +129,9 @@ func TestHandlerServesSessionFrames(t *testing.T) {
 	}
 	if frames[0].Seq != 2 || frames[1].Seq != 3 {
 		t.Fatalf("seqs = %#v, want 2 then 3", frames)
+	}
+	if frames[0].TS.IsZero() || frames[1].TS.IsZero() {
+		t.Fatalf("timestamps = %#v, want non-zero", frames)
 	}
 }
 
@@ -176,7 +176,7 @@ func TestUpdatesWebSocketStreamsOutputAndRemoval(t *testing.T) {
 	}
 	defer updatesConn.Close()
 
-	if err := agentConn.WriteJSON(protocol.EncodeOutput([]byte("hello"))); err != nil {
+	if err := agentConn.WriteJSON(protocol.EncodeOutputWithSeqAndSize(0, []byte("hello"), 132, 43)); err != nil {
 		t.Fatalf("WriteJSON returned error: %v", err)
 	}
 
@@ -186,6 +186,12 @@ func TestUpdatesWebSocketStreamsOutputAndRemoval(t *testing.T) {
 	}
 	if output.Type != "output" || output.SessionID != "sess-1" {
 		t.Fatalf("output = %#v, want sess-1 output", output)
+	}
+	if output.TS == nil || output.TS.IsZero() {
+		t.Fatalf("ts = %v, want non-zero", output.TS)
+	}
+	if output.Cols != 132 || output.Rows != 43 {
+		t.Fatalf("size = %dx%d, want 132x43", output.Cols, output.Rows)
 	}
 	data, err := base64.StdEncoding.DecodeString(output.Data)
 	if err != nil {
@@ -206,7 +212,7 @@ func TestUpdatesWebSocketStreamsOutputAndRemoval(t *testing.T) {
 	}
 }
 
-func TestUpdatesWebSocketForwardsClientInputToAgent(t *testing.T) {
+func TestUpdatesWebSocketForwardsClientInputTextToAgent(t *testing.T) {
 	reg := NewRegistry()
 	server := httptest.NewServer(NewHandler(HandlerConfig{
 		Registry:        reg,
@@ -228,23 +234,56 @@ func TestUpdatesWebSocketForwardsClientInputToAgent(t *testing.T) {
 	}
 	defer conn.Close()
 
-	msg := protocol.ClientUpdateMessage{
-		SessionID: "sess-1",
-		Type:      "input",
-		Data:      base64.StdEncoding.EncodeToString([]byte("ls\n")),
-	}
+	msg := protocol.EncodeClientInputText("sess-1", "ls\n")
 	if err := conn.WriteJSON(msg); err != nil {
 		t.Fatalf("WriteJSON returned error: %v", err)
 	}
 
 	deadline := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
-		if bytes.Equal(bytes.Join(peer.inputs, nil), []byte("ls\n")) {
+		if len(peer.messages) == 1 && peer.messages[0].Type == "input_text" && peer.messages[0].Text == "ls\n" {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("inputs = %#v, want ls\\n", peer.inputs)
+	t.Fatalf("messages = %#v, want input_text ls\\n", peer.messages)
+}
+
+func TestUpdatesWebSocketForwardsClientInputKeyToAgent(t *testing.T) {
+	reg := NewRegistry()
+	server := httptest.NewServer(NewHandler(HandlerConfig{
+		Registry:        reg,
+		BrowserUser:     "demo",
+		BrowserPassword: "secret",
+		AgentToken:      "agent-token",
+	}))
+	defer server.Close()
+
+	peer := &recordingPeer{}
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, peer)
+
+	updatesURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/updates/ws"
+	headers := http.Header{}
+	headers.Set("Authorization", basicAuth("demo", "secret"))
+	conn, _, err := websocket.DefaultDialer.Dial(updatesURL, headers)
+	if err != nil {
+		t.Fatalf("Dial returned error: %v", err)
+	}
+	defer conn.Close()
+
+	msg := protocol.EncodeClientInputKey("sess-1", "TAB", false, false, false)
+	if err := conn.WriteJSON(msg); err != nil {
+		t.Fatalf("WriteJSON returned error: %v", err)
+	}
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if len(peer.messages) == 1 && peer.messages[0].Type == "input_key" && peer.messages[0].Key == "TAB" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("messages = %#v, want input_key TAB", peer.messages)
 }
 
 func basicAuth(user, pass string) string {

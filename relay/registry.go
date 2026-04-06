@@ -12,7 +12,7 @@ import (
 var ErrSessionNotFound = errors.New("relay session not found")
 
 type AgentPeer interface {
-	SendInput([]byte) error
+	Send(protocol.Message) error
 	Close() error
 }
 
@@ -27,11 +27,9 @@ type liveSession struct {
 	info protocol.SessionInfo
 	peer AgentPeer
 
-	frames      []outputFrame
-	frameBytes  int
-	latestSeq   uint64
-	currentCols int
-	currentRows int
+	frames     []outputFrame
+	frameBytes int
+	latestSeq  uint64
 }
 
 func NewRegistry() *Registry {
@@ -61,27 +59,21 @@ func (r *Registry) Register(info protocol.SessionInfo, peer AgentPeer) {
 	var frames []outputFrame
 	var frameBytes int
 	var latestSeq uint64
-	var currentCols int
-	var currentRows int
 	lastActiveAt := info.LastActiveAt
 	if old != nil {
 		frames = old.frames
 		frameBytes = old.frameBytes
 		latestSeq = old.latestSeq
-		currentCols = old.currentCols
-		currentRows = old.currentRows
 		if old.info.LastActiveAt != nil {
 			lastActiveAt = old.info.LastActiveAt
 		}
 	}
 	r.sessions[info.SessionID] = &liveSession{
-		info:        info,
-		peer:        peer,
-		frames:      frames,
-		frameBytes:  frameBytes,
-		latestSeq:   latestSeq,
-		currentCols: currentCols,
-		currentRows: currentRows,
+		info:       info,
+		peer:       peer,
+		frames:     frames,
+		frameBytes: frameBytes,
+		latestSeq:  latestSeq,
 	}
 	r.sessions[info.SessionID].info.LastActiveAt = lastActiveAt
 	r.mu.Unlock()
@@ -149,8 +141,8 @@ func (r *Registry) List() []protocol.SessionInfo {
 	return out
 }
 
-func (r *Registry) TouchOutputIfOwner(sessionID string, owner AgentPeer, chunk []byte, now time.Time) bool {
-	return r.touchOutput(sessionID, owner, chunk, now, true)
+func (r *Registry) TouchOutputIfOwner(sessionID string, owner AgentPeer, chunk []byte, cols, rows int, now time.Time) bool {
+	return r.touchOutput(sessionID, owner, chunk, cols, rows, now, true)
 }
 
 func (r *Registry) Session(sessionID string) (protocol.SessionInfo, bool) {
@@ -175,29 +167,16 @@ func (r *Registry) Frames(sessionID string, from uint64, hasFrom bool, to uint64
 	return live.frameSnapshot(from, hasFrom, to, hasTo), true
 }
 
-func (r *Registry) WriteInput(sessionID string, data []byte) error {
+func (r *Registry) WriteInput(sessionID string, msg protocol.Message) error {
 	r.mu.RLock()
 	live, ok := r.sessions[sessionID]
 	if !ok {
 		r.mu.RUnlock()
 		return ErrSessionNotFound
 	}
-	err := live.peer.SendInput(data)
+	err := live.peer.Send(msg)
 	r.mu.RUnlock()
 	return err
-}
-
-func (r *Registry) UpdateSizeIfOwner(sessionID string, owner AgentPeer, cols, rows int) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	live, ok := r.sessions[sessionID]
-	if !ok || live.peer != owner {
-		return false
-	}
-	live.currentCols = cols
-	live.currentRows = rows
-	return true
 }
 
 func lastActiveTime(info protocol.SessionInfo) time.Time {
@@ -207,20 +186,18 @@ func lastActiveTime(info protocol.SessionInfo) time.Time {
 	return *info.LastActiveAt
 }
 
-func (r *Registry) touchOutput(sessionID string, owner AgentPeer, chunk []byte, now time.Time, requireOwner bool) bool {
+func (r *Registry) touchOutput(sessionID string, owner AgentPeer, chunk []byte, cols, rows int, now time.Time, requireOwner bool) bool {
 	r.mu.Lock()
 	live, ok := r.sessions[sessionID]
 	if !ok || (requireOwner && live.peer != owner) {
 		r.mu.Unlock()
 		return false
 	}
-	seq := live.appendOutput(chunk)
-	cols := live.currentCols
-	rows := live.currentRows
+	seq := live.appendOutput(chunk, cols, rows, now)
 	nowCopy := now
 	live.info.LastActiveAt = &nowCopy
 	r.mu.Unlock()
 
-	r.broadcastClientUpdate(protocol.EncodeClientOutput(sessionID, seq, chunk, cols, rows))
+	r.broadcastClientUpdate(protocol.EncodeClientOutput(sessionID, seq, chunk, cols, rows, now))
 	return true
 }

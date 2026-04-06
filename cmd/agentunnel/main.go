@@ -84,8 +84,11 @@ func runWithArgs(args []string, stderr io.Writer) error {
 	}
 
 	relay := newConnector(relayURL, parsed.RelayToken, info)
+	if cols, rows, sizeErr := local.CurrentSize(); sizeErr == nil {
+		relay.SetInitialSize(cols, rows)
+	}
 	initialSinks := map[string]session.OutputSink{
-		sinkID: sink,
+		sinkID:  sink,
 		"relay": relay,
 	}
 

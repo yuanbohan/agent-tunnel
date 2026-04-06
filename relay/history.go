@@ -3,6 +3,7 @@ package relay
 import (
 	"encoding/base64"
 	"sort"
+	"time"
 
 	"yuanbohan/tunnel/protocol"
 )
@@ -17,16 +18,18 @@ type outputFrame struct {
 	Size int
 	Cols int
 	Rows int
+	TS   time.Time
 }
 
 type outputFrameMessage struct {
-	Seq     uint64 `json:"seq"`
-	DataB64 string `json:"data_b64"`
-	Cols    int    `json:"cols"`
-	Rows    int    `json:"rows"`
+	Seq     uint64    `json:"seq"`
+	DataB64 string    `json:"data_b64"`
+	Cols    int       `json:"cols"`
+	Rows    int       `json:"rows"`
+	TS      time.Time `json:"ts"`
 }
 
-func (s *liveSession) appendOutput(chunk []byte) uint64 {
+func (s *liveSession) appendOutput(chunk []byte, cols, rows int, ts time.Time) uint64 {
 	cp := append([]byte(nil), chunk...)
 	seq := s.latestSeq + 1
 
@@ -35,8 +38,9 @@ func (s *liveSession) appendOutput(chunk []byte) uint64 {
 		Seq:  seq,
 		Data: cp,
 		Size: len(cp),
-		Cols: s.currentCols,
-		Rows: s.currentRows,
+		Cols: cols,
+		Rows: rows,
+		TS:   ts,
 	})
 	s.frameBytes += len(cp)
 
@@ -80,6 +84,7 @@ func (s *liveSession) frameSnapshot(from uint64, hasFrom bool, to uint64, hasTo 
 			DataB64: base64.StdEncoding.EncodeToString(frame.Data),
 			Cols:    frame.Cols,
 			Rows:    frame.Rows,
+			TS:      frame.TS,
 		})
 	}
 	return frames

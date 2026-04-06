@@ -15,10 +15,9 @@ import (
 //
 // Upstream producers feeding this object:
 // - session.Hub output fanout via WriteOutput()
-// - session.Hub resize callback via BindHub()
 //
 // Downstream consumer:
-// - relay `/agent/ws`, which receives register/output/resize frames
+// - relay `/agent/ws`, which receives register/output frames
 //
 // Reverse data path:
 // - relay input frames come back through handleMessage() into the bound Hub
@@ -28,8 +27,10 @@ type Connector struct {
 	info  protocol.SessionInfo
 	hub   *session.Hub
 
-	outbound chan protocol.Message
-	dialer   *websocket.Dialer
+	initialCols int
+	initialRows int
+	outbound    chan protocol.Message
+	dialer      *websocket.Dialer
 }
 
 type readResult struct {
@@ -49,17 +50,22 @@ func New(url, token string, info protocol.SessionInfo) *Connector {
 
 func (c *Connector) BindHub(hub *session.Hub) {
 	c.hub = hub
-	hub.OnResize(func(cols, rows int) {
-		msg := protocol.Message{Type: "resize", Cols: cols, Rows: rows}
-		select {
-		case c.outbound <- msg:
-		default:
-		}
-	})
+}
+
+func (c *Connector) SetInitialSize(cols, rows int) {
+	c.initialCols = cols
+	c.initialRows = rows
 }
 
 func (c *Connector) WriteOutput(data []byte) error {
-	msg := protocol.EncodeOutput(append([]byte(nil), data...))
+	cols, rows := c.initialCols, c.initialRows
+	if c.hub != nil {
+		if currentCols, currentRows := c.hub.CurrentSize(); currentCols > 0 && currentRows > 0 {
+			cols, rows = currentCols, currentRows
+		}
+	}
+
+	msg := protocol.EncodeOutputWithSeqAndSize(0, append([]byte(nil), data...), cols, rows)
 	select {
 	case c.outbound <- msg:
 	default:
@@ -139,9 +145,20 @@ func (c *Connector) readLoop(conn *websocket.Conn, incoming chan<- readResult) {
 }
 
 func (c *Connector) handleMessage(msg protocol.Message) {
-	if msg.Type == "input" {
+	if c.hub == nil {
+		return
+	}
+
+	switch msg.Type {
+	case "input":
 		data, err := protocol.DecodeData(msg)
-		if err == nil && c.hub != nil {
+		if err == nil {
+			_ = c.hub.WriteInput(data)
+		}
+	case "input_text":
+		_ = c.hub.WriteInput(session.EncodeRemoteTextInput(msg.Text))
+	case "input_key":
+		if data, ok := session.EncodeRemoteKeyInput(msg.Key, msg.Ctrl, msg.Alt, msg.Shift); ok {
 			_ = c.hub.WriteInput(data)
 		}
 	}

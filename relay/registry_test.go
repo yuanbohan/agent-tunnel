@@ -12,16 +12,16 @@ import (
 
 type fakeAgentPeer struct{}
 
-func (fakeAgentPeer) SendInput([]byte) error { return nil }
-func (fakeAgentPeer) Close() error           { return nil }
+func (fakeAgentPeer) Send(protocol.Message) error { return nil }
+func (fakeAgentPeer) Close() error                { return nil }
 
 type recordingPeer struct {
-	inputs [][]byte
-	closed int
+	messages []protocol.Message
+	closed   int
 }
 
-func (p *recordingPeer) SendInput(data []byte) error {
-	p.inputs = append(p.inputs, append([]byte(nil), data...))
+func (p *recordingPeer) Send(msg protocol.Message) error {
+	p.messages = append(p.messages, msg)
 	return nil
 }
 
@@ -63,7 +63,7 @@ func TestRegistryRegisterAndListSortedByLastActive(t *testing.T) {
 func TestRegistryMissingSessionErrors(t *testing.T) {
 	reg := NewRegistry()
 
-	if err := reg.WriteInput("missing", []byte("x")); err != ErrSessionNotFound {
+	if err := reg.WriteInput("missing", protocol.EncodeInput([]byte("x"))); err != ErrSessionNotFound {
 		t.Fatalf("WriteInput error = %v, want ErrSessionNotFound", err)
 	}
 }
@@ -75,7 +75,7 @@ func TestRegistryTouchOutputUpdatesSeqAndLastActive(t *testing.T) {
 	reg.Register(info, peer)
 
 	now := time.Unix(40, 0)
-	if ok := reg.TouchOutputIfOwner("sess-1", peer, []byte("focused test\n"), now); !ok {
+	if ok := reg.TouchOutputIfOwner("sess-1", peer, []byte("focused test\n"), 120, 40, now); !ok {
 		t.Fatal("TouchOutputIfOwner returned false, want true")
 	}
 
@@ -98,7 +98,8 @@ func TestRegistryTouchOutputBroadcastsGlobalClientUpdate(t *testing.T) {
 	peer := fakeAgentPeer{}
 	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, peer)
 
-	if ok := reg.TouchOutputIfOwner("sess-1", peer, []byte("hello"), time.Unix(40, 0)); !ok {
+	now := time.Unix(40, 0).UTC()
+	if ok := reg.TouchOutputIfOwner("sess-1", peer, []byte("hello"), 132, 43, now); !ok {
 		t.Fatal("TouchOutputIfOwner returned false, want true")
 	}
 
@@ -108,6 +109,12 @@ func TestRegistryTouchOutputBroadcastsGlobalClientUpdate(t *testing.T) {
 	got := updateSink.updates[0]
 	if got.SessionID != "sess-1" || got.Type != "output" || got.Seq != 1 {
 		t.Fatalf("update = %#v, want sess-1 output seq 1", got)
+	}
+	if got.TS == nil || !got.TS.Equal(now) {
+		t.Fatalf("ts = %v, want %v", got.TS, now)
+	}
+	if got.Cols != 132 || got.Rows != 43 {
+		t.Fatalf("size = %dx%d, want 132x43", got.Cols, got.Rows)
 	}
 	data, err := base64.StdEncoding.DecodeString(got.Data)
 	if err != nil {
@@ -123,16 +130,14 @@ func TestRegistryFramesFilterByInclusiveRange(t *testing.T) {
 	peer := fakeAgentPeer{}
 	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, peer)
 
-	if !reg.UpdateSizeIfOwner("sess-1", peer, 120, 40) {
-		t.Fatal("UpdateSizeIfOwner returned false, want true")
-	}
-	if !reg.TouchOutputIfOwner("sess-1", peer, []byte("one"), time.Unix(40, 0)) {
+	if !reg.TouchOutputIfOwner("sess-1", peer, []byte("one"), 120, 40, time.Unix(40, 0).UTC()) {
 		t.Fatal("TouchOutputIfOwner returned false for frame 1")
 	}
-	if !reg.TouchOutputIfOwner("sess-1", peer, []byte("two"), time.Unix(41, 0)) {
+	if !reg.TouchOutputIfOwner("sess-1", peer, []byte("two"), 120, 40, time.Unix(41, 0).UTC()) {
 		t.Fatal("TouchOutputIfOwner returned false for frame 2")
 	}
-	if !reg.TouchOutputIfOwner("sess-1", peer, []byte("three"), time.Unix(42, 0)) {
+	frameTime := time.Unix(42, 0).UTC()
+	if !reg.TouchOutputIfOwner("sess-1", peer, []byte("three"), 132, 43, frameTime) {
 		t.Fatal("TouchOutputIfOwner returned false for frame 3")
 	}
 
@@ -148,6 +153,9 @@ func TestRegistryFramesFilterByInclusiveRange(t *testing.T) {
 	}
 	if frames[0].Cols != 120 || frames[0].Rows != 40 {
 		t.Fatalf("size = %dx%d, want 120x40", frames[0].Cols, frames[0].Rows)
+	}
+	if frames[0].TS.IsZero() {
+		t.Fatal("expected non-zero timestamp")
 	}
 }
 
@@ -199,10 +207,17 @@ func TestRegistryRemoveIfOwnerSkipsStaleOwnerAfterReplacement(t *testing.T) {
 		t.Fatal("RemoveIfOwner returned true for stale owner, want false")
 	}
 
-	if err := reg.WriteInput("sess-1", []byte("ping")); err != nil {
+	if err := reg.WriteInput("sess-1", protocol.EncodeInput([]byte("ping"))); err != nil {
 		t.Fatalf("WriteInput returned error after stale-owner cleanup: %v", err)
 	}
-	if got := string(bytes.Join(newPeer.inputs, nil)); got != "ping" {
+	if len(newPeer.messages) != 1 {
+		t.Fatalf("message count = %d, want 1", len(newPeer.messages))
+	}
+	data, err := protocol.DecodeData(newPeer.messages[0])
+	if err != nil {
+		t.Fatalf("DecodeData returned error: %v", err)
+	}
+	if got := string(data); got != "ping" {
 		t.Fatalf("new peer input = %q, want ping", got)
 	}
 }

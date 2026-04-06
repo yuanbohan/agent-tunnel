@@ -21,13 +21,12 @@ local machine
 │     session hub                                              │
 │  - PTY output fanout                                         │
 │  - PTY input routing                                         │
-│  - resize propagation                                        │
+│  - PTY size tracking                                          │
 │        │                           │                         │
 │        ▼                           ▼                         │
 │  local terminal sink         relay connector                 │
 │                              - register                      │
 │                              - output                        │
-│                              - resize                        │
 └──────────────────────────────────┬───────────────────────────┘
                                    │
                                    ▼
@@ -57,7 +56,8 @@ It owns:
 - PTY lifecycle and local terminal raw mode
 - fanout of PTY output to the local terminal and relay connector
 - forwarding remote input back into the PTY
-- forwarding resize metadata
+- translating structured remote key input into PTY bytes
+- attaching current terminal `cols` and `rows` to every uploaded output frame
 
 ### Relay
 
@@ -69,6 +69,7 @@ It owns:
 - current live-session snapshots
 - rolling in-memory output frames for replay through `GET /api/sessions/:id/frames`
 - output sequence metadata
+- relay-assigned per-frame timestamps
 - global update fanout for connected clients
 
 The relay does not own:
@@ -87,6 +88,7 @@ PTY output
 → session hub
 → local terminal sink
 → relay connector
+→ output frame with current cols / rows
 → relay registry
 → retained output frames + seq assignment
 → global client updates
@@ -99,15 +101,15 @@ client input frame
 → relay
 → owning agent websocket
 → agentunnel connector
+→ key translation for supported `input_key` events
 → PTY stdin
 ```
 
-### Resize
+### Size Metadata
 
 ```text
 local PTY resize
-→ relay connector resize frame
-→ relay current terminal size metadata
+→ session hub current size update
 → future output frames carry updated cols / rows
 ```
 
