@@ -17,7 +17,7 @@ focus: review current implementation against the product goal "relay only does r
   - `agentunnel` claims a mandatory relay dependency in docs, but startup does not wait for successful relay registration in [cmd/agentunnel/main.go](../../cmd/agentunnel/main.go)
   - transport loss/backpressure is partly silent in [connector/connector.go](../../connector/connector.go) and [relay/client_update_ws.go](../../relay/client_update_ws.go)
   - mobile-facing interaction capability is implicit in [session/remote_input.go](../../session/remote_input.go) rather than explicit in session metadata or a protocol contract
-  - some naming still reflects an older browser-centric mental model, such as `BrowserUser` / `BrowserPassword` in [cmd/relay/main.go](../../cmd/relay/main.go)
+  - some naming still reflects an older UI-specific mental model, especially around auth naming in [cmd/relay/main.go](../../cmd/relay/main.go)
 - Highest-leverage improvement areas:
   - finish the protocol simplification
   - make relay/session lifecycle semantics honest
@@ -60,7 +60,7 @@ focus: review current implementation against the product goal "relay only does r
 
 ### 5. Clean up protocol boundaries and stale naming
 **Description:** Separate agent-side frames, client-to-relay input frames, relay-to-client update frames, and session metadata more cleanly in the `protocol/` package, and rename stale “browser” terminology to “client” or “viewer”. This is a targeted clarity refactor, not a new abstraction layer.
-**Rationale:** The codebase is small enough that naming drift matters. `Message`, `AgentFrame`, `ClientInputMessage`, and `ClientUpdateMessage` are all reasonable individually, but together they still carry migration residue and old mental models. `BrowserUser` / `BrowserPassword` in [cmd/relay/main.go](../../cmd/relay/main.go#L15) is a concrete example of legacy vocabulary that no longer matches “mobile client”.
+**Rationale:** The codebase is small enough that naming drift matters. `Message`, `AgentFrame`, `ClientInputMessage`, and `ClientUpdateMessage` are all reasonable individually, but together they still carry migration residue and old mental models. Relay auth naming in [cmd/relay/main.go](../../cmd/relay/main.go#L15) is a concrete example of vocabulary that should stay aligned with generic clients rather than an older UI-specific framing.
 **Downsides:** Mostly internal cleanup. Useful, but not as directly valuable as fixing product-semantics drift.
 **Confidence:** 84%
 **Complexity:** Low

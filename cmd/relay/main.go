@@ -13,24 +13,24 @@ import (
 )
 
 type mainConfig struct {
-	ListenAddr      string
-	BrowserUser     string
-	BrowserPassword string
-	AgentToken      string
+	ListenAddr string
+	User       string
+	Password   string
+	AgentToken string
 }
 
 func loadMainConfig(getenv func(string) string, portFlag string) (mainConfig, error) {
 	cfg := mainConfig{
-		BrowserUser:     getenv("AGENTUNNEL_BASIC_USER"),
-		BrowserPassword: getenv("AGENTUNNEL_BASIC_PASSWORD"),
-		AgentToken:      getenv("AGENTUNNEL_AGENT_TOKEN"),
+		User:       getenv("AGENTUNNEL_BASIC_USER"),
+		Password:   getenv("AGENTUNNEL_BASIC_PASSWORD"),
+		AgentToken: getenv("AGENTUNNEL_AGENT_TOKEN"),
 	}
 	port := "8586"
 	if portFlag != "" {
 		port = portFlag
 	}
 	cfg.ListenAddr = net.JoinHostPort("0.0.0.0", port)
-	if cfg.BrowserUser == "" || cfg.BrowserPassword == "" || cfg.AgentToken == "" {
+	if cfg.User == "" || cfg.Password == "" || cfg.AgentToken == "" {
 		return mainConfig{}, fmt.Errorf("AGENTUNNEL_BASIC_USER, AGENTUNNEL_BASIC_PASSWORD, and AGENTUNNEL_AGENT_TOKEN are required")
 	}
 
@@ -49,11 +49,11 @@ func main() {
 	logger := relay.NewLogger(os.Stderr)
 
 	handler := relay.NewHandler(relay.HandlerConfig{
-		Registry:        relay.NewRegistry(),
-		BrowserUser:     cfg.BrowserUser,
-		BrowserPassword: cfg.BrowserPassword,
-		AgentToken:      cfg.AgentToken,
-		Logger:          logger,
+		Registry:   relay.NewRegistry(),
+		User:       cfg.User,
+		Password:   cfg.Password,
+		AgentToken: cfg.AgentToken,
+		Logger:     logger,
 	})
 
 	log.Fatal(startRelay(cfg, handler, logger, net.Listen, func(srv *http.Server, ln net.Listener) error {

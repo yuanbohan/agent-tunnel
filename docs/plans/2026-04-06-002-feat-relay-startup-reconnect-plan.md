@@ -3,7 +3,7 @@ title: feat: Relay-aware startup and reconnect UX
 type: feat
 status: completed
 date: 2026-04-06
-origin: docs/brainstorms/2026-04-06-relay-startup-reconnect-requirements.md
+source: docs/brainstorms/2026-04-06-relay-startup-reconnect-requirements.md
 ---
 
 # feat: Relay-aware startup and reconnect UX
@@ -22,7 +22,7 @@ The desired behavior is intentionally asymmetric:
 - after local session start, local terminal work is always primary
 - relay outages should degrade remote visibility, not break the user's active terminal session
 
-## Origin Document
+## Source Document
 
 - Primary source: `docs/brainstorms/2026-04-06-relay-startup-reconnect-requirements.md`
 

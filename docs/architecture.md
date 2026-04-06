@@ -83,7 +83,6 @@ It owns:
 - output sequence metadata
 - relay-assigned per-frame timestamps
 - global update fanout for connected clients
-- same-origin checking for browser client websocket attach when `Origin` is present
 
 The relay does not own:
 

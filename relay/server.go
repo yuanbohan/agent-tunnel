@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,8 +37,8 @@ var (
 
 type HandlerConfig struct {
 	Registry               *Registry
-	BrowserUser            string
-	BrowserPassword        string
+	User                   string
+	Password               string
 	AgentToken             string
 	Logger                 *Logger
 	AgentReadTimeout       time.Duration
@@ -123,7 +122,7 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 
 	mux := http.NewServeMux()
 	agentUpgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-	browserUpgrader := websocket.Upgrader{CheckOrigin: sameOriginOrEmpty}
+	clientUpgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -131,7 +130,7 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 	})
 
 	mux.HandleFunc("/api/sessions", func(w http.ResponseWriter, r *http.Request) {
-		if !checkBasicAuth(r, cfg.BrowserUser, cfg.BrowserPassword) {
+		if !checkBasicAuth(r, cfg.User, cfg.Password) {
 			logAuthFailed(logger, r, "basic")
 			w.Header().Set("WWW-Authenticate", `Basic realm="agentunnel relay"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -147,13 +146,13 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 	})
 
 	mux.HandleFunc("/api/updates/ws", func(w http.ResponseWriter, r *http.Request) {
-		if !checkBasicAuth(r, cfg.BrowserUser, cfg.BrowserPassword) {
+		if !checkBasicAuth(r, cfg.User, cfg.Password) {
 			logAuthFailed(logger, r, "basic")
 			w.Header().Set("WWW-Authenticate", `Basic realm="agentunnel relay"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		conn, err := browserUpgrader.Upgrade(w, r, nil)
+		conn, err := clientUpgrader.Upgrade(w, r, nil)
 		if err != nil {
 			logWSUpgradeFailed(logger, r, "client")
 			return
@@ -275,7 +274,7 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 	})
 
 	mux.HandleFunc("/api/sessions/", func(w http.ResponseWriter, r *http.Request) {
-		if !checkBasicAuth(r, cfg.BrowserUser, cfg.BrowserPassword) {
+		if !checkBasicAuth(r, cfg.User, cfg.Password) {
 			logAuthFailed(logger, r, "basic")
 			w.Header().Set("WWW-Authenticate", `Basic realm="agentunnel relay"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -389,19 +388,6 @@ func startWSPingLoop(conn *websocket.Conn, interval, writeTimeout time.Duration)
 		}
 	}()
 	return stop
-}
-
-func sameOriginOrEmpty(r *http.Request) bool {
-	origin := r.Header.Get("Origin")
-	if origin == "" {
-		return true
-	}
-
-	originURL, err := url.Parse(origin)
-	if err != nil {
-		return false
-	}
-	return originURL.Host == r.Host
 }
 
 func parseOptionalUintQuery(r *http.Request, key string) (uint64, bool, error) {

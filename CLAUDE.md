@@ -31,7 +31,6 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 - `GET /api/sessions/:id/frames` is the standard relay-side recovery path for recently retained output after reconnect, but it is still bounded by live-only in-memory retention.
 - Relay state is live-only and in-memory. If the owning agent socket disappears, the session disappears from the list along with its retained output frames.
 - The relay does not ship a bundled frontend. Any UI or client experience is owned by external clients such as the mobile app.
-- Client WebSocket attach on the relay is same-origin checked when `Origin` is present. Do not relax this casually.
 - Stronger delivery guarantees may be explored later, but do not document or imply them before they exist in code and protocol.
 
 ## Docs Expectations

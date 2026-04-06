@@ -21,13 +21,13 @@ type sessionFramesResponse []struct {
 	TS      time.Time `json:"ts"`
 }
 
-func TestHandlerRejectsDashboardWithoutBasicAuth(t *testing.T) {
+func TestHandlerRejectsSessionsWithoutBasicAuth(t *testing.T) {
 	reg := NewRegistry()
 	handler := NewHandler(HandlerConfig{
-		Registry:        reg,
-		BrowserUser:     "demo",
-		BrowserPassword: "secret",
-		AgentToken:      "agent-token",
+		Registry:   reg,
+		User:       "demo",
+		Password:   "secret",
+		AgentToken: "agent-token",
 	})
 
 	rec := httptest.NewRecorder()
@@ -51,10 +51,10 @@ func TestHandlerReturnsLiveSessionsWithBasicAuth(t *testing.T) {
 	}, fakeAgentPeer{})
 
 	handler := NewHandler(HandlerConfig{
-		Registry:        reg,
-		BrowserUser:     "demo",
-		BrowserPassword: "secret",
-		AgentToken:      "agent-token",
+		Registry:   reg,
+		User:       "demo",
+		Password:   "secret",
+		AgentToken: "agent-token",
 	})
 
 	rec := httptest.NewRecorder()
@@ -81,10 +81,10 @@ func TestHandlerReturnsLiveSessionsWithBasicAuth(t *testing.T) {
 func TestHandlerServesSessionFrames(t *testing.T) {
 	reg := NewRegistry()
 	server := httptest.NewServer(NewHandler(HandlerConfig{
-		Registry:        reg,
-		BrowserUser:     "demo",
-		BrowserPassword: "secret",
-		AgentToken:      "agent-token",
+		Registry:   reg,
+		User:       "demo",
+		Password:   "secret",
+		AgentToken: "agent-token",
 	}))
 	defer server.Close()
 
@@ -139,10 +139,10 @@ func TestHandlerRejectsInvalidFrameRange(t *testing.T) {
 	reg := NewRegistry()
 	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, fakeAgentPeer{})
 	handler := NewHandler(HandlerConfig{
-		Registry:        reg,
-		BrowserUser:     "demo",
-		BrowserPassword: "secret",
-		AgentToken:      "agent-token",
+		Registry:   reg,
+		User:       "demo",
+		Password:   "secret",
+		AgentToken: "agent-token",
 	})
 
 	rec := httptest.NewRecorder()
@@ -158,10 +158,10 @@ func TestHandlerRejectsInvalidFrameRange(t *testing.T) {
 func TestUpdatesWebSocketStreamsOutputAndRemoval(t *testing.T) {
 	reg := NewRegistry()
 	server := httptest.NewServer(NewHandler(HandlerConfig{
-		Registry:        reg,
-		BrowserUser:     "demo",
-		BrowserPassword: "secret",
-		AgentToken:      "agent-token",
+		Registry:   reg,
+		User:       "demo",
+		Password:   "secret",
+		AgentToken: "agent-token",
 	}))
 	defer server.Close()
 
@@ -212,13 +212,34 @@ func TestUpdatesWebSocketStreamsOutputAndRemoval(t *testing.T) {
 	}
 }
 
+func TestUpdatesWebSocketAcceptsOriginHeader(t *testing.T) {
+	reg := NewRegistry()
+	server := httptest.NewServer(NewHandler(HandlerConfig{
+		Registry:   reg,
+		User:       "demo",
+		Password:   "secret",
+		AgentToken: "agent-token",
+	}))
+	defer server.Close()
+
+	updatesURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/updates/ws"
+	headers := http.Header{}
+	headers.Set("Authorization", basicAuth("demo", "secret"))
+	headers.Set("Origin", "https://client.example")
+	conn, _, err := websocket.DefaultDialer.Dial(updatesURL, headers)
+	if err != nil {
+		t.Fatalf("Dial returned error: %v", err)
+	}
+	defer conn.Close()
+}
+
 func TestUpdatesWebSocketForwardsClientInputTextToAgent(t *testing.T) {
 	reg := NewRegistry()
 	server := httptest.NewServer(NewHandler(HandlerConfig{
-		Registry:        reg,
-		BrowserUser:     "demo",
-		BrowserPassword: "secret",
-		AgentToken:      "agent-token",
+		Registry:   reg,
+		User:       "demo",
+		Password:   "secret",
+		AgentToken: "agent-token",
 	}))
 	defer server.Close()
 
@@ -252,10 +273,10 @@ func TestUpdatesWebSocketForwardsClientInputTextToAgent(t *testing.T) {
 func TestUpdatesWebSocketForwardsClientInputKeyToAgent(t *testing.T) {
 	reg := NewRegistry()
 	server := httptest.NewServer(NewHandler(HandlerConfig{
-		Registry:        reg,
-		BrowserUser:     "demo",
-		BrowserPassword: "secret",
-		AgentToken:      "agent-token",
+		Registry:   reg,
+		User:       "demo",
+		Password:   "secret",
+		AgentToken: "agent-token",
 	}))
 	defer server.Close()
 
