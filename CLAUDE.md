@@ -23,17 +23,22 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 - On launch, `agentunnel` gives relay registration a bounded first chance to succeed. If that startup window expires, the local terminal session still starts and the relay reconnect loop continues in the background.
 - After the local terminal session has begun, relay unavailability must not interrupt local terminal work; it only affects remote visibility and interaction until reconnect succeeds.
 - The relay is live-only and monitoring-focused. It lists live sessions, retains a rolling in-memory output frame buffer per live session, and forwards multiplexed live updates on one global client socket; it does not create or stop local sessions.
+- The preferred client foreground receive channel is `GET /api/updates/ws`, and it is a best-effort live channel rather than a guaranteed lossless transcript.
+- The local terminal remains the most complete source of truth for session output in the current product revision.
 - The relay is content-opaque. It may forward or retain output bytes for replay, but it must not derive previews or other message semantics from terminal content.
+- Relay `seq` values describe relay-recorded output ordering, not end-to-end proof that every PTY byte reached a remote client.
+- `GET /api/sessions/:id/frames` is the standard relay-side recovery path for recently retained output after reconnect, but it is still bounded by live-only in-memory retention.
 - Relay state is live-only and in-memory. If the owning agent socket disappears, the session disappears from the list along with its retained output frames.
 - The relay does not ship a bundled frontend. Any UI or client experience is owned by external clients such as the mobile app.
 - Client WebSocket attach on the relay is same-origin checked when `Origin` is present. Do not relax this casually.
-- The preferred client foreground receive channel is `GET /api/updates/ws`, which multiplexes output by `session_id`.
+- Stronger delivery guarantees may be explored later, but do not document or imply them before they exist in code and protocol.
 
 ## Docs Expectations
 
 - Keep `README.md`, `docs/architecture.md`, `CLAUDE.md`, and `AGENTS.md` aligned with the current implementation when behavior or scope changes.
 - If you change relay auth, relay lifecycle, client-facing endpoints, or PTY/input behavior, update `docs/architecture.md`.
 - If you change retained output frame semantics, output sequence semantics, client replay behavior, or the global live-update stream, update `docs/protocol.md` and `docs/architecture.md`.
+- If you change connector buffering or any behavior that affects the best-effort remote-output contract, update `README.md`, `docs/protocol.md`, `docs/architecture.md`, and `CLAUDE.md`.
 - If you change operator-facing startup flow or environment variables, update `README.md`.
 
 ## Verification

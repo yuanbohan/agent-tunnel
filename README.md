@@ -8,6 +8,8 @@ On startup, `agentunnel` gives relay registration a short first chance to succee
 
 The relay is intentionally content-opaque. It forwards and retains output bytes for replay, but it does not derive previews or other content semantics from terminal data.
 
+Remote/mobile clients can observe and interact with live sessions and are suitable for real remote work, but the remote output path is currently best-effort. The local terminal remains the most complete view of the session output in the current revision.
+
 Client input uses structured events:
 
 - `input_text` for normal typing, pasted text, and IME-committed text
@@ -74,8 +76,8 @@ While reconnecting, `agentunnel` keeps retrying in the background and shows a co
 Point your client at the relay with HTTP Basic Auth and use the relay APIs:
 
 - `GET /api/sessions` to list live sessions
-- `GET /api/updates/ws` to receive global live output updates for all sessions on one foreground socket
-- `GET /api/sessions/:id/frames` to fetch the currently retained in-memory output frames
+- `GET /api/updates/ws` to receive best-effort global live output updates for all sessions on one foreground socket
+- `GET /api/sessions/:id/frames` to fetch the currently retained in-memory output frames and recover recent relay-retained output after reconnect
 - `GET /api/sessions/:id/frames?from=101&to=120` to fetch an inclusive output sequence range
 
 Each output frame, whether fetched from retained history or received live over websocket, includes:
@@ -83,7 +85,11 @@ Each output frame, whether fetched from retained history or received live over w
 - `cols` and `rows`
 - relay-assigned UTC `ts`
 
-Retained output frames are intentionally live-only and in-memory. If the owning agent disconnects, the session disappears along with its retained frames.
+Relay `seq` values describe the order of frames the relay has recorded, not proof that a remote client has seen every byte the local PTY produced. After reconnecting to `GET /api/updates/ws`, clients should treat `GET /api/sessions/:id/frames` as the standard relay-side recovery path for recently retained output.
+
+Retained output frames are intentionally live-only, bounded, and in-memory. They are not a durable or complete transcript. If the owning agent disconnects, the session disappears along with its retained frames.
+
+Stronger delivery guarantees may be considered later, but the current contract is intentionally best-effort.
 
 ## VPS Deployment
 

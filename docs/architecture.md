@@ -6,6 +6,8 @@ This document explains the stable shape of the system.
 
 `agentunnel` owns the real local agent process and its PTY. Every supported launcher follows the same path: one local PTY child, one relay connector, no launcher-specific sidecar. The relay exposes authenticated APIs so external clients can observe or interact with that live session, replay retained output frames, and send input back to the PTY.
 
+The local terminal is the primary and most complete view of the PTY session. The remote path is intentionally lighter weight: `GET /api/updates/ws` is a best-effort live channel, while `GET /api/sessions/:id/frames` is the standard relay-side recovery path for recently retained output.
+
 `agentunnel` treats relay availability in two phases:
 
 - startup gating: it gives relay registration a bounded first chance before entering the local terminal session
@@ -78,6 +80,7 @@ It owns:
 - output sequence metadata
 - relay-assigned per-frame timestamps
 - global update fanout for connected clients
+- same-origin checking for browser client websocket attach when `Origin` is present
 
 The relay does not own:
 
@@ -85,6 +88,7 @@ The relay does not own:
 - durable history
 - preview rendering
 - content interpretation of terminal output
+- end-to-end guarantees that a remote client observed every PTY byte
 
 ## Main Data Flows
 
@@ -95,11 +99,14 @@ PTY output
 → session hub
 → local terminal sink
 → relay connector
+→ best-effort enqueue toward relay
 → output frame with current cols / rows
 → relay registry
 → retained output frames + seq assignment
 → global client updates
 ```
+
+`seq` begins only once the relay has accepted and recorded an output frame. It is ordering metadata for relay-retained output, not proof of complete delivery from the PTY to every remote client.
 
 ### Input
 
@@ -134,6 +141,17 @@ local PTY resize
 → session hub current size update
 → future output frames carry updated cols / rows
 ```
+
+### Remote Recovery
+
+```text
+client loses /api/updates/ws
+→ client reconnects to /api/updates/ws
+→ client requests /api/sessions/:id/frames as needed
+→ relay returns only the currently retained in-memory frames for that still-live session
+```
+
+This recovery path is standard for clients, but it is still bounded by live-only relay retention rather than a durable transcript.
 
 ## Package Map
 
