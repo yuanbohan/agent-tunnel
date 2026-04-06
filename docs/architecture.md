@@ -4,7 +4,7 @@ This document explains the stable shape of the system.
 
 ## System Shape
 
-`agentunnel` owns the real local agent process and its PTY. Every supported launcher follows the same path: one local PTY child, one relay connector, no launcher-specific sidecar. The relay exposes authenticated APIs so external clients can observe or interact with that live session.
+`agentunnel` owns the real local agent process and its PTY. Every supported launcher follows the same path: one local PTY child, one relay connector, no launcher-specific sidecar. The relay exposes authenticated APIs so external clients can observe or interact with that live session, replay retained output frames, and send input back to the PTY.
 
 ```text
 local machine
@@ -67,7 +67,7 @@ It owns:
 
 - client and agent authentication
 - current live-session snapshots
-- rolling in-memory output frames for replay
+- rolling in-memory output frames for replay through `GET /api/sessions/:id/frames`
 - output sequence metadata
 - global update fanout for connected clients
 
@@ -88,7 +88,7 @@ PTY output
 → local terminal sink
 → relay connector
 → relay registry
-→ retained output frames + seq update
+→ retained output frames + seq assignment
 → global client updates
 ```
 

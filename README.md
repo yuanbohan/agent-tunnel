@@ -61,8 +61,9 @@ Point your client at the relay with HTTP Basic Auth and use the relay APIs:
 - `GET /api/sessions` to list live sessions
 - `GET /api/updates/ws` to receive global live output updates for all sessions on one foreground socket
 - `GET /api/sessions/:id/frames` to fetch the currently retained in-memory output frames
+- `GET /api/sessions/:id/frames?from=101&to=120` to fetch an inclusive output sequence range
 
-Session history is intentionally live-only and in-memory. If the owning agent disconnects, the session disappears along with its retained history.
+Retained output frames are intentionally live-only and in-memory. If the owning agent disconnects, the session disappears along with its retained frames.
 
 ## VPS Deployment
 

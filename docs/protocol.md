@@ -51,7 +51,7 @@ Authorization: Bearer <token>
 
 ## Output Frames
 
-`GET /api/sessions/:id/frames?from=<seq>&to=<seq>` returns a JSON array. Both query parameters are optional and inclusive.
+`GET /api/sessions/:id/frames?from=<seq>&to=<seq>` returns a JSON array. Both query parameters are optional and inclusive. The response body is the array itself, not an envelope object.
 
 ```json
 [
@@ -66,6 +66,15 @@ Query behavior:
 - only `from`: return frames with `seq >= from`
 - only `to`: return frames with `seq <= to`
 - both `from` and `to`: return frames in the closed range `[from, to]`
+- if both are present and `from > to`: return `400 Bad Request`
+
+Example requests:
+
+```text
+GET /api/sessions/sess-1/frames
+GET /api/sessions/sess-1/frames?from=101
+GET /api/sessions/sess-1/frames?from=101&to=120
+```
 
 ## WebSocket Frames
 
