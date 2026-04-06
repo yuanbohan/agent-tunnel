@@ -115,12 +115,12 @@ func TestHubResizeRejectsInvalidDimensions(t *testing.T) {
 }
 
 func TestStartCommandBridgesInputAndOutput(t *testing.T) {
-	running, err := StartCommand(context.Background(), "/bin/sh", []string{
+	running, err := StartCommandWithInitialSinks(context.Background(), "/bin/sh", []string{
 		"-c",
 		"read line; printf '<child>%s</child>' \"$line\"",
-	})
+	}, nil)
 	if err != nil {
-		t.Fatalf("StartCommand returned error: %v", err)
+		t.Fatalf("StartCommandWithInitialSinks returned error: %v", err)
 	}
 	defer running.Close()
 
@@ -162,12 +162,12 @@ func TestStartCommandWithInitialSinksCapturesImmediateOutput(t *testing.T) {
 }
 
 func TestRunningCloseReapsChildProcess(t *testing.T) {
-	running, err := StartCommand(context.Background(), "/bin/sh", []string{
+	running, err := StartCommandWithInitialSinks(context.Background(), "/bin/sh", []string{
 		"-c",
 		"sleep 30",
-	})
+	}, nil)
 	if err != nil {
-		t.Fatalf("StartCommand returned error: %v", err)
+		t.Fatalf("StartCommandWithInitialSinks returned error: %v", err)
 	}
 
 	if err := running.Close(); err != nil {
@@ -180,12 +180,12 @@ func TestRunningCloseReapsChildProcess(t *testing.T) {
 }
 
 func TestRunningCloseReturnsProcessExitWhenCommandAlreadyFinished(t *testing.T) {
-	running, err := StartCommand(context.Background(), "/bin/sh", []string{
+	running, err := StartCommandWithInitialSinks(context.Background(), "/bin/sh", []string{
 		"-c",
 		"sleep 0.05; exit 7",
-	})
+	}, nil)
 	if err != nil {
-		t.Fatalf("StartCommand returned error: %v", err)
+		t.Fatalf("StartCommandWithInitialSinks returned error: %v", err)
 	}
 
 	time.Sleep(100 * time.Millisecond)
@@ -196,12 +196,12 @@ func TestRunningCloseReturnsProcessExitWhenCommandAlreadyFinished(t *testing.T) 
 }
 
 func TestRunningWaitDrainsPTYOutput(t *testing.T) {
-	running, err := StartCommand(context.Background(), "/bin/sh", []string{
+	running, err := StartCommandWithInitialSinks(context.Background(), "/bin/sh", []string{
 		"-c",
 		"i=0; while [ $i -lt 8192 ]; do printf x; i=$((i+1)); done",
-	})
+	}, nil)
 	if err != nil {
-		t.Fatalf("StartCommand returned error: %v", err)
+		t.Fatalf("StartCommandWithInitialSinks returned error: %v", err)
 	}
 	defer running.Close()
 
@@ -219,12 +219,12 @@ func TestRunningWaitDrainsPTYOutput(t *testing.T) {
 }
 
 func TestRunningWaitClosesPTY(t *testing.T) {
-	running, err := StartCommand(context.Background(), "/bin/sh", []string{
+	running, err := StartCommandWithInitialSinks(context.Background(), "/bin/sh", []string{
 		"-c",
 		"printf done",
-	})
+	}, nil)
 	if err != nil {
-		t.Fatalf("StartCommand returned error: %v", err)
+		t.Fatalf("StartCommandWithInitialSinks returned error: %v", err)
 	}
 
 	if err := running.Wait(); err != nil {

@@ -224,7 +224,7 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 
 		peer := newWSAgentPeer(conn)
 		// The relay treats the agent websocket as the owner of this live session.
-		// All later output/resize/session_state mutations are validated against this
+		// All later output/resize mutations are validated against this
 		// owner so stale connections cannot keep mutating a replaced session.
 		registry.Register(*register.Session, peer)
 		defer registry.RemoveIfOwner(register.Session.SessionID, peer)
@@ -266,19 +266,6 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 				registry.TouchOutputIfOwner(register.Session.SessionID, peer, data, time.Now().UTC())
 			case "resize":
 				registry.UpdateSizeIfOwner(register.Session.SessionID, peer, msg.Cols, msg.Rows)
-			case "session_state":
-				// This is how Codex action-required information enters the relay.
-				// Upstream chain:
-				//   Codex app-server -> codexapp.MonitorActionRequired
-				//   -> connector.UpdateSessionState -> `/agent/ws`
-				//
-				// The relay keeps the state as structured session metadata instead of
-				// mixing it into terminal history.
-				changedAt := time.Now().UTC()
-				if msg.ChangedAt != nil {
-					changedAt = msg.ChangedAt.UTC()
-				}
-				registry.UpdateSessionStateIfOwner(register.Session.SessionID, peer, msg.State, changedAt, msg.ActionRequiredSince)
 			}
 		}
 	})
@@ -368,10 +355,6 @@ func logWSUpgradeFailed(logger *Logger, r *http.Request, role string) {
 		String("remote_addr", r.RemoteAddr),
 		String("role", role),
 	)
-}
-
-func classifyDisconnectReason(err error) string {
-	return disconnectLogFields(err)[0].Value.String()
 }
 
 func disconnectLogFields(err error) []Field {

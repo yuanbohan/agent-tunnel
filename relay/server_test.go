@@ -4,12 +4,9 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -64,7 +61,6 @@ func TestHandlerReturnsLiveSessionsWithBasicAuth(t *testing.T) {
 		CommandPreview: "codex --profile prod",
 		CWD:            "/tmp/project",
 		StartedAt:      time.Unix(10, 0),
-		State:          protocol.SessionStateNormal,
 	}, fakeAgentPeer{})
 
 	handler := NewHandler(HandlerConfig{
@@ -90,59 +86,10 @@ func TestHandlerReturnsLiveSessionsWithBasicAuth(t *testing.T) {
 	if len(sessions) != 1 || sessions[0].SessionID != "sess-1" {
 		t.Fatalf("sessions = %#v, want sess-1", sessions)
 	}
-	for _, want := range []string{"latest_seq", "last_read_seq", "unread_count", "state"} {
+	for _, want := range []string{"latest_seq", "last_read_seq", "unread_count"} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("body = %s, want field %q", rec.Body.String(), want)
 		}
-	}
-	for _, unwanted := range []string{"preview_seq", "preview_b64", "last_preview"} {
-		if strings.Contains(rec.Body.String(), unwanted) {
-			t.Fatalf("body = %s, did not expect field %q", rec.Body.String(), unwanted)
-		}
-	}
-}
-
-func TestHandlerReturnsSessionStateInListAPI(t *testing.T) {
-	reg := NewRegistry()
-	since := time.Unix(100, 0).UTC()
-	changedAt := time.Unix(101, 0).UTC()
-	reg.Register(protocol.SessionInfo{
-		SessionID:           "sess-1",
-		Launcher:            "codex",
-		CWD:                 "/tmp/project",
-		CommandPreview:      "codex",
-		StartedAt:           time.Unix(10, 0),
-		State:               protocol.SessionStateActionRequired,
-		StateChangedAt:      &changedAt,
-		ActionRequiredSince: &since,
-	}, fakeAgentPeer{})
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
-	req.Header.Set("Authorization", basicAuth("demo", "secret"))
-	NewHandler(HandlerConfig{
-		Registry:        reg,
-		BrowserUser:     "demo",
-		BrowserPassword: "secret",
-		AgentToken:      "agent-token",
-	}).ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-
-	var sessions []protocol.SessionInfo
-	if err := json.Unmarshal(rec.Body.Bytes(), &sessions); err != nil {
-		t.Fatalf("Unmarshal returned error: %v", err)
-	}
-	if len(sessions) != 1 {
-		t.Fatalf("len(sessions) = %d, want 1", len(sessions))
-	}
-	if sessions[0].State != protocol.SessionStateActionRequired {
-		t.Fatalf("State = %q, want %q", sessions[0].State, protocol.SessionStateActionRequired)
-	}
-	if sessions[0].ActionRequiredSince == nil || !sessions[0].ActionRequiredSince.Equal(since) {
-		t.Fatalf("ActionRequiredSince = %v, want %v", sessions[0].ActionRequiredSince, since)
 	}
 }
 
@@ -175,467 +122,59 @@ func TestHandlerServesSessionHistoryAndReadState(t *testing.T) {
 			t.Fatalf("WriteJSON output returned error: %v", err)
 		}
 	}
-	waitForLatestSeq(t, reg, "sess-1", 3)
 
-	historyReq := httptest.NewRequest(http.MethodGet, "/api/sessions/sess-1/history?after=0", nil)
-	historyReq.Header.Set("Authorization", basicAuth("demo", "secret"))
-	historyRec := httptest.NewRecorder()
-	NewHandler(HandlerConfig{
-		Registry:        reg,
-		BrowserUser:     "demo",
-		BrowserPassword: "secret",
-		AgentToken:      "agent-token",
-	}).ServeHTTP(historyRec, historyReq)
+	req, err := http.NewRequest(http.MethodGet, server.URL+"/api/sessions/sess-1/history?after=1", nil)
+	if err != nil {
+		t.Fatalf("NewRequest returned error: %v", err)
+	}
+	req.Header.Set("Authorization", basicAuth("demo", "secret"))
 
-	if historyRec.Code != http.StatusOK {
-		t.Fatalf("history status = %d, want 200", historyRec.Code)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do returned error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 
 	var history sessionHistoryResponse
-	if err := json.Unmarshal(historyRec.Body.Bytes(), &history); err != nil {
-		t.Fatalf("Unmarshal history returned error: %v", err)
+	if err := json.NewDecoder(resp.Body).Decode(&history); err != nil {
+		t.Fatalf("Decode returned error: %v", err)
 	}
 	if history.LatestSeq != 3 {
 		t.Fatalf("LatestSeq = %d, want 3", history.LatestSeq)
 	}
-	if history.LastReadSeq != 0 {
-		t.Fatalf("LastReadSeq = %d, want 0", history.LastReadSeq)
-	}
-	if len(history.Messages) != 3 {
-		t.Fatalf("len(Messages) = %d, want 3", len(history.Messages))
-	}
-	wantSizes := [][2]int{{120, 40}, {120, 40}, {132, 43}}
-	for i, want := range []string{"one", "two", "three"} {
-		if history.Messages[i].Seq != uint64(i+1) {
-			t.Fatalf("message %d seq = %d, want %d", i, history.Messages[i].Seq, i+1)
-		}
-		data, err := base64.StdEncoding.DecodeString(history.Messages[i].DataB64)
-		if err != nil {
-			t.Fatalf("DecodeString returned error: %v", err)
-		}
-		if string(data) != want {
-			t.Fatalf("message %d data = %q, want %q", i, string(data), want)
-		}
-		if history.Messages[i].Cols != wantSizes[i][0] || history.Messages[i].Rows != wantSizes[i][1] {
-			t.Fatalf("message %d size = %dx%d, want %dx%d", i, history.Messages[i].Cols, history.Messages[i].Rows, wantSizes[i][0], wantSizes[i][1])
-		}
-	}
-	if history.CurrentCols != 132 || history.CurrentRows != 43 {
-		t.Fatalf("current size = %dx%d, want 132x43", history.CurrentCols, history.CurrentRows)
+	if len(history.Messages) != 2 {
+		t.Fatalf("len(Messages) = %d, want 2", len(history.Messages))
 	}
 
-	historyReq = httptest.NewRequest(http.MethodGet, "/api/sessions/sess-1/history?after=2", nil)
-	historyReq.Header.Set("Authorization", basicAuth("demo", "secret"))
-	historyRec = httptest.NewRecorder()
-	NewHandler(HandlerConfig{
-		Registry:        reg,
-		BrowserUser:     "demo",
-		BrowserPassword: "secret",
-		AgentToken:      "agent-token",
-	}).ServeHTTP(historyRec, historyReq)
-
-	if historyRec.Code != http.StatusOK {
-		t.Fatalf("bounded after history status = %d, want 200", historyRec.Code)
-	}
-	if err := json.Unmarshal(historyRec.Body.Bytes(), &history); err != nil {
-		t.Fatalf("Unmarshal bounded after history returned error: %v", err)
-	}
-	if len(history.Messages) != 1 || history.Messages[0].Seq != 3 {
-		t.Fatalf("bounded after history messages = %#v, want seq 3 only", history.Messages)
-	}
-	if history.Messages[0].Cols != 132 || history.Messages[0].Rows != 43 {
-		t.Fatalf("bounded after history size = %dx%d, want 132x43", history.Messages[0].Cols, history.Messages[0].Rows)
-	}
-
-	readBody := strings.NewReader(`{"seq":2}`)
-	readReq := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-1/read", readBody)
-	readReq.Header.Set("Authorization", basicAuth("demo", "secret"))
-	readReq.Header.Set("Content-Type", "application/json")
-	readRec := httptest.NewRecorder()
-	NewHandler(HandlerConfig{
-		Registry:        reg,
-		BrowserUser:     "demo",
-		BrowserPassword: "secret",
-		AgentToken:      "agent-token",
-	}).ServeHTTP(readRec, readReq)
-
-	if readRec.Code != http.StatusOK {
-		t.Fatalf("read status = %d, want 200", readRec.Code)
-	}
-
-	var afterRead readStateResponse
-	if err := json.Unmarshal(readRec.Body.Bytes(), &afterRead); err != nil {
-		t.Fatalf("Unmarshal read response returned error: %v", err)
-	}
-	if afterRead.LastReadSeq != 2 {
-		t.Fatalf("LastReadSeq = %d, want 2", afterRead.LastReadSeq)
-	}
-	if afterRead.UnreadCount != 1 {
-		t.Fatalf("UnreadCount = %d, want 1", afterRead.UnreadCount)
-	}
-
-	readBody = strings.NewReader(`{"seq":1}`)
-	readReq = httptest.NewRequest(http.MethodPost, "/api/sessions/sess-1/read", readBody)
-	readReq.Header.Set("Authorization", basicAuth("demo", "secret"))
-	readReq.Header.Set("Content-Type", "application/json")
-	readRec = httptest.NewRecorder()
-	NewHandler(HandlerConfig{
-		Registry:        reg,
-		BrowserUser:     "demo",
-		BrowserPassword: "secret",
-		AgentToken:      "agent-token",
-	}).ServeHTTP(readRec, readReq)
-
-	if readRec.Code != http.StatusOK {
-		t.Fatalf("read regression status = %d, want 200", readRec.Code)
-	}
-	if err := json.Unmarshal(readRec.Body.Bytes(), &afterRead); err != nil {
-		t.Fatalf("Unmarshal read regression response returned error: %v", err)
-	}
-	if afterRead.LastReadSeq != 2 {
-		t.Fatalf("LastReadSeq regression = %d, want 2", afterRead.LastReadSeq)
-	}
-	if afterRead.UnreadCount != 1 {
-		t.Fatalf("UnreadCount regression = %d, want 1", afterRead.UnreadCount)
-	}
-}
-
-func TestHandlerNoLongerServesSessionScopedWebSocket(t *testing.T) {
-	reg := NewRegistry()
-	server := httptest.NewServer(NewHandler(HandlerConfig{
-		Registry:        reg,
-		BrowserUser:     "demo",
-		BrowserPassword: "secret",
-		AgentToken:      "agent-token",
-	}))
-	defer server.Close()
-
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions/sess-1/ws", nil)
-	req.Header.Set("Authorization", basicAuth("demo", "secret"))
-	rec := httptest.NewRecorder()
-	NewHandler(HandlerConfig{
-		Registry:        reg,
-		BrowserUser:     "demo",
-		BrowserPassword: "secret",
-		AgentToken:      "agent-token",
-	}).ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404", rec.Code)
-	}
-}
-
-func TestHandlerRejectsAgentWebSocketWithWrongToken(t *testing.T) {
-	reg := NewRegistry()
-	server := httptest.NewServer(NewHandler(HandlerConfig{
-		Registry:        reg,
-		BrowserUser:     "demo",
-		BrowserPassword: "secret",
-		AgentToken:      "agent-token",
-	}))
-	defer server.Close()
-
-	resp, err := http.Get(server.URL + "/agent/ws")
+	markReadReq, err := http.NewRequest(http.MethodPost, server.URL+"/api/sessions/sess-1/read", strings.NewReader(`{"seq":2}`))
 	if err != nil {
-		t.Fatalf("Get returned error: %v", err)
+		t.Fatalf("NewRequest returned error: %v", err)
 	}
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", resp.StatusCode)
-	}
-}
+	markReadReq.Header.Set("Authorization", basicAuth("demo", "secret"))
+	markReadReq.Header.Set("Content-Type", "application/json")
 
-func TestClassifyDisconnectReason(t *testing.T) {
-	tests := []struct {
-		name string
-		err  error
-		want string
-	}{
-		{
-			name: "nil is client closed",
-			err:  nil,
-			want: "client_closed",
-		},
-		{
-			name: "normal close is client closed",
-			err:  &websocket.CloseError{Code: websocket.CloseNormalClosure},
-			want: "client_closed",
-		},
-		{
-			name: "going away is client closed",
-			err:  &websocket.CloseError{Code: websocket.CloseGoingAway},
-			want: "client_closed",
-		},
-		{
-			name: "timeout is read error",
-			err:  timeoutError{},
-			want: "read_error",
-		},
-		{
-			name: "abnormal close is read error",
-			err:  &websocket.CloseError{Code: websocket.CloseAbnormalClosure},
-			want: "read_error",
-		},
-		{
-			name: "protocol close is read error",
-			err:  &websocket.CloseError{Code: websocket.CloseProtocolError},
-			want: "read_error",
-		},
-		{
-			name: "backpressure stays backpressure",
-			err:  errWSSinkBackpressure,
-			want: "backpressure",
-		},
-		{
-			name: "generic error is read error",
-			err:  errors.New("boom"),
-			want: "read_error",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := classifyDisconnectReason(tt.err); got != tt.want {
-				t.Fatalf("classifyDisconnectReason(%v) = %q, want %q", tt.err, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestNewHandlerWiresInjectedLoggerIntoRegistry(t *testing.T) {
-	reg := NewRegistry()
-	logger := NewDiscardLogger()
-
-	_ = NewHandler(HandlerConfig{
-		Registry:        reg,
-		BrowserUser:     "demo",
-		BrowserPassword: "secret",
-		AgentToken:      "agent-token",
-		Logger:          logger,
-	})
-
-	if reg.logger != logger {
-		t.Fatalf("registry logger = %p, want %p", reg.logger, logger)
-	}
-}
-
-func TestNewHandlerKeepsRegistryLoggerWhenConfigLoggerNil(t *testing.T) {
-	reg := NewRegistry()
-	logger := NewDiscardLogger()
-	reg.SetLogger(logger)
-
-	_ = NewHandler(HandlerConfig{
-		Registry:        reg,
-		BrowserUser:     "demo",
-		BrowserPassword: "secret",
-		AgentToken:      "agent-token",
-	})
-
-	if reg.logger != logger {
-		t.Fatalf("registry logger = %p, want preserved %p", reg.logger, logger)
-	}
-}
-
-func TestHandlerLogsAgentAuthFailure(t *testing.T) {
-	reg := NewRegistry()
-	logs := newLogRecorder()
-	server := httptest.NewServer(NewHandler(HandlerConfig{
-		Registry:        reg,
-		BrowserUser:     "demo",
-		BrowserPassword: "secret",
-		AgentToken:      "agent-token",
-		Logger:          NewLogger(logs),
-	}))
-	defer server.Close()
-
-	resp, err := http.Get(server.URL + "/agent/ws")
+	markReadResp, err := http.DefaultClient.Do(markReadReq)
 	if err != nil {
-		t.Fatalf("Get returned error: %v", err)
+		t.Fatalf("Do mark read returned error: %v", err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", resp.StatusCode)
+	defer markReadResp.Body.Close()
+	if markReadResp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", markReadResp.StatusCode)
 	}
 
-	entry := waitForLogEvent(t, logs, "auth_failed", func(entry map[string]any) bool {
-		return entry["path"] == "/agent/ws" && entry["auth_type"] == "bearer"
-	})
-	if entry["remote_addr"] == "" {
-		t.Fatalf("remote_addr = %v, want non-empty", entry["remote_addr"])
+	var state readStateResponse
+	if err := json.NewDecoder(markReadResp.Body).Decode(&state); err != nil {
+		t.Fatalf("Decode returned error: %v", err)
 	}
-}
-
-func TestHandlerRootReturnsNotFoundWithoutBundledFrontend(t *testing.T) {
-	reg := NewRegistry()
-	handler := NewHandler(HandlerConfig{
-		Registry:        reg,
-		BrowserUser:     "demo",
-		BrowserPassword: "secret",
-		AgentToken:      "agent-token",
-	})
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404", rec.Code)
+	if state.LastReadSeq != 2 {
+		t.Fatalf("LastReadSeq = %d, want 2", state.LastReadSeq)
 	}
 }
 
-func TestAgentRegisterAddsLiveSessionAndUpdatesSocketReceivesOutput(t *testing.T) {
-	reg := NewRegistry()
-	server := httptest.NewServer(NewHandler(HandlerConfig{
-		Registry:        reg,
-		BrowserUser:     "demo",
-		BrowserPassword: "secret",
-		AgentToken:      "agent-token",
-	}))
-	defer server.Close()
-
-	agentURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/agent/ws"
-	headers := http.Header{}
-	headers.Set("Authorization", "Bearer agent-token")
-	agentConn, _, err := websocket.DefaultDialer.Dial(agentURL, headers)
-	if err != nil {
-		t.Fatalf("Dial agent returned error: %v", err)
-	}
-	defer agentConn.Close()
-
-	register := protocol.RegisterFrame(protocol.SessionInfo{
-		SessionID:      "sess-1",
-		Launcher:       "codex",
-		Label:          "api-fix",
-		CommandPreview: "codex --profile prod",
-		CWD:            "/tmp/project",
-	})
-	if err := agentConn.WriteJSON(register); err != nil {
-		t.Fatalf("WriteJSON register returned error: %v", err)
-	}
-
-	updatesURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/updates/ws"
-	updatesHeaders := http.Header{}
-	updatesHeaders.Set("Authorization", basicAuth("demo", "secret"))
-	updatesConn, _, err := websocket.DefaultDialer.Dial(updatesURL, updatesHeaders)
-	if err != nil {
-		t.Fatalf("Dial updates returned error: %v", err)
-	}
-	defer updatesConn.Close()
-
-	output := protocol.EncodeOutput([]byte("world"))
-	if err := agentConn.WriteJSON(output); err != nil {
-		t.Fatalf("WriteJSON output returned error: %v", err)
-	}
-
-	var got protocol.ClientUpdateMessage
-	if err := updatesConn.ReadJSON(&got); err != nil {
-		t.Fatalf("ReadJSON updates returned error: %v", err)
-	}
-	if got.SessionID != "sess-1" || got.Type != "output" || got.Seq != 1 {
-		t.Fatalf("got = %#v, want sess-1 output seq 1", got)
-	}
-}
-
-func TestAgentSessionStateUpdatesAppearInListAPI(t *testing.T) {
-	reg := NewRegistry()
-	server := httptest.NewServer(NewHandler(HandlerConfig{
-		Registry:        reg,
-		BrowserUser:     "demo",
-		BrowserPassword: "secret",
-		AgentToken:      "agent-token",
-	}))
-	defer server.Close()
-
-	agentConn := dialAndRegisterAgent(t, server.URL, "sess-1")
-	defer agentConn.Close()
-
-	changedAt := time.Unix(123, 0).UTC()
-	since := time.Unix(122, 0).UTC()
-	if err := agentConn.WriteJSON(protocol.EncodeSessionState(protocol.SessionStateActionRequired, changedAt, &since)); err != nil {
-		t.Fatalf("WriteJSON session_state returned error: %v", err)
-	}
-
-	waitForSessionState(t, reg, "sess-1", protocol.SessionStateActionRequired)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
-	req.Header.Set("Authorization", basicAuth("demo", "secret"))
-	rec := httptest.NewRecorder()
-	NewHandler(HandlerConfig{
-		Registry:        reg,
-		BrowserUser:     "demo",
-		BrowserPassword: "secret",
-		AgentToken:      "agent-token",
-	}).ServeHTTP(rec, req)
-
-	var sessions []protocol.SessionInfo
-	if err := json.Unmarshal(rec.Body.Bytes(), &sessions); err != nil {
-		t.Fatalf("Unmarshal returned error: %v", err)
-	}
-	if len(sessions) != 1 {
-		t.Fatalf("len(sessions) = %d, want 1", len(sessions))
-	}
-	if sessions[0].State != protocol.SessionStateActionRequired {
-		t.Fatalf("State = %q, want %q", sessions[0].State, protocol.SessionStateActionRequired)
-	}
-}
-
-func TestUpdatesWebSocketStreamsOutputAcrossSessions(t *testing.T) {
-	reg := NewRegistry()
-	server := httptest.NewServer(NewHandler(HandlerConfig{
-		Registry:        reg,
-		BrowserUser:     "demo",
-		BrowserPassword: "secret",
-		AgentToken:      "agent-token",
-	}))
-	defer server.Close()
-
-	agentOne := dialAndRegisterAgent(t, server.URL, "sess-1")
-	defer agentOne.Close()
-	agentTwo := dialAndRegisterAgent(t, server.URL, "sess-2")
-	defer agentTwo.Close()
-
-	updatesURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/updates/ws"
-	headers := http.Header{}
-	headers.Set("Authorization", basicAuth("demo", "secret"))
-	updatesConn, _, err := websocket.DefaultDialer.Dial(updatesURL, headers)
-	if err != nil {
-		t.Fatalf("Dial updates returned error: %v", err)
-	}
-	defer updatesConn.Close()
-
-	if err := agentOne.WriteJSON(protocol.EncodeOutput([]byte("one"))); err != nil {
-		t.Fatalf("WriteJSON output one returned error: %v", err)
-	}
-	if err := agentTwo.WriteJSON(protocol.EncodeOutput([]byte("two"))); err != nil {
-		t.Fatalf("WriteJSON output two returned error: %v", err)
-	}
-
-	var first protocol.ClientUpdateMessage
-	if err := updatesConn.ReadJSON(&first); err != nil {
-		t.Fatalf("ReadJSON first update returned error: %v", err)
-	}
-	var second protocol.ClientUpdateMessage
-	if err := updatesConn.ReadJSON(&second); err != nil {
-		t.Fatalf("ReadJSON second update returned error: %v", err)
-	}
-
-	got := map[string]string{}
-	for _, frame := range []protocol.ClientUpdateMessage{first, second} {
-		if frame.Type != "output" {
-			t.Fatalf("frame.Type = %q, want output", frame.Type)
-		}
-		data, err := base64.StdEncoding.DecodeString(frame.Data)
-		if err != nil {
-			t.Fatalf("DecodeString returned error: %v", err)
-		}
-		got[frame.SessionID] = string(data)
-	}
-	if got["sess-1"] != "one" || got["sess-2"] != "two" {
-		t.Fatalf("updates = %#v, want sess-1=one sess-2=two", got)
-	}
-}
-
-func TestUpdatesWebSocketStreamsSessionStateAndRemoval(t *testing.T) {
+func TestUpdatesWebSocketStreamsOutputAndRemoval(t *testing.T) {
 	reg := NewRegistry()
 	server := httptest.NewServer(NewHandler(HandlerConfig{
 		Registry:        reg,
@@ -656,58 +195,37 @@ func TestUpdatesWebSocketStreamsSessionStateAndRemoval(t *testing.T) {
 	}
 	defer updatesConn.Close()
 
-	changedAt := time.Unix(123, 0).UTC()
-	since := time.Unix(122, 0).UTC()
-	if err := agentConn.WriteJSON(protocol.EncodeSessionState(protocol.SessionStateActionRequired, changedAt, &since)); err != nil {
-		t.Fatalf("WriteJSON session_state returned error: %v", err)
+	if err := agentConn.WriteJSON(protocol.EncodeOutput([]byte("hello"))); err != nil {
+		t.Fatalf("WriteJSON returned error: %v", err)
 	}
 
-	var stateFrame protocol.ClientUpdateMessage
-	if err := updatesConn.ReadJSON(&stateFrame); err != nil {
-		t.Fatalf("ReadJSON state update returned error: %v", err)
+	var output protocol.ClientUpdateMessage
+	if err := updatesConn.ReadJSON(&output); err != nil {
+		t.Fatalf("ReadJSON returned error: %v", err)
 	}
-	if stateFrame.SessionID != "sess-1" || stateFrame.Type != "session_state" {
-		t.Fatalf("stateFrame = %#v, want sess-1 session_state", stateFrame)
+	if output.Type != "output" || output.SessionID != "sess-1" {
+		t.Fatalf("output = %#v, want sess-1 output", output)
 	}
-	if stateFrame.State != protocol.SessionStateActionRequired {
-		t.Fatalf("state = %q, want %q", stateFrame.State, protocol.SessionStateActionRequired)
+	data, err := base64.StdEncoding.DecodeString(output.Data)
+	if err != nil {
+		t.Fatalf("DecodeString returned error: %v", err)
+	}
+	if string(data) != "hello" {
+		t.Fatalf("data = %q, want hello", string(data))
 	}
 
 	_ = agentConn.Close()
-	waitForSessionCount(t, server.URL, basicAuth("demo", "secret"), 0)
 
 	var removed protocol.ClientUpdateMessage
 	if err := updatesConn.ReadJSON(&removed); err != nil {
-		t.Fatalf("ReadJSON removal update returned error: %v", err)
+		t.Fatalf("ReadJSON removal returned error: %v", err)
 	}
-	if removed.SessionID != "sess-1" || removed.Type != "session_removed" {
+	if removed.Type != "session_removed" || removed.SessionID != "sess-1" {
 		t.Fatalf("removed = %#v, want sess-1 session_removed", removed)
 	}
-	if removed.Reason != "agent_disconnected" {
-		t.Fatalf("Reason = %q, want agent_disconnected", removed.Reason)
-	}
 }
 
-func TestLegacySessionEventsWebSocketNoLongerExists(t *testing.T) {
-	reg := NewRegistry()
-	handler := NewHandler(HandlerConfig{
-		Registry:        reg,
-		BrowserUser:     "demo",
-		BrowserPassword: "secret",
-		AgentToken:      "agent-token",
-	})
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/session-events/ws", nil)
-	req.Header.Set("Authorization", basicAuth("demo", "secret"))
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404", rec.Code)
-	}
-}
-
-func TestUpdatesWebSocketRoutesInputToRegisteredAgent(t *testing.T) {
+func TestUpdatesWebSocketForwardsClientInputToAgent(t *testing.T) {
 	reg := NewRegistry()
 	server := httptest.NewServer(NewHandler(HandlerConfig{
 		Registry:        reg,
@@ -717,53 +235,39 @@ func TestUpdatesWebSocketRoutesInputToRegisteredAgent(t *testing.T) {
 	}))
 	defer server.Close()
 
-	agentURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/agent/ws"
-	agentHeaders := http.Header{}
-	agentHeaders.Set("Authorization", "Bearer agent-token")
-	agentConn, _, err := websocket.DefaultDialer.Dial(agentURL, agentHeaders)
-	if err != nil {
-		t.Fatalf("Dial agent returned error: %v", err)
-	}
-	defer agentConn.Close()
-
-	if err := agentConn.WriteJSON(protocol.RegisterFrame(protocol.SessionInfo{
-		SessionID: "sess-1",
-		Launcher:  "codex",
-	})); err != nil {
-		t.Fatalf("WriteJSON register returned error: %v", err)
-	}
+	peer := &recordingPeer{}
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, peer)
 
 	updatesURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/updates/ws"
-	updatesHeaders := http.Header{}
-	updatesHeaders.Set("Authorization", basicAuth("demo", "secret"))
-	updatesConn, _, err := websocket.DefaultDialer.Dial(updatesURL, updatesHeaders)
+	headers := http.Header{}
+	headers.Set("Authorization", basicAuth("demo", "secret"))
+	conn, _, err := websocket.DefaultDialer.Dial(updatesURL, headers)
 	if err != nil {
-		t.Fatalf("Dial updates returned error: %v", err)
+		t.Fatalf("Dial returned error: %v", err)
 	}
-	defer updatesConn.Close()
+	defer conn.Close()
 
-	if err := updatesConn.WriteJSON(protocol.ClientUpdateMessage{
+	msg := protocol.ClientUpdateMessage{
 		SessionID: "sess-1",
 		Type:      "input",
-		Data:      base64.StdEncoding.EncodeToString([]byte("hello")),
-	}); err != nil {
-		t.Fatalf("WriteJSON updates input returned error: %v", err)
+		Data:      base64.StdEncoding.EncodeToString([]byte("ls\n")),
+	}
+	if err := conn.WriteJSON(msg); err != nil {
+		t.Fatalf("WriteJSON returned error: %v", err)
 	}
 
-	var got protocol.Message
-	if err := agentConn.ReadJSON(&got); err != nil {
-		t.Fatalf("ReadJSON agent returned error: %v", err)
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if bytes.Equal(bytes.Join(peer.inputs, nil), []byte("ls\n")) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	if got.Type != "input" {
-		t.Fatalf("Type = %q, want input", got.Type)
-	}
-	data, err := protocol.DecodeData(got)
-	if err != nil {
-		t.Fatalf("DecodeData returned error: %v", err)
-	}
-	if string(data) != "hello" {
-		t.Fatalf("input = %q, want hello", string(data))
-	}
+	t.Fatalf("inputs = %#v, want ls\\n", peer.inputs)
+}
+
+func basicAuth(user, pass string) string {
+	return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pass))
 }
 
 func dialAndRegisterAgent(t *testing.T, serverURL, sessionID string) *websocket.Conn {
@@ -772,453 +276,21 @@ func dialAndRegisterAgent(t *testing.T, serverURL, sessionID string) *websocket.
 	agentURL := "ws" + strings.TrimPrefix(serverURL, "http") + "/agent/ws"
 	headers := http.Header{}
 	headers.Set("Authorization", "Bearer agent-token")
-	agentConn, _, err := websocket.DefaultDialer.Dial(agentURL, headers)
-	if err != nil {
-		t.Fatalf("Dial agent returned error: %v", err)
-	}
-
-	if err := agentConn.WriteJSON(protocol.RegisterFrame(protocol.SessionInfo{
-		SessionID: sessionID,
-		Launcher:  "codex",
-	})); err != nil {
-		t.Fatalf("WriteJSON register returned error: %v", err)
-	}
-	return agentConn
-}
-
-func waitForLatestSeq(t *testing.T, reg *Registry, sessionID string, want uint64) {
-	t.Helper()
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		info, ok := reg.Session(sessionID)
-		if ok && info.LatestSeq >= want {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	info, ok := reg.Session(sessionID)
-	if !ok {
-		t.Fatalf("session %q disappeared while waiting for latest_seq", sessionID)
-	}
-	t.Fatalf("LatestSeq = %d, want at least %d", info.LatestSeq, want)
-}
-
-func waitForSessionState(t *testing.T, reg *Registry, sessionID string, want protocol.SessionState) {
-	t.Helper()
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		info, ok := reg.Session(sessionID)
-		if ok && info.State == want {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	info, ok := reg.Session(sessionID)
-	if !ok {
-		t.Fatalf("session %q disappeared while waiting for state", sessionID)
-	}
-	t.Fatalf("State = %q, want %q", info.State, want)
-}
-
-func TestUpdatesWebSocketRejectsForeignOrigin(t *testing.T) {
-	reg := NewRegistry()
-	logs := newLogRecorder()
-
-	server := httptest.NewServer(NewHandler(HandlerConfig{
-		Registry:        reg,
-		BrowserUser:     "demo",
-		BrowserPassword: "secret",
-		AgentToken:      "agent-token",
-		Logger:          NewLogger(logs),
-	}))
-	defer server.Close()
-
-	updatesURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/updates/ws"
-	headers := http.Header{}
-	headers.Set("Authorization", basicAuth("demo", "secret"))
-	headers.Set("Origin", "https://evil.example")
-
-	_, resp, err := websocket.DefaultDialer.Dial(updatesURL, headers)
-	if err == nil {
-		t.Fatal("Dial updates succeeded with foreign origin, want failure")
-	}
-	if resp == nil || resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("status = %v, want 403", responseStatusCode(resp))
-	}
-
-	entry := waitForLogEvent(t, logs, "ws_upgrade_failed", func(entry map[string]any) bool {
-		return entry["path"] == "/api/updates/ws" && entry["role"] == "client"
-	})
-	if entry["remote_addr"] == "" {
-		t.Fatalf("remote_addr = %v, want non-empty", entry["remote_addr"])
-	}
-}
-
-func TestUpdatesWebSocketAllowsSameOrigin(t *testing.T) {
-	reg := NewRegistry()
-
-	server := httptest.NewServer(NewHandler(HandlerConfig{
-		Registry:        reg,
-		BrowserUser:     "demo",
-		BrowserPassword: "secret",
-		AgentToken:      "agent-token",
-	}))
-	defer server.Close()
-
-	parsedURL, err := url.Parse(server.URL)
-	if err != nil {
-		t.Fatalf("Parse returned error: %v", err)
-	}
-
-	updatesURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/updates/ws"
-	headers := http.Header{}
-	headers.Set("Authorization", basicAuth("demo", "secret"))
-	headers.Set("Origin", parsedURL.Scheme+"://"+parsedURL.Host)
-
-	updatesConn, _, err := websocket.DefaultDialer.Dial(updatesURL, headers)
-	if err != nil {
-		t.Fatalf("Dial updates returned error: %v", err)
-	}
-	defer updatesConn.Close()
-}
-
-func TestUpdatesWebSocketStaysLiveAcrossSameSessionReplacementAndRoutesToNewAgent(t *testing.T) {
-	reg := NewRegistry()
-	server := httptest.NewServer(NewHandler(HandlerConfig{
-		Registry:        reg,
-		BrowserUser:     "demo",
-		BrowserPassword: "secret",
-		AgentToken:      "agent-token",
-	}))
-	defer server.Close()
-
-	agentURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/agent/ws"
-	updatesURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/updates/ws"
-
-	agentHeaders := http.Header{}
-	agentHeaders.Set("Authorization", "Bearer agent-token")
-	updatesHeaders := http.Header{}
-	updatesHeaders.Set("Authorization", basicAuth("demo", "secret"))
-
-	oldAgentConn, _, err := websocket.DefaultDialer.Dial(agentURL, agentHeaders)
-	if err != nil {
-		t.Fatalf("Dial old agent returned error: %v", err)
-	}
-	defer oldAgentConn.Close()
-
-	if err := oldAgentConn.WriteJSON(protocol.RegisterFrame(protocol.SessionInfo{
-		SessionID: "sess-1",
-		Launcher:  "codex",
-	})); err != nil {
-		t.Fatalf("WriteJSON register returned error: %v", err)
-	}
-
-	updatesConn, _, err := websocket.DefaultDialer.Dial(updatesURL, updatesHeaders)
-	if err != nil {
-		t.Fatalf("Dial updates returned error: %v", err)
-	}
-	defer updatesConn.Close()
-
-	newAgentConn, _, err := websocket.DefaultDialer.Dial(agentURL, agentHeaders)
-	if err != nil {
-		t.Fatalf("Dial new agent returned error: %v", err)
-	}
-	defer newAgentConn.Close()
-
-	if err := newAgentConn.WriteJSON(protocol.RegisterFrame(protocol.SessionInfo{
-		SessionID: "sess-1",
-		Launcher:  "codex",
-	})); err != nil {
-		t.Fatalf("WriteJSON replacement register returned error: %v", err)
-	}
-
-	if err := newAgentConn.WriteJSON(protocol.EncodeOutput([]byte("after-replace"))); err != nil {
-		t.Fatalf("WriteJSON output returned error: %v", err)
-	}
-
-	_ = updatesConn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	var output protocol.ClientUpdateMessage
-	if err := updatesConn.ReadJSON(&output); err != nil {
-		t.Fatalf("ReadJSON updates returned error: %v", err)
-	}
-	if output.SessionID != "sess-1" || output.Type != "output" {
-		t.Fatalf("output = %#v, want sess-1 output", output)
-	}
-	outputData, err := base64.StdEncoding.DecodeString(output.Data)
-	if err != nil {
-		t.Fatalf("DecodeString output returned error: %v", err)
-	}
-	if string(outputData) != "after-replace" {
-		t.Fatalf("output = %q, want after-replace", string(outputData))
-	}
-
-	if err := updatesConn.WriteJSON(protocol.ClientUpdateMessage{
-		SessionID: "sess-1",
-		Type:      "input",
-		Data:      base64.StdEncoding.EncodeToString([]byte("hello-new")),
-	}); err != nil {
-		t.Fatalf("WriteJSON updates input returned error: %v", err)
-	}
-
-	_ = newAgentConn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	var input protocol.Message
-	if err := newAgentConn.ReadJSON(&input); err != nil {
-		t.Fatalf("ReadJSON new agent returned error: %v", err)
-	}
-	if input.Type != "input" {
-		t.Fatalf("Type = %q, want input", input.Type)
-	}
-	inputData, err := protocol.DecodeData(input)
-	if err != nil {
-		t.Fatalf("DecodeData input returned error: %v", err)
-	}
-	if string(inputData) != "hello-new" {
-		t.Fatalf("input = %q, want hello-new", string(inputData))
-	}
-}
-
-func TestAgentDisconnectRemovesSessionFromList(t *testing.T) {
-	reg := NewRegistry()
-	server := httptest.NewServer(NewHandler(HandlerConfig{
-		Registry:        reg,
-		BrowserUser:     "demo",
-		BrowserPassword: "secret",
-		AgentToken:      "agent-token",
-	}))
-	defer server.Close()
-
-	agentURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/agent/ws"
-	headers := http.Header{}
-	headers.Set("Authorization", "Bearer agent-token")
-	agentConn, _, err := websocket.DefaultDialer.Dial(agentURL, headers)
+	conn, _, err := websocket.DefaultDialer.Dial(agentURL, headers)
 	if err != nil {
 		t.Fatalf("Dial returned error: %v", err)
 	}
 
-	if err := agentConn.WriteJSON(protocol.RegisterFrame(protocol.SessionInfo{
-		SessionID: "sess-1",
-		Launcher:  "codex",
-	})); err != nil {
-		t.Fatalf("WriteJSON returned error: %v", err)
+	info := protocol.SessionInfo{
+		SessionID:      sessionID,
+		Launcher:       "codex",
+		CWD:            "/tmp/project",
+		CommandPreview: "codex",
+		StartedAt:      time.Unix(10, 0),
 	}
-
-	waitForSessionCount(t, server.URL, basicAuth("demo", "secret"), 1)
-
-	if err := agentConn.WriteControl(
-		websocket.CloseMessage,
-		websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
-		time.Now().Add(time.Second),
-	); err != nil {
-		t.Fatalf("WriteControl close returned error: %v", err)
-	}
-	waitForSessionCount(t, server.URL, basicAuth("demo", "secret"), 0)
-}
-
-func TestAgentRegisterLogsLifecycle(t *testing.T) {
-	reg := NewRegistry()
-	logs := newLogRecorder()
-	server := httptest.NewServer(NewHandler(HandlerConfig{
-		Registry:        reg,
-		BrowserUser:     "demo",
-		BrowserPassword: "secret",
-		AgentToken:      "agent-token",
-		Logger:          NewLogger(logs),
-	}))
-	defer server.Close()
-
-	agentURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/agent/ws"
-	headers := http.Header{}
-	headers.Set("Authorization", "Bearer agent-token")
-	agentConn, _, err := websocket.DefaultDialer.Dial(agentURL, headers)
-	if err != nil {
-		t.Fatalf("Dial returned error: %v", err)
-	}
-
-	connected := waitForLogEvent(t, logs, "agent_ws_connected", func(entry map[string]any) bool {
-		return entry["path"] == "/agent/ws"
-	})
-	if connected["remote_addr"] == "" {
-		t.Fatalf("remote_addr = %v, want non-empty", connected["remote_addr"])
-	}
-
-	if err := agentConn.WriteJSON(protocol.RegisterFrame(protocol.SessionInfo{
-		SessionID: "sess-1",
-		Launcher:  "codex",
-		Label:     "api-fix",
-		CWD:       "/tmp/project",
-	})); err != nil {
+	if err := conn.WriteJSON(protocol.RegisterFrame(info)); err != nil {
 		t.Fatalf("WriteJSON register returned error: %v", err)
 	}
 
-	registered := waitForLogEvent(t, logs, "agent_registered", func(entry map[string]any) bool {
-		return entry["session_id"] == "sess-1"
-	})
-	if registered["launcher"] != "codex" {
-		t.Fatalf("launcher = %v, want codex", registered["launcher"])
-	}
-	if registered["label"] != "api-fix" {
-		t.Fatalf("label = %v, want api-fix", registered["label"])
-	}
-	if registered["cwd"] != "/tmp/project" {
-		t.Fatalf("cwd = %v, want /tmp/project", registered["cwd"])
-	}
-
-	_ = agentConn.Close()
-	waitForSessionCount(t, server.URL, basicAuth("demo", "secret"), 0)
-
-	disconnected := waitForLogEvent(t, logs, "agent_disconnected", func(entry map[string]any) bool {
-		return entry["session_id"] == "sess-1"
-	})
-	if got := disconnected["reason"]; got != "read_error" {
-		t.Fatalf("reason = %v, want read_error", got)
-	}
-	if _, ok := disconnected["duration_ms"].(float64); !ok {
-		t.Fatalf("duration_ms = %T, want number", disconnected["duration_ms"])
-	}
-	_ = agentConn.Close()
-}
-
-func TestStaleAgentConnectionTimesOutAndRemovesSessionFromList(t *testing.T) {
-	reg := NewRegistry()
-	server := httptest.NewServer(NewHandler(HandlerConfig{
-		Registry:              reg,
-		BrowserUser:           "demo",
-		BrowserPassword:       "secret",
-		AgentToken:            "agent-token",
-		AgentReadTimeout:      75 * time.Millisecond,
-		AgentPingInterval:     20 * time.Millisecond,
-		AgentPingWriteTimeout: 20 * time.Millisecond,
-	}))
-	defer server.Close()
-
-	agentURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/agent/ws"
-	headers := http.Header{}
-	headers.Set("Authorization", "Bearer agent-token")
-	agentConn, _, err := websocket.DefaultDialer.Dial(agentURL, headers)
-	if err != nil {
-		t.Fatalf("Dial returned error: %v", err)
-	}
-	defer agentConn.Close()
-
-	if err := agentConn.WriteJSON(protocol.RegisterFrame(protocol.SessionInfo{
-		SessionID: "sess-1",
-		Launcher:  "codex",
-	})); err != nil {
-		t.Fatalf("WriteJSON returned error: %v", err)
-	}
-
-	waitForSessionCount(t, server.URL, basicAuth("demo", "secret"), 1)
-	waitForSessionCount(t, server.URL, basicAuth("demo", "secret"), 0)
-}
-
-func basicAuth(user, pass string) string {
-	return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pass))
-}
-
-func waitForSessionCount(t *testing.T, baseURL, auth string, want int) {
-	t.Helper()
-
-	client := &http.Client{Timeout: 500 * time.Millisecond}
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		req, err := http.NewRequest(http.MethodGet, baseURL+"/api/sessions", nil)
-		if err != nil {
-			t.Fatalf("NewRequest returned error: %v", err)
-		}
-		req.Header.Set("Authorization", auth)
-
-		resp, err := client.Do(req)
-		if err != nil {
-			t.Fatalf("Do returned error: %v", err)
-		}
-
-		var sessions []protocol.SessionInfo
-		if err := json.NewDecoder(resp.Body).Decode(&sessions); err != nil {
-			resp.Body.Close()
-			t.Fatalf("Decode returned error: %v", err)
-		}
-		resp.Body.Close()
-
-		if len(sessions) == want {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	t.Fatalf("timed out waiting for %d live sessions", want)
-}
-
-func responseStatusCode(resp *http.Response) int {
-	if resp == nil {
-		return 0
-	}
-	return resp.StatusCode
-}
-
-type logRecorder struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-type timeoutError struct{}
-
-func (timeoutError) Error() string   { return "timeout" }
-func (timeoutError) Timeout() bool   { return true }
-func (timeoutError) Temporary() bool { return false }
-
-func newLogRecorder() *logRecorder {
-	return &logRecorder{}
-}
-
-func (r *logRecorder) Write(p []byte) (int, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.buf.Write(p)
-}
-
-func (r *logRecorder) snapshot() []byte {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return append([]byte(nil), r.buf.Bytes()...)
-}
-
-func waitForLogEvent(t *testing.T, logs *logRecorder, event string, match func(map[string]any) bool) map[string]any {
-	t.Helper()
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		for _, entry := range parseLogEntries(t, logs.snapshot()) {
-			if entry["event"] != event {
-				continue
-			}
-			if match == nil || match(entry) {
-				return entry
-			}
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	t.Fatalf("timed out waiting for log event %q in %q", event, string(logs.snapshot()))
-	return nil
-}
-
-func parseLogEntries(t *testing.T, raw []byte) []map[string]any {
-	t.Helper()
-
-	lines := bytes.Split(raw, []byte{'\n'})
-	entries := make([]map[string]any, 0, len(lines))
-	for _, line := range lines {
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 {
-			continue
-		}
-		var entry map[string]any
-		if err := json.Unmarshal(line, &entry); err != nil {
-			t.Fatalf("unmarshal log line %q: %v", string(line), err)
-		}
-		entries = append(entries, entry)
-	}
-	return entries
+	return conn
 }

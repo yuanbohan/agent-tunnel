@@ -16,25 +16,18 @@ import (
 // Upstream producers feeding this object:
 // - session.Hub output fanout via WriteOutput()
 // - session.Hub resize callback via BindHub()
-// - codexapp.MonitorActionRequired via UpdateSessionState()
 //
 // Downstream consumer:
-// - relay `/agent/ws`, which receives register/output/resize/session_state frames
+// - relay `/agent/ws`, which receives register/output/resize frames
 //
 // Reverse data path:
 // - relay input frames come back through handleMessage() into the bound Hub
 type Connector struct {
 	url   string
 	token string
-	// info is the session snapshot sent in the initial register frame for each
-	// websocket connection attempt.
-	info protocol.SessionInfo
-	// hub is bound after the PTY session has been created. It is required for the
-	// inbound path from relay input frames back into PTY stdin.
-	hub *session.Hub
+	info  protocol.SessionInfo
+	hub   *session.Hub
 
-	// outbound multiplexes three logical sources onto a single websocket write loop:
-	// terminal output, resize updates, and structured session-state changes.
 	outbound chan protocol.Message
 	dialer   *websocket.Dialer
 }
@@ -54,9 +47,6 @@ func New(url, token string, info protocol.SessionInfo) *Connector {
 	}
 }
 
-// BindHub completes the connector's relationship with the PTY session:
-// - inbound relay input can be written into the hub
-// - local resize notifications can be exported to the relay
 func (c *Connector) BindHub(hub *session.Hub) {
 	c.hub = hub
 	hub.OnResize(func(cols, rows int) {
@@ -68,8 +58,6 @@ func (c *Connector) BindHub(hub *session.Hub) {
 	})
 }
 
-// WriteOutput lets Connector satisfy session.OutputSink, so the PTY output fanout
-// can deliver terminal bytes to the relay without special Codex logic.
 func (c *Connector) WriteOutput(data []byte) error {
 	msg := protocol.EncodeOutput(append([]byte(nil), data...))
 	select {
@@ -79,20 +67,6 @@ func (c *Connector) WriteOutput(data []byte) error {
 	return nil
 }
 
-// UpdateSessionState is the Codex-specific state ingress. The app-server monitor
-// calls this method, and the connector forwards the resulting `session_state`
-// message over the same websocket used for terminal output.
-func (c *Connector) UpdateSessionState(state protocol.SessionState, changedAt time.Time, actionRequiredSince *time.Time) {
-	msg := protocol.EncodeSessionState(state, changedAt, actionRequiredSince)
-	select {
-	case c.outbound <- msg:
-	default:
-	}
-}
-
-// Run keeps reconnecting until the context is canceled. This means the PTY
-// runtime and the Codex app-server monitor can continue producing messages into
-// the connector while the websocket is being re-established.
 func (c *Connector) Run(ctx context.Context) {
 	for {
 		if ctx.Err() != nil {
@@ -118,8 +92,6 @@ func (c *Connector) runOnce(ctx context.Context) error {
 	}
 	defer conn.Close()
 
-	// Register establishes the live session on the relay before any output or
-	// session-state messages are accepted for this websocket connection.
 	if err := conn.WriteJSON(protocol.RegisterFrame(c.info)); err != nil {
 		return err
 	}
@@ -140,7 +112,6 @@ func (c *Connector) runOnce(ctx context.Context) error {
 			}
 			c.handleMessage(result.msg)
 		case msg := <-c.outbound:
-			// Output, resize, and session-state messages all share this write path.
 			if err := conn.WriteJSON(msg); err != nil {
 				return err
 			}
@@ -167,8 +138,6 @@ func (c *Connector) readLoop(conn *websocket.Conn, incoming chan<- readResult) {
 	}
 }
 
-// handleMessage is intentionally small because relay -> agent traffic currently
-// carries only input bytes. Session-state is one-way: local Codex runtime to relay.
 func (c *Connector) handleMessage(msg protocol.Message) {
 	if msg.Type == "input" {
 		data, err := protocol.DecodeData(msg)

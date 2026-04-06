@@ -28,10 +28,6 @@ type Running struct {
 	closeInitiated bool
 }
 
-func StartCommand(ctx context.Context, path string, args []string) (*Running, error) {
-	return StartCommandWithInitialSinks(ctx, path, args, nil)
-}
-
 func StartCommandWithInitialSinks(ctx context.Context, path string, args []string, initialSinks map[string]OutputSink) (*Running, error) {
 	cmd := exec.CommandContext(ctx, path, args...)
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color")

@@ -65,9 +65,6 @@ func (r *Registry) Register(info protocol.SessionInfo, peer AgentPeer) {
 	var lastReadSeq uint64
 	var currentCols int
 	var currentRows int
-	var state protocol.SessionState
-	var stateChangedAt *time.Time
-	var actionRequiredSince *time.Time
 	lastActiveAt := info.LastActiveAt
 	if old != nil {
 		history = old.history
@@ -76,20 +73,9 @@ func (r *Registry) Register(info protocol.SessionInfo, peer AgentPeer) {
 		lastReadSeq = old.lastReadSeq
 		currentCols = old.currentCols
 		currentRows = old.currentRows
-		state = old.info.State
-		stateChangedAt = cloneTimePtr(old.info.StateChangedAt)
-		actionRequiredSince = cloneTimePtr(old.info.ActionRequiredSince)
 		if old.info.LastActiveAt != nil {
 			lastActiveAt = old.info.LastActiveAt
 		}
-	}
-	if info.State == "" {
-		info.State = protocol.SessionStateNormal
-	}
-	if state != "" {
-		info.State = state
-		info.StateChangedAt = stateChangedAt
-		info.ActionRequiredSince = actionRequiredSince
 	}
 	r.sessions[info.SessionID] = &liveSession{
 		info:         info,
@@ -167,12 +153,6 @@ func (r *Registry) List() []protocol.SessionInfo {
 	return out
 }
 
-// TouchOutput is the legacy sessionID-only output path.
-// Prefer TouchOutputIfOwner for peer-owned loops so stale peers cannot mutate state.
-func (r *Registry) TouchOutput(sessionID string, chunk []byte, now time.Time) {
-	r.touchOutput(sessionID, nil, chunk, now, false)
-}
-
 func (r *Registry) TouchOutputIfOwner(sessionID string, owner AgentPeer, chunk []byte, now time.Time) bool {
 	return r.touchOutput(sessionID, owner, chunk, now, true)
 }
@@ -211,25 +191,6 @@ func (r *Registry) MarkRead(sessionID string, seq uint64) (protocol.SessionInfo,
 	return live.snapshot(), true
 }
 
-// UpdateSessionStateIfOwner updates the live session snapshot and then broadcasts
-// the derived event on the separate session-state stream. This is intentionally
-// parallel to output handling, not part of terminal replay history.
-func (r *Registry) UpdateSessionStateIfOwner(sessionID string, owner AgentPeer, state protocol.SessionState, changedAt time.Time, actionRequiredSince *time.Time) bool {
-	r.mu.Lock()
-	live, ok := r.sessions[sessionID]
-	if !ok || live.peer != owner {
-		r.mu.Unlock()
-		return false
-	}
-	event, changed := live.updateSessionState(state, changedAt, actionRequiredSince)
-	r.mu.Unlock()
-
-	if changed {
-		r.broadcastSessionStateUpdate(event)
-	}
-	return changed
-}
-
 func (r *Registry) WriteInput(sessionID string, data []byte) error {
 	r.mu.RLock()
 	live, ok := r.sessions[sessionID]
@@ -260,14 +221,6 @@ func lastActiveTime(info protocol.SessionInfo) time.Time {
 		return time.Time{}
 	}
 	return *info.LastActiveAt
-}
-
-func cloneTimePtr(value *time.Time) *time.Time {
-	if value == nil {
-		return nil
-	}
-	copy := value.UTC()
-	return &copy
 }
 
 func (r *Registry) touchOutput(sessionID string, owner AgentPeer, chunk []byte, now time.Time, requireOwner bool) bool {

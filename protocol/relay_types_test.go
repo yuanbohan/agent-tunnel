@@ -67,7 +67,6 @@ func TestSessionSummaryJSONUsesStableFieldNames(t *testing.T) {
 		"latest_seq",
 		"last_read_seq",
 		"unread_count",
-		"state",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("json = %s, want field %q", got, want)
@@ -88,13 +87,8 @@ func TestSessionSummaryOmittedUnsetOptionalFields(t *testing.T) {
 		t.Fatalf("Marshal returned error: %v", err)
 	}
 
-	got := string(raw)
-	for _, unwanted := range []string{
-		"last_active_at",
-	} {
-		if strings.Contains(got, unwanted) {
-			t.Fatalf("json = %s, did not expect field %q", got, unwanted)
-		}
+	if strings.Contains(string(raw), "last_active_at") {
+		t.Fatalf("json = %s, did not expect last_active_at", raw)
 	}
 }
 
@@ -120,37 +114,6 @@ func TestClientUpdateMessageOutputRoundTrip(t *testing.T) {
 	}
 	if string(data) != "hello" {
 		t.Fatalf("data = %q, want hello", string(data))
-	}
-}
-
-func TestClientUpdateMessageSessionStateRoundTrip(t *testing.T) {
-	since := time.Date(2026, 4, 2, 12, 1, 0, 0, time.UTC)
-	changedAt := time.Date(2026, 4, 2, 12, 2, 0, 0, time.UTC)
-	frame := EncodeClientSessionState(SessionStateEvent{
-		SessionID:           "sess-2",
-		State:               SessionStateActionRequired,
-		ChangedAt:           changedAt,
-		ActionRequiredSince: &since,
-	})
-
-	raw, err := json.Marshal(frame)
-	if err != nil {
-		t.Fatalf("Marshal returned error: %v", err)
-	}
-
-	var decoded ClientUpdateMessage
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("Unmarshal returned error: %v", err)
-	}
-
-	if decoded.SessionID != "sess-2" || decoded.Type != "session_state" {
-		t.Fatalf("decoded = %#v, want sess-2 session_state", decoded)
-	}
-	if decoded.State != SessionStateActionRequired {
-		t.Fatalf("State = %q, want %q", decoded.State, SessionStateActionRequired)
-	}
-	if decoded.ActionRequiredSince == nil || !decoded.ActionRequiredSince.Equal(since) {
-		t.Fatalf("ActionRequiredSince = %v, want %v", decoded.ActionRequiredSince, since)
 	}
 }
 

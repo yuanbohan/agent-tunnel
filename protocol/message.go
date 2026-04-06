@@ -5,24 +5,14 @@ import (
 	"time"
 )
 
-type SessionState string
-
-const (
-	SessionStateNormal         SessionState = "normal"
-	SessionStateActionRequired SessionState = "action_required"
-)
-
 // Message is the agent-side JSON frame exchanged over session-scoped WebSockets.
-// Type is one of "input", "output", "resize", or "session_state".
+// Type is one of "input", "output", or "resize".
 type Message struct {
-	Type                string       `json:"type"`
-	Seq                 uint64       `json:"seq,omitempty"`
-	Data                string       `json:"data,omitempty"` // base64-encoded bytes
-	Cols                int          `json:"cols,omitempty"`
-	Rows                int          `json:"rows,omitempty"`
-	State               SessionState `json:"state,omitempty"`
-	ChangedAt           *time.Time   `json:"changed_at,omitempty"`
-	ActionRequiredSince *time.Time   `json:"action_required_since,omitempty"`
+	Type string `json:"type"`
+	Seq  uint64 `json:"seq,omitempty"`
+	Data string `json:"data,omitempty"` // base64-encoded bytes
+	Cols int    `json:"cols,omitempty"`
+	Rows int    `json:"rows,omitempty"`
 }
 
 // EncodeOutput wraps raw PTY bytes into an output Message.
@@ -52,36 +42,18 @@ func DecodeData(m Message) ([]byte, error) {
 	return base64.StdEncoding.DecodeString(m.Data)
 }
 
-func EncodeSessionState(state SessionState, changedAt time.Time, actionRequiredSince *time.Time) Message {
-	changedAtCopy := changedAt.UTC()
-	var sinceCopy *time.Time
-	if actionRequiredSince != nil {
-		value := actionRequiredSince.UTC()
-		sinceCopy = &value
-	}
-	return Message{
-		Type:                "session_state",
-		State:               state,
-		ChangedAt:           &changedAtCopy,
-		ActionRequiredSince: sinceCopy,
-	}
-}
-
 // SessionInfo describes a live agent session registered with the relay.
 type SessionInfo struct {
-	SessionID           string       `json:"session_id"`
-	Launcher            string       `json:"launcher"`
-	Label               string       `json:"label,omitempty"`
-	CWD                 string       `json:"cwd"`
-	CommandPreview      string       `json:"command_preview"`
-	StartedAt           time.Time    `json:"started_at"`
-	LastActiveAt        *time.Time   `json:"last_active_at,omitempty"`
-	LatestSeq           uint64       `json:"latest_seq"`
-	LastReadSeq         uint64       `json:"last_read_seq"`
-	UnreadCount         uint64       `json:"unread_count"`
-	State               SessionState `json:"state"`
-	StateChangedAt      *time.Time   `json:"state_changed_at,omitempty"`
-	ActionRequiredSince *time.Time   `json:"action_required_since,omitempty"`
+	SessionID      string     `json:"session_id"`
+	Launcher       string     `json:"launcher"`
+	Label          string     `json:"label,omitempty"`
+	CWD            string     `json:"cwd"`
+	CommandPreview string     `json:"command_preview"`
+	StartedAt      time.Time  `json:"started_at"`
+	LastActiveAt   *time.Time `json:"last_active_at,omitempty"`
+	LatestSeq      uint64     `json:"latest_seq"`
+	LastReadSeq    uint64     `json:"last_read_seq"`
+	UnreadCount    uint64     `json:"unread_count"`
 }
 
 // AgentFrame is the JSON envelope sent over the agent WebSocket to the relay.
@@ -101,28 +73,18 @@ func RegisterFrame(info SessionInfo) AgentFrame {
 	}
 }
 
-type SessionStateEvent struct {
-	SessionID           string       `json:"session_id"`
-	State               SessionState `json:"state"`
-	ChangedAt           time.Time    `json:"changed_at"`
-	ActionRequiredSince *time.Time   `json:"action_required_since,omitempty"`
-}
-
 // ClientUpdateMessage is the client-facing multiplexed envelope used by the
 // global relay stream. Unlike Message, it always carries session identity so a
 // single foreground connection can route both live output and client input for
 // many sessions.
 type ClientUpdateMessage struct {
-	SessionID           string       `json:"session_id"`
-	Type                string       `json:"type"`
-	Seq                 uint64       `json:"seq,omitempty"`
-	Data                string       `json:"data,omitempty"`
-	Cols                int          `json:"cols,omitempty"`
-	Rows                int          `json:"rows,omitempty"`
-	State               SessionState `json:"state,omitempty"`
-	ChangedAt           *time.Time   `json:"changed_at,omitempty"`
-	ActionRequiredSince *time.Time   `json:"action_required_since,omitempty"`
-	Reason              string       `json:"reason,omitempty"`
+	SessionID string `json:"session_id"`
+	Type      string `json:"type"`
+	Seq       uint64 `json:"seq,omitempty"`
+	Data      string `json:"data,omitempty"`
+	Cols      int    `json:"cols,omitempty"`
+	Rows      int    `json:"rows,omitempty"`
+	Reason    string `json:"reason,omitempty"`
 }
 
 func EncodeClientOutput(sessionID string, seq uint64, b []byte, cols, rows int) ClientUpdateMessage {
@@ -136,29 +98,10 @@ func EncodeClientOutput(sessionID string, seq uint64, b []byte, cols, rows int) 
 	}
 }
 
-func EncodeClientSessionState(event SessionStateEvent) ClientUpdateMessage {
-	changedAtCopy := event.ChangedAt.UTC()
-	return ClientUpdateMessage{
-		SessionID:           event.SessionID,
-		Type:                "session_state",
-		State:               event.State,
-		ChangedAt:           &changedAtCopy,
-		ActionRequiredSince: cloneUTC(event.ActionRequiredSince),
-	}
-}
-
 func EncodeClientSessionRemoved(sessionID, reason string) ClientUpdateMessage {
 	return ClientUpdateMessage{
 		SessionID: sessionID,
 		Type:      "session_removed",
 		Reason:    reason,
 	}
-}
-
-func cloneUTC(value *time.Time) *time.Time {
-	if value == nil {
-		return nil
-	}
-	copy := value.UTC()
-	return &copy
 }
