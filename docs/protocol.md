@@ -38,8 +38,7 @@ Authorization: Bearer <token>
 
 WebSocket attach notes:
 
-- browser client attach on `GET /api/updates/ws` is same-origin checked when `Origin` is present
-- non-browser clients that do not send `Origin` are allowed by this protocol revision
+- clients attach to `GET /api/updates/ws` with the same Basic Auth credentials as the HTTP endpoints
 
 ## Session Snapshot
 

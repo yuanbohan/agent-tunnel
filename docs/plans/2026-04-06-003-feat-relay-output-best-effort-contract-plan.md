@@ -3,7 +3,7 @@ title: feat: Clarify best-effort remote output contract
 type: feat
 status: completed
 date: 2026-04-06
-origin: docs/brainstorms/2026-04-06-relay-output-best-effort-requirements.md
+source: docs/brainstorms/2026-04-06-relay-output-best-effort-requirements.md
 ---
 
 # feat: Clarify best-effort remote output contract
@@ -42,7 +42,7 @@ That means remote/mobile clients can observe and interact with real sessions, bu
 
 - `connector/connector.go` is the key source for the current best-effort claim: `WriteOutput` drops relay-bound output when the outbound queue is full rather than blocking local PTY flow.
 - `relay/history.go` defines retained-frame semantics: `seq` is assigned when relay appends a frame, history is in-memory, and retention is byte-bounded.
-- `relay/server.go` defines the client-facing contract surfaces this plan must describe: `GET /api/updates/ws`, `GET /api/sessions`, and `GET /api/sessions/:id/frames`, plus same-origin checking for browser websocket clients when `Origin` is present.
+- `relay/server.go` defines the client-facing contract surfaces this plan must describe: `GET /api/updates/ws`, `GET /api/sessions`, and `GET /api/sessions/:id/frames`, plus the shared auth boundary for client HTTP and websocket access.
 - `protocol/message.go` defines the wire fields whose semantics need to be clarified, especially `SessionInfo.latest_seq`, output frame `seq`, `cols`, `rows`, and `ts`.
 - `README.md`, `docs/architecture.md`, and `docs/protocol.md` already describe the relay as live-only and content-opaque; this change should tighten those descriptions rather than inventing a new product shape.
 - `AGENTS.md` is a symlink to `CLAUDE.md` in this repository, so updating `CLAUDE.md` updates both instruction surfaces.
@@ -142,7 +142,7 @@ client reconnect pattern
 - Document the recommended reconnect flow: reattach to `GET /api/updates/ws`, then use `/api/sessions/:id/frames` to recover recent relay-retained output when needed.
 - Clarify that retained frames are live-only, in-memory, bounded history for the current live session only.
 - In `docs/architecture.md`, add the missing system-boundary language that the remote path is best-effort while the local PTY path remains primary, and ensure the output/recovery flow description matches the protocol wording.
-- Use this pass to add any missing client-surface constraints already implemented, especially the current same-origin check for browser websocket clients when `Origin` is present.
+- Use this pass to add any missing client-surface constraints already implemented, especially the shared Basic Auth requirement across client HTTP and websocket access.
 
 **Patterns to follow:**
 - Existing protocol style in `docs/protocol.md`: exact field semantics, endpoint-by-endpoint framing, terse notes under examples
@@ -167,7 +167,7 @@ client reconnect pattern
 - Modify: `CLAUDE.md`
 
 **Approach:**
-- Update `CLAUDE.md` so contributor guidance preserves the same best-effort remote-output contract and same-origin constraint that the public docs now describe. Because `AGENTS.md` is a symlink, no separate file edit is required.
+- Update `CLAUDE.md` so contributor guidance preserves the same best-effort remote-output contract and client auth boundary that the public docs now describe. Because `AGENTS.md` is a symlink, no separate file edit is required.
 - Run a final consistency pass across all four docs so that:
   - `README.md` stays concise and operator-facing
   - `docs/protocol.md` carries the exact semantics
@@ -190,7 +190,7 @@ client reconnect pattern
 - **Interaction graph:** No runtime interaction graph changes. This work only changes how existing connector, relay, and client surfaces are described.
 - **Error propagation:** No runtime error-propagation changes. The only change is making current best-effort behavior explicit to readers and client authors.
 - **State lifecycle risks:** The main risk is documentation drift or over-correction that makes the product sound weaker than it is. The plan should preserve "remote work is supported" while clarifying "live output is not guaranteed lossless."
-- **API surface parity:** `README.md`, `docs/protocol.md`, `docs/architecture.md`, and `CLAUDE.md` must describe the same contract for `/api/updates/ws`, `/api/sessions/:id/frames`, relay `seq`, and same-origin client attachment behavior.
+- **API surface parity:** `README.md`, `docs/protocol.md`, `docs/architecture.md`, and `CLAUDE.md` must describe the same contract for `/api/updates/ws`, `/api/sessions/:id/frames`, relay `seq`, and client auth behavior.
 - **Integration coverage:** Cross-document consistency review is the main integration check because the change spans operator guidance, protocol contract, architecture boundaries, and contributor guardrails.
 - **Unchanged invariants:** The relay remains live-only, in-memory, and content-opaque; `agentunnel` remains the PTY owner; `/api/updates/ws` remains the preferred live client channel; and this plan does not change delivery semantics in code.
 
@@ -211,7 +211,7 @@ client reconnect pattern
 
 ## Sources & References
 
-- **Origin document:** `docs/brainstorms/2026-04-06-relay-output-best-effort-requirements.md`
+- **Source document:** `docs/brainstorms/2026-04-06-relay-output-best-effort-requirements.md`
 - Related code: `connector/connector.go`
 - Related code: `relay/history.go`
 - Related code: `relay/server.go`
