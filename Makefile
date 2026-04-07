@@ -1,4 +1,4 @@
-.PHONY: agentunnel relay start start-relay stop-relay status status-relay build build-linux clean vet test test-relay
+.PHONY: agentunnel relay start start-relay stop-relay status status-relay build build-linux install clean vet test test-relay
 
 RELAY_BIN ?= ./relay
 RELAY_PORT ?= 8586
@@ -21,12 +21,12 @@ start-relay:
 		echo "relay binary not found or not executable: $(RELAY_BIN)"; \
 		exit 1; \
 	fi; \
-	nohup "$(RELAY_BIN)" >> logs/relay.log 2>&1 & \
+	nohup "$(RELAY_BIN)" --port "$(RELAY_PORT)" >> logs/relay.log 2>&1 & \
 	echo $$! > logs/relay.pid; \
 	sleep 1; \
 	pid="$$(cat logs/relay.pid)"; \
 	if kill -0 "$$pid" 2>/dev/null; then \
-		echo "relay started in background (pid=$$pid, log=logs/relay.log)"; \
+		echo "relay started in background (pid=$$pid, port=$(RELAY_PORT), log=logs/relay.log)"; \
 	else \
 		rm -f logs/relay.pid; \
 		echo "relay failed to start; check logs/relay.log"; \
@@ -75,12 +75,18 @@ status-relay:
 status: status-relay
 
 build:
-	go build -o bin/agentunnel ./cmd/agentunnel
+	go build -o bin/tunnel ./cmd/agentunnel
 	go build -o bin/relay ./cmd/relay
 
 build-linux:
 	GOOS=linux GOARCH=amd64 go build -o bin/relay ./cmd/relay
-	GOOS=linux GOARCH=amd64 go build -o bin/agentunnel ./cmd/agentunnel
+	GOOS=linux GOARCH=amd64 go build -o bin/tunnel ./cmd/agentunnel
+
+install: build
+	@set -e; \
+	mkdir -p "$(HOME)/.local/bin"; \
+	cp -f bin/* "$(HOME)/.local/bin/"; \
+	echo "installed binaries to $(HOME)/.local/bin"
 
 clean:
 	rm -rf bin/
