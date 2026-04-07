@@ -38,5 +38,7 @@ bin/
 *.pid
 *.txt
 
-.superpowers/
-.worktrees/
+
+/logs
+.superpowers
+.worktrees
