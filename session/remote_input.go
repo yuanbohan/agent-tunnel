@@ -2,13 +2,12 @@ package session
 
 import "strings"
 
-func EncodeRemoteTextInput(text string) []byte {
-	return []byte(text)
-}
-
-func EncodeRemoteSubmitInput(text string) []byte {
+func EncodeRemoteTextInput(text string, submit bool) []byte {
 	data := append([]byte(nil), text...)
-	return append(data, '\r')
+	if submit {
+		return append(data, '\r')
+	}
+	return data
 }
 
 func EncodeRemoteKeyInput(key string, ctrl, alt, shift bool) ([]byte, bool) {

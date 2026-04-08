@@ -6,13 +6,13 @@ import (
 )
 
 func TestEncodeRemoteTextInputReturnsUTF8Bytes(t *testing.T) {
-	got := EncodeRemoteTextInput("hello")
+	got := EncodeRemoteTextInput("hello", false)
 	if string(got) != "hello" {
 		t.Fatalf("got %q, want hello", string(got))
 	}
 }
 
-func TestEncodeRemoteSubmitInputAppendsEnterBytes(t *testing.T) {
+func TestEncodeRemoteTextInputAppendsEnterBytesWhenSubmitIsTrue(t *testing.T) {
 	tests := []struct {
 		name string
 		text string
@@ -25,7 +25,7 @@ func TestEncodeRemoteSubmitInputAppendsEnterBytes(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := EncodeRemoteSubmitInput(tc.text)
+			got := EncodeRemoteTextInput(tc.text, true)
 			if !bytes.Equal(got, tc.want) {
 				t.Fatalf("got %#v, want %#v", got, tc.want)
 			}

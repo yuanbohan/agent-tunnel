@@ -193,7 +193,7 @@ func TestUpdatesWebSocketStreamsOutputAndRemoval(t *testing.T) {
 	if output.Cols != 132 || output.Rows != 43 {
 		t.Fatalf("size = %dx%d, want 132x43", output.Cols, output.Rows)
 	}
-	data, err := base64.StdEncoding.DecodeString(output.Data)
+	data, err := base64.StdEncoding.DecodeString(output.DataB64)
 	if err != nil {
 		t.Fatalf("DecodeString returned error: %v", err)
 	}
@@ -209,6 +209,46 @@ func TestUpdatesWebSocketStreamsOutputAndRemoval(t *testing.T) {
 	}
 	if removed.Type != "session_removed" || removed.SessionID != "sess-1" {
 		t.Fatalf("removed = %#v, want sess-1 session_removed", removed)
+	}
+}
+
+func TestAgentWebSocketIgnoresOutputWithoutDataB64(t *testing.T) {
+	reg := NewRegistry()
+	server := httptest.NewServer(NewHandler(HandlerConfig{
+		Registry:   reg,
+		User:       "demo",
+		Password:   "secret",
+		AgentToken: "agent-token",
+	}))
+	defer server.Close()
+
+	agentConn := dialAndRegisterAgent(t, server.URL, "sess-1")
+	defer agentConn.Close()
+
+	if err := agentConn.WriteJSON(protocol.Message{
+		Type: "output",
+		Cols: 132,
+		Rows: 43,
+	}); err != nil {
+		t.Fatalf("WriteJSON returned error: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	info, ok := reg.Session("sess-1")
+	if !ok {
+		t.Fatal("Session returned false, want true")
+	}
+	if info.LatestSeq != 0 {
+		t.Fatalf("LatestSeq = %d, want 0 after invalid output", info.LatestSeq)
+	}
+
+	frames, ok := reg.Frames("sess-1", 0, false, 0, false)
+	if !ok {
+		t.Fatal("Frames returned false, want true")
+	}
+	if len(frames) != 0 {
+		t.Fatalf("frames = %#v, want no retained frames", frames)
 	}
 }
 
@@ -255,7 +295,7 @@ func TestUpdatesWebSocketForwardsClientInputTextToAgent(t *testing.T) {
 	}
 	defer conn.Close()
 
-	msg := protocol.EncodeClientInputText("sess-1", "ls\n")
+	msg := protocol.EncodeClientInputText("sess-1", "ls\n", false)
 	if err := conn.WriteJSON(msg); err != nil {
 		t.Fatalf("WriteJSON returned error: %v", err)
 	}
@@ -270,7 +310,7 @@ func TestUpdatesWebSocketForwardsClientInputTextToAgent(t *testing.T) {
 	t.Fatalf("messages = %#v, want input_text ls\\n", peer.messages)
 }
 
-func TestUpdatesWebSocketForwardsClientInputSubmitToAgent(t *testing.T) {
+func TestUpdatesWebSocketForwardsSubmittingClientInputTextToAgent(t *testing.T) {
 	reg := NewRegistry()
 	server := httptest.NewServer(NewHandler(HandlerConfig{
 		Registry:   reg,
@@ -292,22 +332,22 @@ func TestUpdatesWebSocketForwardsClientInputSubmitToAgent(t *testing.T) {
 	}
 	defer conn.Close()
 
-	msg := protocol.EncodeClientInputSubmit("sess-1", "line1\nline2")
+	msg := protocol.EncodeClientInputText("sess-1", "line1\nline2", true)
 	if err := conn.WriteJSON(msg); err != nil {
 		t.Fatalf("WriteJSON returned error: %v", err)
 	}
 
 	deadline := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
-		if len(peer.messages) == 1 && peer.messages[0].Type == "input_submit" && peer.messages[0].Text == "line1\nline2" {
+		if len(peer.messages) == 1 && peer.messages[0].Type == "input_text" && peer.messages[0].Text == "line1\nline2" && peer.messages[0].Submit {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("messages = %#v, want input_submit line1\\nline2", peer.messages)
+	t.Fatalf("messages = %#v, want input_text submit line1\\nline2", peer.messages)
 }
 
-func TestUpdatesWebSocketForwardsEmptyClientInputSubmitToAgent(t *testing.T) {
+func TestUpdatesWebSocketForwardsEmptySubmittingClientInputTextToAgent(t *testing.T) {
 	reg := NewRegistry()
 	server := httptest.NewServer(NewHandler(HandlerConfig{
 		Registry:   reg,
@@ -329,19 +369,19 @@ func TestUpdatesWebSocketForwardsEmptyClientInputSubmitToAgent(t *testing.T) {
 	}
 	defer conn.Close()
 
-	msg := protocol.EncodeClientInputSubmit("sess-1", "")
+	msg := protocol.EncodeClientInputText("sess-1", "", true)
 	if err := conn.WriteJSON(msg); err != nil {
 		t.Fatalf("WriteJSON returned error: %v", err)
 	}
 
 	deadline := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
-		if len(peer.messages) == 1 && peer.messages[0].Type == "input_submit" && peer.messages[0].Text == "" {
+		if len(peer.messages) == 1 && peer.messages[0].Type == "input_text" && peer.messages[0].Text == "" && peer.messages[0].Submit {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("messages = %#v, want input_submit empty text", peer.messages)
+	t.Fatalf("messages = %#v, want input_text submit empty text", peer.messages)
 }
 
 func TestUpdatesWebSocketForwardsClientInputKeyToAgent(t *testing.T) {
