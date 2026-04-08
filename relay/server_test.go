@@ -302,12 +302,13 @@ func TestUpdatesWebSocketForwardsClientInputTextToAgent(t *testing.T) {
 
 	deadline := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
-		if len(peer.messages) == 1 && peer.messages[0].Type == "input_text" && peer.messages[0].Text == "ls\n" {
+		messages := peer.Messages()
+		if len(messages) == 1 && messages[0].Type == "input_text" && messages[0].Text == "ls\n" {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("messages = %#v, want input_text ls\\n", peer.messages)
+	t.Fatalf("messages = %#v, want input_text ls\\n", peer.Messages())
 }
 
 func TestUpdatesWebSocketForwardsSubmittingClientInputTextToAgent(t *testing.T) {
@@ -339,12 +340,13 @@ func TestUpdatesWebSocketForwardsSubmittingClientInputTextToAgent(t *testing.T) 
 
 	deadline := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
-		if len(peer.messages) == 1 && peer.messages[0].Type == "input_text" && peer.messages[0].Text == "line1\nline2" && peer.messages[0].Submit {
+		messages := peer.Messages()
+		if len(messages) == 1 && messages[0].Type == "input_text" && messages[0].Text == "line1\nline2" && messages[0].Submit {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("messages = %#v, want input_text submit line1\\nline2", peer.messages)
+	t.Fatalf("messages = %#v, want input_text submit line1\\nline2", peer.Messages())
 }
 
 func TestUpdatesWebSocketForwardsEmptySubmittingClientInputTextToAgent(t *testing.T) {
@@ -376,12 +378,13 @@ func TestUpdatesWebSocketForwardsEmptySubmittingClientInputTextToAgent(t *testin
 
 	deadline := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
-		if len(peer.messages) == 1 && peer.messages[0].Type == "input_text" && peer.messages[0].Text == "" && peer.messages[0].Submit {
+		messages := peer.Messages()
+		if len(messages) == 1 && messages[0].Type == "input_text" && messages[0].Text == "" && messages[0].Submit {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("messages = %#v, want input_text submit empty text", peer.messages)
+	t.Fatalf("messages = %#v, want input_text submit empty text", peer.Messages())
 }
 
 func TestUpdatesWebSocketForwardsClientInputKeyToAgent(t *testing.T) {
@@ -413,12 +416,13 @@ func TestUpdatesWebSocketForwardsClientInputKeyToAgent(t *testing.T) {
 
 	deadline := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
-		if len(peer.messages) == 1 && peer.messages[0].Type == "input_key" && peer.messages[0].Key == "TAB" {
+		messages := peer.Messages()
+		if len(messages) == 1 && messages[0].Type == "input_key" && messages[0].Key == "TAB" {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("messages = %#v, want input_key TAB", peer.messages)
+	t.Fatalf("messages = %#v, want input_key TAB", peer.Messages())
 }
 
 func basicAuth(user, pass string) string {

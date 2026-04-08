@@ -20,7 +20,7 @@ The current code on `feat/input-submit-protocol` still reflects an earlier wire 
 - raw bytes can still arrive through `input`
 - live output still uses `data` in shared types
 
-The updated [docs/protocol.md](docs/protocol.md) defines a narrower protocol:
+The updated [docs/protocol.md](../protocol.md) defines a narrower protocol:
 
 - `input_text { submit: true }` is the submit shape
 - `input_key` keeps its existing semantics
@@ -62,7 +62,7 @@ Because this feature is still pre-release, carrying dual protocol paths adds avo
 - `session/remote_input.go` remains the PTY-owner boundary for translating structured input intent into actual PTY bytes.
 - `relay/history.go` and replay responses already use `data_b64`, so the live-output rename should converge toward the existing replay shape.
 - `protocol/relay_types_test.go`, `relay/server_test.go`, `connector/connector_test.go`, and `session/remote_input_test.go` are the contract tests that need to move with the protocol.
-- The earlier [docs/plans/2026-04-08-001-feat-input-submit-protocol-plan.md](docs/plans/2026-04-08-001-feat-input-submit-protocol-plan.md) captures the superseded standalone-`input_submit` direction and remains historical context only.
+- The earlier [docs/plans/2026-04-08-001-feat-input-submit-protocol-plan.md](2026-04-08-001-feat-input-submit-protocol-plan.md) captures the superseded standalone-`input_submit` direction and remains historical context only.
 
 ### Institutional Learnings
 
