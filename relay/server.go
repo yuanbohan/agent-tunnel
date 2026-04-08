@@ -1,7 +1,6 @@
 package relay
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -184,10 +183,6 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 				continue
 			}
 			switch msg.Type {
-			case "input":
-				if _, err := base64.StdEncoding.DecodeString(msg.Data); err != nil {
-					continue
-				}
 			case "input_text":
 			case "input_key":
 				if msg.Key == "" {
@@ -261,7 +256,10 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 			}
 			switch msg.Type {
 			case "output":
-				data, err := protocol.DecodeData(msg)
+				if msg.DataB64 == "" {
+					continue
+				}
+				data, err := protocol.DecodeDataB64(msg)
 				if err != nil {
 					continue
 				}

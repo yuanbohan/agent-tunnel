@@ -140,7 +140,7 @@ GET /api/sessions/sess-1/frames?from=101&to=120
 ```json
 {
   "type": "output",
-  "data": "SGVsbG8=",
+  "data_b64": "SGVsbG8=",
   "cols": 132,
   "rows": 43
 }
@@ -163,19 +163,28 @@ Use this for:
 - normal typing
 - pasted text
 - IME-committed text
+- local draft text that should not imply submit
+- explicit submit actions when the client intends atomic `text + Enter`
 
 ```json
 {
   "session_id": "sess-1",
   "type": "input_text",
-  "text": "hello"
+  "text": "hello",
+  "submit": false
 }
 ```
 
 Rules:
 
 - `text` is UTF-8 text
+- `submit` is optional and defaults to `false`
 - plain character input belongs here, not in `input_key`
+- if `submit` is `false`, `input_text` does not imply `Enter`
+- if `submit` is `true`, the event is an atomic submit intent, not a best-effort client macro
+- when `submit` is `true`, the relay and owning agent must preserve ordering so the PTY receives `text` and the submit carriage return as one serialized operation for that session
+- when `submit` is `true`, the owning agent appends exactly one trailing carriage return (`\r`) beyond the provided text body
+- the appended carriage return must match the existing `input_key` handling for `ENTER` in the owning agent
 
 #### `input_key`
 
@@ -220,9 +229,17 @@ The relay forwards structured client input to the owning `agentunnel` session ov
 ```json
 {
   "type": "input_text",
-  "text": "hello"
+  "text": "hello",
+  "submit": false
 }
 ```
+
+Relay and agent requirements:
+
+- the relay forwards `input_text` with the `submit` flag intact
+- the relay must not decompose `input_text { submit: true }` into separate forwarded `input_text` and `input_key`
+- the owning `agentunnel` session must serialize `input_text { submit: true }` as one submit operation for that session
+- the owning `agentunnel` session appends exactly one trailing carriage return (`\r`) for `input_text { submit: true }` using the same semantics it already uses for `ENTER`
 
 #### `input_key`
 
@@ -236,10 +253,11 @@ The relay forwards structured client input to the owning `agentunnel` session ov
 }
 ```
 
-Compatibility note:
+Notes:
 
-- the legacy raw-byte `input` message may remain temporarily during migration
-- new clients should target `input_text` and `input_key`
+- existing `input_key` values and semantics are unchanged in this revision
+- this protocol revision defines only `input_text` and `input_key` as forwarded client input messages
+- live output uses `data_b64`; `output.data` is not part of this revision
 
 ### Relay -> Client
 
@@ -250,7 +268,7 @@ Compatibility note:
   "session_id": "sess-1",
   "type": "output",
   "seq": 42,
-  "data": "SGVsbG8=",
+  "data_b64": "SGVsbG8=",
   "cols": 132,
   "rows": 43,
   "ts": "2026-04-06T02:10:02Z"
@@ -269,7 +287,7 @@ Compatibility note:
 
 Notes:
 
-- `data` is base64-encoded PTY output bytes
+- `data_b64` is base64-encoded PTY output bytes
 - `cols` and `rows` are carried on every live output frame
 - `ts` is the same relay-assigned timestamp stored in retained frame history for the same output frame
 - this live stream is best-effort; clients should reconnect and use `/api/sessions/:id/frames` to recover recent relay-retained output when needed
@@ -338,7 +356,7 @@ This keeps terminal behavior close to the PTY owner and avoids embedding termina
 - websocket disconnects do not alter retained output history for still-live sessions
 - if the owning agent disconnects, the session disappears along with its retained frames
 
-## Compatibility Notes
+## Client Notes
 
 - the Android client expects a `baseUrl` with an explicit scheme such as `http://...`
 - clients may validate relay availability with:

@@ -78,7 +78,7 @@ func TestConnectorRoutesInputFrameIntoHub(t *testing.T) {
 			t.Fatalf("ReadJSON returned error: %v", err)
 		}
 
-		msg := protocol.EncodeInput([]byte("hello"))
+		msg := protocol.EncodeInputText("hello", false)
 		if err := conn.WriteJSON(msg); err != nil {
 			t.Fatalf("WriteJSON returned error: %v", err)
 		}
@@ -153,9 +153,9 @@ func TestConnectorStreamsOutputFramesToRelay(t *testing.T) {
 		if msg.Type != "output" {
 			t.Fatalf("Type = %q, want output", msg.Type)
 		}
-		data, err := protocol.DecodeData(msg)
+		data, err := protocol.DecodeDataB64(msg)
 		if err != nil {
-			t.Fatalf("DecodeData returned error: %v", err)
+			t.Fatalf("DecodeDataB64 returned error: %v", err)
 		}
 		if string(data) != "world" {
 			t.Fatalf("output = %q, want world", string(data))
@@ -225,7 +225,9 @@ func TestConnectorRoutesStructuredInputFramesIntoHub(t *testing.T) {
 		message protocol.Message
 		want    string
 	}{
-		{name: "input text", message: protocol.EncodeInputText("hello"), want: "hello"},
+		{name: "input text", message: protocol.EncodeInputText("hello", false), want: "hello"},
+		{name: "input text submit", message: protocol.EncodeInputText("hello", true), want: "hello\r"},
+		{name: "empty input text submit", message: protocol.EncodeInputText("", true), want: "\r"},
 		{name: "input key", message: protocol.EncodeInputKey("TAB", false, false, false), want: "\t"},
 	}
 
@@ -348,9 +350,9 @@ func TestConnectorBuffersOutputAcrossReconnectWithoutLeakingOldWriter(t *testing
 		if msg.Type != "output" {
 			t.Fatalf("Type = %q, want output", msg.Type)
 		}
-		data, err := protocol.DecodeData(msg)
+		data, err := protocol.DecodeDataB64(msg)
 		if err != nil {
-			t.Fatalf("DecodeData returned error: %v", err)
+			t.Fatalf("DecodeDataB64 returned error: %v", err)
 		}
 		if string(data) != "persisted" {
 			t.Fatalf("output = %q, want persisted", string(data))
@@ -383,7 +385,7 @@ func TestConnectorQueuesInputUntilHubIsBound(t *testing.T) {
 			t.Fatalf("ReadJSON register returned error: %v", err)
 		}
 
-		if err := conn.WriteJSON(protocol.EncodeInputText("queued")); err != nil {
+		if err := conn.WriteJSON(protocol.EncodeInputText("queued", false)); err != nil {
 			t.Fatalf("WriteJSON returned error: %v", err)
 		}
 

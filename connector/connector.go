@@ -387,13 +387,8 @@ func (c *Connector) deliverInput(msg protocol.Message) {
 
 func (c *Connector) deliverInputToHub(hub *session.Hub, msg protocol.Message) {
 	switch msg.Type {
-	case "input":
-		data, err := protocol.DecodeData(msg)
-		if err == nil {
-			_ = hub.WriteInput(data)
-		}
 	case "input_text":
-		_ = hub.WriteInput(session.EncodeRemoteTextInput(msg.Text))
+		_ = hub.WriteInput(session.EncodeRemoteTextInput(msg.Text, msg.Submit))
 	case "input_key":
 		if data, ok := session.EncodeRemoteKeyInput(msg.Key, msg.Ctrl, msg.Alt, msg.Shift); ok {
 			_ = hub.WriteInput(data)

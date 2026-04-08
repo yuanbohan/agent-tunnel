@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,18 +17,29 @@ func (fakeAgentPeer) Send(protocol.Message) error { return nil }
 func (fakeAgentPeer) Close() error                { return nil }
 
 type recordingPeer struct {
+	mu       sync.Mutex
 	messages []protocol.Message
 	closed   int
 }
 
 func (p *recordingPeer) Send(msg protocol.Message) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.messages = append(p.messages, msg)
 	return nil
 }
 
 func (p *recordingPeer) Close() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.closed++
 	return nil
+}
+
+func (p *recordingPeer) Messages() []protocol.Message {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]protocol.Message(nil), p.messages...)
 }
 
 type recordingClientUpdateSink struct {
@@ -63,7 +75,7 @@ func TestRegistryRegisterAndListSortedByLastActive(t *testing.T) {
 func TestRegistryMissingSessionErrors(t *testing.T) {
 	reg := NewRegistry()
 
-	if err := reg.WriteInput("missing", protocol.EncodeInput([]byte("x"))); err != ErrSessionNotFound {
+	if err := reg.WriteInput("missing", protocol.EncodeInputText("x", false)); err != ErrSessionNotFound {
 		t.Fatalf("WriteInput error = %v, want ErrSessionNotFound", err)
 	}
 }
@@ -116,7 +128,7 @@ func TestRegistryTouchOutputBroadcastsGlobalClientUpdate(t *testing.T) {
 	if got.Cols != 132 || got.Rows != 43 {
 		t.Fatalf("size = %dx%d, want 132x43", got.Cols, got.Rows)
 	}
-	data, err := base64.StdEncoding.DecodeString(got.Data)
+	data, err := base64.StdEncoding.DecodeString(got.DataB64)
 	if err != nil {
 		t.Fatalf("DecodeString returned error: %v", err)
 	}
@@ -207,18 +219,15 @@ func TestRegistryRemoveIfOwnerSkipsStaleOwnerAfterReplacement(t *testing.T) {
 		t.Fatal("RemoveIfOwner returned true for stale owner, want false")
 	}
 
-	if err := reg.WriteInput("sess-1", protocol.EncodeInput([]byte("ping"))); err != nil {
+	if err := reg.WriteInput("sess-1", protocol.EncodeInputText("ping", false)); err != nil {
 		t.Fatalf("WriteInput returned error after stale-owner cleanup: %v", err)
 	}
-	if len(newPeer.messages) != 1 {
-		t.Fatalf("message count = %d, want 1", len(newPeer.messages))
+	messages := newPeer.Messages()
+	if len(messages) != 1 {
+		t.Fatalf("message count = %d, want 1", len(messages))
 	}
-	data, err := protocol.DecodeData(newPeer.messages[0])
-	if err != nil {
-		t.Fatalf("DecodeData returned error: %v", err)
-	}
-	if got := string(data); got != "ping" {
-		t.Fatalf("new peer input = %q, want ping", got)
+	if got := messages[0]; got.Type != "input_text" || got.Text != "ping" || got.Submit {
+		t.Fatalf("new peer input = %#v, want input_text ping submit=false", got)
 	}
 }
 

@@ -6,18 +6,19 @@ import (
 )
 
 // Message is the agent-side JSON frame exchanged over session-scoped WebSockets.
-// Type is one of "input", "input_text", "input_key", or "output".
+// Type is one of "input_text", "input_key", or "output".
 type Message struct {
-	Type  string `json:"type"`
-	Seq   uint64 `json:"seq,omitempty"`
-	Data  string `json:"data,omitempty"` // base64-encoded bytes
-	Text  string `json:"text,omitempty"`
-	Key   string `json:"key,omitempty"`
-	Cols  int    `json:"cols,omitempty"`
-	Rows  int    `json:"rows,omitempty"`
-	Ctrl  bool   `json:"ctrl,omitempty"`
-	Alt   bool   `json:"alt,omitempty"`
-	Shift bool   `json:"shift,omitempty"`
+	Type    string `json:"type"`
+	Seq     uint64 `json:"seq,omitempty"`
+	DataB64 string `json:"data_b64,omitempty"` // base64-encoded bytes for output frames
+	Text    string `json:"text,omitempty"`
+	Submit  bool   `json:"submit,omitempty"`
+	Key     string `json:"key,omitempty"`
+	Cols    int    `json:"cols,omitempty"`
+	Rows    int    `json:"rows,omitempty"`
+	Ctrl    bool   `json:"ctrl,omitempty"`
+	Alt     bool   `json:"alt,omitempty"`
+	Shift   bool   `json:"shift,omitempty"`
 }
 
 // EncodeOutput wraps raw PTY bytes into an output Message.
@@ -34,25 +35,19 @@ func EncodeOutputWithSeq(seq uint64, b []byte) Message {
 // into an output Message.
 func EncodeOutputWithSeqAndSize(seq uint64, b []byte, cols, rows int) Message {
 	return Message{
-		Type: "output",
-		Seq:  seq,
-		Data: base64.StdEncoding.EncodeToString(b),
-		Cols: cols,
-		Rows: rows,
+		Type:    "output",
+		Seq:     seq,
+		DataB64: base64.StdEncoding.EncodeToString(b),
+		Cols:    cols,
+		Rows:    rows,
 	}
 }
 
-func EncodeInput(b []byte) Message {
+func EncodeInputText(text string, submit bool) Message {
 	return Message{
-		Type: "input",
-		Data: base64.StdEncoding.EncodeToString(b),
-	}
-}
-
-func EncodeInputText(text string) Message {
-	return Message{
-		Type: "input_text",
-		Text: text,
+		Type:   "input_text",
+		Text:   text,
+		Submit: submit,
 	}
 }
 
@@ -66,9 +61,9 @@ func EncodeInputKey(key string, ctrl, alt, shift bool) Message {
 	}
 }
 
-// DecodeData decodes the base64 Data field of an input or output Message.
-func DecodeData(m Message) ([]byte, error) {
-	return base64.StdEncoding.DecodeString(m.Data)
+// DecodeDataB64 decodes the base64 data_b64 field of an output Message.
+func DecodeDataB64(m Message) ([]byte, error) {
+	return base64.StdEncoding.DecodeString(m.DataB64)
 }
 
 // SessionInfo describes a live agent session registered with the relay.
@@ -87,9 +82,6 @@ type SessionInfo struct {
 type AgentFrame struct {
 	Type    string       `json:"type"`
 	Session *SessionInfo `json:"session,omitempty"`
-	Data    string       `json:"data,omitempty"`
-	Cols    int          `json:"cols,omitempty"`
-	Rows    int          `json:"rows,omitempty"`
 }
 
 // RegisterFrame builds an AgentFrame of type "register".
@@ -104,27 +96,20 @@ func RegisterFrame(info SessionInfo) AgentFrame {
 type ClientInputMessage struct {
 	SessionID string `json:"session_id"`
 	Type      string `json:"type"`
-	Data      string `json:"data,omitempty"` // legacy raw bytes during migration
 	Text      string `json:"text,omitempty"`
+	Submit    bool   `json:"submit,omitempty"`
 	Key       string `json:"key,omitempty"`
 	Ctrl      bool   `json:"ctrl,omitempty"`
 	Alt       bool   `json:"alt,omitempty"`
 	Shift     bool   `json:"shift,omitempty"`
 }
 
-func EncodeClientInput(sessionID string, b []byte) ClientInputMessage {
-	return ClientInputMessage{
-		SessionID: sessionID,
-		Type:      "input",
-		Data:      base64.StdEncoding.EncodeToString(b),
-	}
-}
-
-func EncodeClientInputText(sessionID, text string) ClientInputMessage {
+func EncodeClientInputText(sessionID, text string, submit bool) ClientInputMessage {
 	return ClientInputMessage{
 		SessionID: sessionID,
 		Type:      "input_text",
 		Text:      text,
+		Submit:    submit,
 	}
 }
 
@@ -142,18 +127,11 @@ func EncodeClientInputKey(sessionID, key string, ctrl, alt, shift bool) ClientIn
 func (m ClientInputMessage) AgentMessage() Message {
 	switch m.Type {
 	case "input_text":
-		return EncodeInputText(m.Text)
+		return EncodeInputText(m.Text, m.Submit)
 	case "input_key":
 		return EncodeInputKey(m.Key, m.Ctrl, m.Alt, m.Shift)
 	default:
-		return EncodeInputFromBase64(m.Data)
-	}
-}
-
-func EncodeInputFromBase64(data string) Message {
-	return Message{
-		Type: "input",
-		Data: data,
+		return Message{Type: m.Type}
 	}
 }
 
@@ -164,7 +142,7 @@ type ClientUpdateMessage struct {
 	SessionID string     `json:"session_id"`
 	Type      string     `json:"type"`
 	Seq       uint64     `json:"seq,omitempty"`
-	Data      string     `json:"data,omitempty"`
+	DataB64   string     `json:"data_b64,omitempty"`
 	Cols      int        `json:"cols,omitempty"`
 	Rows      int        `json:"rows,omitempty"`
 	Reason    string     `json:"reason,omitempty"`
@@ -177,7 +155,7 @@ func EncodeClientOutput(sessionID string, seq uint64, b []byte, cols, rows int, 
 		SessionID: sessionID,
 		Type:      "output",
 		Seq:       seq,
-		Data:      base64.StdEncoding.EncodeToString(b),
+		DataB64:   base64.StdEncoding.EncodeToString(b),
 		Cols:      cols,
 		Rows:      rows,
 		TS:        &tsCopy,

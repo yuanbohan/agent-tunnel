@@ -117,7 +117,10 @@ client input frame
 → relay
 → owning agent websocket
 → agentunnel connector
-→ key translation for supported `input_key` events
+→ structured input translation:
+     - `input_text { submit: false }` -> UTF-8 text bytes
+     - `input_text { submit: true }` -> UTF-8 text bytes + trailing `\r` in one write
+     - supported `input_key` events -> PTY key bytes
 → PTY stdin
 ```
 
