@@ -252,10 +252,10 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
 }
 
 func TestStartupBannerUsesRelayState(t *testing.T) {
-	if got := startupBanner("codex", "127.0.0.1:8586", connector.StateConnected, sleepPreventionActive); got != "▶ agentunnel codex — relay connected (127.0.0.1:8586); sleep prevented\n\n" {
+	if got := startupBanner("codex", "sess-123", "127.0.0.1:8586", connector.StateConnected, sleepPreventionActive); got != "\x1b[32m▶ agentunnel codex — session sess-123; relay connected (127.0.0.1:8586); sleep prevented\x1b[0m\n" {
 		t.Fatalf("connected banner = %q", got)
 	}
-	if got := startupBanner("codex", "127.0.0.1:8586", connector.StateReconnecting, sleepPreventionFailed); got != "▶ agentunnel codex — relay reconnecting (127.0.0.1:8586); sleep prevention failed\n\n" {
+	if got := startupBanner("codex", "sess-456", "127.0.0.1:8586", connector.StateReconnecting, sleepPreventionFailed); got != "\x1b[31m▶ agentunnel codex — session sess-456; relay reconnecting (127.0.0.1:8586); sleep prevention failed\x1b[0m\n" {
 		t.Fatalf("reconnecting banner = %q", got)
 	}
 }
@@ -308,7 +308,9 @@ func TestRunWithArgsPrintsStartupBannerWithSleepStatusAndStopsSleepPreventionOnE
 		})
 	}
 
+	var sessionID string
 	newConnector = func(url, token string, info protocol.SessionInfo) relayConnector {
+		sessionID = info.SessionID
 		return &fakeRelayConnector{waitConnected: true, state: connector.StateConnected}
 	}
 
@@ -317,7 +319,7 @@ func TestRunWithArgsPrintsStartupBannerWithSleepStatusAndStopsSleepPreventionOnE
 		t.Fatalf("runWithArgs error = %v", err)
 	}
 
-	if got := stderr.String(); got != "▶ agentunnel codex — relay connected (127.0.0.1:8586); sleep prevented\n\n" {
+	if got := stderr.String(); got != startupBanner("codex", sessionID, "127.0.0.1:8586", connector.StateConnected, sleepPreventionActive) {
 		t.Fatalf("stderr = %q", got)
 	}
 	if stopCalls != 1 {
@@ -367,7 +369,9 @@ func TestRunWithArgsContinuesWhenSleepPreventionFails(t *testing.T) {
 		return newSleepPrevention(sleepPreventionFailed, nil)
 	}
 
+	var sessionID string
 	newConnector = func(url, token string, info protocol.SessionInfo) relayConnector {
+		sessionID = info.SessionID
 		return &fakeRelayConnector{waitConnected: false, state: connector.StateReconnecting}
 	}
 
@@ -376,7 +380,7 @@ func TestRunWithArgsContinuesWhenSleepPreventionFails(t *testing.T) {
 		t.Fatalf("runWithArgs error = %v", err)
 	}
 
-	if got := stderr.String(); got != "▶ agentunnel codex — relay reconnecting (127.0.0.1:8586); sleep prevention failed\n\n" {
+	if got := stderr.String(); got != startupBanner("codex", sessionID, "127.0.0.1:8586", connector.StateReconnecting, sleepPreventionFailed) {
 		t.Fatalf("stderr = %q", got)
 	}
 }
@@ -423,7 +427,9 @@ func TestRunWithArgsContinuesWhenSleepPreventionIsUnsupported(t *testing.T) {
 		return newSleepPrevention(sleepPreventionUnsupported, nil)
 	}
 
+	var sessionID string
 	newConnector = func(url, token string, info protocol.SessionInfo) relayConnector {
+		sessionID = info.SessionID
 		return &fakeRelayConnector{waitConnected: true, state: connector.StateConnected}
 	}
 
@@ -432,7 +438,7 @@ func TestRunWithArgsContinuesWhenSleepPreventionIsUnsupported(t *testing.T) {
 		t.Fatalf("runWithArgs error = %v", err)
 	}
 
-	if got := stderr.String(); got != "▶ agentunnel codex — relay connected (127.0.0.1:8586); sleep unsupported\n\n" {
+	if got := stderr.String(); got != startupBanner("codex", sessionID, "127.0.0.1:8586", connector.StateConnected, sleepPreventionUnsupported) {
 		t.Fatalf("stderr = %q", got)
 	}
 }

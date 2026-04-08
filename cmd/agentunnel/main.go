@@ -20,6 +20,12 @@ import (
 
 const startupRelayWait = 10 * time.Second
 
+const (
+	startupBannerGreen = "\x1b[32m"
+	startupBannerRed   = "\x1b[31m"
+	startupBannerReset = "\x1b[0m"
+)
+
 type relayConnector interface {
 	session.OutputSink
 	SetInitialSize(cols, rows int)
@@ -127,7 +133,7 @@ func runWithArgs(args []string, stderr io.Writer) error {
 	sleep := startSleepPrevention(os.Getpid())
 	defer sleep.Stop()
 
-	fmt.Fprint(stderr, startupBanner(command.Name, parsed.RelayAddr, relay.CurrentState(), sleep.status))
+	fmt.Fprint(stderr, startupBanner(command.Name, sessionID, parsed.RelayAddr, relay.CurrentState(), sleep.status))
 
 	stateCh, cancelStates := relay.SubscribeStateChanges()
 	defer cancelStates()
@@ -156,12 +162,16 @@ func waitForProcessOrShutdown(ctx context.Context, localDone <-chan struct{}, wa
 	}
 }
 
-func startupBanner(launcherName, relayAddr string, state connector.State, sleepStatus sleepPreventionStatus) string {
+func startupBanner(launcherName, sessionID, relayAddr string, state connector.State, sleepStatus sleepPreventionStatus) string {
 	status := "connected"
 	if state != connector.StateConnected {
 		status = "reconnecting"
 	}
-	return fmt.Sprintf("▶ agentunnel %s — relay %s (%s); %s\n\n", launcherName, status, relayAddr, sleepStatus)
+	color := startupBannerGreen
+	if state != connector.StateConnected || sleepStatus == sleepPreventionFailed {
+		color = startupBannerRed
+	}
+	return fmt.Sprintf("%s▶ agentunnel %s — session %s; relay %s (%s); %s%s\n", color, launcherName, sessionID, status, relayAddr, sleepStatus, startupBannerReset)
 }
 
 func followRelayState(ctx context.Context, statusLine *session.StatusLine, stateCh <-chan connector.State) {
