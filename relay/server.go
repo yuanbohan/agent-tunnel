@@ -189,6 +189,7 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 					continue
 				}
 			case "input_text":
+			case "input_submit":
 			case "input_key":
 				if msg.Key == "" {
 					continue

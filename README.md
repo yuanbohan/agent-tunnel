@@ -15,9 +15,10 @@ Remote/mobile clients can observe and interact with live sessions and are suitab
 Client input uses structured events:
 
 - `input_text` for normal typing, pasted text, and IME-committed text
+- `input_submit` for explicit draft submit flows that mean `text + Enter`
 - `input_key` for special keys and supported key combinations
 
-The relay forwards those events to the owning `agentunnel` session, and `agentunnel` translates supported key events into PTY bytes locally.
+The relay forwards those events to the owning `agentunnel` session. `agentunnel` translates supported key events into PTY bytes locally, and it handles `input_submit` as one serialized PTY write of the submitted text plus the same carriage return semantics used for `ENTER`.
 
 ## Requirements
 

@@ -162,6 +162,24 @@ func TestClientInputMessageTextRoundTrip(t *testing.T) {
 	}
 }
 
+func TestClientInputMessageSubmitRoundTrip(t *testing.T) {
+	frame := EncodeClientInputSubmit("sess-4", "hello\nworld")
+
+	raw, err := json.Marshal(frame)
+	if err != nil {
+		t.Fatalf("Marshal returned error: %v", err)
+	}
+
+	var decoded ClientInputMessage
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+
+	if decoded.SessionID != "sess-4" || decoded.Type != "input_submit" || decoded.Text != "hello\nworld" {
+		t.Fatalf("decoded = %#v, want sess-4 input_submit hello\\nworld", decoded)
+	}
+}
+
 func TestClientInputMessageKeyRoundTrip(t *testing.T) {
 	frame := EncodeClientInputKey("sess-5", "TAB", false, false, true)
 
@@ -198,6 +216,24 @@ func TestAgentMessageInputTextRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAgentMessageInputSubmitRoundTrip(t *testing.T) {
+	frame := EncodeInputSubmit("")
+
+	raw, err := json.Marshal(frame)
+	if err != nil {
+		t.Fatalf("Marshal returned error: %v", err)
+	}
+
+	var decoded Message
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+
+	if decoded.Type != "input_submit" || decoded.Text != "" {
+		t.Fatalf("decoded = %#v, want input_submit empty text", decoded)
+	}
+}
+
 func TestAgentMessageInputKeyRoundTrip(t *testing.T) {
 	frame := EncodeInputKey("C", true, false, false)
 
@@ -213,5 +249,14 @@ func TestAgentMessageInputKeyRoundTrip(t *testing.T) {
 
 	if decoded.Type != "input_key" || decoded.Key != "C" || !decoded.Ctrl {
 		t.Fatalf("decoded = %#v, want input_key ctrl-C", decoded)
+	}
+}
+
+func TestClientInputMessageAgentMessageSubmit(t *testing.T) {
+	msg := EncodeClientInputSubmit("sess-9", "")
+
+	got := msg.AgentMessage()
+	if got.Type != "input_submit" || got.Text != "" {
+		t.Fatalf("AgentMessage() = %#v, want input_submit empty text", got)
 	}
 }

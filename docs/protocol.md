@@ -163,6 +163,7 @@ Use this for:
 - normal typing
 - pasted text
 - IME-committed text
+- local draft text that should not imply submit
 
 ```json
 {
@@ -176,6 +177,33 @@ Rules:
 
 - `text` is UTF-8 text
 - plain character input belongs here, not in `input_key`
+- `input_text` does not imply `Enter`
+
+#### `input_submit`
+
+Use this for:
+
+- explicit draft submit actions in clients
+- send flows that semantically mean `text + Enter`
+- any UX where the client must avoid splitting submit into separate `input_text` and `input_key ENTER` messages
+
+```json
+{
+  "session_id": "sess-1",
+  "type": "input_submit",
+  "text": "hello"
+}
+```
+
+Rules:
+
+- `text` is UTF-8 text
+- `text` may be empty and may include embedded newline characters such as `\n`
+- this is an atomic submit intent, not a best-effort client macro
+- the relay and owning agent must preserve ordering so the PTY receives `text` and the submit carriage return as one serialized operation for that session
+- clients should prefer `input_submit` over `input_text` + `input_key ENTER` when the UX means "send this draft now"
+- the owning agent appends exactly one trailing carriage return (`\r`) beyond the provided text body
+- the appended carriage return must match the existing `input_key` handling for `ENTER` in the owning agent
 
 #### `input_key`
 
@@ -224,6 +252,21 @@ The relay forwards structured client input to the owning `agentunnel` session ov
 }
 ```
 
+#### `input_submit`
+
+```json
+{
+  "type": "input_submit",
+  "text": "hello"
+}
+```
+
+Relay and agent requirements:
+
+- the relay forwards `input_submit` as a distinct structured event; it must not decompose it into separate forwarded `input_text` and `input_key`
+- the owning `agentunnel` session must serialize the resulting PTY write as one submit operation for that session
+- the owning `agentunnel` session appends exactly one trailing carriage return (`\r`) using the same semantics it already uses for `ENTER`
+
 #### `input_key`
 
 ```json
@@ -239,7 +282,7 @@ The relay forwards structured client input to the owning `agentunnel` session ov
 Compatibility note:
 
 - the legacy raw-byte `input` message may remain temporarily during migration
-- new clients should target `input_text` and `input_key`
+- new clients should target `input_text`, `input_submit`, and `input_key`
 
 ### Relay -> Client
 

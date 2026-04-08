@@ -6,6 +6,11 @@ func EncodeRemoteTextInput(text string) []byte {
 	return []byte(text)
 }
 
+func EncodeRemoteSubmitInput(text string) []byte {
+	data := append([]byte(nil), text...)
+	return append(data, remoteEnterInput()...)
+}
+
 func EncodeRemoteKeyInput(key string, ctrl, alt, shift bool) ([]byte, bool) {
 	normalized := strings.ToUpper(strings.TrimSpace(key))
 	if normalized == "" {
@@ -25,7 +30,7 @@ func EncodeRemoteKeyInput(key string, ctrl, alt, shift bool) ([]byte, bool) {
 
 	switch normalized {
 	case "ENTER":
-		return []byte{'\r'}, true
+		return remoteEnterInput(), true
 	case "BACKSPACE":
 		return []byte{0x7f}, true
 	case "TAB":
@@ -54,4 +59,8 @@ func EncodeRemoteKeyInput(key string, ctrl, alt, shift bool) ([]byte, bool) {
 		_ = shift
 		return nil, false
 	}
+}
+
+func remoteEnterInput() []byte {
+	return []byte{'\r'}
 }

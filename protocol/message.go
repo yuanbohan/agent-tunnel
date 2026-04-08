@@ -6,7 +6,7 @@ import (
 )
 
 // Message is the agent-side JSON frame exchanged over session-scoped WebSockets.
-// Type is one of "input", "input_text", "input_key", or "output".
+// Type is one of "input", "input_text", "input_submit", "input_key", or "output".
 type Message struct {
 	Type  string `json:"type"`
 	Seq   uint64 `json:"seq,omitempty"`
@@ -52,6 +52,13 @@ func EncodeInput(b []byte) Message {
 func EncodeInputText(text string) Message {
 	return Message{
 		Type: "input_text",
+		Text: text,
+	}
+}
+
+func EncodeInputSubmit(text string) Message {
+	return Message{
+		Type: "input_submit",
 		Text: text,
 	}
 }
@@ -128,6 +135,14 @@ func EncodeClientInputText(sessionID, text string) ClientInputMessage {
 	}
 }
 
+func EncodeClientInputSubmit(sessionID, text string) ClientInputMessage {
+	return ClientInputMessage{
+		SessionID: sessionID,
+		Type:      "input_submit",
+		Text:      text,
+	}
+}
+
 func EncodeClientInputKey(sessionID, key string, ctrl, alt, shift bool) ClientInputMessage {
 	return ClientInputMessage{
 		SessionID: sessionID,
@@ -143,6 +158,8 @@ func (m ClientInputMessage) AgentMessage() Message {
 	switch m.Type {
 	case "input_text":
 		return EncodeInputText(m.Text)
+	case "input_submit":
+		return EncodeInputSubmit(m.Text)
 	case "input_key":
 		return EncodeInputKey(m.Key, m.Ctrl, m.Alt, m.Shift)
 	default:

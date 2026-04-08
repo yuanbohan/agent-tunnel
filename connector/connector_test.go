@@ -226,6 +226,8 @@ func TestConnectorRoutesStructuredInputFramesIntoHub(t *testing.T) {
 		want    string
 	}{
 		{name: "input text", message: protocol.EncodeInputText("hello"), want: "hello"},
+		{name: "input submit", message: protocol.EncodeInputSubmit("hello"), want: "hello\r"},
+		{name: "empty input submit", message: protocol.EncodeInputSubmit(""), want: "\r"},
 		{name: "input key", message: protocol.EncodeInputKey("TAB", false, false, false), want: "\t"},
 	}
 

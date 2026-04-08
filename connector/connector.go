@@ -394,6 +394,8 @@ func (c *Connector) deliverInputToHub(hub *session.Hub, msg protocol.Message) {
 		}
 	case "input_text":
 		_ = hub.WriteInput(session.EncodeRemoteTextInput(msg.Text))
+	case "input_submit":
+		_ = hub.WriteInput(session.EncodeRemoteSubmitInput(msg.Text))
 	case "input_key":
 		if data, ok := session.EncodeRemoteKeyInput(msg.Key, msg.Ctrl, msg.Alt, msg.Shift); ok {
 			_ = hub.WriteInput(data)

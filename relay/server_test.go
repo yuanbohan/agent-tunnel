@@ -270,6 +270,80 @@ func TestUpdatesWebSocketForwardsClientInputTextToAgent(t *testing.T) {
 	t.Fatalf("messages = %#v, want input_text ls\\n", peer.messages)
 }
 
+func TestUpdatesWebSocketForwardsClientInputSubmitToAgent(t *testing.T) {
+	reg := NewRegistry()
+	server := httptest.NewServer(NewHandler(HandlerConfig{
+		Registry:   reg,
+		User:       "demo",
+		Password:   "secret",
+		AgentToken: "agent-token",
+	}))
+	defer server.Close()
+
+	peer := &recordingPeer{}
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, peer)
+
+	updatesURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/updates/ws"
+	headers := http.Header{}
+	headers.Set("Authorization", basicAuth("demo", "secret"))
+	conn, _, err := websocket.DefaultDialer.Dial(updatesURL, headers)
+	if err != nil {
+		t.Fatalf("Dial returned error: %v", err)
+	}
+	defer conn.Close()
+
+	msg := protocol.EncodeClientInputSubmit("sess-1", "line1\nline2")
+	if err := conn.WriteJSON(msg); err != nil {
+		t.Fatalf("WriteJSON returned error: %v", err)
+	}
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if len(peer.messages) == 1 && peer.messages[0].Type == "input_submit" && peer.messages[0].Text == "line1\nline2" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("messages = %#v, want input_submit line1\\nline2", peer.messages)
+}
+
+func TestUpdatesWebSocketForwardsEmptyClientInputSubmitToAgent(t *testing.T) {
+	reg := NewRegistry()
+	server := httptest.NewServer(NewHandler(HandlerConfig{
+		Registry:   reg,
+		User:       "demo",
+		Password:   "secret",
+		AgentToken: "agent-token",
+	}))
+	defer server.Close()
+
+	peer := &recordingPeer{}
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, peer)
+
+	updatesURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/updates/ws"
+	headers := http.Header{}
+	headers.Set("Authorization", basicAuth("demo", "secret"))
+	conn, _, err := websocket.DefaultDialer.Dial(updatesURL, headers)
+	if err != nil {
+		t.Fatalf("Dial returned error: %v", err)
+	}
+	defer conn.Close()
+
+	msg := protocol.EncodeClientInputSubmit("sess-1", "")
+	if err := conn.WriteJSON(msg); err != nil {
+		t.Fatalf("WriteJSON returned error: %v", err)
+	}
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if len(peer.messages) == 1 && peer.messages[0].Type == "input_submit" && peer.messages[0].Text == "" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("messages = %#v, want input_submit empty text", peer.messages)
+}
+
 func TestUpdatesWebSocketForwardsClientInputKeyToAgent(t *testing.T) {
 	reg := NewRegistry()
 	server := httptest.NewServer(NewHandler(HandlerConfig{
