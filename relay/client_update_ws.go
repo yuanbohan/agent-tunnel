@@ -9,6 +9,7 @@ import (
 
 type wsClientUpdateSink struct {
 	conn         wsConn
+	tracker      *wsTrafficTracker
 	writeTimeout time.Duration
 
 	mu        sync.RWMutex
@@ -17,13 +18,14 @@ type wsClientUpdateSink struct {
 	closeOnce sync.Once
 }
 
-func newWSClientUpdateSink(conn wsConn, bufferSize int, writeTimeout time.Duration) *wsClientUpdateSink {
+func newWSClientUpdateSink(conn wsConn, tracker *wsTrafficTracker, bufferSize int, writeTimeout time.Duration) *wsClientUpdateSink {
 	if bufferSize <= 0 {
 		bufferSize = 1
 	}
 
 	sink := &wsClientUpdateSink{
 		conn:         conn,
+		tracker:      tracker,
 		writeTimeout: writeTimeout,
 		outbound:     make(chan protocol.ClientUpdateMessage, bufferSize),
 	}
@@ -43,6 +45,9 @@ func (s *wsClientUpdateSink) WriteClientUpdate(msg protocol.ClientUpdateMessage)
 		return nil
 	default:
 		s.mu.RUnlock()
+		if s.tracker != nil {
+			s.tracker.NoteDisconnectError(errWSSinkBackpressure)
+		}
 		_ = s.Close()
 		return errWSSinkBackpressure
 	}
@@ -65,11 +70,21 @@ func (s *wsClientUpdateSink) run() {
 	for msg := range s.outbound {
 		if s.writeTimeout > 0 {
 			if err := s.conn.SetWriteDeadline(time.Now().Add(s.writeTimeout)); err != nil {
+				if s.tracker != nil {
+					s.tracker.NoteDisconnectError(err)
+				}
 				return
 			}
 		}
-		if err := s.conn.WriteJSON(msg); err != nil {
+		payload, err := writeWSJSON(s.conn, msg)
+		if err != nil {
+			if s.tracker != nil {
+				s.tracker.NoteDisconnectError(err)
+			}
 			return
+		}
+		if s.tracker != nil {
+			s.tracker.RecordOutbound(len(payload))
 		}
 	}
 }
