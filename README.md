@@ -62,16 +62,18 @@ go run ./cmd/agentunnel --label api-fix --relay-addr 127.0.0.1:9000 codex
 Expected stderr output on macOS when relay is available during startup:
 
 ```text
-▶ agentunnel claude — relay connected (127.0.0.1:8586); sleep prevented
+▶ agentunnel claude — session <session-id>; relay connected (127.0.0.1:8586); sleep prevented
 ```
 
 If relay startup registration does not succeed within the startup wait window, `agentunnel` still enters the local terminal session and shows this on macOS:
 
 ```text
-▶ agentunnel claude — relay reconnecting (127.0.0.1:8586); sleep prevented
+▶ agentunnel claude — session <session-id>; relay reconnecting (127.0.0.1:8586); sleep prevented
 ```
 
 While reconnecting, `agentunnel` keeps retrying in the background and shows a compact terminal status that local work continues.
+
+Healthy startup banners are printed in green. Degraded startup banners, such as relay reconnecting or `sleep prevention failed`, are printed in red.
 
 If macOS sleep prevention cannot be enabled, startup still continues and the startup line reports `sleep prevention failed` instead of `sleep prevented`.
 
