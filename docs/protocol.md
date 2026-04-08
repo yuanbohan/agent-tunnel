@@ -200,6 +200,7 @@ Rules:
 - `text` is UTF-8 text
 - `text` may be empty and may include embedded newline characters such as `\n`
 - this is an atomic submit intent, not a best-effort client macro
+- `input_submit` adds a new event shape only; it does not change the existing `input_key` vocabulary or `input_key` behavior
 - the relay and owning agent must preserve ordering so the PTY receives `text` and the submit carriage return as one serialized operation for that session
 - clients should prefer `input_submit` over `input_text` + `input_key ENTER` when the UX means "send this draft now"
 - the owning agent appends exactly one trailing carriage return (`\r`) beyond the provided text body
@@ -282,6 +283,7 @@ Relay and agent requirements:
 Compatibility note:
 
 - the legacy raw-byte `input` message may remain temporarily during migration
+- existing `input_key` values and semantics are unchanged in this revision
 - new clients should target `input_text`, `input_submit`, and `input_key`
 
 ### Relay -> Client

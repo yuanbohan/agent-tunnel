@@ -8,7 +8,7 @@ func EncodeRemoteTextInput(text string) []byte {
 
 func EncodeRemoteSubmitInput(text string) []byte {
 	data := append([]byte(nil), text...)
-	return append(data, remoteEnterInput()...)
+	return append(data, '\r')
 }
 
 func EncodeRemoteKeyInput(key string, ctrl, alt, shift bool) ([]byte, bool) {
@@ -30,7 +30,7 @@ func EncodeRemoteKeyInput(key string, ctrl, alt, shift bool) ([]byte, bool) {
 
 	switch normalized {
 	case "ENTER":
-		return remoteEnterInput(), true
+		return []byte{'\r'}, true
 	case "BACKSPACE":
 		return []byte{0x7f}, true
 	case "TAB":
@@ -59,8 +59,4 @@ func EncodeRemoteKeyInput(key string, ctrl, alt, shift bool) ([]byte, bool) {
 		_ = shift
 		return nil, false
 	}
-}
-
-func remoteEnterInput() []byte {
-	return []byte{'\r'}
 }
