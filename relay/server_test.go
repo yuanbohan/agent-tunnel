@@ -1,11 +1,13 @@
 package relay
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,6 +21,112 @@ type sessionFramesResponse []struct {
 	Cols    int       `json:"cols"`
 	Rows    int       `json:"rows"`
 	TS      time.Time `json:"ts"`
+}
+
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func readLogEntries(t *testing.T, buf *syncBuffer) []map[string]any {
+	t.Helper()
+
+	raw := strings.TrimSpace(buf.String())
+	if raw == "" {
+		return nil
+	}
+
+	lines := strings.Split(raw, "\n")
+	entries := make([]map[string]any, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("Unmarshal log line returned error: %v\nline: %s", err, line)
+		}
+		entries = append(entries, entry)
+	}
+	return entries
+}
+
+func waitForLogEvent(t *testing.T, buf *syncBuffer, event string, want int) []map[string]any {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		entries := readLogEntries(t, buf)
+		if countLogEvents(entries, event) >= want {
+			return entries
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	entries := readLogEntries(t, buf)
+	t.Fatalf("event %q count = %d, want at least %d\nlogs:\n%s", event, countLogEvents(entries, event), want, buf.String())
+	return nil
+}
+
+func countLogEvents(entries []map[string]any, event string) int {
+	count := 0
+	for _, entry := range entries {
+		if logString(entry, "event") == event {
+			count++
+		}
+	}
+	return count
+}
+
+func findLogEntryByEventAndPath(t *testing.T, entries []map[string]any, event, path string) map[string]any {
+	t.Helper()
+
+	for _, entry := range entries {
+		if logString(entry, "event") == event && logString(entry, "path") == path {
+			return entry
+		}
+	}
+	t.Fatalf("missing log entry event=%q path=%q in %#v", event, path, entries)
+	return nil
+}
+
+func findLogEntryByEvent(t *testing.T, entries []map[string]any, event string) map[string]any {
+	t.Helper()
+
+	for _, entry := range entries {
+		if logString(entry, "event") == event {
+			return entry
+		}
+	}
+	t.Fatalf("missing log entry event=%q in %#v", event, entries)
+	return nil
+}
+
+func logString(entry map[string]any, key string) string {
+	value, _ := entry[key].(string)
+	return value
+}
+
+func logNumber(t *testing.T, entry map[string]any, key string) float64 {
+	t.Helper()
+
+	value, ok := entry[key].(float64)
+	if !ok {
+		t.Fatalf("entry[%q] = %#v, want number in %#v", key, entry[key], entry)
+	}
+	return value
 }
 
 func TestHandlerRejectsSessionsWithoutBasicAuth(t *testing.T) {
@@ -155,6 +263,129 @@ func TestHandlerRejectsInvalidFrameRange(t *testing.T) {
 	}
 }
 
+func TestHandlerAccessLogsRequestsAndSkipsHealthz(t *testing.T) {
+	reg := NewRegistry()
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, fakeAgentPeer{})
+	logs := &syncBuffer{}
+
+	handler := NewHandler(HandlerConfig{
+		Registry:   reg,
+		User:       "demo",
+		Password:   "secret",
+		AgentToken: "agent-token",
+		Logger:     NewLogger(logs),
+	})
+
+	healthRec := httptest.NewRecorder()
+	healthReq := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	handler.ServeHTTP(healthRec, healthReq)
+
+	unauthRec := httptest.NewRecorder()
+	unauthReq := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+	unauthReq.Header.Set("User-Agent", "scanbot/1.0")
+	unauthReq.Header.Set("X-Request-Id", "req-unauth-1")
+	handler.ServeHTTP(unauthRec, unauthReq)
+
+	badRangeRec := httptest.NewRecorder()
+	badRangeReq := httptest.NewRequest(http.MethodGet, "/api/sessions/sess-1/frames?from=3&to=2", nil)
+	badRangeReq.Header.Set("Authorization", basicAuth("demo", "secret"))
+	handler.ServeHTTP(badRangeRec, badRangeReq)
+
+	entries := readLogEntries(t, logs)
+	if countLogEvents(entries, "http_request_completed") != 2 {
+		t.Fatalf("http_request_completed count = %d, want 2", countLogEvents(entries, "http_request_completed"))
+	}
+
+	for _, entry := range entries {
+		if logString(entry, "event") == "http_request_completed" && logString(entry, "path") == "/healthz" {
+			t.Fatalf("unexpected healthz access log: %#v", entry)
+		}
+	}
+
+	unauthEntry := findLogEntryByEventAndPath(t, entries, "http_request_completed", "/api/sessions")
+	if got := int(logNumber(t, unauthEntry, "status")); got != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", got)
+	}
+	if got := logString(unauthEntry, "target"); got != "/api/sessions" {
+		t.Fatalf("target = %q, want /api/sessions", got)
+	}
+	if got := logString(unauthEntry, "user_agent"); got != "scanbot/1.0" {
+		t.Fatalf("user_agent = %q, want scanbot/1.0", got)
+	}
+	if got := logString(unauthEntry, "request_id"); got != "req-unauth-1" {
+		t.Fatalf("request_id = %q, want req-unauth-1", got)
+	}
+	if got := int64(logNumber(t, unauthEntry, "response_bytes")); got != int64(unauthRec.Body.Len()) {
+		t.Fatalf("response_bytes = %d, want %d", got, unauthRec.Body.Len())
+	}
+
+	rangeEntry := findLogEntryByEventAndPath(t, entries, "http_request_completed", "/api/sessions/sess-1/frames")
+	if got := int(logNumber(t, rangeEntry, "status")); got != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", got)
+	}
+	if got := logString(rangeEntry, "target"); got != "/api/sessions/sess-1/frames?from=3&to=2" {
+		t.Fatalf("target = %q, want raw query preserved", got)
+	}
+	if got := int64(logNumber(t, rangeEntry, "response_bytes")); got != int64(badRangeRec.Body.Len()) {
+		t.Fatalf("response_bytes = %d, want %d", got, badRangeRec.Body.Len())
+	}
+
+	authFailed := findLogEntryByEvent(t, entries, "auth_failed")
+	if got := logString(authFailed, "path"); got != "/api/sessions" {
+		t.Fatalf("auth_failed path = %q, want /api/sessions", got)
+	}
+	if got := logString(authFailed, "user_agent"); got != "scanbot/1.0" {
+		t.Fatalf("auth_failed user_agent = %q, want scanbot/1.0", got)
+	}
+	if got := logString(authFailed, "request_id"); got != "req-unauth-1" {
+		t.Fatalf("auth_failed request_id = %q, want req-unauth-1", got)
+	}
+}
+
+func TestHandlerLogsWebSocketUpgradeFailureWithoutLifecycle(t *testing.T) {
+	logs := &syncBuffer{}
+	handler := NewHandler(HandlerConfig{
+		Registry:   NewRegistry(),
+		User:       "demo",
+		Password:   "secret",
+		AgentToken: "agent-token",
+		Logger:     NewLogger(logs),
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/updates/ws", nil)
+	req.Header.Set("Authorization", basicAuth("demo", "secret"))
+	req.Header.Set("User-Agent", "probe/2.0")
+	req.Header.Set("X-Request-Id", "req-upgrade-1")
+	handler.ServeHTTP(rec, req)
+
+	entries := readLogEntries(t, logs)
+	upgradeFailed := findLogEntryByEvent(t, entries, "ws_upgrade_failed")
+	if got := logString(upgradeFailed, "path"); got != "/api/updates/ws" {
+		t.Fatalf("path = %q, want /api/updates/ws", got)
+	}
+	if got := logString(upgradeFailed, "user_agent"); got != "probe/2.0" {
+		t.Fatalf("user_agent = %q, want probe/2.0", got)
+	}
+	if got := logString(upgradeFailed, "request_id"); got != "req-upgrade-1" {
+		t.Fatalf("request_id = %q, want req-upgrade-1", got)
+	}
+
+	access := findLogEntryByEventAndPath(t, entries, "http_request_completed", "/api/updates/ws")
+	if got := int(logNumber(t, access, "status")); got != rec.Code {
+		t.Fatalf("status = %d, want %d", got, rec.Code)
+	}
+	if got := logString(access, "user_agent"); got != "probe/2.0" {
+		t.Fatalf("user_agent = %q, want probe/2.0", got)
+	}
+	if got := logString(access, "request_id"); got != "req-upgrade-1" {
+		t.Fatalf("request_id = %q, want req-upgrade-1", got)
+	}
+	if countLogEvents(entries, "updates_ws_connected") != 0 || countLogEvents(entries, "updates_ws_disconnected") != 0 {
+		t.Fatalf("unexpected lifecycle logs on failed upgrade: %#v", entries)
+	}
+}
+
 func TestUpdatesWebSocketStreamsOutputAndRemoval(t *testing.T) {
 	reg := NewRegistry()
 	server := httptest.NewServer(NewHandler(HandlerConfig{
@@ -209,6 +440,95 @@ func TestUpdatesWebSocketStreamsOutputAndRemoval(t *testing.T) {
 	}
 	if removed.Type != "session_removed" || removed.SessionID != "sess-1" {
 		t.Fatalf("removed = %#v, want sess-1 session_removed", removed)
+	}
+}
+
+func TestUpdatesWebSocketLogsTrafficAndAccess(t *testing.T) {
+	reg := NewRegistry()
+	logs := &syncBuffer{}
+	peer := &recordingPeer{}
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, peer)
+
+	server := httptest.NewServer(NewHandler(HandlerConfig{
+		Registry:   reg,
+		User:       "demo",
+		Password:   "secret",
+		AgentToken: "agent-token",
+		Logger:     NewLogger(logs),
+	}))
+	defer server.Close()
+
+	updatesURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/updates/ws"
+	headers := http.Header{}
+	headers.Set("Authorization", basicAuth("demo", "secret"))
+	headers.Set("X-Request-Id", "req-updates-1")
+	conn, _, err := websocket.DefaultDialer.Dial(updatesURL, headers)
+	if err != nil {
+		t.Fatalf("Dial returned error: %v", err)
+	}
+
+	if err := conn.WriteJSON(protocol.EncodeClientInputText("sess-1", "ls\n", false)); err != nil {
+		t.Fatalf("WriteJSON returned error: %v", err)
+	}
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		messages := peer.Messages()
+		if len(messages) == 1 && messages[0].Type == "input_text" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if messages := peer.Messages(); len(messages) != 1 || messages[0].Type != "input_text" {
+		t.Fatalf("messages = %#v, want one input_text", messages)
+	}
+
+	if ok := reg.TouchOutputIfOwner("sess-1", peer, []byte("hello"), 132, 43, time.Now()); !ok {
+		t.Fatal("TouchOutputIfOwner returned false, want true")
+	}
+
+	var output protocol.ClientUpdateMessage
+	if err := conn.ReadJSON(&output); err != nil {
+		t.Fatalf("ReadJSON returned error: %v", err)
+	}
+	if output.Type != "output" {
+		t.Fatalf("output.Type = %q, want output", output.Type)
+	}
+
+	_ = conn.Close()
+
+	entries := waitForLogEvent(t, logs, "updates_ws_disconnected", 1)
+	access := findLogEntryByEventAndPath(t, entries, "http_request_completed", "/api/updates/ws")
+	if got := int(logNumber(t, access, "status")); got != http.StatusSwitchingProtocols {
+		t.Fatalf("status = %d, want 101", got)
+	}
+	if got := logString(access, "request_id"); got != "req-updates-1" {
+		t.Fatalf("request_id = %q, want req-updates-1", got)
+	}
+
+	connected := findLogEntryByEvent(t, entries, "updates_ws_connected")
+	if got := logString(connected, "path"); got != "/api/updates/ws" {
+		t.Fatalf("path = %q, want /api/updates/ws", got)
+	}
+	if got := logString(connected, "request_id"); got != "req-updates-1" {
+		t.Fatalf("request_id = %q, want req-updates-1", got)
+	}
+
+	disconnected := findLogEntryByEvent(t, entries, "updates_ws_disconnected")
+	if got := logString(disconnected, "request_id"); got != "req-updates-1" {
+		t.Fatalf("request_id = %q, want req-updates-1", got)
+	}
+	if got := int64(logNumber(t, disconnected, "inbound_messages")); got < 1 {
+		t.Fatalf("inbound_messages = %d, want >= 1", got)
+	}
+	if got := int64(logNumber(t, disconnected, "outbound_messages")); got < 1 {
+		t.Fatalf("outbound_messages = %d, want >= 1", got)
+	}
+	if got := int64(logNumber(t, disconnected, "inbound_bytes")); got <= 0 {
+		t.Fatalf("inbound_bytes = %d, want > 0", got)
+	}
+	if got := int64(logNumber(t, disconnected, "outbound_bytes")); got <= 0 {
+		t.Fatalf("outbound_bytes = %d, want > 0", got)
 	}
 }
 
@@ -425,6 +745,129 @@ func TestUpdatesWebSocketForwardsClientInputKeyToAgent(t *testing.T) {
 	t.Fatalf("messages = %#v, want input_key TAB", peer.Messages())
 }
 
+func TestAgentWebSocketLogsTrafficAndAccess(t *testing.T) {
+	logs := &syncBuffer{}
+	server := httptest.NewServer(NewHandler(HandlerConfig{
+		Registry:   NewRegistry(),
+		User:       "demo",
+		Password:   "secret",
+		AgentToken: "agent-token",
+		Logger:     NewLogger(logs),
+	}))
+	defer server.Close()
+
+	agentHeaders := http.Header{}
+	agentHeaders.Set("X-Request-Id", "req-agent-1")
+	agentConn := dialAndRegisterAgentWithHeaders(t, server.URL, "sess-1", agentHeaders)
+	defer agentConn.Close()
+
+	updatesURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/updates/ws"
+	headers := http.Header{}
+	headers.Set("Authorization", basicAuth("demo", "secret"))
+	updatesConn, _, err := websocket.DefaultDialer.Dial(updatesURL, headers)
+	if err != nil {
+		t.Fatalf("Dial updates returned error: %v", err)
+	}
+
+	msg := protocol.EncodeClientInputText("sess-1", "pwd\n", false)
+	if err := updatesConn.WriteJSON(msg); err != nil {
+		t.Fatalf("WriteJSON returned error: %v", err)
+	}
+
+	var forwarded protocol.Message
+	if err := agentConn.ReadJSON(&forwarded); err != nil {
+		t.Fatalf("ReadJSON forwarded returned error: %v", err)
+	}
+	if forwarded.Type != "input_text" || forwarded.Text != "pwd\n" {
+		t.Fatalf("forwarded = %#v, want input_text pwd\\n", forwarded)
+	}
+
+	if err := agentConn.WriteJSON(protocol.EncodeOutputWithSeqAndSize(0, []byte("hello"), 120, 40)); err != nil {
+		t.Fatalf("WriteJSON output returned error: %v", err)
+	}
+
+	_ = updatesConn.Close()
+	_ = agentConn.Close()
+
+	entries := waitForLogEvent(t, logs, "agent_disconnected", 1)
+	access := findLogEntryByEventAndPath(t, entries, "http_request_completed", "/agent/ws")
+	if got := int(logNumber(t, access, "status")); got != http.StatusSwitchingProtocols {
+		t.Fatalf("status = %d, want 101", got)
+	}
+	if got := logString(access, "request_id"); got != "req-agent-1" {
+		t.Fatalf("request_id = %q, want req-agent-1", got)
+	}
+
+	registered := findLogEntryByEvent(t, entries, "agent_registered")
+	if got := logString(registered, "session_id"); got != "sess-1" {
+		t.Fatalf("session_id = %q, want sess-1", got)
+	}
+	if got := logString(registered, "request_id"); got != "req-agent-1" {
+		t.Fatalf("request_id = %q, want req-agent-1", got)
+	}
+
+	connected := findLogEntryByEvent(t, entries, "agent_ws_connected")
+	if got := logString(connected, "request_id"); got != "req-agent-1" {
+		t.Fatalf("request_id = %q, want req-agent-1", got)
+	}
+
+	disconnected := findLogEntryByEvent(t, entries, "agent_disconnected")
+	if got := logString(disconnected, "request_id"); got != "req-agent-1" {
+		t.Fatalf("request_id = %q, want req-agent-1", got)
+	}
+	if got := logString(disconnected, "session_id"); got != "sess-1" {
+		t.Fatalf("session_id = %q, want sess-1", got)
+	}
+	if got := int64(logNumber(t, disconnected, "inbound_messages")); got < 2 {
+		t.Fatalf("inbound_messages = %d, want >= 2", got)
+	}
+	if got := int64(logNumber(t, disconnected, "outbound_messages")); got < 1 {
+		t.Fatalf("outbound_messages = %d, want >= 1", got)
+	}
+	if got := int64(logNumber(t, disconnected, "inbound_bytes")); got <= 0 {
+		t.Fatalf("inbound_bytes = %d, want > 0", got)
+	}
+	if got := int64(logNumber(t, disconnected, "outbound_bytes")); got <= 0 {
+		t.Fatalf("outbound_bytes = %d, want > 0", got)
+	}
+}
+
+func TestAgentWebSocketLogsDisconnectBeforeRegisterWithoutSessionID(t *testing.T) {
+	logs := &syncBuffer{}
+	server := httptest.NewServer(NewHandler(HandlerConfig{
+		Registry:   NewRegistry(),
+		User:       "demo",
+		Password:   "secret",
+		AgentToken: "agent-token",
+		Logger:     NewLogger(logs),
+	}))
+	defer server.Close()
+
+	agentURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/agent/ws"
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer agent-token")
+	headers.Set("X-Request-Id", "req-agent-pre-register")
+	conn, _, err := websocket.DefaultDialer.Dial(agentURL, headers)
+	if err != nil {
+		t.Fatalf("Dial returned error: %v", err)
+	}
+
+	_ = conn.Close()
+
+	entries := waitForLogEvent(t, logs, "agent_disconnected", 1)
+	if countLogEvents(entries, "agent_registered") != 0 {
+		t.Fatalf("unexpected agent_registered logs: %#v", entries)
+	}
+
+	disconnected := findLogEntryByEvent(t, entries, "agent_disconnected")
+	if got := logString(disconnected, "request_id"); got != "req-agent-pre-register" {
+		t.Fatalf("request_id = %q, want req-agent-pre-register", got)
+	}
+	if _, ok := disconnected["session_id"]; ok {
+		t.Fatalf("session_id present = %#v, want absent", disconnected["session_id"])
+	}
+}
+
 func basicAuth(user, pass string) string {
 	return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pass))
 }
@@ -432,9 +875,20 @@ func basicAuth(user, pass string) string {
 func dialAndRegisterAgent(t *testing.T, serverURL, sessionID string) *websocket.Conn {
 	t.Helper()
 
+	return dialAndRegisterAgentWithHeaders(t, serverURL, sessionID, nil)
+}
+
+func dialAndRegisterAgentWithHeaders(t *testing.T, serverURL, sessionID string, extraHeaders http.Header) *websocket.Conn {
+	t.Helper()
+
 	agentURL := "ws" + strings.TrimPrefix(serverURL, "http") + "/agent/ws"
 	headers := http.Header{}
 	headers.Set("Authorization", "Bearer agent-token")
+	for key, values := range extraHeaders {
+		for _, value := range values {
+			headers.Add(key, value)
+		}
+	}
 	conn, _, err := websocket.DefaultDialer.Dial(agentURL, headers)
 	if err != nil {
 		t.Fatalf("Dial returned error: %v", err)

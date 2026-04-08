@@ -28,9 +28,10 @@ const (
 var (
 	errWSSinkClosed         = errors.New("websocket sink closed")
 	errWSSinkBackpressure   = errors.New("websocket sink backpressure")
+	errInvalidAgentRegister = errors.New("invalid agent register frame")
 	nextSinkID              uint64
-	clientUpdateSinkFactory = func(conn *websocket.Conn) clientUpdateSink {
-		return newWSClientUpdateSink(conn, defaultWSSinkBufferSize, defaultWSWriteTimeout)
+	clientUpdateSinkFactory = func(conn *websocket.Conn, tracker *wsTrafficTracker) clientUpdateSink {
+		return newWSClientUpdateSink(conn, tracker, defaultWSSinkBufferSize, defaultWSWriteTimeout)
 	}
 )
 
@@ -49,25 +50,36 @@ type HandlerConfig struct {
 }
 
 type wsAgentPeer struct {
-	conn *websocket.Conn
-	mu   sync.Mutex
+	conn    *websocket.Conn
+	tracker *wsTrafficTracker
+	mu      sync.Mutex
 }
 
 type wsConn interface {
-	WriteJSON(v any) error
+	WriteMessage(messageType int, data []byte) error
 	SetWriteDeadline(t time.Time) error
 	Close() error
 }
 
-func newWSAgentPeer(conn *websocket.Conn) *wsAgentPeer {
-	return &wsAgentPeer{conn: conn}
+func newWSAgentPeer(conn *websocket.Conn, tracker *wsTrafficTracker) *wsAgentPeer {
+	return &wsAgentPeer{conn: conn, tracker: tracker}
 }
 
 func (p *wsAgentPeer) Send(msg protocol.Message) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	return p.conn.WriteJSON(msg)
+	payload, err := writeWSJSON(p.conn, msg)
+	if err != nil {
+		if p.tracker != nil {
+			p.tracker.NoteDisconnectError(err)
+		}
+		return err
+	}
+	if p.tracker != nil {
+		p.tracker.RecordOutbound(len(payload))
+	}
+	return nil
 }
 
 func (p *wsAgentPeer) Close() error {
@@ -157,6 +169,21 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 			return
 		}
 		defer conn.Close()
+		tracker := newWSTrafficTracker(r.URL.Path, r.RemoteAddr, requestIDFromRequest(r))
+		fields := []Field{
+			String("path", r.URL.Path),
+			String("remote_addr", r.RemoteAddr),
+		}
+		if requestID := requestIDFromRequest(r); requestID != "" {
+			fields = append(fields, String("request_id", requestID))
+		}
+		logger.Info("updates_ws_connected", fields...)
+		var loopErr error
+		defer func() {
+			fields := tracker.SummaryFields(time.Now())
+			fields = append(fields, disconnectLogFields(tracker.DisconnectError(loopErr))...)
+			logger.Info("updates_ws_disconnected", fields...)
+		}()
 		conn.SetReadLimit(1 << 20)
 		_ = conn.SetReadDeadline(time.Now().Add(clientReadTimeout))
 		conn.SetPongHandler(func(string) error {
@@ -164,7 +191,7 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 		})
 
 		sinkID := "updates-" + strconv.FormatUint(atomic.AddUint64(&nextSinkID, 1), 10)
-		sink := clientUpdateSinkFactory(conn)
+		sink := clientUpdateSinkFactory(conn, tracker)
 		registry.AddUpdateSink(sinkID, sink)
 		defer func() {
 			registry.RemoveUpdateSink(sinkID)
@@ -176,9 +203,12 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 
 		for {
 			var msg protocol.ClientInputMessage
-			if err := conn.ReadJSON(&msg); err != nil {
+			payload, err := readWSJSON(conn, &msg)
+			if err != nil {
+				loopErr = err
 				return
 			}
+			tracker.RecordInbound(len(payload))
 			if msg.SessionID == "" {
 				continue
 			}
@@ -207,10 +237,21 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 			return
 		}
 		defer conn.Close()
-		logger.Info("agent_ws_connected",
+		tracker := newWSTrafficTracker(r.URL.Path, r.RemoteAddr, requestIDFromRequest(r))
+		fields := []Field{
 			String("path", r.URL.Path),
 			String("remote_addr", r.RemoteAddr),
-		)
+		}
+		if requestID := requestIDFromRequest(r); requestID != "" {
+			fields = append(fields, String("request_id", requestID))
+		}
+		logger.Info("agent_ws_connected", fields...)
+		var loopErr error
+		defer func() {
+			fields := tracker.SummaryFields(time.Now())
+			fields = append(fields, disconnectLogFields(tracker.DisconnectError(loopErr))...)
+			logger.Info("agent_disconnected", fields...)
+		}()
 		conn.SetReadLimit(1 << 20)
 		_ = conn.SetReadDeadline(time.Now().Add(agentReadTimeout))
 		conn.SetPongHandler(func(string) error {
@@ -218,42 +259,46 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 		})
 
 		var register protocol.AgentFrame
-		if err := conn.ReadJSON(&register); err != nil || register.Type != "register" || register.Session == nil {
+		payload, err := readWSJSON(conn, &register)
+		if err != nil {
+			loopErr = err
+			return
+		}
+		tracker.RecordInbound(len(payload))
+		if register.Type != "register" || register.Session == nil {
+			loopErr = errInvalidAgentRegister
 			return
 		}
 
-		peer := newWSAgentPeer(conn)
+		peer := newWSAgentPeer(conn, tracker)
 		// The relay treats the agent websocket as the owner of this live session.
 		// All later output mutations are validated against this
 		// owner so stale connections cannot keep mutating a replaced session.
 		registry.Register(*register.Session, peer)
 		defer registry.RemoveIfOwner(register.Session.SessionID, peer)
-		logger.Info("agent_registered",
+		tracker.SetSessionID(register.Session.SessionID)
+		fields = []Field{
 			String("session_id", register.Session.SessionID),
 			String("launcher", register.Session.Launcher),
 			String("label", register.Session.Label),
 			String("cwd", register.Session.CWD),
-		)
-		connectedAt := time.Now()
-		var loopErr error
-		defer func() {
-			fields := []Field{
-				String("session_id", register.Session.SessionID),
-				Int64("duration_ms", time.Since(connectedAt).Milliseconds()),
-			}
-			fields = append(fields, disconnectLogFields(loopErr)...)
-			logger.Info("agent_disconnected", fields...)
-		}()
+		}
+		if requestID := requestIDFromRequest(r); requestID != "" {
+			fields = append(fields, String("request_id", requestID))
+		}
+		logger.Info("agent_registered", fields...)
 
 		stopPings := startWSPingLoop(conn, agentPingInterval, agentPingWriteTimeout)
 		defer close(stopPings)
 
 		for {
 			var msg protocol.Message
-			if err := conn.ReadJSON(&msg); err != nil {
+			payload, err := readWSJSON(conn, &msg)
+			if err != nil {
 				loopErr = err
 				return
 			}
+			tracker.RecordInbound(len(payload))
 			switch msg.Type {
 			case "output":
 				if msg.DataB64 == "" {
@@ -324,23 +369,25 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 		}
 	})
 
-	return mux
+	return logRequests(logger, mux)
 }
 
 func logAuthFailed(logger *Logger, r *http.Request, authType string) {
-	logger.Warn("auth_failed",
+	fields := []Field{
 		String("path", r.URL.Path),
-		String("remote_addr", r.RemoteAddr),
 		String("auth_type", authType),
-	)
+	}
+	fields = append(fields, requestLogFields(r)...)
+	logger.Warn("auth_failed", fields...)
 }
 
 func logWSUpgradeFailed(logger *Logger, r *http.Request, role string) {
-	logger.Warn("ws_upgrade_failed",
+	fields := []Field{
 		String("path", r.URL.Path),
-		String("remote_addr", r.RemoteAddr),
 		String("role", role),
-	)
+	}
+	fields = append(fields, requestLogFields(r)...)
+	logger.Warn("ws_upgrade_failed", fields...)
 }
 
 func disconnectLogFields(err error) []Field {
