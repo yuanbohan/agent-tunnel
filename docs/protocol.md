@@ -2,15 +2,17 @@
 
 This document describes the relay-facing contract for clients and agents.
 
-The key boundary is simple:
+## Core Model
 
-- the relay is content-opaque
+The current protocol is built around these boundaries:
+
+- `session_id` identifies one running `agentunnel` process; relay reconnects keep the same `session_id`, while a fresh agent launch gets a new one
+- the owning agent is the authority for the current session transcript and for `seq`, `ts`, and `latest_seq`
+- the relay is a discovery, fanout, and proxy layer; it does not retain the session frame array
 - `GET /api/updates/ws` is a best-effort live channel
-- output bytes may be forwarded live and replayed through the owning agent
-- clients should not infer semantics from PTY text
-- clients send structured input events
-- `agentunnel`, as the PTY owner, translates supported key events into real PTY input bytes
-- the local terminal remains the most complete view of session output in the current revision
+- `GET /api/sessions/:id/frames` is the standard recovery path for agent-owned output while the session is `connected`
+- transcript history is output-only; there is no exact input log in this protocol revision
+- the local terminal remains the most complete view of the PTY session
 
 ## Endpoint Inventory
 
@@ -18,9 +20,9 @@ The key boundary is simple:
 |----------|------|------|------|---------|
 | `GET /healthz` | Any | None | HTTP | Health check |
 | `GET /api/sessions` | Client | Basic Auth | HTTP | Current live session snapshot |
-| `GET /api/sessions/:id/frames?from=<seq>&to=<seq>` | Client | Basic Auth | HTTP | Agent-owned output replay and standard recovery path for one live session |
+| `GET /api/sessions/:id/frames?from=<seq>&to=<seq>` | Client | Basic Auth | HTTP | Proxy a replay request to the connected owning agent |
 | `GET /api/updates/ws` | Client | Basic Auth | WebSocket | Best-effort global live output updates and structured client input |
-| `GET /agent/ws` | Agent | Bearer | WebSocket | Agent registration, output upload, and forwarded client input |
+| `GET /agent/ws` | Agent | Bearer | WebSocket | Agent registration, live output upload, proxied history requests, and forwarded client input |
 
 ## Auth Headers
 
@@ -39,6 +41,7 @@ Authorization: Bearer <token>
 WebSocket attach notes:
 
 - clients attach to `GET /api/updates/ws` with the same Basic Auth credentials as the HTTP endpoints
+- agents attach to `GET /agent/ws` with the bearer token
 
 ## Session Snapshot
 
@@ -62,11 +65,31 @@ Notes:
 
 - `label` may be omitted when empty
 - `last_active_at` may be omitted when unknown
-- `state` is `connected` when the relay has an active owning agent peer and `reconnecting` during the short post-disconnect grace window
-- `latest_seq` is the highest output sequence the relay currently knows for that agent-owned live session
+- `state` is `connected` when the relay currently has an owning agent websocket and `reconnecting` during the short post-disconnect grace window
+- `latest_seq` is the highest output sequence the relay currently knows for that live session from agent-authored metadata
 - `reconnecting` sessions remain discoverable briefly, but they do not serve `/frames` or accept remote input until the owning agent reconnects
+- there is no pushed session-state update on `GET /api/updates/ws` in this protocol revision; clients should refetch `GET /api/sessions` to observe state changes
 
-## Output Frames
+## History Ownership And Replay
+
+The current replay contract is agent-owned.
+
+- `agentunnel` appends PTY output into a bounded in-memory history buffer for the lifetime of the running session
+- each retained entry is a `ReplayFrame` with `seq`, `data_b64`, `cols`, `rows`, and `ts`
+- the relay stores metadata, owner connection state, and pending history-request bookkeeping, but not the transcript itself
+- when a client fetches `/api/sessions/:id/frames`, the relay issues a `history_request` to the connected agent and returns the agent's `history_response`
+
+Replay flow:
+
+1. the client calls `GET /api/sessions/:id/frames` with optional inclusive `from` and `to`
+2. the relay authenticates the request, validates query bounds, and looks up the live session
+3. if the session is `connected`, the relay allocates a `request_id`, records a pending waiter, and sends `history_request` over `/agent/ws`
+4. the agent snapshots its local history buffer for the requested bounds and replies with `history_response`
+5. the relay matches the response by `request_id` and returns the `frames` array as the HTTP response body
+
+The history is a terminal output transcript, not an exact input log. Locally typed characters and remote input only appear in replay when the terminal application echoes them.
+
+## Replay Frames
 
 `GET /api/sessions/:id/frames?from=<seq>&to=<seq>` returns a JSON array. Both query parameters are optional and inclusive. The response body is the array itself, not an envelope object.
 
@@ -104,15 +127,17 @@ Query behavior:
 - both `from` and `to`: return frames in the closed range `[from, to]`
 - if both are present and `from > to`: return `400 Bad Request`
 
+Status behavior:
+
+- `404 Not Found` with `{"reason":"session_not_found"}` when the session is unknown or the reconnect grace window has expired
+- `409 Conflict` with `{"reason":"session_reconnecting"}` when the session is listed but currently has no connected owning agent
+- `502 Bad Gateway` with `{"reason":"invalid_agent_response"}` when the agent returns a malformed history response
+- `504 Gateway Timeout` with `{"reason":"upstream_timeout"}` when the relay does not receive a history response before timeout
+
 Recovery notes:
 
-- `/api/sessions/:id/frames` is the standard relay-side recovery path after a client reconnects to `GET /api/updates/ws`
-- replay is limited to the frames the owning agent still retains in memory for that still-live session
-- the relay proxies `/frames` only while the session is `connected`
-- a discoverable `reconnecting` session returns `409 Conflict` with JSON body `{"reason":"session_reconnecting"}`
-- unknown or expired sessions return `404` with `{"reason":"session_not_found"}`
-- upstream timeout returns `504` with `{"reason":"upstream_timeout"}`
-- malformed agent history responses return `502` with `{"reason":"invalid_agent_response"}`
+- `/api/sessions/:id/frames` is the standard replay path after a client reconnects to `GET /api/updates/ws`
+- replay is limited to the output frames the owning agent still retains in memory for that still-running session
 - `seq` does not prove complete end-to-end delivery from the local PTY to a remote client; it orders agent-recorded frames only
 
 Example requests:
@@ -123,7 +148,9 @@ GET /api/sessions/sess-1/frames?from=101
 GET /api/sessions/sess-1/frames?from=101&to=120
 ```
 
-## WebSocket Frames
+## Frames On `/agent/ws`
+
+`/agent/ws` is a bidirectional, session-scoped websocket between the relay and the owning `agentunnel` process.
 
 ### Agent -> Relay
 
@@ -137,10 +164,19 @@ GET /api/sessions/sess-1/frames?from=101&to=120
     "launcher": "codex",
     "cwd": "/repo",
     "command_preview": "codex --profile prod",
-    "started_at": "2026-04-05T08:00:00Z"
+    "started_at": "2026-04-05T08:00:00Z",
+    "last_active_at": "2026-04-05T08:03:00Z",
+    "latest_seq": 42
   }
 }
 ```
+
+Notes:
+
+- `register` must be the first agent frame on the websocket
+- the relay treats that websocket as the owner of the live session
+- on first connect, `last_active_at` may be omitted and `latest_seq` may be `0`
+- on reconnect, the registering agent may advertise its current `last_active_at` and `latest_seq` so the relay can continue exposing the same live-session metadata
 
 `output`
 
@@ -159,22 +195,8 @@ Notes:
 
 - agent output carries agent-authored `seq` and `ts`
 - every agent output frame must include `cols` and `rows`
-- the relay forwards live output with the same `seq` and `ts` it received from the agent
+- the relay forwards live output with the same `seq`, `ts`, `cols`, and `rows` it received from the agent
 - there is no standalone `resize` event in this protocol revision
-- sequence metadata begins at the PTY owner rather than at the relay boundary
-
-`history_request`
-
-```json
-{
-  "type": "history_request",
-  "request_id": "history-1",
-  "from": 101,
-  "to": 120
-}
-```
-
-`from` and `to` are optional and inclusive. The relay sends this control frame to the connected owning agent when serving `GET /api/sessions/:id/frames`.
 
 `history_response`
 
@@ -196,8 +218,89 @@ Notes:
 
 Notes:
 
-- `request_id` must match the relay-issued `history_request`
+- `request_id` must match a relay-issued `history_request`
+- every replay frame in `frames` must include non-zero `seq`, non-empty `data_b64`, and non-zero `ts`
 - the relay treats malformed or mismatched history responses as upstream protocol errors
+
+### Relay -> Agent
+
+`history_request`
+
+```json
+{
+  "type": "history_request",
+  "request_id": "history-1",
+  "from": 101,
+  "to": 120
+}
+```
+
+Notes:
+
+- `from` and `to` are optional and inclusive
+- the relay sends this message only for a currently `connected` session
+- the agent should answer with one `history_response` carrying the requested snapshot of its local in-memory history
+
+`input_text`
+
+```json
+{
+  "type": "input_text",
+  "text": "hello",
+  "submit": false
+}
+```
+
+`input_key`
+
+```json
+{
+  "type": "input_key",
+  "key": "TAB",
+  "ctrl": false,
+  "alt": false,
+  "shift": false
+}
+```
+
+Once the relay chooses the target session, forwarded agent input is the same logical payload as client input, but without `session_id`.
+
+## Frames On `GET /api/updates/ws`
+
+`GET /api/updates/ws` is the client-facing multiplexed websocket. It carries best-effort live output for many sessions on one connection, plus client-to-relay input events.
+
+### Relay -> Client
+
+`output`
+
+```json
+{
+  "session_id": "sess-1",
+  "type": "output",
+  "seq": 42,
+  "data_b64": "SGVsbG8=",
+  "cols": 132,
+  "rows": 43,
+  "ts": "2026-04-06T02:10:02Z"
+}
+```
+
+Notes:
+
+- relay-to-client output preserves the agent-authored `seq`, `ts`, `cols`, and `rows`
+- this channel is best-effort; clients should not assume it contains a complete transcript
+
+`session_removed`
+
+```json
+{
+  "session_id": "sess-1",
+  "type": "session_removed",
+  "reason": "session_removed"
+}
+```
+
+The relay emits `session_removed` when a live session expires from the registry, including after reconnect grace expiry.
 
 ### Client -> Relay
 
@@ -259,93 +362,9 @@ Example:
 }
 ```
 
-Rules:
-
-- `key` is a symbolic key identifier, not a terminal escape sequence
-- clients must not manufacture terminal byte sequences for special keys
-- unsupported keys may be ignored safely
-
-### Relay -> Agent
-
-The relay forwards structured client input to the owning `agentunnel` session over `/agent/ws`.
-
-#### `input_text`
-
-```json
-{
-  "type": "input_text",
-  "text": "hello",
-  "submit": false
-}
-```
-
-Relay and agent requirements:
-
-- the relay forwards `input_text` with the `submit` flag intact
-- the relay must not decompose `input_text { submit: true }` into separate forwarded `input_text` and `input_key`
-- the owning `agentunnel` session must serialize `input_text { submit: true }` as one submit operation for that session, even if it uses multiple ordered PTY writes to do so
-- the owning `agentunnel` session appends exactly one trailing carriage return (`\r`) for `input_text { submit: true }` using the same semantics it already uses for `ENTER`
-
-#### `input_key`
-
-```json
-{
-  "type": "input_key",
-  "key": "TAB",
-  "ctrl": false,
-  "alt": false,
-  "shift": false
-}
-```
-
-Notes:
-
-- existing `input_key` values and semantics are unchanged in this revision
-- this protocol revision defines only `input_text` and `input_key` as forwarded client input messages
-- live output uses `data_b64`; `output.data` is not part of this revision
-
-### Relay -> Client
-
-`output`
-
-```json
-{
-  "session_id": "sess-1",
-  "type": "output",
-  "seq": 42,
-  "data_b64": "SGVsbG8=",
-  "cols": 132,
-  "rows": 43,
-  "ts": "2026-04-06T02:10:02Z"
-}
-```
-
-`session_removed`
-
-```json
-{
-  "session_id": "sess-1",
-  "type": "session_removed",
-  "reason": "session_removed"
-}
-```
-
-Notes:
-
-- `data_b64` is base64-encoded PTY output bytes
-- `cols` and `rows` are carried on every live output frame
-- `ts` is the same agent-authored timestamp stored in agent-side history for the same output frame
-- this live stream is best-effort; clients should reconnect and use `/api/sessions/:id/frames` to recover agent-owned output when needed
-
-## Current Boundary
-
-- the current protocol supports real remote observation and interaction
-- the live remote output path is intentionally best-effort in this revision
-- stronger delivery guarantees may be added in a future revision, but they are not part of the current contract
-
 ## Supported `input_key` Values
 
-The first implementation should support at least:
+The current relay contract should support at least:
 
 - `ENTER`
 - `BACKSPACE`
@@ -387,27 +406,17 @@ This keeps terminal behavior close to the PTY owner and avoids embedding termina
 
 ## Size Metadata
 
-- every output frame carries `cols` and `rows`
-- replayed history includes `cols` and `rows`
-- live `output` websocket events include `cols` and `rows`
-- agent-uploaded `output` frames on `/agent/ws` include `cols` and `rows`
+- every replay frame carries `cols` and `rows`
+- live `output` websocket events on `GET /api/updates/ws` carry `cols` and `rows`
+- agent-uploaded `output` frames on `/agent/ws` carry `cols` and `rows`
 - there is no separate resize stream; size is part of each output frame contract
-
-## Error Behavior
-
-- invalid client credentials return `401`
-- unknown session ids return `404` for frame replay requests
-- malformed websocket input payloads are ignored or rejected safely
-- websocket disconnects move the session into `reconnecting` for a bounded grace window before removal
-- while `state` is `reconnecting`, `/frames` returns `409` and remote input is rejected
-- if the owning agent does not reconnect before the grace window expires, the relay emits `session_removed` and deletes the session snapshot
 
 ## Client Notes
 
+- clients should use `GET /api/sessions` to observe `connected` versus `reconnecting`
+- clients should reconnect `GET /api/updates/ws` for live output and use `/api/sessions/:id/frames` to recover missed transcript
 - the Android client expects a `baseUrl` with an explicit scheme such as `http://...`
-- clients may validate relay availability with:
-  - `GET /api/sessions`
-  - fallback `GET /healthz`
+- clients may validate relay availability with `GET /api/sessions` or fallback `GET /healthz`
 
 ## Invariants
 
