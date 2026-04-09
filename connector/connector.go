@@ -314,24 +314,12 @@ func (c *Connector) handleInboundMessage(conn *websocket.Conn, msg protocol.Mess
 		if msg.From != nil && msg.To != nil && *msg.From > *msg.To {
 			return nil
 		}
-		frames := c.history.Snapshot(historyBounds(msg))
+		frames := c.history.Snapshot(msg.From, msg.To)
 		return conn.WriteJSON(protocol.EncodeHistoryResponse(msg.RequestID, frames))
 	default:
 		c.routeInput(msg)
 		return nil
 	}
-}
-
-func historyBounds(msg protocol.Message) (from uint64, hasFrom bool, to uint64, hasTo bool) {
-	if msg.From != nil {
-		from = *msg.From
-		hasFrom = true
-	}
-	if msg.To != nil {
-		to = *msg.To
-		hasTo = true
-	}
-	return from, hasFrom, to, hasTo
 }
 
 func (c *Connector) infoSnapshot() protocol.SessionInfo {

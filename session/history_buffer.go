@@ -52,21 +52,21 @@ func (b *HistoryBuffer) AppendOutput(chunk []byte, cols, rows int, ts time.Time)
 	return frame
 }
 
-func (b *HistoryBuffer) Snapshot(from uint64, hasFrom bool, to uint64, hasTo bool) []protocol.ReplayFrame {
+func (b *HistoryBuffer) Snapshot(from, to *uint64) []protocol.ReplayFrame {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
 	start := 0
-	if hasFrom {
+	if from != nil {
 		start = sort.Search(len(b.frames), func(i int) bool {
-			return b.frames[i].frame.Seq >= from
+			return b.frames[i].frame.Seq >= *from
 		})
 	}
 
 	end := len(b.frames)
-	if hasTo {
+	if to != nil {
 		end = sort.Search(len(b.frames), func(i int) bool {
-			return b.frames[i].frame.Seq > to
+			return b.frames[i].frame.Seq > *to
 		})
 	}
 

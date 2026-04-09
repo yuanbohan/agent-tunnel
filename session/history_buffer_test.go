@@ -38,7 +38,7 @@ func TestHistoryBufferSnapshotUsesInclusiveRange(t *testing.T) {
 	frameTime := time.Unix(42, 0).UTC()
 	buffer.AppendOutput([]byte("three"), 132, 43, frameTime)
 
-	frames := buffer.Snapshot(2, true, 2, true)
+	frames := buffer.Snapshot(uint64Ptr(2), uint64Ptr(2))
 	if len(frames) != 1 {
 		t.Fatalf("len(Snapshot) = %d, want 1", len(frames))
 	}
@@ -64,7 +64,7 @@ func TestHistoryBufferEvictsOldFramesButKeepsLatestSeqMonotonic(t *testing.T) {
 		t.Fatalf("seqs = %d, %d, %d, want 1, 2, 3", first.Seq, second.Seq, third.Seq)
 	}
 
-	frames := buffer.Snapshot(0, false, 0, false)
+	frames := buffer.Snapshot(nil, nil)
 	if len(frames) != 1 {
 		t.Fatalf("len(Snapshot) = %d, want 1", len(frames))
 	}
@@ -86,4 +86,8 @@ func TestEncodeHistoryResponseCopiesReplayFrames(t *testing.T) {
 	if original.Seq != 4 {
 		t.Fatalf("original seq = %d, want 4", original.Seq)
 	}
+}
+
+func uint64Ptr(v uint64) *uint64 {
+	return &v
 }
