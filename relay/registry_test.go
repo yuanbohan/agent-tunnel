@@ -53,6 +53,29 @@ func (s *recordingClientUpdateSink) WriteClientUpdate(msg protocol.ClientUpdateM
 
 func (s *recordingClientUpdateSink) Close() error { return nil }
 
+type blockingHistoryStore struct {
+	appendStarted chan struct{}
+	releaseAppend chan struct{}
+}
+
+func (s *blockingHistoryStore) LatestSeq(string) (uint64, bool, error) {
+	return 0, false, nil
+}
+
+func (s *blockingHistoryStore) AppendFrame(string, []byte, int, int, time.Time) (uint64, error) {
+	select {
+	case <-s.appendStarted:
+	default:
+		close(s.appendStarted)
+	}
+	<-s.releaseAppend
+	return 1, nil
+}
+
+func (s *blockingHistoryStore) Frames(string, uint64, bool, uint64, bool) ([]outputFrameMessage, bool, error) {
+	return nil, false, nil
+}
+
 func TestRegistryRegisterAndListSortedByLastActive(t *testing.T) {
 	reg := NewRegistry()
 	olderActive := time.Unix(20, 0)
@@ -87,8 +110,8 @@ func TestRegistryTouchOutputUpdatesSeqAndLastActive(t *testing.T) {
 	reg.Register(info, peer)
 
 	now := time.Unix(40, 0)
-	if ok := reg.TouchOutputIfOwner("sess-1", peer, []byte("focused test\n"), 120, 40, now); !ok {
-		t.Fatal("TouchOutputIfOwner returned false, want true")
+	if ok, err := reg.TouchOutputIfOwner("sess-1", peer, []byte("focused test\n"), 120, 40, now); err != nil || !ok {
+		t.Fatalf("TouchOutputIfOwner returned ok=%v err=%v, want ok=true err=nil", ok, err)
 	}
 
 	got := reg.List()
@@ -111,8 +134,8 @@ func TestRegistryTouchOutputBroadcastsGlobalClientUpdate(t *testing.T) {
 	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, peer)
 
 	now := time.Unix(40, 0).UTC()
-	if ok := reg.TouchOutputIfOwner("sess-1", peer, []byte("hello"), 132, 43, now); !ok {
-		t.Fatal("TouchOutputIfOwner returned false, want true")
+	if ok, err := reg.TouchOutputIfOwner("sess-1", peer, []byte("hello"), 132, 43, now); err != nil || !ok {
+		t.Fatalf("TouchOutputIfOwner returned ok=%v err=%v, want ok=true err=nil", ok, err)
 	}
 
 	if len(updateSink.updates) != 1 {
@@ -142,18 +165,21 @@ func TestRegistryFramesFilterByInclusiveRange(t *testing.T) {
 	peer := fakeAgentPeer{}
 	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, peer)
 
-	if !reg.TouchOutputIfOwner("sess-1", peer, []byte("one"), 120, 40, time.Unix(40, 0).UTC()) {
-		t.Fatal("TouchOutputIfOwner returned false for frame 1")
+	if ok, err := reg.TouchOutputIfOwner("sess-1", peer, []byte("one"), 120, 40, time.Unix(40, 0).UTC()); err != nil || !ok {
+		t.Fatalf("TouchOutputIfOwner frame 1 returned ok=%v err=%v, want ok=true err=nil", ok, err)
 	}
-	if !reg.TouchOutputIfOwner("sess-1", peer, []byte("two"), 120, 40, time.Unix(41, 0).UTC()) {
-		t.Fatal("TouchOutputIfOwner returned false for frame 2")
+	if ok, err := reg.TouchOutputIfOwner("sess-1", peer, []byte("two"), 120, 40, time.Unix(41, 0).UTC()); err != nil || !ok {
+		t.Fatalf("TouchOutputIfOwner frame 2 returned ok=%v err=%v, want ok=true err=nil", ok, err)
 	}
 	frameTime := time.Unix(42, 0).UTC()
-	if !reg.TouchOutputIfOwner("sess-1", peer, []byte("three"), 132, 43, frameTime) {
-		t.Fatal("TouchOutputIfOwner returned false for frame 3")
+	if ok, err := reg.TouchOutputIfOwner("sess-1", peer, []byte("three"), 132, 43, frameTime); err != nil || !ok {
+		t.Fatalf("TouchOutputIfOwner frame 3 returned ok=%v err=%v, want ok=true err=nil", ok, err)
 	}
 
-	frames, ok := reg.Frames("sess-1", 2, true, 2, true)
+	frames, ok, err := reg.Frames("sess-1", 2, true, 2, true)
+	if err != nil {
+		t.Fatalf("Frames returned error: %v", err)
+	}
 	if !ok {
 		t.Fatal("Frames returned false, want true")
 	}
@@ -168,6 +194,50 @@ func TestRegistryFramesFilterByInclusiveRange(t *testing.T) {
 	}
 	if frames[0].TS.IsZero() {
 		t.Fatal("expected non-zero timestamp")
+	}
+}
+
+func TestRegistryListDoesNotBlockOnSlowHistoryAppend(t *testing.T) {
+	store := &blockingHistoryStore{
+		appendStarted: make(chan struct{}),
+		releaseAppend: make(chan struct{}),
+	}
+	reg := NewRegistryWithHistoryStore(store)
+	peer := fakeAgentPeer{}
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, peer)
+	reg.Register(protocol.SessionInfo{SessionID: "sess-2", Launcher: "gemini"}, fakeAgentPeer{})
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = reg.TouchOutputIfOwner("sess-1", peer, []byte("hello"), 120, 40, time.Unix(40, 0).UTC())
+		close(done)
+	}()
+
+	select {
+	case <-store.appendStarted:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("AppendFrame did not start")
+	}
+
+	listDone := make(chan []protocol.SessionInfo, 1)
+	go func() {
+		listDone <- reg.List()
+	}()
+
+	select {
+	case sessions := <-listDone:
+		if len(sessions) != 2 {
+			t.Fatalf("len(List()) = %d, want 2", len(sessions))
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("List blocked on slow history append")
+	}
+
+	close(store.releaseAppend)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("TouchOutputIfOwner did not finish after releasing append")
 	}
 }
 

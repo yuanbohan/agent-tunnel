@@ -20,6 +20,8 @@ func validEnv(key string) string {
 		return "secret"
 	case "AGENTUNNEL_AGENT_TOKEN":
 		return "agent-token"
+	case "AGENTUNNEL_REDIS_URL":
+		return "redis://127.0.0.1:6379/0"
 	default:
 		return ""
 	}
@@ -37,6 +39,9 @@ func TestLoadMainConfigDefaultsListenAddr(t *testing.T) {
 	}
 	if cfg.ListenAddr != "0.0.0.0:8586" {
 		t.Fatalf("ListenAddr = %q, want 0.0.0.0:8586", cfg.ListenAddr)
+	}
+	if cfg.RedisURL != "redis://127.0.0.1:6379/0" {
+		t.Fatalf("RedisURL = %q, want redis://127.0.0.1:6379/0", cfg.RedisURL)
 	}
 }
 
@@ -62,6 +67,18 @@ func TestLoadMainConfigIgnoresLegacyRelayAddrEnv(t *testing.T) {
 	}
 	if cfg.ListenAddr != "0.0.0.0:8586" {
 		t.Errorf("ListenAddr = %q, want 0.0.0.0:8586 (legacy env should be ignored)", cfg.ListenAddr)
+	}
+}
+
+func TestLoadMainConfigRequiresRedisURL(t *testing.T) {
+	_, err := loadMainConfig(func(key string) string {
+		if key == "AGENTUNNEL_REDIS_URL" {
+			return ""
+		}
+		return validEnv(key)
+	}, "")
+	if err == nil {
+		t.Fatal("expected missing redis url to fail")
 	}
 }
 

@@ -271,10 +271,24 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 		}
 
 		peer := newWSAgentPeer(conn, tracker)
+		unlockSession := registry.lockSessionGate(register.Session.SessionID)
+		retainedLatestSeq, ok, err := registry.RetainedLatestSeq(register.Session.SessionID)
+		if ok {
+			register.Session.LatestSeq = retainedLatestSeq
+		}
+		if err != nil {
+			logger.Warn(
+				"history_store_read_failed",
+				String("session_id", register.Session.SessionID),
+				String("operation", "latest_seq"),
+				String("error", err.Error()),
+			)
+		}
 		// The relay treats the agent websocket as the owner of this live session.
 		// All later output mutations are validated against this
 		// owner so stale connections cannot keep mutating a replaced session.
-		registry.Register(*register.Session, peer)
+		registry.registerLocked(*register.Session, peer)
+		unlockSession()
 		defer registry.RemoveIfOwner(register.Session.SessionID, peer)
 		tracker.SetSessionID(register.Session.SessionID)
 		fields = []Field{
@@ -311,7 +325,14 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 				// Output flows onto the global multiplexed client stream under
 				// /api/updates/ws. The relay tracks output sequence metadata for replay,
 				// but it does not interpret terminal content.
-				registry.TouchOutputIfOwner(register.Session.SessionID, peer, data, msg.Cols, msg.Rows, time.Now().UTC())
+				ok, err := registry.TouchOutputIfOwner(register.Session.SessionID, peer, data, msg.Cols, msg.Rows, time.Now().UTC())
+				if err != nil {
+					logger.Warn("history_store_write_failed", String("session_id", register.Session.SessionID), String("error", err.Error()))
+					continue
+				}
+				if !ok {
+					continue
+				}
 			}
 		}
 	})
@@ -337,10 +358,6 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 				return
 			}
-			if !registry.HasSession(sessionID) {
-				http.NotFound(w, r)
-				return
-			}
 			from, hasFrom, err := parseOptionalUintQuery(r, "from")
 			if err != nil {
 				http.Error(w, "bad request", http.StatusBadRequest)
@@ -355,7 +372,11 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 				http.Error(w, "bad request", http.StatusBadRequest)
 				return
 			}
-			frames, ok := registry.Frames(sessionID, from, hasFrom, to, hasTo)
+			frames, ok, err := registry.Frames(sessionID, from, hasFrom, to, hasTo)
+			if err != nil {
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+				return
+			}
 			if !ok {
 				http.NotFound(w, r)
 				return

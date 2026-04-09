@@ -6,7 +6,7 @@ The key boundary is simple:
 
 - the relay is content-opaque
 - `GET /api/updates/ws` is a best-effort live channel
-- output bytes may be forwarded and retained for replay
+- output bytes may be forwarded and retained in bounded Redis-backed history for replay
 - clients should not infer semantics from PTY text
 - clients send structured input events
 - `agentunnel`, as the PTY owner, translates supported key events into real PTY input bytes
@@ -18,7 +18,7 @@ The key boundary is simple:
 |----------|------|------|------|---------|
 | `GET /healthz` | Any | None | HTTP | Health check |
 | `GET /api/sessions` | Client | Basic Auth | HTTP | Current live session snapshot |
-| `GET /api/sessions/:id/frames?from=<seq>&to=<seq>` | Client | Basic Auth | HTTP | Retained output replay and standard relay-side recovery for one live session |
+| `GET /api/sessions/:id/frames?from=<seq>&to=<seq>` | Client | Basic Auth | HTTP | Retained output replay and standard relay-side recovery for one known session id |
 | `GET /api/updates/ws` | Client | Basic Auth | WebSocket | Best-effort global live output updates and structured client input |
 | `GET /agent/ws` | Agent | Bearer | WebSocket | Agent registration, output upload, and forwarded client input |
 
@@ -61,7 +61,7 @@ Notes:
 
 - `label` may be omitted when empty
 - `last_active_at` may be omitted when unknown
-- `latest_seq` is the highest output sequence the relay has recorded for that live session
+- `latest_seq` is the highest output sequence the relay has recorded for that `session_id`, hydrated from retained history when a session reconnects
 - this protocol revision does not define `state` or `session_state`
 
 ## Output Frames
@@ -89,7 +89,7 @@ Notes:
 
 Field semantics:
 
-- `seq`: strictly increasing output sequence number within the live session for frames the relay has recorded
+- `seq`: strictly increasing output sequence number within one `session_id` for frames the relay has recorded
 - `data_b64`: base64-encoded PTY output bytes
 - `cols` / `rows`: terminal size metadata captured for that frame
 - `ts`: relay-assigned UTC timestamp recorded when the frame is appended to retained history
@@ -105,7 +105,9 @@ Query behavior:
 Recovery notes:
 
 - `/api/sessions/:id/frames` is the standard relay-side recovery path after a client reconnects to `GET /api/updates/ws`
-- replay is limited to the frames the relay still retains in memory for that still-live session
+- replay is limited to the frames the relay still retains for that `session_id`
+- retained history currently uses a 24 hour sliding TTL that refreshes on new output
+- retained history may outlive the live session list, but it is still bounded and incomplete
 - `seq` does not prove complete end-to-end delivery from the local PTY to a remote client; it orders relay-recorded frames only
 
 Example requests:
@@ -351,10 +353,10 @@ This keeps terminal behavior close to the PTY owner and avoids embedding termina
 ## Error Behavior
 
 - invalid client credentials return `401`
-- unknown session ids return `404` for frame replay requests
+- frame replay returns `404` when the session is not live and no retained history remains for that `session_id`
 - malformed websocket input payloads are ignored or rejected safely
-- websocket disconnects do not alter retained output history for still-live sessions
-- if the owning agent disconnects, the session disappears along with its retained frames
+- websocket disconnects do not alter retained output history for the same `session_id`
+- if the owning agent disconnects, the session disappears from `/api/sessions`, but retained history may remain replayable until it expires
 
 ## Client Notes
 
@@ -365,7 +367,7 @@ This keeps terminal behavior close to the PTY owner and avoids embedding termina
 
 ## Invariants
 
-- output replay remains live-only and in-memory
-- output `seq` is strictly increasing within one live session
+- output replay is bounded, Redis-backed, and keyed by `session_id`
+- output `seq` is strictly increasing within one `session_id`
 - retained frames and live output fanout refer to the same output events
 - retained frames and live output fanout use the same `ts` for the same output frame

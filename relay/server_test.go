@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -26,6 +27,37 @@ type sessionFramesResponse []struct {
 type syncBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
+}
+
+type stubHistoryStore struct {
+	latestSeq uint64
+	latestOK  bool
+	latestErr error
+	appendSeq uint64
+	appendErr error
+	frames    []outputFrameMessage
+	framesOK  bool
+	framesErr error
+}
+
+func (s *stubHistoryStore) LatestSeq(string) (uint64, bool, error) {
+	return s.latestSeq, s.latestOK, s.latestErr
+}
+
+func (s *stubHistoryStore) AppendFrame(string, []byte, int, int, time.Time) (uint64, error) {
+	if s.appendSeq == 0 {
+		s.appendSeq = 1
+	}
+	return s.appendSeq, s.appendErr
+}
+
+func (s *stubHistoryStore) Frames(string, uint64, bool, uint64, bool) ([]outputFrameMessage, bool, error) {
+	if s.frames == nil {
+		return nil, s.framesOK, s.framesErr
+	}
+	out := make([]outputFrameMessage, len(s.frames))
+	copy(out, s.frames)
+	return out, s.framesOK, s.framesErr
 }
 
 func (b *syncBuffer) Write(p []byte) (int, error) {
@@ -240,6 +272,173 @@ func TestHandlerServesSessionFrames(t *testing.T) {
 	}
 	if frames[0].TS.IsZero() || frames[1].TS.IsZero() {
 		t.Fatalf("timestamps = %#v, want non-zero", frames)
+	}
+}
+
+func TestHandlerServesRetainedFramesAfterAgentDisconnect(t *testing.T) {
+	reg := NewRegistry()
+	server := httptest.NewServer(NewHandler(HandlerConfig{
+		Registry:   reg,
+		User:       "demo",
+		Password:   "secret",
+		AgentToken: "agent-token",
+	}))
+	defer server.Close()
+
+	agentConn := dialAndRegisterAgent(t, server.URL, "sess-1")
+	for _, payload := range []string{"one", "two"} {
+		if err := agentConn.WriteJSON(protocol.EncodeOutputWithSeqAndSize(0, []byte(payload), 120, 40)); err != nil {
+			t.Fatalf("WriteJSON output returned error: %v", err)
+		}
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		info, ok := reg.Session("sess-1")
+		if ok && info.LatestSeq == 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	info, ok := reg.Session("sess-1")
+	if !ok || info.LatestSeq != 2 {
+		t.Fatalf("LatestSeq before disconnect = %#v, want 2", info)
+	}
+	_ = agentConn.Close()
+
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if !reg.HasSession("sess-1") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if reg.HasSession("sess-1") {
+		t.Fatal("session remained live after agent disconnect")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, server.URL+"/api/sessions/sess-1/frames", nil)
+	if err != nil {
+		t.Fatalf("NewRequest returned error: %v", err)
+	}
+	req.Header.Set("Authorization", basicAuth("demo", "secret"))
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do returned error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	var frames sessionFramesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&frames); err != nil {
+		t.Fatalf("Decode returned error: %v", err)
+	}
+	if len(frames) != 2 {
+		t.Fatalf("len(Frames) = %d, want 2", len(frames))
+	}
+	if frames[0].Seq != 1 || frames[1].Seq != 2 {
+		t.Fatalf("seqs = %#v, want 1 then 2", frames)
+	}
+}
+
+func TestHandlerHydratesLatestSeqFromRetainedHistoryOnRegister(t *testing.T) {
+	store := newInMemoryHistoryStore()
+	if _, err := store.AppendFrame("sess-1", []byte("one"), 120, 40, time.Unix(100, 0).UTC()); err != nil {
+		t.Fatalf("AppendFrame returned error: %v", err)
+	}
+	if _, err := store.AppendFrame("sess-1", []byte("two"), 121, 41, time.Unix(101, 0).UTC()); err != nil {
+		t.Fatalf("AppendFrame returned error: %v", err)
+	}
+
+	reg := NewRegistryWithHistoryStore(store)
+	server := httptest.NewServer(NewHandler(HandlerConfig{
+		Registry:   reg,
+		User:       "demo",
+		Password:   "secret",
+		AgentToken: "agent-token",
+	}))
+	defer server.Close()
+
+	agentConn := dialAndRegisterAgent(t, server.URL, "sess-1")
+	defer agentConn.Close()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		info, ok := reg.Session("sess-1")
+		if ok && info.LatestSeq == 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+	req.Header.Set("Authorization", basicAuth("demo", "secret"))
+	rec := httptest.NewRecorder()
+	NewHandler(HandlerConfig{
+		Registry:   reg,
+		User:       "demo",
+		Password:   "secret",
+		AgentToken: "agent-token",
+	}).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var sessions []protocol.SessionInfo
+	if err := json.Unmarshal(rec.Body.Bytes(), &sessions); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("len(sessions) = %d, want 1", len(sessions))
+	}
+	if sessions[0].LatestSeq != 2 {
+		t.Fatalf("LatestSeq = %d, want 2", sessions[0].LatestSeq)
+	}
+}
+
+func TestHandlerRegistersSessionWhenRetainedLatestSeqLookupFails(t *testing.T) {
+	logs := &syncBuffer{}
+	reg := NewRegistryWithHistoryStore(&stubHistoryStore{
+		latestErr: errors.New("redis unavailable"),
+	})
+	server := httptest.NewServer(NewHandler(HandlerConfig{
+		Registry:   reg,
+		User:       "demo",
+		Password:   "secret",
+		AgentToken: "agent-token",
+		Logger:     NewLogger(logs),
+	}))
+	defer server.Close()
+
+	agentConn := dialAndRegisterAgent(t, server.URL, "sess-1")
+	defer agentConn.Close()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok := reg.Session("sess-1"); ok {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	info, ok := reg.Session("sess-1")
+	if !ok {
+		t.Fatal("Session returned false, want true")
+	}
+	if info.LatestSeq != 0 {
+		t.Fatalf("LatestSeq = %d, want 0 when hydration fails", info.LatestSeq)
+	}
+
+	entries := waitForLogEvent(t, logs, "history_store_read_failed", 1)
+	entry := findLogEntryByEvent(t, entries, "history_store_read_failed")
+	if got := logString(entry, "session_id"); got != "sess-1" {
+		t.Fatalf("session_id = %q, want sess-1", got)
+	}
+	if got := logString(entry, "operation"); got != "latest_seq" {
+		t.Fatalf("operation = %q, want latest_seq", got)
 	}
 }
 
@@ -483,8 +682,8 @@ func TestUpdatesWebSocketLogsTrafficAndAccess(t *testing.T) {
 		t.Fatalf("messages = %#v, want one input_text", messages)
 	}
 
-	if ok := reg.TouchOutputIfOwner("sess-1", peer, []byte("hello"), 132, 43, time.Now()); !ok {
-		t.Fatal("TouchOutputIfOwner returned false, want true")
+	if ok, err := reg.TouchOutputIfOwner("sess-1", peer, []byte("hello"), 132, 43, time.Now()); err != nil || !ok {
+		t.Fatalf("TouchOutputIfOwner returned ok=%v err=%v, want ok=true err=nil", ok, err)
 	}
 
 	var output protocol.ClientUpdateMessage
@@ -563,7 +762,10 @@ func TestAgentWebSocketIgnoresOutputWithoutDataB64(t *testing.T) {
 		t.Fatalf("LatestSeq = %d, want 0 after invalid output", info.LatestSeq)
 	}
 
-	frames, ok := reg.Frames("sess-1", 0, false, 0, false)
+	frames, ok, err := reg.Frames("sess-1", 0, false, 0, false)
+	if err != nil {
+		t.Fatalf("Frames returned error: %v", err)
+	}
 	if !ok {
 		t.Fatal("Frames returned false, want true")
 	}

@@ -1,0 +1,12 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: agentunnel-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - agentunnel-redis-data:/data
+    command: ["redis-server", "--appendonly", "yes"]
+
+volumes:
+  agentunnel-redis-data:

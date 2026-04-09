@@ -4,9 +4,9 @@ This document explains the stable shape of the system.
 
 ## System Shape
 
-`agentunnel` owns the real local agent process and its PTY. Every supported launcher follows the same path: one local PTY child, one relay connector, no launcher-specific sidecar. The relay exposes authenticated APIs so external clients can observe or interact with that live session, replay retained output frames, and send input back to the PTY.
+`agentunnel` owns the real local agent process and its PTY. Every supported launcher follows the same path: one local PTY child, one relay connector, no launcher-specific sidecar. The relay exposes authenticated APIs so external clients can observe or interact with that live session, replay bounded retained output frames, and send input back to the PTY.
 
-The local terminal is the primary and most complete view of the PTY session. The remote path is intentionally lighter weight: `GET /api/updates/ws` is a best-effort live channel, while `GET /api/sessions/:id/frames` is the standard relay-side recovery path for recently retained output.
+The local terminal is the primary and most complete view of the PTY session. The remote path is intentionally lighter weight: `GET /api/updates/ws` is a best-effort live channel, while `GET /api/sessions/:id/frames` is the standard relay-side recovery path for recently retained output for a known `session_id`.
 
 `agentunnel` treats relay availability in two phases:
 
@@ -43,7 +43,7 @@ local machine
                     │          relay server          │
                     │  - auth                        │
                     │  - live session registry       │
-                    │  - output frame buffer         │
+                    │  - redis retained history      │
                     │  - output seq metadata         │
                     │  - global client update fanout │
                     └───────────────┬────────────────┘
@@ -73,21 +73,21 @@ It owns:
 
 ### Relay
 
-The relay is a live broker, not durable storage and not a semantic interpreter of terminal content.
+The relay is a live broker with bounded retained history, not a complete durable transcript store and not a semantic interpreter of terminal content.
 
 It owns:
 
 - client and agent authentication
-- current live-session snapshots
-- rolling in-memory output frames for replay through `GET /api/sessions/:id/frames`
-- output sequence metadata
+- current live-session snapshots in memory
+- bounded retained output history in Redis for replay through `GET /api/sessions/:id/frames`
+- output sequence metadata per `session_id`
 - relay-assigned per-frame timestamps
 - global update fanout for connected clients
 
 The relay does not own:
 
 - session creation beyond registration by an agent
-- durable history
+- durable full-session transcripts
 - preview rendering
 - content interpretation of terminal output
 - end-to-end guarantees that a remote client observed every PTY byte
@@ -104,7 +104,7 @@ PTY output
 → best-effort enqueue toward relay
 → output frame with current cols / rows
 → relay registry
-→ retained output frames + seq assignment
+→ redis retained output history + seq assignment
 → global client updates
 ```
 
@@ -153,10 +153,10 @@ local PTY resize
 client loses /api/updates/ws
 → client reconnects to /api/updates/ws
 → client requests /api/sessions/:id/frames as needed
-→ relay returns only the currently retained in-memory frames for that still-live session
+→ relay returns the currently retained frames for that `session_id`, even if it is no longer live, until retained history expires
 ```
 
-This recovery path is standard for clients, but it is still bounded by live-only relay retention rather than a durable transcript.
+This recovery path is standard for clients, but it is still bounded retained history rather than a durable transcript. The live session list remains memory-backed and live-only.
 
 ## Package Map
 
@@ -164,7 +164,7 @@ This recovery path is standard for clients, but it is still bounded by live-only
 - `session/`: PTY ownership, local terminal handling, output/input hub
 - `connector/`: outbound relay connection and message forwarding
 - `cmd/relay`: relay entrypoint
-- `relay/`: live session registry and HTTP / WebSocket handlers
+- `relay/`: live session registry, retained frame history store, and HTTP / WebSocket handlers
 - `protocol/`: shared wire types
 
 ## Related Documents

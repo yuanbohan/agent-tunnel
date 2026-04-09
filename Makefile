@@ -1,7 +1,8 @@
-.PHONY: agentunnel relay start stop status build build-linux install clean vet test test-relay
+.PHONY: agentunnel relay start stop status build build-linux install clean vet test test-relay redis-up redis-down redis-logs
 
 RELAY_BIN ?= ./relay
 RELAY_PORT ?= 8586
+REDIS_COMPOSE_FILE ?= compose.redis.yml
 
 agentunnel:
 	@test -n "$(LAUNCHER)" || (echo "usage: make agentunnel LAUNCHER=claude" && exit 1)
@@ -70,6 +71,15 @@ status:
 		echo "no ss/lsof available to inspect listening sockets"; \
 	fi
 
+redis-up:
+	docker compose -f $(REDIS_COMPOSE_FILE) up -d redis
+
+redis-down:
+	docker compose -f $(REDIS_COMPOSE_FILE) down
+
+redis-logs:
+	docker compose -f $(REDIS_COMPOSE_FILE) logs -f redis
+
 build:
 	go build -o bin/tunnel ./cmd/agentunnel
 	go build -o bin/relay ./cmd/relay
@@ -81,7 +91,11 @@ build-linux:
 install: build
 	@set -e; \
 	mkdir -p "$(HOME)/.local/bin"; \
-	cp -f bin/* "$(HOME)/.local/bin/"; \
+	for src in bin/*; do \
+		dst="$(HOME)/.local/bin/$$(basename "$$src")"; \
+		rm -f "$$dst"; \
+		cp "$$src" "$$dst"; \
+	done; \
 	echo "installed binaries to $(HOME)/.local/bin"
 
 clean:

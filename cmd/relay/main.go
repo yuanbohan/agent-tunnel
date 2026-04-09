@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"yuanbohan/tunnel/relay"
 )
 
@@ -17,6 +19,7 @@ type mainConfig struct {
 	User       string
 	Password   string
 	AgentToken string
+	RedisURL   string
 }
 
 func loadMainConfig(getenv func(string) string, portFlag string) (mainConfig, error) {
@@ -24,14 +27,15 @@ func loadMainConfig(getenv func(string) string, portFlag string) (mainConfig, er
 		User:       getenv("AGENTUNNEL_BASIC_USER"),
 		Password:   getenv("AGENTUNNEL_BASIC_PASSWORD"),
 		AgentToken: getenv("AGENTUNNEL_AGENT_TOKEN"),
+		RedisURL:   getenv("AGENTUNNEL_REDIS_URL"),
 	}
 	port := "8586"
 	if portFlag != "" {
 		port = portFlag
 	}
 	cfg.ListenAddr = net.JoinHostPort("0.0.0.0", port)
-	if cfg.User == "" || cfg.Password == "" || cfg.AgentToken == "" {
-		return mainConfig{}, fmt.Errorf("AGENTUNNEL_BASIC_USER, AGENTUNNEL_BASIC_PASSWORD, and AGENTUNNEL_AGENT_TOKEN are required")
+	if cfg.User == "" || cfg.Password == "" || cfg.AgentToken == "" || cfg.RedisURL == "" {
+		return mainConfig{}, fmt.Errorf("AGENTUNNEL_BASIC_USER, AGENTUNNEL_BASIC_PASSWORD, AGENTUNNEL_AGENT_TOKEN, and AGENTUNNEL_REDIS_URL are required")
 	}
 
 	return cfg, nil
@@ -47,9 +51,20 @@ func main() {
 	}
 
 	logger := relay.NewLogger(os.Stderr)
+	redisOpts, err := redis.ParseURL(cfg.RedisURL)
+	if err != nil {
+		log.Fatal(err)
+	}
+	redisClient := redis.NewClient(redisOpts)
+	if err := redisClient.Ping(context.Background()).Err(); err != nil {
+		_ = redisClient.Close()
+		log.Fatal(err)
+	}
+	defer redisClient.Close()
+	historyStore := relay.NewRedisHistoryStore(redisClient, relay.RedisHistoryStoreConfig{})
 
 	handler := relay.NewHandler(relay.HandlerConfig{
-		Registry:   relay.NewRegistry(),
+		Registry:   relay.NewRegistryWithHistoryStore(historyStore),
 		User:       cfg.User,
 		Password:   cfg.Password,
 		AgentToken: cfg.AgentToken,

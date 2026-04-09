@@ -21,22 +21,35 @@ type Registry struct {
 	sessions    map[string]*liveSession
 	updateSinks map[string]clientUpdateSink
 	logger      *Logger
+	history     HistoryStore
+	gateMu      sync.Mutex
+	gates       map[string]*sessionGate
 }
 
 type liveSession struct {
 	info protocol.SessionInfo
 	peer AgentPeer
+}
 
-	frames     []outputFrame
-	frameBytes int
-	latestSeq  uint64
+type sessionGate struct {
+	mu   sync.Mutex
+	refs int
 }
 
 func NewRegistry() *Registry {
+	return NewRegistryWithHistoryStore(nil)
+}
+
+func NewRegistryWithHistoryStore(store HistoryStore) *Registry {
+	if store == nil {
+		store = newInMemoryHistoryStore()
+	}
 	return &Registry{
 		sessions:    make(map[string]*liveSession),
 		updateSinks: make(map[string]clientUpdateSink),
 		logger:      NewDiscardLogger(),
+		history:     store,
+		gates:       make(map[string]*sessionGate),
 	}
 }
 
@@ -52,28 +65,33 @@ func (r *Registry) SetLogger(logger *Logger) {
 	r.logger = logger
 }
 
+func (r *Registry) RetainedLatestSeq(sessionID string) (uint64, bool, error) {
+	return r.history.LatestSeq(sessionID)
+}
+
 func (r *Registry) Register(info protocol.SessionInfo, peer AgentPeer) {
+	unlock := r.lockSessionGate(info.SessionID)
+	defer unlock()
+
+	r.registerLocked(info, peer)
+}
+
+func (r *Registry) registerLocked(info protocol.SessionInfo, peer AgentPeer) {
 	r.mu.Lock()
 	old := r.sessions[info.SessionID]
 	logger := r.logger
-	var frames []outputFrame
-	var frameBytes int
-	var latestSeq uint64
 	lastActiveAt := info.LastActiveAt
 	if old != nil {
-		frames = old.frames
-		frameBytes = old.frameBytes
-		latestSeq = old.latestSeq
 		if old.info.LastActiveAt != nil {
 			lastActiveAt = old.info.LastActiveAt
 		}
+		if old.info.LatestSeq > info.LatestSeq {
+			info.LatestSeq = old.info.LatestSeq
+		}
 	}
 	r.sessions[info.SessionID] = &liveSession{
-		info:       info,
-		peer:       peer,
-		frames:     frames,
-		frameBytes: frameBytes,
-		latestSeq:  latestSeq,
+		info: info,
+		peer: peer,
 	}
 	r.sessions[info.SessionID].info.LastActiveAt = lastActiveAt
 	r.mu.Unlock()
@@ -87,6 +105,9 @@ func (r *Registry) Register(info protocol.SessionInfo, peer AgentPeer) {
 }
 
 func (r *Registry) Remove(sessionID string) {
+	unlock := r.lockSessionGate(sessionID)
+	defer unlock()
+
 	r.mu.Lock()
 	_, ok := r.sessions[sessionID]
 	if ok {
@@ -101,6 +122,9 @@ func (r *Registry) Remove(sessionID string) {
 }
 
 func (r *Registry) RemoveIfOwner(sessionID string, owner AgentPeer) bool {
+	unlock := r.lockSessionGate(sessionID)
+	defer unlock()
+
 	r.mu.Lock()
 	live, ok := r.sessions[sessionID]
 	if !ok || owner == nil || live.peer != owner {
@@ -128,7 +152,7 @@ func (r *Registry) List() []protocol.SessionInfo {
 
 	out := make([]protocol.SessionInfo, 0, len(r.sessions))
 	for _, live := range r.sessions {
-		out = append(out, live.snapshot())
+		out = append(out, live.info)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		ti := lastActiveTime(out[i])
@@ -141,7 +165,7 @@ func (r *Registry) List() []protocol.SessionInfo {
 	return out
 }
 
-func (r *Registry) TouchOutputIfOwner(sessionID string, owner AgentPeer, chunk []byte, cols, rows int, now time.Time) bool {
+func (r *Registry) TouchOutputIfOwner(sessionID string, owner AgentPeer, chunk []byte, cols, rows int, now time.Time) (bool, error) {
 	return r.touchOutput(sessionID, owner, chunk, cols, rows, now, true)
 }
 
@@ -153,18 +177,27 @@ func (r *Registry) Session(sessionID string) (protocol.SessionInfo, bool) {
 	if !ok {
 		return protocol.SessionInfo{}, false
 	}
-	return live.snapshot(), true
+	return live.info, true
 }
 
-func (r *Registry) Frames(sessionID string, from uint64, hasFrom bool, to uint64, hasTo bool) ([]outputFrameMessage, bool) {
+func (r *Registry) Frames(sessionID string, from uint64, hasFrom bool, to uint64, hasTo bool) ([]outputFrameMessage, bool, error) {
+	unlock := r.lockSessionGate(sessionID)
+	defer unlock()
+
+	frames, ok, err := r.history.Frames(sessionID, from, hasFrom, to, hasTo)
+	if err != nil {
+		return nil, false, err
+	}
+	if ok {
+		return frames, true, nil
+	}
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-
-	live, ok := r.sessions[sessionID]
-	if !ok {
-		return nil, false
+	if _, live := r.sessions[sessionID]; live {
+		return []outputFrameMessage{}, true, nil
 	}
-	return live.frameSnapshot(from, hasFrom, to, hasTo), true
+	return nil, false, nil
 }
 
 func (r *Registry) WriteInput(sessionID string, msg protocol.Message) error {
@@ -186,18 +219,57 @@ func lastActiveTime(info protocol.SessionInfo) time.Time {
 	return *info.LastActiveAt
 }
 
-func (r *Registry) touchOutput(sessionID string, owner AgentPeer, chunk []byte, cols, rows int, now time.Time, requireOwner bool) bool {
-	r.mu.Lock()
+func (r *Registry) touchOutput(sessionID string, owner AgentPeer, chunk []byte, cols, rows int, now time.Time, requireOwner bool) (bool, error) {
+	unlock := r.lockSessionGate(sessionID)
+	defer unlock()
+
+	r.mu.RLock()
 	live, ok := r.sessions[sessionID]
 	if !ok || (requireOwner && live.peer != owner) {
-		r.mu.Unlock()
-		return false
+		r.mu.RUnlock()
+		return false, nil
 	}
-	seq := live.appendOutput(chunk, cols, rows, now)
+	r.mu.RUnlock()
+
+	seq, err := r.history.AppendFrame(sessionID, chunk, cols, rows, now)
+	if err != nil {
+		return true, err
+	}
+
+	r.mu.Lock()
+	live, ok = r.sessions[sessionID]
+	if !ok || (requireOwner && live.peer != owner) {
+		r.mu.Unlock()
+		return false, nil
+	}
 	nowCopy := now
 	live.info.LastActiveAt = &nowCopy
+	live.info.LatestSeq = seq
 	r.mu.Unlock()
 
 	r.broadcastClientUpdate(protocol.EncodeClientOutput(sessionID, seq, chunk, cols, rows, now))
-	return true
+	return true, nil
+}
+
+func (r *Registry) lockSessionGate(sessionID string) func() {
+	r.gateMu.Lock()
+	gate := r.gates[sessionID]
+	if gate == nil {
+		gate = &sessionGate{}
+		r.gates[sessionID] = gate
+	}
+	gate.refs++
+	r.gateMu.Unlock()
+
+	gate.mu.Lock()
+	return func() {
+		gate.mu.Unlock()
+
+		r.gateMu.Lock()
+		gate.refs--
+		if gate.refs == 0 {
+			delete(r.gates, sessionID)
+		}
+		r.gateMu.Unlock()
+	}
 }
