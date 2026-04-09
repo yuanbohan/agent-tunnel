@@ -3,6 +3,7 @@ package session
 import (
 	"fmt"
 	"sync"
+	"time"
 )
 
 type OutputSink interface {
@@ -12,7 +13,9 @@ type OutputSink interface {
 type Hub struct {
 	writeInput func([]byte) error
 	resizePTY  func(int, int) error
+	sleep      func(time.Duration)
 
+	writeMu  sync.Mutex
 	mu       sync.RWMutex
 	sinks    map[string]OutputSink
 	cols     int
@@ -24,6 +27,7 @@ func NewHub(writeInput func([]byte) error, resizePTY func(int, int) error) *Hub 
 	return &Hub{
 		writeInput: writeInput,
 		resizePTY:  resizePTY,
+		sleep:      time.Sleep,
 		sinks:      make(map[string]OutputSink),
 	}
 }
@@ -55,8 +59,39 @@ func (h *Hub) BroadcastOutput(data []byte) {
 }
 
 func (h *Hub) WriteInput(data []byte) error {
-	cp := append([]byte(nil), data...)
-	return h.writeInput(cp)
+	return h.WriteInputSequence(data)
+}
+
+func (h *Hub) WriteInputSequence(chunks ...[]byte) error {
+	return h.WriteInputSequenceWithGap(0, chunks...)
+}
+
+func (h *Hub) WriteInputSequenceWithGap(gap time.Duration, chunks ...[]byte) error {
+	h.writeMu.Lock()
+	defer h.writeMu.Unlock()
+
+	for i, chunk := range chunks {
+		if len(chunk) == 0 {
+			continue
+		}
+		cp := append([]byte(nil), chunk...)
+		if err := h.writeInput(cp); err != nil {
+			return err
+		}
+		if gap > 0 && hasNonEmptyChunk(chunks[i+1:]) {
+			h.sleep(gap)
+		}
+	}
+	return nil
+}
+
+func hasNonEmptyChunk(chunks [][]byte) bool {
+	for _, chunk := range chunks {
+		if len(chunk) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Hub) Resize(cols, rows int) error {

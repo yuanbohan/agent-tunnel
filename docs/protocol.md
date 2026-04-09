@@ -182,7 +182,7 @@ Rules:
 - plain character input belongs here, not in `input_key`
 - if `submit` is `false`, `input_text` does not imply `Enter`
 - if `submit` is `true`, the event is an atomic submit intent, not a best-effort client macro
-- when `submit` is `true`, the relay and owning agent must preserve ordering so the PTY receives `text` and the submit carriage return as one serialized operation for that session
+- when `submit` is `true`, the relay and owning agent must preserve ordering so the PTY receives `text` first and then the submit carriage return as one serialized operation for that session
 - when `submit` is `true`, the owning agent appends exactly one trailing carriage return (`\r`) beyond the provided text body
 - the appended carriage return must match the existing `input_key` handling for `ENTER` in the owning agent
 
@@ -238,7 +238,7 @@ Relay and agent requirements:
 
 - the relay forwards `input_text` with the `submit` flag intact
 - the relay must not decompose `input_text { submit: true }` into separate forwarded `input_text` and `input_key`
-- the owning `agentunnel` session must serialize `input_text { submit: true }` as one submit operation for that session
+- the owning `agentunnel` session must serialize `input_text { submit: true }` as one submit operation for that session, even if it uses multiple ordered PTY writes to do so
 - the owning `agentunnel` session appends exactly one trailing carriage return (`\r`) for `input_text { submit: true }` using the same semantics it already uses for `ENTER`
 
 #### `input_key`

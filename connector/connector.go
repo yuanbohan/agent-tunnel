@@ -31,6 +31,9 @@ var defaultReconnectBackoff = []time.Duration{
 }
 
 const defaultPendingInputLimit = 128
+// Some terminal UIs only react to submit correctly when text and Enter arrive
+// as distinct input events instead of one combined PTY write.
+const defaultSubmitEnterGap = 120 * time.Millisecond
 
 // Connector is the one place where the local runtime meets the relay protocol.
 //
@@ -388,7 +391,11 @@ func (c *Connector) deliverInput(msg protocol.Message) {
 func (c *Connector) deliverInputToHub(hub *session.Hub, msg protocol.Message) {
 	switch msg.Type {
 	case "input_text":
-		_ = hub.WriteInput(session.EncodeRemoteTextInput(msg.Text, msg.Submit))
+		if msg.Submit {
+			_ = hub.WriteInputSequenceWithGap(defaultSubmitEnterGap, session.EncodeRemoteSubmitInput(msg.Text)...)
+			return
+		}
+		_ = hub.WriteInput(session.EncodeRemoteTextInput(msg.Text))
 	case "input_key":
 		if data, ok := session.EncodeRemoteKeyInput(msg.Key, msg.Ctrl, msg.Alt, msg.Shift); ok {
 			_ = hub.WriteInput(data)

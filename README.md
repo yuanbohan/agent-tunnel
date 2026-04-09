@@ -17,7 +17,7 @@ Client input uses structured events:
 - `input_text` for normal typing, pasted text, IME-committed text, and explicit submit via `submit: true`
 - `input_key` for special keys and supported key combinations
 
-The relay forwards those events to the owning `agentunnel` session. `agentunnel` translates supported key events into PTY bytes locally, and it handles `input_text { submit: true }` as one serialized PTY write of the provided text plus the same carriage return semantics used for `ENTER`.
+The relay forwards those events to the owning `agentunnel` session. `agentunnel` translates supported key events into PTY bytes locally, and it handles `input_text { submit: true }` as one serialized submit operation: write the provided text first, then write the same carriage return semantics used for `ENTER`, with no interleaving input for that session.
 
 ## Requirements
 
