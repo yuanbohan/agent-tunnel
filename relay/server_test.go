@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -22,6 +23,41 @@ type sessionFramesResponse []struct {
 	Rows    int       `json:"rows"`
 	TS      time.Time `json:"ts"`
 }
+
+type historyProxyErrorResponse struct {
+	Reason string `json:"reason"`
+}
+
+type mockWSConn struct {
+	mu             sync.Mutex
+	deadline       time.Time
+	messages       [][]byte
+	setDeadlineErr error
+	writeErr       error
+	closeErr       error
+}
+
+func (m *mockWSConn) WriteMessage(_ int, data []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.writeErr != nil {
+		return m.writeErr
+	}
+	m.messages = append(m.messages, append([]byte(nil), data...))
+	return nil
+}
+
+func (m *mockWSConn) SetWriteDeadline(t time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.setDeadlineErr != nil {
+		return m.setDeadlineErr
+	}
+	m.deadline = t
+	return nil
+}
+
+func (m *mockWSConn) Close() error { return m.closeErr }
 
 type syncBuffer struct {
 	mu  sync.Mutex
@@ -129,6 +165,39 @@ func logNumber(t *testing.T, entry map[string]any, key string) float64 {
 	return value
 }
 
+func TestWSAgentPeerSendSetsWriteDeadline(t *testing.T) {
+	conn := &mockWSConn{}
+	peer := &wsAgentPeer{
+		conn:         conn,
+		writeTimeout: 5 * time.Second,
+	}
+
+	if err := peer.Send(protocol.EncodeHistoryRequest("req-1", nil, nil)); err != nil {
+		t.Fatalf("Send returned error: %v", err)
+	}
+
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	if conn.deadline.IsZero() {
+		t.Fatal("SetWriteDeadline was not called")
+	}
+	if len(conn.messages) != 1 {
+		t.Fatalf("message count = %d, want 1", len(conn.messages))
+	}
+}
+
+func TestWSAgentPeerSendReturnsDeadlineError(t *testing.T) {
+	conn := &mockWSConn{setDeadlineErr: errors.New("deadline failed")}
+	peer := &wsAgentPeer{
+		conn:         conn,
+		writeTimeout: 5 * time.Second,
+	}
+
+	if err := peer.Send(protocol.EncodeHistoryRequest("req-1", nil, nil)); err == nil || err.Error() != "deadline failed" {
+		t.Fatalf("Send error = %v, want deadline failed", err)
+	}
+}
+
 func TestHandlerRejectsSessionsWithoutBasicAuth(t *testing.T) {
 	reg := NewRegistry()
 	handler := NewHandler(HandlerConfig{
@@ -181,8 +250,42 @@ func TestHandlerReturnsLiveSessionsWithBasicAuth(t *testing.T) {
 	if len(sessions) != 1 || sessions[0].SessionID != "sess-1" {
 		t.Fatalf("sessions = %#v, want sess-1", sessions)
 	}
+	if sessions[0].State != protocol.SessionStateConnected {
+		t.Fatalf("State = %q, want connected", sessions[0].State)
+	}
 	if !strings.Contains(rec.Body.String(), "latest_seq") {
 		t.Fatalf("body = %s, want field %q", rec.Body.String(), "latest_seq")
+	}
+}
+
+func TestHandlerReturnsReconnectingSessionsWithBasicAuth(t *testing.T) {
+	reg := NewRegistry()
+	peer := &recordingPeer{}
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, peer)
+	reg.DisconnectIfOwner("sess-1", peer)
+
+	handler := NewHandler(HandlerConfig{
+		Registry:   reg,
+		User:       "demo",
+		Password:   "secret",
+		AgentToken: "agent-token",
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+	req.Header.Set("Authorization", basicAuth("demo", "secret"))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var sessions []protocol.SessionInfo
+	if err := json.Unmarshal(rec.Body.Bytes(), &sessions); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].State != protocol.SessionStateReconnecting {
+		t.Fatalf("sessions = %#v, want one reconnecting session", sessions)
 	}
 }
 
@@ -199,33 +302,33 @@ func TestHandlerServesSessionFrames(t *testing.T) {
 	agentConn := dialAndRegisterAgent(t, server.URL, "sess-1")
 	defer agentConn.Close()
 
-	for _, frame := range []struct {
-		cols int
-		rows int
-		data string
-	}{
-		{cols: 120, rows: 40, data: "one"},
-		{cols: 120, rows: 40, data: "two"},
-		{cols: 132, rows: 43, data: "three"},
-	} {
-		if err := agentConn.WriteJSON(protocol.EncodeOutputWithSeqAndSize(0, []byte(frame.data), frame.cols, frame.rows)); err != nil {
-			t.Fatalf("WriteJSON output returned error: %v", err)
-		}
-	}
+	frame2Time := time.Unix(41, 0).UTC()
+	frame3Time := time.Unix(42, 0).UTC()
+	requestCh := replyToNextHistoryRequest(agentConn, func(msg protocol.Message) protocol.Message {
+		return protocol.EncodeHistoryResponse(msg.RequestID, []protocol.ReplayFrame{
+			replayFrame(2, "two", 120, 40, frame2Time),
+			replayFrame(3, "three", 132, 43, frame3Time),
+		})
+	})
 
-	req, err := http.NewRequest(http.MethodGet, server.URL+"/api/sessions/sess-1/frames?from=2&to=3", nil)
-	if err != nil {
-		t.Fatalf("NewRequest returned error: %v", err)
-	}
-	req.Header.Set("Authorization", basicAuth("demo", "secret"))
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("Do returned error: %v", err)
-	}
+	resp := doAuthenticatedGET(t, server.URL+"/api/sessions/sess-1/frames?from=2&to=3")
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	request := <-requestCh
+	if request.err != nil {
+		t.Fatalf("history request error = %v", request.err)
+	}
+	if request.msg.Type != "history_request" || request.msg.RequestID == "" {
+		t.Fatalf("request = %#v, want history_request with request_id", request.msg)
+	}
+	if request.msg.From == nil || *request.msg.From != 2 {
+		t.Fatalf("request.From = %v, want 2", request.msg.From)
+	}
+	if request.msg.To == nil || *request.msg.To != 3 {
+		t.Fatalf("request.To = %v, want 3", request.msg.To)
 	}
 
 	var frames sessionFramesResponse
@@ -233,13 +336,316 @@ func TestHandlerServesSessionFrames(t *testing.T) {
 		t.Fatalf("Decode returned error: %v", err)
 	}
 	if len(frames) != 2 {
-		t.Fatalf("len(Frames) = %d, want 2", len(frames))
+		t.Fatalf("len(frames) = %d, want 2", len(frames))
 	}
 	if frames[0].Seq != 2 || frames[1].Seq != 3 {
 		t.Fatalf("seqs = %#v, want 2 then 3", frames)
 	}
-	if frames[0].TS.IsZero() || frames[1].TS.IsZero() {
-		t.Fatalf("timestamps = %#v, want non-zero", frames)
+	if !frames[0].TS.Equal(frame2Time) || !frames[1].TS.Equal(frame3Time) {
+		t.Fatalf("timestamps = %#v, want preserved agent-authored times", frames)
+	}
+}
+
+func TestHandlerServesAllSessionFramesWhenRangeOmitted(t *testing.T) {
+	reg := NewRegistry()
+	server := httptest.NewServer(NewHandler(HandlerConfig{
+		Registry:   reg,
+		User:       "demo",
+		Password:   "secret",
+		AgentToken: "agent-token",
+	}))
+	defer server.Close()
+
+	agentConn := dialAndRegisterAgent(t, server.URL, "sess-1")
+	defer agentConn.Close()
+
+	requestCh := replyToNextHistoryRequest(agentConn, func(msg protocol.Message) protocol.Message {
+		return protocol.EncodeHistoryResponse(msg.RequestID, []protocol.ReplayFrame{
+			replayFrame(1, "one", 120, 40, time.Unix(40, 0).UTC()),
+			replayFrame(2, "two", 120, 40, time.Unix(41, 0).UTC()),
+			replayFrame(3, "three", 132, 43, time.Unix(42, 0).UTC()),
+		})
+	})
+
+	resp := doAuthenticatedGET(t, server.URL+"/api/sessions/sess-1/frames")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	request := <-requestCh
+	if request.err != nil {
+		t.Fatalf("history request error = %v", request.err)
+	}
+	if request.msg.From != nil || request.msg.To != nil {
+		t.Fatalf("request bounds = %#v/%#v, want nil/nil", request.msg.From, request.msg.To)
+	}
+
+	var frames sessionFramesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&frames); err != nil {
+		t.Fatalf("Decode returned error: %v", err)
+	}
+	if len(frames) != 3 {
+		t.Fatalf("len(frames) = %d, want 3", len(frames))
+	}
+}
+
+func TestHandlerReturns404ForUnknownSessionFrames(t *testing.T) {
+	reg := NewRegistry()
+	handler := NewHandler(HandlerConfig{
+		Registry:   reg,
+		User:       "demo",
+		Password:   "secret",
+		AgentToken: "agent-token",
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/missing/frames", nil)
+	req.Header.Set("Authorization", basicAuth("demo", "secret"))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+
+	var body historyProxyErrorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	if body.Reason != "session_not_found" {
+		t.Fatalf("reason = %q, want session_not_found", body.Reason)
+	}
+}
+
+func TestHandlerReturns409ForReconnectingSessionFrames(t *testing.T) {
+	reg := NewRegistry()
+	peer := &recordingPeer{}
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, peer)
+	reg.DisconnectIfOwner("sess-1", peer)
+
+	handler := NewHandler(HandlerConfig{
+		Registry:   reg,
+		User:       "demo",
+		Password:   "secret",
+		AgentToken: "agent-token",
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/sess-1/frames", nil)
+	req.Header.Set("Authorization", basicAuth("demo", "secret"))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", rec.Code)
+	}
+
+	var body historyProxyErrorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	if body.Reason != "session_reconnecting" {
+		t.Fatalf("reason = %q, want session_reconnecting", body.Reason)
+	}
+}
+
+func TestHandlerReturnsTimeoutWhenAgentNeverAnswersHistoryRequest(t *testing.T) {
+	reg := NewRegistry()
+	server := httptest.NewServer(NewHandler(HandlerConfig{
+		Registry:              reg,
+		User:                  "demo",
+		Password:              "secret",
+		AgentToken:            "agent-token",
+		HistoryRequestTimeout: 20 * time.Millisecond,
+	}))
+	defer server.Close()
+
+	agentConn := dialAndRegisterAgent(t, server.URL, "sess-1")
+	defer agentConn.Close()
+
+	resp := doAuthenticatedGET(t, server.URL+"/api/sessions/sess-1/frames")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusGatewayTimeout {
+		t.Fatalf("status = %d, want 504", resp.StatusCode)
+	}
+
+	var body historyProxyErrorResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("Decode returned error: %v", err)
+	}
+	if body.Reason != "upstream_timeout" {
+		t.Fatalf("reason = %q, want upstream_timeout", body.Reason)
+	}
+}
+
+func TestHandlerReturnsBadGatewayForMalformedHistoryResponse(t *testing.T) {
+	reg := NewRegistry()
+	server := httptest.NewServer(NewHandler(HandlerConfig{
+		Registry:   reg,
+		User:       "demo",
+		Password:   "secret",
+		AgentToken: "agent-token",
+	}))
+	defer server.Close()
+
+	agentConn := dialAndRegisterAgent(t, server.URL, "sess-1")
+	defer agentConn.Close()
+
+	requestCh := replyToNextHistoryRequest(agentConn, func(msg protocol.Message) protocol.Message {
+		return protocol.Message{
+			Type:      "history_response",
+			RequestID: msg.RequestID,
+			Frames: []protocol.ReplayFrame{{
+				Seq:     2,
+				DataB64: base64.StdEncoding.EncodeToString([]byte("two")),
+				Cols:    120,
+				Rows:    40,
+			}},
+		}
+	})
+
+	resp := doAuthenticatedGET(t, server.URL+"/api/sessions/sess-1/frames?from=2&to=2")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", resp.StatusCode)
+	}
+	if request := <-requestCh; request.err != nil {
+		t.Fatalf("history request error = %v", request.err)
+	}
+
+	var body historyProxyErrorResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("Decode returned error: %v", err)
+	}
+	if body.Reason != "invalid_agent_response" {
+		t.Fatalf("reason = %q, want invalid_agent_response", body.Reason)
+	}
+}
+
+func TestHandlerReturnsBadGatewayForInvalidHistoryResponseDataB64(t *testing.T) {
+	reg := NewRegistry()
+	server := httptest.NewServer(NewHandler(HandlerConfig{
+		Registry:   reg,
+		User:       "demo",
+		Password:   "secret",
+		AgentToken: "agent-token",
+	}))
+	defer server.Close()
+
+	agentConn := dialAndRegisterAgent(t, server.URL, "sess-1")
+	defer agentConn.Close()
+
+	requestCh := replyToNextHistoryRequest(agentConn, func(msg protocol.Message) protocol.Message {
+		return protocol.Message{
+			Type:      "history_response",
+			RequestID: msg.RequestID,
+			Frames: []protocol.ReplayFrame{{
+				Seq:     2,
+				DataB64: "***not-base64***",
+				Cols:    120,
+				Rows:    40,
+				TS:      time.Unix(41, 0).UTC(),
+			}},
+		}
+	})
+
+	resp := doAuthenticatedGET(t, server.URL+"/api/sessions/sess-1/frames?from=2&to=2")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", resp.StatusCode)
+	}
+	if request := <-requestCh; request.err != nil {
+		t.Fatalf("history request error = %v", request.err)
+	}
+
+	var body historyProxyErrorResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("Decode returned error: %v", err)
+	}
+	if body.Reason != "invalid_agent_response" {
+		t.Fatalf("reason = %q, want invalid_agent_response", body.Reason)
+	}
+}
+
+func TestHandlerReturnsBadGatewayForMismatchedHistoryResponse(t *testing.T) {
+	reg := NewRegistry()
+	server := httptest.NewServer(NewHandler(HandlerConfig{
+		Registry:   reg,
+		User:       "demo",
+		Password:   "secret",
+		AgentToken: "agent-token",
+	}))
+	defer server.Close()
+
+	agentConn := dialAndRegisterAgent(t, server.URL, "sess-1")
+	defer agentConn.Close()
+
+	requestCh := replyToNextHistoryRequest(agentConn, func(protocol.Message) protocol.Message {
+		return protocol.EncodeHistoryResponse("wrong-request-id", []protocol.ReplayFrame{
+			replayFrame(2, "two", 120, 40, time.Unix(41, 0).UTC()),
+		})
+	})
+
+	resp := doAuthenticatedGET(t, server.URL+"/api/sessions/sess-1/frames?from=2&to=2")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", resp.StatusCode)
+	}
+	if request := <-requestCh; request.err != nil {
+		t.Fatalf("history request error = %v", request.err)
+	}
+
+	var body historyProxyErrorResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("Decode returned error: %v", err)
+	}
+	if body.Reason != "invalid_agent_response" {
+		t.Fatalf("reason = %q, want invalid_agent_response", body.Reason)
+	}
+}
+
+func TestHandlerServesFramesAgainAfterReconnectWithinGrace(t *testing.T) {
+	reg := NewRegistry()
+	reg.reconnectGrace = 200 * time.Millisecond
+	server := httptest.NewServer(NewHandler(HandlerConfig{
+		Registry:   reg,
+		User:       "demo",
+		Password:   "secret",
+		AgentToken: "agent-token",
+	}))
+	defer server.Close()
+
+	agentConn := dialAndRegisterAgent(t, server.URL, "sess-1")
+	_ = agentConn.Close()
+
+	resp := doAuthenticatedGET(t, server.URL+"/api/sessions/sess-1/frames")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 while reconnecting", resp.StatusCode)
+	}
+
+	reconnected := dialAndRegisterAgent(t, server.URL, "sess-1")
+	defer reconnected.Close()
+	requestCh := replyToNextHistoryRequest(reconnected, func(msg protocol.Message) protocol.Message {
+		return protocol.EncodeHistoryResponse(msg.RequestID, []protocol.ReplayFrame{
+			replayFrame(4, "four", 120, 40, time.Unix(44, 0).UTC()),
+		})
+	})
+
+	resp2 := doAuthenticatedGET(t, server.URL+"/api/sessions/sess-1/frames")
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 after reconnect", resp2.StatusCode)
+	}
+	if request := <-requestCh; request.err != nil {
+		t.Fatalf("history request error = %v", request.err)
+	}
+
+	var frames sessionFramesResponse
+	if err := json.NewDecoder(resp2.Body).Decode(&frames); err != nil {
+		t.Fatalf("Decode returned error: %v", err)
+	}
+	if len(frames) != 1 || frames[0].Seq != 4 {
+		t.Fatalf("frames = %#v, want one seq 4 frame", frames)
 	}
 }
 
@@ -388,6 +794,7 @@ func TestHandlerLogsWebSocketUpgradeFailureWithoutLifecycle(t *testing.T) {
 
 func TestUpdatesWebSocketStreamsOutputAndRemoval(t *testing.T) {
 	reg := NewRegistry()
+	reg.reconnectGrace = 20 * time.Millisecond
 	server := httptest.NewServer(NewHandler(HandlerConfig{
 		Registry:   reg,
 		User:       "demo",
@@ -407,7 +814,8 @@ func TestUpdatesWebSocketStreamsOutputAndRemoval(t *testing.T) {
 	}
 	defer updatesConn.Close()
 
-	if err := agentConn.WriteJSON(protocol.EncodeOutputWithSeqAndSize(0, []byte("hello"), 132, 43)); err != nil {
+	ts := time.Unix(40, 0).UTC()
+	if err := agentConn.WriteJSON(protocol.EncodeOutputWithSeqAndSizeAndTime(1, []byte("hello"), 132, 43, ts)); err != nil {
 		t.Fatalf("WriteJSON returned error: %v", err)
 	}
 
@@ -418,8 +826,8 @@ func TestUpdatesWebSocketStreamsOutputAndRemoval(t *testing.T) {
 	if output.Type != "output" || output.SessionID != "sess-1" {
 		t.Fatalf("output = %#v, want sess-1 output", output)
 	}
-	if output.TS == nil || output.TS.IsZero() {
-		t.Fatalf("ts = %v, want non-zero", output.TS)
+	if output.TS == nil || !output.TS.Equal(ts) {
+		t.Fatalf("ts = %v, want %v", output.TS, ts)
 	}
 	if output.Cols != 132 || output.Rows != 43 {
 		t.Fatalf("size = %dx%d, want 132x43", output.Cols, output.Rows)
@@ -433,6 +841,7 @@ func TestUpdatesWebSocketStreamsOutputAndRemoval(t *testing.T) {
 	}
 
 	_ = agentConn.Close()
+	_ = updatesConn.SetReadDeadline(time.Now().Add(time.Second))
 
 	var removed protocol.ClientUpdateMessage
 	if err := updatesConn.ReadJSON(&removed); err != nil {
@@ -483,7 +892,7 @@ func TestUpdatesWebSocketLogsTrafficAndAccess(t *testing.T) {
 		t.Fatalf("messages = %#v, want one input_text", messages)
 	}
 
-	if ok := reg.TouchOutputIfOwner("sess-1", peer, []byte("hello"), 132, 43, time.Now()); !ok {
+	if ok := reg.TouchOutputIfOwner("sess-1", peer, replayFrame(5, "hello", 132, 43, time.Now().UTC())); !ok {
 		t.Fatal("TouchOutputIfOwner returned false, want true")
 	}
 
@@ -561,14 +970,6 @@ func TestAgentWebSocketIgnoresOutputWithoutDataB64(t *testing.T) {
 	}
 	if info.LatestSeq != 0 {
 		t.Fatalf("LatestSeq = %d, want 0 after invalid output", info.LatestSeq)
-	}
-
-	frames, ok := reg.Frames("sess-1", 0, false, 0, false)
-	if !ok {
-		t.Fatal("Frames returned false, want true")
-	}
-	if len(frames) != 0 {
-		t.Fatalf("frames = %#v, want no retained frames", frames)
 	}
 }
 
@@ -782,7 +1183,7 @@ func TestAgentWebSocketLogsTrafficAndAccess(t *testing.T) {
 		t.Fatalf("forwarded = %#v, want input_text pwd\\n", forwarded)
 	}
 
-	if err := agentConn.WriteJSON(protocol.EncodeOutputWithSeqAndSize(0, []byte("hello"), 120, 40)); err != nil {
+	if err := agentConn.WriteJSON(protocol.EncodeOutputWithSeqAndSizeAndTime(1, []byte("hello"), 120, 40, time.Unix(40, 0).UTC())); err != nil {
 		t.Fatalf("WriteJSON output returned error: %v", err)
 	}
 
@@ -866,6 +1267,46 @@ func TestAgentWebSocketLogsDisconnectBeforeRegisterWithoutSessionID(t *testing.T
 	if _, ok := disconnected["session_id"]; ok {
 		t.Fatalf("session_id present = %#v, want absent", disconnected["session_id"])
 	}
+}
+
+type historyRequestResult struct {
+	msg protocol.Message
+	err error
+}
+
+func doAuthenticatedGET(t *testing.T, target string) *http.Response {
+	t.Helper()
+
+	req, err := http.NewRequest(http.MethodGet, target, nil)
+	if err != nil {
+		t.Fatalf("NewRequest returned error: %v", err)
+	}
+	req.Header.Set("Authorization", basicAuth("demo", "secret"))
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do returned error: %v", err)
+	}
+	return resp
+}
+
+func replyToNextHistoryRequest(conn *websocket.Conn, responder func(protocol.Message) protocol.Message) <-chan historyRequestResult {
+	ch := make(chan historyRequestResult, 1)
+	go func() {
+		var msg protocol.Message
+		if err := conn.ReadJSON(&msg); err != nil {
+			ch <- historyRequestResult{err: err}
+			return
+		}
+		if responder != nil {
+			if err := conn.WriteJSON(responder(msg)); err != nil {
+				ch <- historyRequestResult{msg: msg, err: err}
+				return
+			}
+		}
+		ch <- historyRequestResult{msg: msg}
+	}()
+	return ch
 }
 
 func basicAuth(user, pass string) string {

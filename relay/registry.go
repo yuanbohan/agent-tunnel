@@ -9,7 +9,12 @@ import (
 	"yuanbohan/tunnel/protocol"
 )
 
-var ErrSessionNotFound = errors.New("relay session not found")
+var (
+	ErrSessionNotFound     = errors.New("relay session not found")
+	ErrSessionReconnecting = errors.New("relay session reconnecting")
+)
+
+const defaultReconnectGrace = 60 * time.Second
 
 type AgentPeer interface {
 	Send(protocol.Message) error
@@ -17,26 +22,31 @@ type AgentPeer interface {
 }
 
 type Registry struct {
-	mu          sync.RWMutex
-	sessions    map[string]*liveSession
-	updateSinks map[string]clientUpdateSink
-	logger      *Logger
+	mu             sync.RWMutex
+	sessions       map[string]*liveSession
+	updateSinks    map[string]clientUpdateSink
+	logger         *Logger
+	reconnectGrace time.Duration
+}
+
+type historyResult struct {
+	frames []protocol.ReplayFrame
+	err    error
 }
 
 type liveSession struct {
-	info protocol.SessionInfo
-	peer AgentPeer
-
-	frames     []outputFrame
-	frameBytes int
-	latestSeq  uint64
+	info           protocol.SessionInfo
+	peer           AgentPeer
+	removeTimer    *time.Timer
+	pendingHistory map[string]chan historyResult
 }
 
 func NewRegistry() *Registry {
 	return &Registry{
-		sessions:    make(map[string]*liveSession),
-		updateSinks: make(map[string]clientUpdateSink),
-		logger:      NewDiscardLogger(),
+		sessions:       make(map[string]*liveSession),
+		updateSinks:    make(map[string]clientUpdateSink),
+		logger:         NewDiscardLogger(),
+		reconnectGrace: defaultReconnectGrace,
 	}
 }
 
@@ -56,27 +66,32 @@ func (r *Registry) Register(info protocol.SessionInfo, peer AgentPeer) {
 	r.mu.Lock()
 	old := r.sessions[info.SessionID]
 	logger := r.logger
-	var frames []outputFrame
-	var frameBytes int
-	var latestSeq uint64
 	lastActiveAt := info.LastActiveAt
+	var pending []chan historyResult
+
 	if old != nil {
-		frames = old.frames
-		frameBytes = old.frameBytes
-		latestSeq = old.latestSeq
-		if old.info.LastActiveAt != nil {
+		if old.removeTimer != nil {
+			old.removeTimer.Stop()
+		}
+		if old.info.LastActiveAt != nil && (lastActiveAt == nil || old.info.LastActiveAt.After(*lastActiveAt)) {
 			lastActiveAt = old.info.LastActiveAt
 		}
+		if info.LatestSeq < old.info.LatestSeq {
+			info.LatestSeq = old.info.LatestSeq
+		}
+		pending = takeAllPendingHistoryLocked(old)
 	}
+
+	info.LastActiveAt = lastActiveAt
+	info.State = protocol.SessionStateConnected
 	r.sessions[info.SessionID] = &liveSession{
-		info:       info,
-		peer:       peer,
-		frames:     frames,
-		frameBytes: frameBytes,
-		latestSeq:  latestSeq,
+		info:           info,
+		peer:           peer,
+		pendingHistory: make(map[string]chan historyResult),
 	}
-	r.sessions[info.SessionID].info.LastActiveAt = lastActiveAt
 	r.mu.Unlock()
+
+	failHistoryWaiters(pending, ErrSessionReconnecting)
 
 	if old != nil {
 		logger.Warn("session_replaced", String("session_id", info.SessionID))
@@ -88,29 +103,47 @@ func (r *Registry) Register(info protocol.SessionInfo, peer AgentPeer) {
 
 func (r *Registry) Remove(sessionID string) {
 	r.mu.Lock()
-	_, ok := r.sessions[sessionID]
+	live, ok := r.sessions[sessionID]
 	if ok {
 		delete(r.sessions, sessionID)
+	}
+	var pending []chan historyResult
+	if ok {
+		if live.removeTimer != nil {
+			live.removeTimer.Stop()
+		}
+		pending = takeAllPendingHistoryLocked(live)
 	}
 	r.mu.Unlock()
 
 	if !ok {
 		return
 	}
+	failHistoryWaiters(pending, ErrSessionNotFound)
 	r.broadcastClientUpdate(protocol.EncodeClientSessionRemoved(sessionID, "session_removed"))
 }
 
-func (r *Registry) RemoveIfOwner(sessionID string, owner AgentPeer) bool {
+func (r *Registry) DisconnectIfOwner(sessionID string, owner AgentPeer) bool {
 	r.mu.Lock()
 	live, ok := r.sessions[sessionID]
 	if !ok || owner == nil || live.peer != owner {
 		r.mu.Unlock()
 		return false
 	}
-	delete(r.sessions, sessionID)
+
+	live.peer = nil
+	live.info.State = protocol.SessionStateReconnecting
+	if live.removeTimer != nil {
+		live.removeTimer.Stop()
+	}
+	sessionIDCopy := sessionID
+	live.removeTimer = time.AfterFunc(r.reconnectGrace, func() {
+		r.expireReconnectingSession(sessionIDCopy)
+	})
+	pending := takeAllPendingHistoryLocked(live)
 	r.mu.Unlock()
 
-	r.broadcastClientUpdate(protocol.EncodeClientSessionRemoved(sessionID, "agent_disconnected"))
+	failHistoryWaiters(pending, ErrSessionReconnecting)
 	return true
 }
 
@@ -141,8 +174,25 @@ func (r *Registry) List() []protocol.SessionInfo {
 	return out
 }
 
-func (r *Registry) TouchOutputIfOwner(sessionID string, owner AgentPeer, chunk []byte, cols, rows int, now time.Time) bool {
-	return r.touchOutput(sessionID, owner, chunk, cols, rows, now, true)
+func (r *Registry) TouchOutputIfOwner(sessionID string, owner AgentPeer, frame protocol.ReplayFrame) bool {
+	r.mu.Lock()
+	live, ok := r.sessions[sessionID]
+	if !ok || live.peer != owner {
+		r.mu.Unlock()
+		return false
+	}
+	if frame.Seq > live.info.LatestSeq {
+		live.info.LatestSeq = frame.Seq
+	}
+	if !frame.TS.IsZero() {
+		nowCopy := frame.TS
+		live.info.LastActiveAt = &nowCopy
+	}
+	live.info.State = protocol.SessionStateConnected
+	r.mu.Unlock()
+
+	r.broadcastClientUpdate(protocol.EncodeClientOutputFrame(sessionID, frame))
+	return true
 }
 
 func (r *Registry) Session(sessionID string) (protocol.SessionInfo, bool) {
@@ -156,15 +206,87 @@ func (r *Registry) Session(sessionID string) (protocol.SessionInfo, bool) {
 	return live.snapshot(), true
 }
 
-func (r *Registry) Frames(sessionID string, from uint64, hasFrom bool, to uint64, hasTo bool) ([]outputFrameMessage, bool) {
+func (r *Registry) StartHistoryRequest(sessionID, requestID string) (AgentPeer, <-chan historyResult, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	live, ok := r.sessions[sessionID]
+	if !ok {
+		return nil, nil, ErrSessionNotFound
+	}
+	if live.peer == nil || live.info.State != protocol.SessionStateConnected {
+		return nil, nil, ErrSessionReconnecting
+	}
+	ch := make(chan historyResult, 1)
+	live.pendingHistory[requestID] = ch
+	return live.peer, ch, nil
+}
+
+func (r *Registry) ResolveHistoryRequest(sessionID string, owner AgentPeer, requestID string, frames []protocol.ReplayFrame) bool {
+	r.mu.Lock()
+	live, ok := r.sessions[sessionID]
+	if !ok || live.peer != owner {
+		r.mu.Unlock()
+		return false
+	}
+	ch, ok := live.pendingHistory[requestID]
+	if ok {
+		delete(live.pendingHistory, requestID)
+	}
+	r.mu.Unlock()
+
+	if !ok {
+		return false
+	}
+	ch <- historyResult{frames: append([]protocol.ReplayFrame(nil), frames...)}
+	close(ch)
+	return true
+}
+
+func (r *Registry) FailHistoryRequest(sessionID, requestID string, err error) bool {
+	r.mu.Lock()
+	live, ok := r.sessions[sessionID]
+	if !ok {
+		r.mu.Unlock()
+		return false
+	}
+	ch, ok := live.pendingHistory[requestID]
+	if ok {
+		delete(live.pendingHistory, requestID)
+	}
+	r.mu.Unlock()
+
+	if !ok {
+		return false
+	}
+	ch <- historyResult{err: err}
+	close(ch)
+	return true
+}
+
+func (r *Registry) FailPendingHistoryRequestsIfOwner(sessionID string, owner AgentPeer, err error) bool {
+	r.mu.Lock()
+	live, ok := r.sessions[sessionID]
+	if !ok || live.peer != owner {
+		r.mu.Unlock()
+		return false
+	}
+	pending := takeAllPendingHistoryLocked(live)
+	r.mu.Unlock()
+
+	failHistoryWaiters(pending, err)
+	return len(pending) > 0
+}
+
+func (r *Registry) PendingHistoryCountIfOwner(sessionID string, owner AgentPeer) int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	live, ok := r.sessions[sessionID]
-	if !ok {
-		return nil, false
+	if !ok || live.peer != owner {
+		return 0
 	}
-	return live.frameSnapshot(from, hasFrom, to, hasTo), true
+	return len(live.pendingHistory)
 }
 
 func (r *Registry) WriteInput(sessionID string, msg protocol.Message) error {
@@ -174,9 +296,51 @@ func (r *Registry) WriteInput(sessionID string, msg protocol.Message) error {
 		r.mu.RUnlock()
 		return ErrSessionNotFound
 	}
+	if live.peer == nil || live.info.State != protocol.SessionStateConnected {
+		r.mu.RUnlock()
+		return ErrSessionReconnecting
+	}
 	err := live.peer.Send(msg)
 	r.mu.RUnlock()
 	return err
+}
+
+func (r *Registry) expireReconnectingSession(sessionID string) {
+	r.mu.Lock()
+	live, ok := r.sessions[sessionID]
+	if !ok || live.info.State != protocol.SessionStateReconnecting || live.peer != nil {
+		r.mu.Unlock()
+		return
+	}
+	delete(r.sessions, sessionID)
+	pending := takeAllPendingHistoryLocked(live)
+	r.mu.Unlock()
+
+	failHistoryWaiters(pending, ErrSessionNotFound)
+	r.broadcastClientUpdate(protocol.EncodeClientSessionRemoved(sessionID, "session_removed"))
+}
+
+func takeAllPendingHistoryLocked(live *liveSession) []chan historyResult {
+	if len(live.pendingHistory) == 0 {
+		return nil
+	}
+	pending := make([]chan historyResult, 0, len(live.pendingHistory))
+	for requestID, ch := range live.pendingHistory {
+		delete(live.pendingHistory, requestID)
+		pending = append(pending, ch)
+	}
+	return pending
+}
+
+func failHistoryWaiters(waiters []chan historyResult, err error) {
+	for _, ch := range waiters {
+		ch <- historyResult{err: err}
+		close(ch)
+	}
+}
+
+func (s *liveSession) snapshot() protocol.SessionInfo {
+	return s.info
 }
 
 func lastActiveTime(info protocol.SessionInfo) time.Time {
@@ -184,20 +348,4 @@ func lastActiveTime(info protocol.SessionInfo) time.Time {
 		return time.Time{}
 	}
 	return *info.LastActiveAt
-}
-
-func (r *Registry) touchOutput(sessionID string, owner AgentPeer, chunk []byte, cols, rows int, now time.Time, requireOwner bool) bool {
-	r.mu.Lock()
-	live, ok := r.sessions[sessionID]
-	if !ok || (requireOwner && live.peer != owner) {
-		r.mu.Unlock()
-		return false
-	}
-	seq := live.appendOutput(chunk, cols, rows, now)
-	nowCopy := now
-	live.info.LastActiveAt = &nowCopy
-	r.mu.Unlock()
-
-	r.broadcastClientUpdate(protocol.EncodeClientOutput(sessionID, seq, chunk, cols, rows, now))
-	return true
 }

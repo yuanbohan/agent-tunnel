@@ -2,15 +2,19 @@
 
 Launch a terminal agent locally and stream the live PTY session to a remote relay service.
 
-`agentunnel` starts a real CLI such as `claude`, `codex`, or `gemini`, keeps the launching terminal interactive, and registers the session with a relay server. Every launcher follows the same direct PTY path. The relay is API-only: it exposes authenticated HTTP and WebSocket endpoints for external clients to list live sessions, replay retained output, attach to a live stream, and send input.
+`agentunnel` starts a real CLI such as `claude`, `codex`, or `gemini`, keeps the launching terminal interactive, and registers the session with a relay server. The relay is API-only: it authenticates clients, lists live sessions, fans out best-effort live output, and proxies session-history reads from the owning agent. It does not retain frame history itself.
 
 On startup, `agentunnel` gives relay registration a short first chance to succeed. If that startup window expires, local terminal work still begins and `agentunnel` continues reconnecting to the relay in the background. Runtime relay outages do not interrupt the local terminal session.
 
 On macOS, once startup succeeds, `agentunnel` also attempts default-on idle sleep prevention for the lifetime of the `agentunnel` process. If that helper cannot be started, the session still starts and the startup line reports the failure.
 
-The relay is intentionally content-opaque. It forwards and retains output bytes for replay, but it does not derive previews or other content semantics from terminal data.
+The relay is intentionally content-opaque. It forwards output bytes and proxies history reads, but it does not derive previews or other content semantics from terminal data.
 
-Remote/mobile clients can observe and interact with live sessions and are suitable for real remote work, but the remote output path is currently best-effort. The local terminal remains the most complete view of the session output in the current revision.
+Remote and mobile clients can observe and interact with live sessions, but the remote path remains intentionally lighter weight than the local terminal:
+
+- `GET /api/updates/ws` is the best-effort live output channel
+- `GET /api/sessions/:id/frames` is the recovery path for the current in-memory transcript owned by the running agent
+- the local terminal remains the most complete view of session output
 
 Client input uses structured events:
 
@@ -83,19 +87,32 @@ On non-macOS platforms, startup still succeeds but the banner reports `sleep uns
 
 Point your client at the relay with HTTP Basic Auth and use the relay APIs:
 
-- `GET /api/sessions` to list live sessions
+- `GET /api/sessions` to list live sessions, including `state` (`connected` or `reconnecting`) and the latest known agent-authored `latest_seq`
 - `GET /api/updates/ws` to receive best-effort global live output updates for all sessions on one foreground socket
-- `GET /api/sessions/:id/frames` to fetch the currently retained in-memory output frames and recover recent relay-retained output after reconnect
+- `GET /api/sessions/:id/frames` to fetch the current session transcript from the connected owning agent
 - `GET /api/sessions/:id/frames?from=101&to=120` to fetch an inclusive output sequence range
 
-Each output frame, whether fetched from retained history or received live over websocket, includes:
+Each output frame, whether fetched through `/frames` or received live over websocket, includes:
 
+- `seq`
+- `data_b64`
 - `cols` and `rows`
-- relay-assigned UTC `ts`
+- agent-authored UTC `ts`
 
-Relay `seq` values describe the order of frames the relay has recorded, not proof that a remote client has seen every byte the local PTY produced. After reconnecting to `GET /api/updates/ws`, clients should treat `GET /api/sessions/:id/frames` as the standard relay-side recovery path for recently retained output.
+`seq`, `ts`, and `latest_seq` are authored by the running `agentunnel` process. They describe the current agent-owned transcript, not proof that a remote client has seen every byte the local PTY produced. After reconnecting to `GET /api/updates/ws`, clients should treat `GET /api/sessions/:id/frames` as the standard recovery path while the session is `connected`.
 
-Retained output frames are intentionally live-only, bounded, and in-memory. They are not a durable or complete transcript. If the owning agent disconnects, the session disappears along with its retained frames.
+## Session History Model
+
+The session transcript now lives on the agent side.
+
+- `agentunnel` keeps a bounded in-memory history buffer for the lifetime of the running session
+- every PTY output chunk is appended locally as a replay frame with agent-authored `seq`, `ts`, `cols`, and `rows`
+- the relay stores session metadata such as `latest_seq`, `last_active_at`, state, and the current owner connection, but it does not store the frame array
+- when a client calls `GET /api/sessions/:id/frames`, the relay sends a `history_request` over `/agent/ws`, the agent snapshots its local buffer, and the relay returns the agent's `history_response` frames to the client
+- the history is a terminal output transcript only, not an exact input log; typed characters appear in history only when the terminal application echoes them
+- the transcript is live-only and non-durable; if the agent process exits, that session and its in-memory history are gone
+
+If the agent-relay link drops, the session stays discoverable as `reconnecting` for a short grace window, but `/frames` and remote input are unavailable until the agent reconnects. If the grace window expires, the relay removes the session.
 
 Stronger delivery guarantees may be considered later, but the current contract is intentionally best-effort.
 

@@ -8,18 +8,38 @@ import (
 // Message is the agent-side JSON frame exchanged over session-scoped WebSockets.
 // Type is one of "input_text", "input_key", or "output".
 type Message struct {
-	Type    string `json:"type"`
-	Seq     uint64 `json:"seq,omitempty"`
-	DataB64 string `json:"data_b64,omitempty"` // base64-encoded bytes for output frames
-	Text    string `json:"text,omitempty"`
-	Submit  bool   `json:"submit,omitempty"`
-	Key     string `json:"key,omitempty"`
-	Cols    int    `json:"cols,omitempty"`
-	Rows    int    `json:"rows,omitempty"`
-	Ctrl    bool   `json:"ctrl,omitempty"`
-	Alt     bool   `json:"alt,omitempty"`
-	Shift   bool   `json:"shift,omitempty"`
+	Type      string        `json:"type"`
+	Seq       uint64        `json:"seq,omitempty"`
+	DataB64   string        `json:"data_b64,omitempty"` // base64-encoded bytes for output frames
+	Frames    []ReplayFrame `json:"frames,omitempty"`
+	Text      string        `json:"text,omitempty"`
+	Submit    bool          `json:"submit,omitempty"`
+	Key       string        `json:"key,omitempty"`
+	Cols      int           `json:"cols,omitempty"`
+	Rows      int           `json:"rows,omitempty"`
+	Ctrl      bool          `json:"ctrl,omitempty"`
+	Alt       bool          `json:"alt,omitempty"`
+	Shift     bool          `json:"shift,omitempty"`
+	RequestID string        `json:"request_id,omitempty"`
+	From      *uint64       `json:"from,omitempty"`
+	To        *uint64       `json:"to,omitempty"`
+	TS        *time.Time    `json:"ts,omitempty"`
 }
+
+type ReplayFrame struct {
+	Seq     uint64    `json:"seq"`
+	DataB64 string    `json:"data_b64"`
+	Cols    int       `json:"cols"`
+	Rows    int       `json:"rows"`
+	TS      time.Time `json:"ts"`
+}
+
+type SessionState string
+
+const (
+	SessionStateConnected    SessionState = "connected"
+	SessionStateReconnecting SessionState = "reconnecting"
+)
 
 // EncodeOutput wraps raw PTY bytes into an output Message.
 func EncodeOutput(b []byte) Message {
@@ -34,12 +54,54 @@ func EncodeOutputWithSeq(seq uint64, b []byte) Message {
 // EncodeOutputWithSeqAndSize wraps raw PTY bytes, sequence, and terminal size
 // into an output Message.
 func EncodeOutputWithSeqAndSize(seq uint64, b []byte, cols, rows int) Message {
-	return Message{
-		Type:    "output",
+	return EncodeOutputWithSeqAndSizeAndTime(seq, b, cols, rows, time.Time{})
+}
+
+func EncodeReplayFrame(seq uint64, b []byte, cols, rows int, ts time.Time) ReplayFrame {
+	return ReplayFrame{
 		Seq:     seq,
 		DataB64: base64.StdEncoding.EncodeToString(b),
 		Cols:    cols,
 		Rows:    rows,
+		TS:      ts,
+	}
+}
+
+func EncodeOutputWithSeqAndSizeAndTime(seq uint64, b []byte, cols, rows int, ts time.Time) Message {
+	frame := EncodeReplayFrame(seq, b, cols, rows, ts)
+	return EncodeOutputFromReplayFrame(frame)
+}
+
+func EncodeOutputFromReplayFrame(frame ReplayFrame) Message {
+	msg := Message{
+		Type:    "output",
+		Seq:     frame.Seq,
+		DataB64: frame.DataB64,
+		Cols:    frame.Cols,
+		Rows:    frame.Rows,
+	}
+	if !frame.TS.IsZero() {
+		tsCopy := frame.TS
+		msg.TS = &tsCopy
+	}
+	return msg
+}
+
+func EncodeHistoryRequest(requestID string, from, to *uint64) Message {
+	return Message{
+		Type:      "history_request",
+		RequestID: requestID,
+		From:      from,
+		To:        to,
+	}
+}
+
+func EncodeHistoryResponse(requestID string, frames []ReplayFrame) Message {
+	cp := append([]ReplayFrame(nil), frames...)
+	return Message{
+		Type:      "history_response",
+		RequestID: requestID,
+		Frames:    cp,
 	}
 }
 
@@ -66,16 +128,30 @@ func DecodeDataB64(m Message) ([]byte, error) {
 	return base64.StdEncoding.DecodeString(m.DataB64)
 }
 
+func ReplayFrameFromOutputMessage(m Message) (ReplayFrame, bool) {
+	if m.Type != "output" || m.Seq == 0 || m.DataB64 == "" || m.TS == nil || m.TS.IsZero() {
+		return ReplayFrame{}, false
+	}
+	return ReplayFrame{
+		Seq:     m.Seq,
+		DataB64: m.DataB64,
+		Cols:    m.Cols,
+		Rows:    m.Rows,
+		TS:      *m.TS,
+	}, true
+}
+
 // SessionInfo describes a live agent session registered with the relay.
 type SessionInfo struct {
-	SessionID      string     `json:"session_id"`
-	Launcher       string     `json:"launcher"`
-	Label          string     `json:"label,omitempty"`
-	CWD            string     `json:"cwd"`
-	CommandPreview string     `json:"command_preview"`
-	StartedAt      time.Time  `json:"started_at"`
-	LastActiveAt   *time.Time `json:"last_active_at,omitempty"`
-	LatestSeq      uint64     `json:"latest_seq"`
+	SessionID      string       `json:"session_id"`
+	Launcher       string       `json:"launcher"`
+	Label          string       `json:"label,omitempty"`
+	CWD            string       `json:"cwd"`
+	CommandPreview string       `json:"command_preview"`
+	StartedAt      time.Time    `json:"started_at"`
+	LastActiveAt   *time.Time   `json:"last_active_at,omitempty"`
+	State          SessionState `json:"state,omitempty"`
+	LatestSeq      uint64       `json:"latest_seq"`
 }
 
 // AgentFrame is the JSON envelope sent over the agent WebSocket to the relay.
@@ -150,14 +226,18 @@ type ClientUpdateMessage struct {
 }
 
 func EncodeClientOutput(sessionID string, seq uint64, b []byte, cols, rows int, ts time.Time) ClientUpdateMessage {
-	tsCopy := ts
+	return EncodeClientOutputFrame(sessionID, EncodeReplayFrame(seq, b, cols, rows, ts))
+}
+
+func EncodeClientOutputFrame(sessionID string, frame ReplayFrame) ClientUpdateMessage {
+	tsCopy := frame.TS
 	return ClientUpdateMessage{
 		SessionID: sessionID,
 		Type:      "output",
-		Seq:       seq,
-		DataB64:   base64.StdEncoding.EncodeToString(b),
-		Cols:      cols,
-		Rows:      rows,
+		Seq:       frame.Seq,
+		DataB64:   frame.DataB64,
+		Cols:      frame.Cols,
+		Rows:      frame.Rows,
 		TS:        &tsCopy,
 	}
 }

@@ -49,6 +49,7 @@ func TestSessionSummaryJSONUsesStableFieldNames(t *testing.T) {
 		Label:          "docs",
 		CWD:            "/Users/test/project",
 		CommandPreview: "gemini",
+		State:          SessionStateConnected,
 	}
 
 	raw, err := json.Marshal(info)
@@ -63,6 +64,7 @@ func TestSessionSummaryJSONUsesStableFieldNames(t *testing.T) {
 		"label",
 		"cwd",
 		"command_preview",
+		"state",
 		"latest_seq",
 	} {
 		if !strings.Contains(got, want) {
@@ -86,6 +88,9 @@ func TestSessionSummaryOmittedUnsetOptionalFields(t *testing.T) {
 
 	if strings.Contains(string(raw), "last_active_at") {
 		t.Fatalf("json = %s, did not expect last_active_at", raw)
+	}
+	if strings.Contains(string(raw), "state") {
+		t.Fatalf("json = %s, did not expect state", raw)
 	}
 }
 
@@ -212,6 +217,83 @@ func TestAgentMessageInputTextRoundTrip(t *testing.T) {
 
 	if decoded.Type != "input_text" || decoded.Text != "hello" || !decoded.Submit {
 		t.Fatalf("decoded = %#v, want input_text hello submit=true", decoded)
+	}
+}
+
+func TestAgentMessageOutputRoundTripWithTimestamp(t *testing.T) {
+	ts := time.Date(2026, 4, 9, 2, 10, 2, 0, time.UTC)
+	frame := EncodeOutputWithSeqAndSizeAndTime(42, []byte("hello"), 132, 43, ts)
+
+	raw, err := json.Marshal(frame)
+	if err != nil {
+		t.Fatalf("Marshal returned error: %v", err)
+	}
+
+	var decoded Message
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+
+	if decoded.Type != "output" || decoded.Seq != 42 || decoded.DataB64 != "aGVsbG8=" {
+		t.Fatalf("decoded = %#v, want output seq 42 hello", decoded)
+	}
+	if decoded.TS == nil || !decoded.TS.Equal(ts) {
+		t.Fatalf("TS = %v, want %v", decoded.TS, ts)
+	}
+}
+
+func TestHistoryRequestRoundTrip(t *testing.T) {
+	from := uint64(10)
+	to := uint64(20)
+	frame := EncodeHistoryRequest("req-1", &from, &to)
+
+	raw, err := json.Marshal(frame)
+	if err != nil {
+		t.Fatalf("Marshal returned error: %v", err)
+	}
+
+	var decoded Message
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+
+	if decoded.Type != "history_request" || decoded.RequestID != "req-1" {
+		t.Fatalf("decoded = %#v, want history_request req-1", decoded)
+	}
+	if decoded.From == nil || *decoded.From != from {
+		t.Fatalf("From = %v, want %d", decoded.From, from)
+	}
+	if decoded.To == nil || *decoded.To != to {
+		t.Fatalf("To = %v, want %d", decoded.To, to)
+	}
+}
+
+func TestHistoryResponseRoundTrip(t *testing.T) {
+	ts := time.Date(2026, 4, 9, 2, 10, 2, 0, time.UTC)
+	replay := EncodeReplayFrame(42, []byte("hello"), 132, 43, ts)
+	frame := EncodeHistoryResponse("req-1", []ReplayFrame{replay})
+
+	raw, err := json.Marshal(frame)
+	if err != nil {
+		t.Fatalf("Marshal returned error: %v", err)
+	}
+
+	var decoded Message
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+
+	if decoded.Type != "history_response" || decoded.RequestID != "req-1" {
+		t.Fatalf("decoded = %#v, want history_response req-1", decoded)
+	}
+	if len(decoded.Frames) != 1 {
+		t.Fatalf("len(Frames) = %d, want 1", len(decoded.Frames))
+	}
+	if decoded.Frames[0].Seq != 42 || decoded.Frames[0].DataB64 != "aGVsbG8=" {
+		t.Fatalf("frame = %#v, want seq 42 hello", decoded.Frames[0])
+	}
+	if !decoded.Frames[0].TS.Equal(ts) {
+		t.Fatalf("TS = %v, want %v", decoded.Frames[0].TS, ts)
 	}
 }
 
