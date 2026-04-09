@@ -1,6 +1,8 @@
 package relay
 
 import (
+	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -17,6 +19,7 @@ import (
 const (
 	defaultWSSinkBufferSize       = 64
 	defaultWSWriteTimeout         = 5 * time.Second
+	defaultHistoryRequestTimeout  = 5 * time.Second
 	defaultAgentReadTimeout       = 30 * time.Second
 	defaultAgentPingInterval      = 10 * time.Second
 	defaultAgentPingWriteTimeout  = 5 * time.Second
@@ -29,7 +32,9 @@ var (
 	errWSSinkClosed         = errors.New("websocket sink closed")
 	errWSSinkBackpressure   = errors.New("websocket sink backpressure")
 	errInvalidAgentRegister = errors.New("invalid agent register frame")
+	errHistoryResponseProto = errors.New("invalid history response frame")
 	nextSinkID              uint64
+	nextHistoryRequestID    uint64
 	clientUpdateSinkFactory = func(conn *websocket.Conn, tracker *wsTrafficTracker) clientUpdateSink {
 		return newWSClientUpdateSink(conn, tracker, defaultWSSinkBufferSize, defaultWSWriteTimeout)
 	}
@@ -41,6 +46,7 @@ type HandlerConfig struct {
 	Password               string
 	AgentToken             string
 	Logger                 *Logger
+	HistoryRequestTimeout  time.Duration
 	AgentReadTimeout       time.Duration
 	AgentPingInterval      time.Duration
 	AgentPingWriteTimeout  time.Duration
@@ -50,9 +56,14 @@ type HandlerConfig struct {
 }
 
 type wsAgentPeer struct {
-	conn    *websocket.Conn
-	tracker *wsTrafficTracker
-	mu      sync.Mutex
+	conn         wsConn
+	tracker      *wsTrafficTracker
+	writeTimeout time.Duration
+	mu           sync.Mutex
+}
+
+type historyProxyErrorBody struct {
+	Reason string `json:"reason"`
 }
 
 type wsConn interface {
@@ -62,13 +73,25 @@ type wsConn interface {
 }
 
 func newWSAgentPeer(conn *websocket.Conn, tracker *wsTrafficTracker) *wsAgentPeer {
-	return &wsAgentPeer{conn: conn, tracker: tracker}
+	return &wsAgentPeer{
+		conn:         conn,
+		tracker:      tracker,
+		writeTimeout: defaultWSWriteTimeout,
+	}
 }
 
 func (p *wsAgentPeer) Send(msg protocol.Message) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	if p.writeTimeout > 0 {
+		if err := p.conn.SetWriteDeadline(time.Now().Add(p.writeTimeout)); err != nil {
+			if p.tracker != nil {
+				p.tracker.NoteDisconnectError(err)
+			}
+			return err
+		}
+	}
 	payload, err := writeWSJSON(p.conn, msg)
 	if err != nil {
 		if p.tracker != nil {
@@ -129,6 +152,10 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 	clientPingWriteTimeout := cfg.ClientPingWriteTimeout
 	if clientPingWriteTimeout <= 0 {
 		clientPingWriteTimeout = defaultClientPingWriteTimeout
+	}
+	historyRequestTimeout := cfg.HistoryRequestTimeout
+	if historyRequestTimeout <= 0 {
+		historyRequestTimeout = defaultHistoryRequestTimeout
 	}
 
 	mux := http.NewServeMux()
@@ -275,7 +302,7 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 		// All later output mutations are validated against this
 		// owner so stale connections cannot keep mutating a replaced session.
 		registry.Register(*register.Session, peer)
-		defer registry.RemoveIfOwner(register.Session.SessionID, peer)
+		defer registry.DisconnectIfOwner(register.Session.SessionID, peer)
 		tracker.SetSessionID(register.Session.SessionID)
 		fields = []Field{
 			String("session_id", register.Session.SessionID),
@@ -301,17 +328,26 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 			tracker.RecordInbound(len(payload))
 			switch msg.Type {
 			case "output":
-				if msg.DataB64 == "" {
+				frame, ok := protocol.ReplayFrameFromOutputMessage(msg)
+				if !ok {
 					continue
 				}
-				data, err := protocol.DecodeDataB64(msg)
-				if err != nil {
+				registry.TouchOutputIfOwner(register.Session.SessionID, peer, frame)
+			case "history_response":
+				if msg.RequestID == "" {
+					if registry.PendingHistoryCountIfOwner(register.Session.SessionID, peer) == 1 {
+						registry.FailPendingHistoryRequestsIfOwner(register.Session.SessionID, peer, errHistoryResponseProto)
+					}
 					continue
 				}
-				// Output flows onto the global multiplexed client stream under
-				// /api/updates/ws. The relay tracks output sequence metadata for replay,
-				// but it does not interpret terminal content.
-				registry.TouchOutputIfOwner(register.Session.SessionID, peer, data, msg.Cols, msg.Rows, time.Now().UTC())
+				if !validHistoryResponse(msg) {
+					registry.FailHistoryRequest(register.Session.SessionID, msg.RequestID, errHistoryResponseProto)
+					continue
+				}
+				if !registry.ResolveHistoryRequest(register.Session.SessionID, peer, msg.RequestID, msg.Frames) &&
+					registry.PendingHistoryCountIfOwner(register.Session.SessionID, peer) == 1 {
+					registry.FailPendingHistoryRequestsIfOwner(register.Session.SessionID, peer, errHistoryResponseProto)
+				}
 			}
 		}
 	})
@@ -337,10 +373,6 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 				return
 			}
-			if !registry.HasSession(sessionID) {
-				http.NotFound(w, r)
-				return
-			}
 			from, hasFrom, err := parseOptionalUintQuery(r, "from")
 			if err != nil {
 				http.Error(w, "bad request", http.StatusBadRequest)
@@ -355,14 +387,42 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 				http.Error(w, "bad request", http.StatusBadRequest)
 				return
 			}
-			frames, ok := registry.Frames(sessionID, from, hasFrom, to, hasTo)
-			if !ok {
-				http.NotFound(w, r)
+			requestID := "history-" + strconv.FormatUint(atomic.AddUint64(&nextHistoryRequestID, 1), 10)
+			peer, resultCh, err := registry.StartHistoryRequest(sessionID, requestID)
+			if err != nil {
+				writeHistoryProxyError(w, err)
 				return
 			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(frames)
-			return
+			if err := peer.Send(protocol.EncodeHistoryRequest(requestID, optionalUint64Ptr(from, hasFrom), optionalUint64Ptr(to, hasTo))); err != nil {
+				_ = registry.FailHistoryRequest(sessionID, requestID, ErrSessionReconnecting)
+				writeHistoryProxyError(w, ErrSessionReconnecting)
+				return
+			}
+
+			timer := time.NewTimer(historyRequestTimeout)
+			defer timer.Stop()
+
+			select {
+			case <-r.Context().Done():
+				_ = registry.FailHistoryRequest(sessionID, requestID, r.Context().Err())
+				return
+			case result, ok := <-resultCh:
+				if !ok {
+					writeHistoryProxyError(w, errHistoryResponseProto)
+					return
+				}
+				if result.err != nil {
+					writeHistoryProxyError(w, result.err)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(result.frames)
+				return
+			case <-timer.C:
+				_ = registry.FailHistoryRequest(sessionID, requestID, context.DeadlineExceeded)
+				writeHistoryProxyError(w, context.DeadlineExceeded)
+				return
+			}
 		default:
 			http.NotFound(w, r)
 			return
@@ -413,6 +473,50 @@ func disconnectLogFields(err error) []Field {
 	}
 	fields = append(fields, String("error", err.Error()))
 	return fields
+}
+
+func optionalUint64Ptr(v uint64, ok bool) *uint64 {
+	if !ok {
+		return nil
+	}
+	cp := v
+	return &cp
+}
+
+func validHistoryResponse(msg protocol.Message) bool {
+	if msg.Type != "history_response" || msg.RequestID == "" {
+		return false
+	}
+	for _, frame := range msg.Frames {
+		if frame.Seq == 0 || frame.DataB64 == "" || frame.TS.IsZero() {
+			return false
+		}
+		if _, err := base64.StdEncoding.DecodeString(frame.DataB64); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+func writeHistoryProxyError(w http.ResponseWriter, err error) {
+	status := http.StatusBadGateway
+	reason := "invalid_agent_response"
+
+	switch {
+	case errors.Is(err, ErrSessionNotFound):
+		status = http.StatusNotFound
+		reason = "session_not_found"
+	case errors.Is(err, ErrSessionReconnecting):
+		status = http.StatusConflict
+		reason = "session_reconnecting"
+	case errors.Is(err, context.DeadlineExceeded):
+		status = http.StatusGatewayTimeout
+		reason = "upstream_timeout"
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(historyProxyErrorBody{Reason: reason})
 }
 
 func startWSPingLoop(conn *websocket.Conn, interval, writeTimeout time.Duration) chan struct{} {

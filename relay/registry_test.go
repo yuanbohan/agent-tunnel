@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -43,22 +44,41 @@ func (p *recordingPeer) Messages() []protocol.Message {
 }
 
 type recordingClientUpdateSink struct {
+	mu      sync.Mutex
 	updates []protocol.ClientUpdateMessage
 }
 
 func (s *recordingClientUpdateSink) WriteClientUpdate(msg protocol.ClientUpdateMessage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.updates = append(s.updates, msg)
 	return nil
 }
 
 func (s *recordingClientUpdateSink) Close() error { return nil }
 
+func (s *recordingClientUpdateSink) Updates() []protocol.ClientUpdateMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]protocol.ClientUpdateMessage(nil), s.updates...)
+}
+
 func TestRegistryRegisterAndListSortedByLastActive(t *testing.T) {
 	reg := NewRegistry()
 	olderActive := time.Unix(20, 0)
 	newerActive := time.Unix(30, 0)
-	older := protocol.SessionInfo{SessionID: "a", Launcher: "codex", StartedAt: time.Unix(10, 0), LastActiveAt: &olderActive}
-	newer := protocol.SessionInfo{SessionID: "b", Launcher: "gemini", StartedAt: time.Unix(11, 0), LastActiveAt: &newerActive}
+	older := protocol.SessionInfo{
+		SessionID:    "a",
+		Launcher:     "codex",
+		StartedAt:    time.Unix(10, 0),
+		LastActiveAt: &olderActive,
+	}
+	newer := protocol.SessionInfo{
+		SessionID:    "b",
+		Launcher:     "gemini",
+		StartedAt:    time.Unix(11, 0),
+		LastActiveAt: &newerActive,
+	}
 
 	reg.Register(older, fakeAgentPeer{})
 	reg.Register(newer, fakeAgentPeer{})
@@ -69,6 +89,9 @@ func TestRegistryRegisterAndListSortedByLastActive(t *testing.T) {
 	}
 	if got[0].SessionID != "b" || got[1].SessionID != "a" {
 		t.Fatalf("order = %#v, want b before a", got)
+	}
+	if got[0].State != protocol.SessionStateConnected || got[1].State != protocol.SessionStateConnected {
+		t.Fatalf("states = %#v, want connected", got)
 	}
 }
 
@@ -86,8 +109,8 @@ func TestRegistryTouchOutputUpdatesSeqAndLastActive(t *testing.T) {
 	peer := fakeAgentPeer{}
 	reg.Register(info, peer)
 
-	now := time.Unix(40, 0)
-	if ok := reg.TouchOutputIfOwner("sess-1", peer, []byte("focused test\n"), 120, 40, now); !ok {
+	now := time.Unix(40, 0).UTC()
+	if ok := reg.TouchOutputIfOwner("sess-1", peer, replayFrame(3, "focused test\n", 120, 40, now)); !ok {
 		t.Fatal("TouchOutputIfOwner returned false, want true")
 	}
 
@@ -95,11 +118,14 @@ func TestRegistryTouchOutputUpdatesSeqAndLastActive(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("len(List()) = %d, want 1", len(got))
 	}
-	if got[0].LatestSeq != 1 {
-		t.Fatalf("LatestSeq = %d, want 1", got[0].LatestSeq)
+	if got[0].LatestSeq != 3 {
+		t.Fatalf("LatestSeq = %d, want 3", got[0].LatestSeq)
 	}
 	if got[0].LastActiveAt == nil || !got[0].LastActiveAt.Equal(now) {
 		t.Fatalf("LastActiveAt = %v, want %v", got[0].LastActiveAt, now)
+	}
+	if got[0].State != protocol.SessionStateConnected {
+		t.Fatalf("State = %q, want connected", got[0].State)
 	}
 }
 
@@ -111,16 +137,17 @@ func TestRegistryTouchOutputBroadcastsGlobalClientUpdate(t *testing.T) {
 	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, peer)
 
 	now := time.Unix(40, 0).UTC()
-	if ok := reg.TouchOutputIfOwner("sess-1", peer, []byte("hello"), 132, 43, now); !ok {
+	if ok := reg.TouchOutputIfOwner("sess-1", peer, replayFrame(7, "hello", 132, 43, now)); !ok {
 		t.Fatal("TouchOutputIfOwner returned false, want true")
 	}
 
-	if len(updateSink.updates) != 1 {
-		t.Fatalf("update count = %d, want 1", len(updateSink.updates))
+	updates := updateSink.Updates()
+	if len(updates) != 1 {
+		t.Fatalf("update count = %d, want 1", len(updates))
 	}
-	got := updateSink.updates[0]
-	if got.SessionID != "sess-1" || got.Type != "output" || got.Seq != 1 {
-		t.Fatalf("update = %#v, want sess-1 output seq 1", got)
+	got := updates[0]
+	if got.SessionID != "sess-1" || got.Type != "output" || got.Seq != 7 {
+		t.Fatalf("update = %#v, want sess-1 output seq 7", got)
 	}
 	if got.TS == nil || !got.TS.Equal(now) {
 		t.Fatalf("ts = %v, want %v", got.TS, now)
@@ -134,40 +161,6 @@ func TestRegistryTouchOutputBroadcastsGlobalClientUpdate(t *testing.T) {
 	}
 	if string(data) != "hello" {
 		t.Fatalf("data = %q, want hello", string(data))
-	}
-}
-
-func TestRegistryFramesFilterByInclusiveRange(t *testing.T) {
-	reg := NewRegistry()
-	peer := fakeAgentPeer{}
-	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, peer)
-
-	if !reg.TouchOutputIfOwner("sess-1", peer, []byte("one"), 120, 40, time.Unix(40, 0).UTC()) {
-		t.Fatal("TouchOutputIfOwner returned false for frame 1")
-	}
-	if !reg.TouchOutputIfOwner("sess-1", peer, []byte("two"), 120, 40, time.Unix(41, 0).UTC()) {
-		t.Fatal("TouchOutputIfOwner returned false for frame 2")
-	}
-	frameTime := time.Unix(42, 0).UTC()
-	if !reg.TouchOutputIfOwner("sess-1", peer, []byte("three"), 132, 43, frameTime) {
-		t.Fatal("TouchOutputIfOwner returned false for frame 3")
-	}
-
-	frames, ok := reg.Frames("sess-1", 2, true, 2, true)
-	if !ok {
-		t.Fatal("Frames returned false, want true")
-	}
-	if len(frames) != 1 {
-		t.Fatalf("len(Frames) = %d, want 1", len(frames))
-	}
-	if frames[0].Seq != 2 {
-		t.Fatalf("Seq = %d, want 2", frames[0].Seq)
-	}
-	if frames[0].Cols != 120 || frames[0].Rows != 40 {
-		t.Fatalf("size = %dx%d, want 120x40", frames[0].Cols, frames[0].Rows)
-	}
-	if frames[0].TS.IsZero() {
-		t.Fatal("expected non-zero timestamp")
 	}
 }
 
@@ -188,7 +181,7 @@ func TestRegistryReplaceSessionIDLogsSessionReplaced(t *testing.T) {
 	}
 }
 
-func TestRegistryRemoveIfOwnerBroadcastsRemovalOnly(t *testing.T) {
+func TestRegistryDisconnectMarksSessionReconnectingWithoutRemoval(t *testing.T) {
 	reg := NewRegistry()
 	peer := &recordingPeer{}
 	updateSink := &recordingClientUpdateSink{}
@@ -196,18 +189,93 @@ func TestRegistryRemoveIfOwnerBroadcastsRemovalOnly(t *testing.T) {
 
 	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, peer)
 
-	if removed := reg.RemoveIfOwner("sess-1", peer); !removed {
-		t.Fatal("RemoveIfOwner returned false, want true")
+	if disconnected := reg.DisconnectIfOwner("sess-1", peer); !disconnected {
+		t.Fatal("DisconnectIfOwner returned false, want true")
 	}
-	if len(updateSink.updates) != 1 {
-		t.Fatalf("client update count = %d, want 1", len(updateSink.updates))
+
+	info, ok := reg.Session("sess-1")
+	if !ok {
+		t.Fatal("Session returned false after disconnect, want true")
 	}
-	if updateSink.updates[0].Type != "session_removed" {
-		t.Fatalf("client updates = %#v, want removal only", updateSink.updates)
+	if info.State != protocol.SessionStateReconnecting {
+		t.Fatalf("State = %q, want reconnecting", info.State)
+	}
+	if updates := updateSink.Updates(); len(updates) != 0 {
+		t.Fatalf("updates = %#v, want no immediate session_removed broadcast", updates)
 	}
 }
 
-func TestRegistryRemoveIfOwnerSkipsStaleOwnerAfterReplacement(t *testing.T) {
+func TestRegistryReconnectWithinGraceRestoresConnectedAndKeepsNewestMetadata(t *testing.T) {
+	reg := NewRegistry()
+	reg.reconnectGrace = 30 * time.Millisecond
+	oldPeer := &recordingPeer{}
+	oldActive := time.Unix(40, 0).UTC()
+	reg.Register(protocol.SessionInfo{
+		SessionID:    "sess-1",
+		Launcher:     "codex",
+		StartedAt:    time.Unix(10, 0),
+		LastActiveAt: &oldActive,
+		LatestSeq:    3,
+	}, oldPeer)
+
+	if disconnected := reg.DisconnectIfOwner("sess-1", oldPeer); !disconnected {
+		t.Fatal("DisconnectIfOwner returned false, want true")
+	}
+
+	newPeer := &recordingPeer{}
+	newActive := time.Unix(50, 0).UTC()
+	reg.Register(protocol.SessionInfo{
+		SessionID:    "sess-1",
+		Launcher:     "codex",
+		StartedAt:    time.Unix(10, 0),
+		LastActiveAt: &newActive,
+		LatestSeq:    5,
+	}, newPeer)
+
+	time.Sleep(2 * reg.reconnectGrace)
+
+	info, ok := reg.Session("sess-1")
+	if !ok {
+		t.Fatal("Session returned false after reconnect, want true")
+	}
+	if info.State != protocol.SessionStateConnected {
+		t.Fatalf("State = %q, want connected", info.State)
+	}
+	if info.LatestSeq != 5 {
+		t.Fatalf("LatestSeq = %d, want 5", info.LatestSeq)
+	}
+	if info.LastActiveAt == nil || !info.LastActiveAt.Equal(newActive) {
+		t.Fatalf("LastActiveAt = %v, want %v", info.LastActiveAt, newActive)
+	}
+}
+
+func TestRegistryDisconnectGraceExpiryRemovesSessionOnce(t *testing.T) {
+	reg := NewRegistry()
+	reg.reconnectGrace = 20 * time.Millisecond
+	peer := &recordingPeer{}
+	updateSink := &recordingClientUpdateSink{}
+	reg.AddUpdateSink("updates-1", updateSink)
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, peer)
+
+	if disconnected := reg.DisconnectIfOwner("sess-1", peer); !disconnected {
+		t.Fatal("DisconnectIfOwner returned false, want true")
+	}
+
+	waitForCondition(t, time.Second, func() bool {
+		_, ok := reg.Session("sess-1")
+		return !ok
+	})
+
+	updates := updateSink.Updates()
+	if len(updates) != 1 {
+		t.Fatalf("update count = %d, want 1", len(updates))
+	}
+	if updates[0].Type != "session_removed" || updates[0].SessionID != "sess-1" {
+		t.Fatalf("updates = %#v, want one session_removed for sess-1", updates)
+	}
+}
+
+func TestRegistryDisconnectSkipsStaleOwnerAfterReplacement(t *testing.T) {
 	reg := NewRegistry()
 	oldPeer := &recordingPeer{}
 	newPeer := &recordingPeer{}
@@ -215,12 +283,19 @@ func TestRegistryRemoveIfOwnerSkipsStaleOwnerAfterReplacement(t *testing.T) {
 	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, oldPeer)
 	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, newPeer)
 
-	if removed := reg.RemoveIfOwner("sess-1", oldPeer); removed {
-		t.Fatal("RemoveIfOwner returned true for stale owner, want false")
+	if disconnected := reg.DisconnectIfOwner("sess-1", oldPeer); disconnected {
+		t.Fatal("DisconnectIfOwner returned true for stale owner, want false")
 	}
 
+	info, ok := reg.Session("sess-1")
+	if !ok {
+		t.Fatal("Session returned false, want true")
+	}
+	if info.State != protocol.SessionStateConnected {
+		t.Fatalf("State = %q, want connected", info.State)
+	}
 	if err := reg.WriteInput("sess-1", protocol.EncodeInputText("ping", false)); err != nil {
-		t.Fatalf("WriteInput returned error after stale-owner cleanup: %v", err)
+		t.Fatalf("WriteInput returned error after stale-owner disconnect: %v", err)
 	}
 	messages := newPeer.Messages()
 	if len(messages) != 1 {
@@ -231,6 +306,45 @@ func TestRegistryRemoveIfOwnerSkipsStaleOwnerAfterReplacement(t *testing.T) {
 	}
 }
 
+func TestRegistryWriteInputReturnsReconnectingForDisconnectedSession(t *testing.T) {
+	reg := NewRegistry()
+	peer := &recordingPeer{}
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, peer)
+	reg.DisconnectIfOwner("sess-1", peer)
+
+	err := reg.WriteInput("sess-1", protocol.EncodeInputText("ping", false))
+	if !errors.Is(err, ErrSessionReconnecting) {
+		t.Fatalf("WriteInput error = %v, want ErrSessionReconnecting", err)
+	}
+	if messages := peer.Messages(); len(messages) != 0 {
+		t.Fatalf("messages = %#v, want none", messages)
+	}
+}
+
+func TestRegistryPendingHistoryFailsPromptlyOnDisconnect(t *testing.T) {
+	reg := NewRegistry()
+	peer := &recordingPeer{}
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, peer)
+
+	_, resultCh, err := reg.StartHistoryRequest("sess-1", "history-1")
+	if err != nil {
+		t.Fatalf("StartHistoryRequest returned error: %v", err)
+	}
+
+	if disconnected := reg.DisconnectIfOwner("sess-1", peer); !disconnected {
+		t.Fatal("DisconnectIfOwner returned false, want true")
+	}
+
+	select {
+	case result := <-resultCh:
+		if !errors.Is(result.err, ErrSessionReconnecting) {
+			t.Fatalf("result.err = %v, want ErrSessionReconnecting", result.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for pending history request to fail")
+	}
+}
+
 func TestRegistrySnapshotJSONRoundTrip(t *testing.T) {
 	info := protocol.SessionInfo{
 		SessionID:      "sess-1",
@@ -238,6 +352,7 @@ func TestRegistrySnapshotJSONRoundTrip(t *testing.T) {
 		CWD:            "/tmp/project",
 		CommandPreview: "codex",
 		StartedAt:      time.Unix(10, 0),
+		State:          protocol.SessionStateConnected,
 	}
 
 	raw, err := json.Marshal(info)
@@ -252,6 +367,9 @@ func TestRegistrySnapshotJSONRoundTrip(t *testing.T) {
 	if decoded.SessionID != "sess-1" {
 		t.Fatalf("SessionID = %q, want sess-1", decoded.SessionID)
 	}
+	if decoded.State != protocol.SessionStateConnected {
+		t.Fatalf("State = %q, want connected", decoded.State)
+	}
 }
 
 func parseRegistryLogEntries(t *testing.T, raw []byte) []map[string]any {
@@ -265,9 +383,26 @@ func parseRegistryLogEntries(t *testing.T, raw []byte) []map[string]any {
 		}
 		var entry map[string]any
 		if err := json.Unmarshal(line, &entry); err != nil {
-			t.Fatalf("Unmarshal returned error: %v", err)
+			t.Fatalf("Unmarshal returned error: %v\nline: %s", err, line)
 		}
 		entries = append(entries, entry)
 	}
 	return entries
+}
+
+func replayFrame(seq uint64, data string, cols, rows int, ts time.Time) protocol.ReplayFrame {
+	return protocol.EncodeReplayFrame(seq, []byte(data), cols, rows, ts)
+}
+
+func waitForCondition(t *testing.T, timeout time.Duration, fn func() bool) {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if fn() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for condition")
 }

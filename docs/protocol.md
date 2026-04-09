@@ -6,7 +6,7 @@ The key boundary is simple:
 
 - the relay is content-opaque
 - `GET /api/updates/ws` is a best-effort live channel
-- output bytes may be forwarded and retained for replay
+- output bytes may be forwarded live and replayed through the owning agent
 - clients should not infer semantics from PTY text
 - clients send structured input events
 - `agentunnel`, as the PTY owner, translates supported key events into real PTY input bytes
@@ -18,7 +18,7 @@ The key boundary is simple:
 |----------|------|------|------|---------|
 | `GET /healthz` | Any | None | HTTP | Health check |
 | `GET /api/sessions` | Client | Basic Auth | HTTP | Current live session snapshot |
-| `GET /api/sessions/:id/frames?from=<seq>&to=<seq>` | Client | Basic Auth | HTTP | Retained output replay and standard relay-side recovery for one live session |
+| `GET /api/sessions/:id/frames?from=<seq>&to=<seq>` | Client | Basic Auth | HTTP | Agent-owned output replay and standard recovery path for one live session |
 | `GET /api/updates/ws` | Client | Basic Auth | WebSocket | Best-effort global live output updates and structured client input |
 | `GET /agent/ws` | Agent | Bearer | WebSocket | Agent registration, output upload, and forwarded client input |
 
@@ -53,6 +53,7 @@ WebSocket attach notes:
   "command_preview": "codex --profile prod",
   "started_at": "2026-04-05T08:00:00Z",
   "last_active_at": "2026-04-05T08:03:00Z",
+  "state": "connected",
   "latest_seq": 42
 }
 ```
@@ -61,8 +62,9 @@ Notes:
 
 - `label` may be omitted when empty
 - `last_active_at` may be omitted when unknown
-- `latest_seq` is the highest output sequence the relay has recorded for that live session
-- this protocol revision does not define `state` or `session_state`
+- `state` is `connected` when the relay has an active owning agent peer and `reconnecting` during the short post-disconnect grace window
+- `latest_seq` is the highest output sequence the relay currently knows for that agent-owned live session
+- `reconnecting` sessions remain discoverable briefly, but they do not serve `/frames` or accept remote input until the owning agent reconnects
 
 ## Output Frames
 
@@ -89,14 +91,14 @@ Notes:
 
 Field semantics:
 
-- `seq`: strictly increasing output sequence number within the live session for frames the relay has recorded
+- `seq`: strictly increasing output sequence number within the live session for frames the owning agent recorded
 - `data_b64`: base64-encoded PTY output bytes
 - `cols` / `rows`: terminal size metadata captured for that frame
-- `ts`: relay-assigned UTC timestamp recorded when the frame is appended to retained history
+- `ts`: agent-authored UTC timestamp recorded when the frame is appended to the agent-side history buffer
 
 Query behavior:
 
-- no `from` or `to`: return every retained output frame
+- no `from` or `to`: return every currently retained frame from the owning agent
 - only `from`: return frames with `seq >= from`
 - only `to`: return frames with `seq <= to`
 - both `from` and `to`: return frames in the closed range `[from, to]`
@@ -105,8 +107,13 @@ Query behavior:
 Recovery notes:
 
 - `/api/sessions/:id/frames` is the standard relay-side recovery path after a client reconnects to `GET /api/updates/ws`
-- replay is limited to the frames the relay still retains in memory for that still-live session
-- `seq` does not prove complete end-to-end delivery from the local PTY to a remote client; it orders relay-recorded frames only
+- replay is limited to the frames the owning agent still retains in memory for that still-live session
+- the relay proxies `/frames` only while the session is `connected`
+- a discoverable `reconnecting` session returns `409 Conflict` with JSON body `{"reason":"session_reconnecting"}`
+- unknown or expired sessions return `404` with `{"reason":"session_not_found"}`
+- upstream timeout returns `504` with `{"reason":"upstream_timeout"}`
+- malformed agent history responses return `502` with `{"reason":"invalid_agent_response"}`
+- `seq` does not prove complete end-to-end delivery from the local PTY to a remote client; it orders agent-recorded frames only
 
 Example requests:
 
@@ -140,19 +147,57 @@ GET /api/sessions/sess-1/frames?from=101&to=120
 ```json
 {
   "type": "output",
+  "seq": 42,
   "data_b64": "SGVsbG8=",
   "cols": 132,
-  "rows": 43
+  "rows": 43,
+  "ts": "2026-04-06T02:10:02Z"
 }
 ```
 
 Notes:
 
-- agent output does not carry `seq` or `ts`
+- agent output carries agent-authored `seq` and `ts`
 - every agent output frame must include `cols` and `rows`
-- the relay assigns `seq` and `ts` when it records the output frame
+- the relay forwards live output with the same `seq` and `ts` it received from the agent
 - there is no standalone `resize` event in this protocol revision
-- because the relay assigns `seq` only after recording a frame, relay sequence metadata begins at the relay boundary rather than the PTY boundary
+- sequence metadata begins at the PTY owner rather than at the relay boundary
+
+`history_request`
+
+```json
+{
+  "type": "history_request",
+  "request_id": "history-1",
+  "from": 101,
+  "to": 120
+}
+```
+
+`from` and `to` are optional and inclusive. The relay sends this control frame to the connected owning agent when serving `GET /api/sessions/:id/frames`.
+
+`history_response`
+
+```json
+{
+  "type": "history_response",
+  "request_id": "history-1",
+  "frames": [
+    {
+      "seq": 101,
+      "data_b64": "b25l",
+      "cols": 120,
+      "rows": 40,
+      "ts": "2026-04-06T02:10:01Z"
+    }
+  ]
+}
+```
+
+Notes:
+
+- `request_id` must match the relay-issued `history_request`
+- the relay treats malformed or mismatched history responses as upstream protocol errors
 
 ### Client -> Relay
 
@@ -281,7 +326,7 @@ Notes:
 {
   "session_id": "sess-1",
   "type": "session_removed",
-  "reason": "agent_disconnected"
+  "reason": "session_removed"
 }
 ```
 
@@ -289,8 +334,8 @@ Notes:
 
 - `data_b64` is base64-encoded PTY output bytes
 - `cols` and `rows` are carried on every live output frame
-- `ts` is the same relay-assigned timestamp stored in retained frame history for the same output frame
-- this live stream is best-effort; clients should reconnect and use `/api/sessions/:id/frames` to recover recent relay-retained output when needed
+- `ts` is the same agent-authored timestamp stored in agent-side history for the same output frame
+- this live stream is best-effort; clients should reconnect and use `/api/sessions/:id/frames` to recover agent-owned output when needed
 
 ## Current Boundary
 
@@ -343,7 +388,7 @@ This keeps terminal behavior close to the PTY owner and avoids embedding termina
 ## Size Metadata
 
 - every output frame carries `cols` and `rows`
-- retained frame replay includes `cols` and `rows`
+- replayed history includes `cols` and `rows`
 - live `output` websocket events include `cols` and `rows`
 - agent-uploaded `output` frames on `/agent/ws` include `cols` and `rows`
 - there is no separate resize stream; size is part of each output frame contract
@@ -353,8 +398,9 @@ This keeps terminal behavior close to the PTY owner and avoids embedding termina
 - invalid client credentials return `401`
 - unknown session ids return `404` for frame replay requests
 - malformed websocket input payloads are ignored or rejected safely
-- websocket disconnects do not alter retained output history for still-live sessions
-- if the owning agent disconnects, the session disappears along with its retained frames
+- websocket disconnects move the session into `reconnecting` for a bounded grace window before removal
+- while `state` is `reconnecting`, `/frames` returns `409` and remote input is rejected
+- if the owning agent does not reconnect before the grace window expires, the relay emits `session_removed` and deletes the session snapshot
 
 ## Client Notes
 
@@ -365,7 +411,7 @@ This keeps terminal behavior close to the PTY owner and avoids embedding termina
 
 ## Invariants
 
-- output replay remains live-only and in-memory
+- output replay remains live-only and in-memory on the owning agent
 - output `seq` is strictly increasing within one live session
-- retained frames and live output fanout refer to the same output events
-- retained frames and live output fanout use the same `ts` for the same output frame
+- replayed frames and live output fanout refer to the same output events
+- replayed frames and live output fanout use the same agent-authored `ts` for the same output frame

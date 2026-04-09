@@ -31,6 +31,7 @@ var defaultReconnectBackoff = []time.Duration{
 }
 
 const defaultPendingInputLimit = 128
+
 // Some terminal UIs only react to submit correctly when text and Enter arrive
 // as distinct input events instead of one combined PTY write.
 const defaultSubmitEnterGap = 120 * time.Millisecond
@@ -46,9 +47,10 @@ const defaultSubmitEnterGap = 120 * time.Millisecond
 // Reverse data path:
 // - relay input frames come back through handleMessage() into the bound Hub
 type Connector struct {
-	url   string
-	token string
-	info  protocol.SessionInfo
+	url    string
+	token  string
+	info   protocol.SessionInfo
+	infoMu sync.RWMutex
 
 	initialCols int
 	initialRows int
@@ -64,6 +66,7 @@ type Connector struct {
 	subscribers  map[chan State]struct{}
 	retryBackoff []time.Duration
 	sleep        func(context.Context, time.Duration) bool
+	history      *session.HistoryBuffer
 }
 
 type readResult struct {
@@ -81,6 +84,7 @@ func New(url, token string, info protocol.SessionInfo) *Connector {
 		state:        StateDisconnected,
 		subscribers:  make(map[chan State]struct{}),
 		retryBackoff: append([]time.Duration(nil), defaultReconnectBackoff...),
+		history:      session.NewHistoryBuffer(session.DefaultHistoryBufferBytes),
 		sleep: func(ctx context.Context, d time.Duration) bool {
 			timer := time.NewTimer(d)
 			defer timer.Stop()
@@ -192,7 +196,9 @@ func (c *Connector) WriteOutput(data []byte) error {
 		}
 	}
 
-	msg := protocol.EncodeOutputWithSeqAndSize(0, append([]byte(nil), data...), cols, rows)
+	frame := c.history.AppendOutput(append([]byte(nil), data...), cols, rows, time.Now().UTC())
+	c.setLatestOutputMeta(frame.Seq, frame.TS)
+	msg := protocol.EncodeOutputFromReplayFrame(frame)
 	select {
 	case c.outbound <- msg:
 	default:
@@ -245,7 +251,7 @@ func (c *Connector) runOnce(ctx context.Context, connectTimeout time.Duration) (
 		return false, err
 	}
 
-	if err := conn.WriteJSON(protocol.RegisterFrame(c.info)); err != nil {
+	if err := conn.WriteJSON(protocol.RegisterFrame(c.infoSnapshot())); err != nil {
 		_ = conn.Close()
 		return false, err
 	}
@@ -271,12 +277,76 @@ func (c *Connector) serveConnection(ctx context.Context, conn *websocket.Conn) e
 			if result.err != nil {
 				return result.err
 			}
-			c.routeInput(result.msg)
+			if err := c.handleInboundMessage(conn, result.msg); err != nil {
+				return err
+			}
+			continue
+		default:
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case result, ok := <-incoming:
+			if !ok {
+				return nil
+			}
+			if result.err != nil {
+				return result.err
+			}
+			if err := c.handleInboundMessage(conn, result.msg); err != nil {
+				return err
+			}
 		case msg := <-c.outbound:
 			if err := conn.WriteJSON(msg); err != nil {
 				return err
 			}
 		}
+	}
+}
+
+func (c *Connector) handleInboundMessage(conn *websocket.Conn, msg protocol.Message) error {
+	switch msg.Type {
+	case "history_request":
+		if msg.RequestID == "" {
+			return nil
+		}
+		if msg.From != nil && msg.To != nil && *msg.From > *msg.To {
+			return nil
+		}
+		frames := c.history.Snapshot(historyBounds(msg))
+		return conn.WriteJSON(protocol.EncodeHistoryResponse(msg.RequestID, frames))
+	default:
+		c.routeInput(msg)
+		return nil
+	}
+}
+
+func historyBounds(msg protocol.Message) (from uint64, hasFrom bool, to uint64, hasTo bool) {
+	if msg.From != nil {
+		from = *msg.From
+		hasFrom = true
+	}
+	if msg.To != nil {
+		to = *msg.To
+		hasTo = true
+	}
+	return from, hasFrom, to, hasTo
+}
+
+func (c *Connector) infoSnapshot() protocol.SessionInfo {
+	c.infoMu.RLock()
+	defer c.infoMu.RUnlock()
+	return c.info
+}
+
+func (c *Connector) setLatestOutputMeta(seq uint64, ts time.Time) {
+	c.infoMu.Lock()
+	defer c.infoMu.Unlock()
+	c.info.LatestSeq = seq
+	if !ts.IsZero() {
+		tsCopy := ts
+		c.info.LastActiveAt = &tsCopy
 	}
 }
 

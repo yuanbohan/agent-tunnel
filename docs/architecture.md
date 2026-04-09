@@ -4,9 +4,9 @@ This document explains the stable shape of the system.
 
 ## System Shape
 
-`agentunnel` owns the real local agent process and its PTY. Every supported launcher follows the same path: one local PTY child, one relay connector, no launcher-specific sidecar. The relay exposes authenticated APIs so external clients can observe or interact with that live session, replay retained output frames, and send input back to the PTY.
+`agentunnel` owns the real local agent process and its PTY. Every supported launcher follows the same path: one local PTY child, one relay connector, no launcher-specific sidecar. The relay exposes authenticated APIs so external clients can observe or interact with that live session, proxy history reads from the owning agent, and send input back to the PTY.
 
-The local terminal is the primary and most complete view of the PTY session. The remote path is intentionally lighter weight: `GET /api/updates/ws` is a best-effort live channel, while `GET /api/sessions/:id/frames` is the standard relay-side recovery path for recently retained output.
+The local terminal is the primary and most complete view of the PTY session. The remote path is intentionally lighter weight: `GET /api/updates/ws` is a best-effort live channel, while `GET /api/sessions/:id/frames` is the standard recovery path for agent-owned output while the session is `connected`.
 
 `agentunnel` treats relay availability in two phases:
 
@@ -43,8 +43,8 @@ local machine
                     │          relay server          │
                     │  - auth                        │
                     │  - live session registry       │
-                    │  - output frame buffer         │
-                    │  - output seq metadata         │
+                    │  - reconnecting grace state    │
+                    │  - proxied history requests    │
                     │  - global client update fanout │
                     └───────────────┬────────────────┘
                                     │
@@ -66,6 +66,8 @@ It owns:
 - macOS idle sleep-prevention helper lifecycle
 - startup relay wait and background reconnect policy
 - fanout of PTY output to the local terminal and relay connector
+- bounded in-memory output history for the lifetime of the running session
+- agent-authored `seq`, `ts`, and `latest_seq` metadata
 - forwarding remote input back into the PTY
 - translating structured remote key input into PTY bytes
 - attaching current terminal `cols` and `rows` to every uploaded output frame
@@ -79,15 +81,15 @@ It owns:
 
 - client and agent authentication
 - current live-session snapshots
-- rolling in-memory output frames for replay through `GET /api/sessions/:id/frames`
-- output sequence metadata
-- relay-assigned per-frame timestamps
+- `connected` / `reconnecting` session lifecycle state with a short reconnect grace window
+- proxied `GET /api/sessions/:id/frames` requests while the owning agent is connected
 - global update fanout for connected clients
 
 The relay does not own:
 
 - session creation beyond registration by an agent
 - durable history
+- session-history authority
 - preview rendering
 - content interpretation of terminal output
 - end-to-end guarantees that a remote client observed every PTY byte
@@ -101,14 +103,14 @@ PTY output
 → session hub
 → local terminal sink
 → relay connector
+→ agent-side history buffer + seq / ts assignment
 → best-effort enqueue toward relay
 → output frame with current cols / rows
 → relay registry
-→ retained output frames + seq assignment
 → global client updates
 ```
 
-`seq` begins only once the relay has accepted and recorded an output frame. It is ordering metadata for relay-retained output, not proof of complete delivery from the PTY to every remote client.
+`seq` begins at the PTY owner when `agentunnel` appends an output frame to its local history buffer. It is ordering metadata for agent-owned history, not proof of complete delivery from the PTY to every remote client.
 
 ### Input
 
@@ -153,10 +155,11 @@ local PTY resize
 client loses /api/updates/ws
 → client reconnects to /api/updates/ws
 → client requests /api/sessions/:id/frames as needed
-→ relay returns only the currently retained in-memory frames for that still-live session
+→ relay proxies the request to the connected owning agent
+→ agent returns only the currently retained in-memory frames for that still-live session
 ```
 
-This recovery path is standard for clients, but it is still bounded by live-only relay retention rather than a durable transcript.
+This recovery path is standard for clients, but it is still bounded by live-only agent retention rather than a durable transcript. During the relay grace window, a session may remain listed as `reconnecting`, but `/frames` and remote input stay unavailable until the agent reconnects.
 
 ## Package Map
 

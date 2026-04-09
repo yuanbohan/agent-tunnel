@@ -154,12 +154,18 @@ func TestConnectorStreamsOutputFramesToRelay(t *testing.T) {
 		if msg.Type != "output" {
 			t.Fatalf("Type = %q, want output", msg.Type)
 		}
+		if msg.Seq != 1 {
+			t.Fatalf("Seq = %d, want 1", msg.Seq)
+		}
 		data, err := protocol.DecodeDataB64(msg)
 		if err != nil {
 			t.Fatalf("DecodeDataB64 returned error: %v", err)
 		}
 		if string(data) != "world" {
 			t.Fatalf("output = %q, want world", string(data))
+		}
+		if msg.TS == nil || msg.TS.IsZero() {
+			t.Fatalf("TS = %v, want non-zero timestamp", msg.TS)
 		}
 		if msg.Cols != 120 || msg.Rows != 40 {
 			t.Fatalf("size = %dx%d, want 120x40", msg.Cols, msg.Rows)
@@ -211,6 +217,12 @@ func TestConnectorUsesInitialSizeBeforeHubBind(t *testing.T) {
 	case msg := <-received:
 		if msg.Type != "output" {
 			t.Fatalf("Type = %q, want output", msg.Type)
+		}
+		if msg.Seq != 1 {
+			t.Fatalf("Seq = %d, want 1", msg.Seq)
+		}
+		if msg.TS == nil || msg.TS.IsZero() {
+			t.Fatalf("TS = %v, want non-zero timestamp", msg.TS)
 		}
 		if msg.Cols != 120 || msg.Rows != 40 {
 			t.Fatalf("size = %dx%d, want 120x40", msg.Cols, msg.Rows)
@@ -371,6 +383,9 @@ func TestConnectorBuffersOutputAcrossReconnectWithoutLeakingOldWriter(t *testing
 		if err := conn.ReadJSON(&register); err != nil {
 			t.Fatalf("ReadJSON second register returned error: %v", err)
 		}
+		if register.Session == nil || register.Session.LatestSeq != 1 {
+			t.Fatalf("register session = %#v, want latest_seq 1", register.Session)
+		}
 
 		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 		var msg protocol.Message
@@ -400,6 +415,9 @@ func TestConnectorBuffersOutputAcrossReconnectWithoutLeakingOldWriter(t *testing
 		}
 		if string(data) != "persisted" {
 			t.Fatalf("output = %q, want persisted", string(data))
+		}
+		if msg.Seq != 1 {
+			t.Fatalf("Seq = %d, want 1", msg.Seq)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for reconnected output")
@@ -499,6 +517,74 @@ func TestConnectorWaitUntilConnectedReturnsTrueAfterRegister(t *testing.T) {
 
 	if !c.WaitUntilConnected(ctx, time.Second) {
 		t.Fatal("WaitUntilConnected returned false, want true")
+	}
+}
+
+func TestConnectorAnswersHistoryRequestsFromAgentBuffer(t *testing.T) {
+	received := make(chan protocol.Message, 1)
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("Upgrade returned error: %v", err)
+		}
+		defer conn.Close()
+
+		var register protocol.AgentFrame
+		if err := conn.ReadJSON(&register); err != nil {
+			t.Fatalf("ReadJSON register returned error: %v", err)
+		}
+
+		from := uint64(1)
+		to := uint64(1)
+		if err := conn.WriteJSON(protocol.EncodeHistoryRequest("req-1", &from, &to)); err != nil {
+			t.Fatalf("WriteJSON history request returned error: %v", err)
+		}
+
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			_ = conn.SetReadDeadline(deadline)
+			var msg protocol.Message
+			if err := conn.ReadJSON(&msg); err != nil {
+				t.Fatalf("ReadJSON returned error: %v", err)
+			}
+			if msg.Type == "history_response" {
+				received <- msg
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	c := New(wsURL, "token", protocol.SessionInfo{
+		SessionID: "sess-1",
+		Launcher:  "codex",
+	})
+	if err := c.WriteOutput([]byte("hello")); err != nil {
+		t.Fatalf("WriteOutput returned error: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Run(ctx)
+
+	select {
+	case msg := <-received:
+		if msg.RequestID != "req-1" {
+			t.Fatalf("RequestID = %q, want req-1", msg.RequestID)
+		}
+		if len(msg.Frames) != 1 {
+			t.Fatalf("len(Frames) = %d, want 1", len(msg.Frames))
+		}
+		if msg.Frames[0].Seq != 1 || msg.Frames[0].DataB64 != "aGVsbG8=" {
+			t.Fatalf("frame = %#v, want seq 1 hello", msg.Frames[0])
+		}
+		if msg.Frames[0].TS.IsZero() {
+			t.Fatal("expected non-zero timestamp")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for history response")
 	}
 }
 
