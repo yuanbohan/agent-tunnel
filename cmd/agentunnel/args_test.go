@@ -27,7 +27,7 @@ func TestParseRunArgsValid(t *testing.T) {
 	setEnv(t, "AGENTUNNEL_RELAY_ADDR", "127.0.0.1:8586")
 	setEnv(t, "AGENTUNNEL_RELAY_TOKEN", "secret")
 
-	cfg, err := parseRunArgs([]string{"agentunnel", "codex", "--profile", "prod"})
+	cfg, err := parseRunArgs([]string{"tunnel", "codex", "--profile", "prod"})
 	if err != nil {
 		t.Fatalf("parseRunArgs returned error: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestParseRunArgsFlagOverridesEnvForRelayAddr(t *testing.T) {
 	setEnv(t, "AGENTUNNEL_RELAY_ADDR", "127.0.0.1:8586")
 	setEnv(t, "AGENTUNNEL_RELAY_TOKEN", "secret")
 
-	cfg, err := parseRunArgs([]string{"agentunnel", "--relay-addr", "127.0.0.1:9000", "codex"})
+	cfg, err := parseRunArgs([]string{"tunnel", "--relay-addr", "127.0.0.1:9000", "codex"})
 	if err != nil {
 		t.Fatalf("parseRunArgs returned error: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestParseRunArgsRejectsWebSocketScheme(t *testing.T) {
 	setEnv(t, "AGENTUNNEL_RELAY_ADDR", "")
 	setEnv(t, "AGENTUNNEL_RELAY_TOKEN", "secret")
 
-	_, err := parseRunArgs([]string{"agentunnel", "--relay-addr", "ws://127.0.0.1:8586", "codex"})
+	_, err := parseRunArgs([]string{"tunnel", "--relay-addr", "ws://127.0.0.1:8586", "codex"})
 	if err == nil {
 		t.Fatal("expected error for websocket scheme in relay address")
 	}
@@ -76,7 +76,7 @@ func TestParseRunArgsDoesNotReadLegacyRelayURLEnv(t *testing.T) {
 	setEnv(t, "AGENTUNNEL_RELAY_ADDR", "")
 	setEnv(t, "AGENTUNNEL_RELAY_TOKEN", "secret")
 
-	_, err := parseRunArgs([]string{"agentunnel", "codex"})
+	_, err := parseRunArgs([]string{"tunnel", "codex"})
 	if err == nil {
 		t.Fatal("expected error when only legacy relay URL env is set")
 	}
@@ -89,7 +89,7 @@ func TestParseRunArgsMissingRelayAddr(t *testing.T) {
 	setEnv(t, "AGENTUNNEL_RELAY_ADDR", "")
 	setEnv(t, "AGENTUNNEL_RELAY_TOKEN", "secret")
 
-	_, err := parseRunArgs([]string{"agentunnel", "codex"})
+	_, err := parseRunArgs([]string{"tunnel", "codex"})
 	if err == nil {
 		t.Fatal("expected error for missing relay address")
 	}
@@ -99,7 +99,7 @@ func TestParseRunArgsMissingToken(t *testing.T) {
 	setEnv(t, "AGENTUNNEL_RELAY_ADDR", "127.0.0.1:8586")
 	setEnv(t, "AGENTUNNEL_RELAY_TOKEN", "")
 
-	_, err := parseRunArgs([]string{"agentunnel", "codex"})
+	_, err := parseRunArgs([]string{"tunnel", "codex"})
 	if err == nil {
 		t.Fatal("expected error for missing token")
 	}
@@ -109,7 +109,7 @@ func TestParseRunArgsMissingLauncher(t *testing.T) {
 	setEnv(t, "AGENTUNNEL_RELAY_ADDR", "127.0.0.1:8586")
 	setEnv(t, "AGENTUNNEL_RELAY_TOKEN", "secret")
 
-	_, err := parseRunArgs([]string{"agentunnel"})
+	_, err := parseRunArgs([]string{"tunnel"})
 	if err == nil {
 		t.Fatal("expected error for missing launcher")
 	}
@@ -120,7 +120,7 @@ func TestParseRunArgsWithLabelAndArgs(t *testing.T) {
 	setEnv(t, "AGENTUNNEL_RELAY_TOKEN", "secret")
 
 	cfg, err := parseRunArgs([]string{
-		"agentunnel",
+		"tunnel",
 		"--label", "api-fix",
 		"--relay-addr", "127.0.0.1:9000",
 		"codex",

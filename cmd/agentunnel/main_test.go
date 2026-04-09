@@ -125,7 +125,7 @@ func TestRunWithArgsStopsBeforeStartingSessionWhenLocalTerminalPreparationFails(
 	}
 
 	var stderr bytes.Buffer
-	err := runWithArgs([]string{"agentunnel", "codex", "--version"}, &stderr)
+	err := runWithArgs([]string{"tunnel", "codex", "--version"}, &stderr)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("runWithArgs error = %v, want %v", err, wantErr)
 	}
@@ -197,7 +197,7 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
 	}
 
 	var stderr bytes.Buffer
-	err := runWithArgs([]string{"agentunnel", "--label", "api-fix", "codex", "--profile", "prod"}, &stderr)
+	err := runWithArgs([]string{"tunnel", "--label", "api-fix", "codex", "--profile", "prod"}, &stderr)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("runWithArgs error = %v, want %v", err, wantErr)
 	}
@@ -252,10 +252,10 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
 }
 
 func TestStartupBannerUsesRelayState(t *testing.T) {
-	if got := startupBanner("codex", "sess-123", "127.0.0.1:8586", connector.StateConnected, sleepPreventionActive); got != "\x1b[32m▶ agentunnel codex — session sess-123; relay connected (127.0.0.1:8586); sleep prevented\x1b[0m\n" {
+	if got := startupBanner("codex", "sess-123", "127.0.0.1:8586", connector.StateConnected, sleepPreventionActive); got != "\x1b[32m▶ tunnel codex — session sess-123; relay connected (127.0.0.1:8586); sleep prevented\x1b[0m\n" {
 		t.Fatalf("connected banner = %q", got)
 	}
-	if got := startupBanner("codex", "sess-456", "127.0.0.1:8586", connector.StateReconnecting, sleepPreventionFailed); got != "\x1b[31m▶ agentunnel codex — session sess-456; relay reconnecting (127.0.0.1:8586); sleep prevention failed\x1b[0m\n" {
+	if got := startupBanner("codex", "sess-456", "127.0.0.1:8586", connector.StateReconnecting, sleepPreventionFailed); got != "\x1b[31m▶ tunnel codex — session sess-456; relay reconnecting (127.0.0.1:8586); sleep prevention failed\x1b[0m\n" {
 		t.Fatalf("reconnecting banner = %q", got)
 	}
 }
@@ -315,7 +315,7 @@ func TestRunWithArgsPrintsStartupBannerWithSleepStatusAndStopsSleepPreventionOnE
 	}
 
 	var stderr bytes.Buffer
-	if err := runWithArgs([]string{"agentunnel", "codex"}, &stderr); err != nil {
+	if err := runWithArgs([]string{"tunnel", "codex"}, &stderr); err != nil {
 		t.Fatalf("runWithArgs error = %v", err)
 	}
 
@@ -376,7 +376,7 @@ func TestRunWithArgsContinuesWhenSleepPreventionFails(t *testing.T) {
 	}
 
 	var stderr bytes.Buffer
-	if err := runWithArgs([]string{"agentunnel", "codex"}, &stderr); err != nil {
+	if err := runWithArgs([]string{"tunnel", "codex"}, &stderr); err != nil {
 		t.Fatalf("runWithArgs error = %v", err)
 	}
 
@@ -434,7 +434,7 @@ func TestRunWithArgsContinuesWhenSleepPreventionIsUnsupported(t *testing.T) {
 	}
 
 	var stderr bytes.Buffer
-	if err := runWithArgs([]string{"agentunnel", "codex"}, &stderr); err != nil {
+	if err := runWithArgs([]string{"tunnel", "codex"}, &stderr); err != nil {
 		t.Fatalf("runWithArgs error = %v", err)
 	}
 

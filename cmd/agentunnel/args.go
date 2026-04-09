@@ -19,7 +19,7 @@ type runArgs struct {
 }
 
 func parseRunArgs(argv []string) (runArgs, error) {
-	fs := flag.NewFlagSet("agentunnel", flag.ContinueOnError)
+	fs := flag.NewFlagSet("tunnel", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
 	var cfg runArgs
@@ -49,7 +49,7 @@ func parseRunArgs(argv []string) (runArgs, error) {
 
 	rest := fs.Args()
 	if len(rest) == 0 {
-		return runArgs{}, fmt.Errorf("usage: agentunnel [--label label] [--relay-addr host:port] <claude|codex|gemini> [args...]")
+		return runArgs{}, fmt.Errorf("usage: tunnel [--label label] [--relay-addr host:port] <claude|codex|gemini> [args...]")
 	}
 
 	cfg.Launcher = rest[0]
