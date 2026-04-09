@@ -92,7 +92,7 @@ install: build
 	echo "installed tunnel and relay to $(INSTALL_DIR)"
 
 clean:
-	rm -rf bin/
+	rm -rf "$(BIN_DIR)"
 
 vet:
 	go vet ./...
