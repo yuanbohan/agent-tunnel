@@ -2,12 +2,15 @@ package session
 
 import "strings"
 
-func EncodeRemoteTextInput(text string, submit bool) []byte {
-	data := append([]byte(nil), text...)
-	if submit {
-		return append(data, '\r')
+func EncodeRemoteTextInput(text string) []byte {
+	return append([]byte(nil), text...)
+}
+
+func EncodeRemoteSubmitInput(text string) [][]byte {
+	return [][]byte{
+		EncodeRemoteTextInput(text),
+		remoteEnterInput(),
 	}
-	return data
 }
 
 func EncodeRemoteKeyInput(key string, ctrl, alt, shift bool) ([]byte, bool) {
@@ -29,7 +32,7 @@ func EncodeRemoteKeyInput(key string, ctrl, alt, shift bool) ([]byte, bool) {
 
 	switch normalized {
 	case "ENTER":
-		return []byte{'\r'}, true
+		return remoteEnterInput(), true
 	case "BACKSPACE":
 		return []byte{0x7f}, true
 	case "TAB":
@@ -58,4 +61,8 @@ func EncodeRemoteKeyInput(key string, ctrl, alt, shift bool) ([]byte, bool) {
 		_ = shift
 		return nil, false
 	}
+}
+
+func remoteEnterInput() []byte {
+	return []byte{'\r'}
 }

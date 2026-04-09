@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -223,17 +224,17 @@ func TestConnectorRoutesStructuredInputFramesIntoHub(t *testing.T) {
 	tests := []struct {
 		name    string
 		message protocol.Message
-		want    string
+		want    []string
 	}{
-		{name: "input text", message: protocol.EncodeInputText("hello", false), want: "hello"},
-		{name: "input text submit", message: protocol.EncodeInputText("hello", true), want: "hello\r"},
-		{name: "empty input text submit", message: protocol.EncodeInputText("", true), want: "\r"},
-		{name: "input key", message: protocol.EncodeInputKey("TAB", false, false, false), want: "\t"},
+		{name: "input text", message: protocol.EncodeInputText("hello", false), want: []string{"hello"}},
+		{name: "input text submit", message: protocol.EncodeInputText("hello", true), want: []string{"hello", "\r"}},
+		{name: "empty input text submit", message: protocol.EncodeInputText("", true), want: []string{"\r"}},
+		{name: "input key", message: protocol.EncodeInputKey("TAB", false, false, false), want: []string{"\t"}},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			inputCh := make(chan string, 1)
+			inputCh := make(chan string, 4)
 			hub := session.NewHub(func(data []byte) error {
 				inputCh <- string(data)
 				return nil
@@ -269,15 +270,58 @@ func TestConnectorRoutesStructuredInputFramesIntoHub(t *testing.T) {
 			defer cancel()
 			go c.Run(ctx)
 
-			select {
-			case got := <-inputCh:
-				if got != tc.want {
-					t.Fatalf("input = %q, want %q", got, tc.want)
+			got := make([]string, 0, len(tc.want))
+			deadline := time.After(2 * time.Second)
+			for len(got) < len(tc.want) {
+				select {
+				case chunk := <-inputCh:
+					got = append(got, chunk)
+				case <-deadline:
+					t.Fatalf("timed out waiting for input, got %#v want %#v", got, tc.want)
 				}
-			case <-time.After(2 * time.Second):
-				t.Fatal("timed out waiting for input")
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("input = %#v, want %#v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestConnectorSubmitInputWritesSeparateDelayedChunks(t *testing.T) {
+	type inputEvent struct {
+		data string
+		at   time.Time
+	}
+
+	events := make([]inputEvent, 0, 2)
+	hub := session.NewHub(func(data []byte) error {
+		events = append(events, inputEvent{
+			data: string(data),
+			at:   time.Now(),
+		})
+		return nil
+	}, func(int, int) error { return nil })
+
+	c := New("", "token", protocol.SessionInfo{
+		SessionID: "sess-1",
+		Launcher:  "codex",
+	})
+
+	c.deliverInputToHub(hub, protocol.EncodeInputText("hello", true))
+
+	if len(events) != 2 {
+		t.Fatalf("len(events) = %d, want 2", len(events))
+	}
+	if events[0].data != "hello" {
+		t.Fatalf("first event = %q, want hello", events[0].data)
+	}
+	if events[1].data != "\r" {
+		t.Fatalf("second event = %q, want \\r", events[1].data)
+	}
+
+	minGap := defaultSubmitEnterGap - 20*time.Millisecond
+	if gap := events[1].at.Sub(events[0].at); gap < minGap {
+		t.Fatalf("submit gap = %v, want at least %v", gap, minGap)
 	}
 }
 

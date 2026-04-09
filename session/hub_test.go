@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -84,6 +85,104 @@ func TestHubWriteInputPassesBytesToWriter(t *testing.T) {
 	input[0] = 'o'
 	if string(got) != "input" {
 		t.Fatalf("got input %q, want input", string(got))
+	}
+}
+
+func TestHubWriteInputSequencePreservesOrderAndCopiesChunks(t *testing.T) {
+	var got [][]byte
+	hub := NewHub(func(data []byte) error {
+		got = append(got, data)
+		return nil
+	}, func(int, int) error { return nil })
+
+	text := []byte("hello")
+	enter := []byte{'\r'}
+	if err := hub.WriteInputSequence(text, enter); err != nil {
+		t.Fatalf("WriteInputSequence returned error: %v", err)
+	}
+
+	text[0] = 'j'
+	enter[0] = '\n'
+
+	if len(got) != 2 {
+		t.Fatalf("len(got) = %d, want 2", len(got))
+	}
+	if string(got[0]) != "hello" {
+		t.Fatalf("first chunk = %q, want hello", string(got[0]))
+	}
+	if string(got[1]) != "\r" {
+		t.Fatalf("second chunk = %q, want \\r", string(got[1]))
+	}
+}
+
+func TestHubWriteInputSequenceWithGapBlocksInterleavingWrites(t *testing.T) {
+	wroteText := make(chan struct{}, 1)
+	got := make([]string, 0, 3)
+	hub := NewHub(func(data []byte) error {
+		got = append(got, string(data))
+		if string(data) == "hello" {
+			select {
+			case wroteText <- struct{}{}:
+			default:
+			}
+		}
+		return nil
+	}, func(int, int) error { return nil })
+
+	sequenceDone := make(chan error, 1)
+	go func() {
+		sequenceDone <- hub.WriteInputSequenceWithGap(50*time.Millisecond, []byte("hello"), []byte{'\r'})
+	}()
+
+	select {
+	case <-wroteText:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first submit chunk")
+	}
+
+	interleavingDone := make(chan error, 1)
+	go func() {
+		interleavingDone <- hub.WriteInput([]byte("!"))
+	}()
+
+	select {
+	case err := <-interleavingDone:
+		t.Fatalf("interleaving write finished early with err=%v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	if err := <-sequenceDone; err != nil {
+		t.Fatalf("WriteInputSequenceWithGap returned error: %v", err)
+	}
+	if err := <-interleavingDone; err != nil {
+		t.Fatalf("interleaving WriteInput returned error: %v", err)
+	}
+
+	if !reflect.DeepEqual(got, []string{"hello", "\r", "!"}) {
+		t.Fatalf("writes = %#v, want %#v", got, []string{"hello", "\r", "!"})
+	}
+}
+
+func TestHubWriteInputSequenceWithGapSleepsOnlyBetweenNonEmptyChunks(t *testing.T) {
+	got := make([]string, 0, 2)
+	slept := make([]time.Duration, 0, 1)
+	hub := NewHub(func(data []byte) error {
+		got = append(got, string(data))
+		return nil
+	}, func(int, int) error { return nil })
+	hub.sleep = func(d time.Duration) {
+		slept = append(slept, d)
+	}
+
+	if err := hub.WriteInputSequenceWithGap(25*time.Millisecond, nil, []byte("hello"), []byte{}, []byte{'\r'}, nil); err != nil {
+		t.Fatalf("WriteInputSequenceWithGap returned error: %v", err)
+	}
+
+	if !reflect.DeepEqual(got, []string{"hello", "\r"}) {
+		t.Fatalf("writes = %#v, want %#v", got, []string{"hello", "\r"})
+	}
+	if !reflect.DeepEqual(slept, []time.Duration{25 * time.Millisecond}) {
+		t.Fatalf("slept = %#v, want one gap between non-empty writes", slept)
 	}
 }
 

@@ -6,28 +6,33 @@ import (
 )
 
 func TestEncodeRemoteTextInputReturnsUTF8Bytes(t *testing.T) {
-	got := EncodeRemoteTextInput("hello", false)
+	got := EncodeRemoteTextInput("hello")
 	if string(got) != "hello" {
 		t.Fatalf("got %q, want hello", string(got))
 	}
 }
 
-func TestEncodeRemoteTextInputAppendsEnterBytesWhenSubmitIsTrue(t *testing.T) {
+func TestEncodeRemoteSubmitInputReturnsTextThenEnterChunks(t *testing.T) {
 	tests := []struct {
 		name string
 		text string
-		want []byte
+		want [][]byte
 	}{
-		{name: "plain text", text: "hello", want: []byte("hello\r")},
-		{name: "multiline text", text: "line1\nline2", want: []byte("line1\nline2\r")},
-		{name: "empty text", text: "", want: []byte{'\r'}},
+		{name: "plain text", text: "hello", want: [][]byte{[]byte("hello"), []byte{'\r'}}},
+		{name: "multiline text", text: "line1\nline2", want: [][]byte{[]byte("line1\nline2"), []byte{'\r'}}},
+		{name: "empty text", text: "", want: [][]byte{[]byte(""), []byte{'\r'}}},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := EncodeRemoteTextInput(tc.text, true)
-			if !bytes.Equal(got, tc.want) {
-				t.Fatalf("got %#v, want %#v", got, tc.want)
+			got := EncodeRemoteSubmitInput(tc.text)
+			if len(got) != len(tc.want) {
+				t.Fatalf("len(got) = %d, want %d", len(got), len(tc.want))
+			}
+			for i := range tc.want {
+				if !bytes.Equal(got[i], tc.want[i]) {
+					t.Fatalf("got[%d] = %#v, want %#v", i, got[i], tc.want[i])
+				}
 			}
 		})
 	}

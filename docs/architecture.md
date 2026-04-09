@@ -119,7 +119,7 @@ client input frame
 → agentunnel connector
 → structured input translation:
      - `input_text { submit: false }` -> UTF-8 text bytes
-     - `input_text { submit: true }` -> UTF-8 text bytes + trailing `\r` in one write
+     - `input_text { submit: true }` -> UTF-8 text bytes, then trailing `\r`, as one serialized submit operation
      - supported `input_key` events -> PTY key bytes
 → PTY stdin
 ```
