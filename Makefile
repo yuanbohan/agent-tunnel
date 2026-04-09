@@ -1,4 +1,4 @@
-.PHONY: agentunnel relay start start-relay stop-relay status status-relay build build-linux install clean vet test test-relay
+.PHONY: agentunnel relay start stop status build build-linux install clean vet test test-relay
 
 RELAY_BIN ?= ./relay
 RELAY_PORT ?= 8586
@@ -10,7 +10,7 @@ agentunnel:
 relay:
 	go run ./cmd/relay
 
-start-relay:
+start:
 	@set -e; \
 	mkdir -p logs; \
 	if [ -f logs/relay.pid ] && kill -0 "$$(cat logs/relay.pid)" 2>/dev/null; then \
@@ -33,9 +33,7 @@ start-relay:
 		exit 1; \
 	fi
 
-start: start-relay
-
-stop-relay:
+stop:
 	@set -e; \
 	if [ ! -f logs/relay.pid ]; then \
 		echo "relay is not running (logs/relay.pid not found)"; \
@@ -50,7 +48,7 @@ stop-relay:
 	fi; \
 	rm -f logs/relay.pid
 
-status-relay:
+status:
 	@set -e; \
 	echo "relay status"; \
 	if [ -f logs/relay.pid ]; then \
@@ -71,8 +69,6 @@ status-relay:
 	else \
 		echo "no ss/lsof available to inspect listening sockets"; \
 	fi
-
-status: status-relay
 
 build:
 	go build -o bin/tunnel ./cmd/agentunnel
