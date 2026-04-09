@@ -4,23 +4,23 @@ This document explains the stable shape of the system.
 
 ## System Shape
 
-`agentunnel` owns the real local agent process, its PTY, and the current session transcript. Every supported launcher follows the same path: one local PTY child, one session hub, one outbound relay connector, and no launcher-specific sidecar.
+`tunnel` owns the real local agent process, its PTY, and the current session transcript. Every supported launcher follows the same path: one local PTY child, one session hub, one outbound relay connector, and no launcher-specific sidecar.
 
 The relay exposes authenticated APIs so external clients can observe live output, send input, list live sessions, and fetch replay for a connected session. The relay is not the history authority. It proxies replay reads to the owning agent.
 
 The local terminal is the primary and most complete view of the PTY session. The remote path is intentionally lighter weight: `GET /api/updates/ws` is a best-effort live channel, while `GET /api/sessions/:id/frames` is the standard recovery path for the agent-owned transcript while the session is `connected`.
 
-`agentunnel` treats relay availability in two phases:
+`tunnel` treats relay availability in two phases:
 
 - startup gating: it gives relay registration a bounded first chance before entering the local terminal session
 - post-startup continuity: once the local session has begun, relay outages only affect remote visibility and control; local terminal work continues while the connector retries in the background
 
-On macOS, after startup reaches a live local session, `agentunnel` also attempts idle sleep prevention for the lifetime of the `agentunnel` process. That host-level helper is best-effort: startup continues if it cannot be enabled, but the startup banner reports the result.
+On macOS, after startup reaches a live local session, `tunnel` also attempts idle sleep prevention for the lifetime of the `tunnel` process. That host-level helper is best-effort: startup continues if it cannot be enabled, but the startup banner reports the result.
 
 ```text
 local machine
 ┌─────────────────────────────────────────────────────────────────────┐
-│                             agentunnel                              │
+│                               tunnel                                │
 │                                                                     │
 │  launcher resolve                                                   │
 │        │                                                            │
@@ -59,9 +59,9 @@ local machine
 
 ## Major Responsibilities
 
-### `agentunnel`
+### `tunnel`
 
-`agentunnel` is the PTY owner and the history authority for one running session.
+`tunnel` is the PTY owner and the history authority for one running session.
 
 It owns:
 
@@ -135,7 +135,7 @@ Remote input still flows through the relay, but translation into PTY bytes remai
 client input frame
 → relay
 → owning agent websocket
-→ agentunnel connector
+→ tunnel connector
 → structured input translation:
      - input_text { submit: false } -> UTF-8 text bytes
      - input_text { submit: true } -> UTF-8 text bytes, then trailing \r, as one serialized submit operation
@@ -154,7 +154,7 @@ This keeps terminal behavior close to the PTY owner and avoids embedding termina
 3. If the session is missing, the relay returns `404 session_not_found`. If the session is currently `reconnecting`, the relay returns `409 session_reconnecting`.
 4. For a `connected` session, the registry allocates a pending waiter keyed by a relay-issued `request_id` and binds it to the current owner websocket.
 5. The relay sends `history_request { request_id, from, to }` over `/agent/ws`.
-6. `agentunnel` snapshots its local `HistoryBuffer` for the requested bounds and replies with `history_response { request_id, frames }`.
+6. `tunnel` snapshots its local `HistoryBuffer` for the requested bounds and replies with `history_response { request_id, frames }`.
 7. The relay matches the response to the pending waiter and returns the `frames` array as the HTTP response body.
 8. If the agent disconnects before replying, the pending request fails and the HTTP request resolves as reconnecting or timeout behavior. If the agent returns malformed replay payloads, the relay returns `502 invalid_agent_response`.
 
@@ -197,7 +197,7 @@ Clients should think of `/frames` as "ask the current agent what transcript it s
 Relay availability has a bounded effect on startup, but not on the already-running local terminal session.
 
 ```text
-agentunnel launch
+tunnel launch
 → connector starts trying /agent/ws
 → if registration succeeds during the startup wait window:
      local session starts in connected mode
@@ -223,7 +223,7 @@ Closing the agent process ends the session. A later agent launch starts a differ
 
 ## Package Map
 
-- `cmd/agentunnel`: local launcher entrypoint
+- `cmd/agentunnel`: local `tunnel` entrypoint
 - `session/`: PTY ownership, local terminal handling, output/input hub, and history buffer
 - `connector/`: outbound relay connection, live output upload, and history-request handling
 - `cmd/relay`: relay entrypoint

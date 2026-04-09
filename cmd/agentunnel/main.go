@@ -171,7 +171,7 @@ func startupBanner(launcherName, sessionID, relayAddr string, state connector.St
 	if state != connector.StateConnected || sleepStatus == sleepPreventionFailed {
 		color = startupBannerRed
 	}
-	return fmt.Sprintf("%s▶ agentunnel %s — session %s; relay %s (%s); %s%s\n", color, launcherName, sessionID, status, relayAddr, sleepStatus, startupBannerReset)
+	return fmt.Sprintf("%s▶ tunnel %s — session %s; relay %s (%s); %s%s\n", color, launcherName, sessionID, status, relayAddr, sleepStatus, startupBannerReset)
 }
 
 func followRelayState(ctx context.Context, statusLine *session.StatusLine, stateCh <-chan connector.State) {

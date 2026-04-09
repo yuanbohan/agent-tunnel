@@ -1,10 +1,12 @@
-.PHONY: agentunnel relay start stop status build build-linux install clean vet test test-relay
+.PHONY: tunnel relay start stop status build build-linux install clean vet test test-relay
 
 RELAY_BIN ?= ./relay
 RELAY_PORT ?= 8586
+BIN_DIR ?= bin
+INSTALL_DIR ?= $(HOME)/.local/bin
 
-agentunnel:
-	@test -n "$(LAUNCHER)" || (echo "usage: make agentunnel LAUNCHER=claude" && exit 1)
+tunnel:
+	@test -n "$(LAUNCHER)" || (echo "usage: make tunnel LAUNCHER=claude" && exit 1)
 	go run ./cmd/agentunnel $(LAUNCHER)
 
 relay:
@@ -71,18 +73,23 @@ status:
 	fi
 
 build:
-	go build -o bin/tunnel ./cmd/agentunnel
-	go build -o bin/relay ./cmd/relay
+	mkdir -p "$(BIN_DIR)"
+	rm -f "$(BIN_DIR)/agentunnel"
+	go build -o "$(BIN_DIR)/tunnel" ./cmd/agentunnel
+	go build -o "$(BIN_DIR)/relay" ./cmd/relay
 
 build-linux:
-	GOOS=linux GOARCH=amd64 go build -o bin/relay ./cmd/relay
-	GOOS=linux GOARCH=amd64 go build -o bin/tunnel ./cmd/agentunnel
+	mkdir -p "$(BIN_DIR)"
+	rm -f "$(BIN_DIR)/agentunnel"
+	GOOS=linux GOARCH=amd64 go build -o "$(BIN_DIR)/tunnel" ./cmd/agentunnel
+	GOOS=linux GOARCH=amd64 go build -o "$(BIN_DIR)/relay" ./cmd/relay
 
 install: build
 	@set -e; \
-	mkdir -p "$(HOME)/.local/bin"; \
-	cp -f bin/* "$(HOME)/.local/bin/"; \
-	echo "installed binaries to $(HOME)/.local/bin"
+	mkdir -p "$(INSTALL_DIR)"; \
+	rm -f "$(INSTALL_DIR)/agentunnel"; \
+	cp -f "$(BIN_DIR)/tunnel" "$(BIN_DIR)/relay" "$(INSTALL_DIR)/"; \
+	echo "installed tunnel and relay to $(INSTALL_DIR)"
 
 clean:
 	rm -rf bin/

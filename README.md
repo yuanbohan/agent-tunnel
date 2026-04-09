@@ -2,11 +2,11 @@
 
 Launch a terminal agent locally and stream the live PTY session to a remote relay service.
 
-`agentunnel` starts a real CLI such as `claude`, `codex`, or `gemini`, keeps the launching terminal interactive, and registers the session with a relay server. The relay is API-only: it authenticates clients, lists live sessions, fans out best-effort live output, and proxies session-history reads from the owning agent. It does not retain frame history itself.
+`tunnel` starts a real CLI such as `claude`, `codex`, or `gemini`, keeps the launching terminal interactive, and registers the session with a relay server. The relay is API-only: it authenticates clients, lists live sessions, fans out best-effort live output, and proxies session-history reads from the owning agent. It does not retain frame history itself.
 
-On startup, `agentunnel` gives relay registration a short first chance to succeed. If that startup window expires, local terminal work still begins and `agentunnel` continues reconnecting to the relay in the background. Runtime relay outages do not interrupt the local terminal session.
+On startup, `tunnel` gives relay registration a short first chance to succeed. If that startup window expires, local terminal work still begins and `tunnel` continues reconnecting to the relay in the background. Runtime relay outages do not interrupt the local terminal session.
 
-On macOS, once startup succeeds, `agentunnel` also attempts default-on idle sleep prevention for the lifetime of the `agentunnel` process. If that helper cannot be started, the session still starts and the startup line reports the failure.
+On macOS, once startup succeeds, `tunnel` also attempts default-on idle sleep prevention for the lifetime of the `tunnel` process. If that helper cannot be started, the session still starts and the startup line reports the failure.
 
 The relay is intentionally content-opaque. It forwards output bytes and proxies history reads, but it does not derive previews or other content semantics from terminal data.
 
@@ -21,7 +21,7 @@ Client input uses structured events:
 - `input_text` for normal typing, pasted text, IME-committed text, and explicit submit via `submit: true`
 - `input_key` for special keys and supported key combinations
 
-The relay forwards those events to the owning `agentunnel` session. `agentunnel` translates supported key events into PTY bytes locally, and it handles `input_text { submit: true }` as one serialized submit operation: write the provided text first, then write the same carriage return semantics used for `ENTER`, with no interleaving input for that session.
+The relay forwards those events to the owning `tunnel` session. `tunnel` translates supported key events into PTY bytes locally, and it handles `input_text { submit: true }` as one serialized submit operation: write the provided text first, then write the same carriage return semantics used for `ENTER`, with no interleaving input for that session.
 
 ## Requirements
 
@@ -47,35 +47,36 @@ The relay listens on `0.0.0.0:8586` by default. Override the port with `--port`:
 go run ./cmd/relay --port 9000
 ```
 
-### 2. Start agentunnel
+### 2. Start tunnel
 
-Point the agent at the relay and launch a session:
+Build the local binaries, then point the agent at the relay and launch a session:
 
 ```bash
+make build
 export AGENTUNNEL_RELAY_ADDR=127.0.0.1:8586
 export AGENTUNNEL_RELAY_TOKEN=agent-token
-go run ./cmd/agentunnel claude
+./bin/tunnel claude
 ```
 
 Or with a label:
 
 ```bash
-go run ./cmd/agentunnel --label api-fix --relay-addr 127.0.0.1:9000 codex
+./bin/tunnel --label api-fix --relay-addr 127.0.0.1:9000 codex
 ```
 
 Expected stderr output on macOS when relay is available during startup:
 
 ```text
-▶ agentunnel claude — session <session-id>; relay connected (127.0.0.1:8586); sleep prevented
+▶ tunnel claude — session <session-id>; relay connected (127.0.0.1:8586); sleep prevented
 ```
 
-If relay startup registration does not succeed within the startup wait window, `agentunnel` still enters the local terminal session and shows this on macOS:
+If relay startup registration does not succeed within the startup wait window, `tunnel` still enters the local terminal session and shows this on macOS:
 
 ```text
-▶ agentunnel claude — session <session-id>; relay reconnecting (127.0.0.1:8586); sleep prevented
+▶ tunnel claude — session <session-id>; relay reconnecting (127.0.0.1:8586); sleep prevented
 ```
 
-While reconnecting, `agentunnel` keeps retrying in the background and shows a compact terminal status that local work continues.
+While reconnecting, `tunnel` keeps retrying in the background and shows a compact terminal status that local work continues.
 
 Healthy startup banners are printed in green. Degraded startup banners, such as relay reconnecting or `sleep prevention failed`, are printed in red.
 
@@ -99,13 +100,13 @@ Each output frame, whether fetched through `/frames` or received live over webso
 - `cols` and `rows`
 - agent-authored UTC `ts`
 
-`seq`, `ts`, and `latest_seq` are authored by the running `agentunnel` process. They describe the current agent-owned transcript, not proof that a remote client has seen every byte the local PTY produced. After reconnecting to `GET /api/updates/ws`, clients should treat `GET /api/sessions/:id/frames` as the standard recovery path while the session is `connected`.
+`seq`, `ts`, and `latest_seq` are authored by the running `tunnel` process. They describe the current agent-owned transcript, not proof that a remote client has seen every byte the local PTY produced. After reconnecting to `GET /api/updates/ws`, clients should treat `GET /api/sessions/:id/frames` as the standard recovery path while the session is `connected`.
 
 ## Session History Model
 
 The session transcript now lives on the agent side.
 
-- `agentunnel` keeps a bounded in-memory history buffer for the lifetime of the running session
+- `tunnel` keeps a bounded in-memory history buffer for the lifetime of the running session
 - every PTY output chunk is appended locally as a replay frame with agent-authored `seq`, `ts`, `cols`, and `rows`
 - the relay stores session metadata such as `latest_seq`, `last_active_at`, state, and the current owner connection, but it does not store the frame array
 - when a client calls `GET /api/sessions/:id/frames`, the relay sends a `history_request` over `/agent/ws`, the agent snapshots its local buffer, and the relay returns the agent's `history_response` frames to the client
@@ -132,7 +133,7 @@ On each developer machine:
 ```bash
 export AGENTUNNEL_RELAY_ADDR=relay.example.com:8586
 export AGENTUNNEL_RELAY_TOKEN=shared-agent-token
-./bin/agentunnel --label "feature-branch" claude
+./bin/tunnel --label "feature-branch" claude
 ```
 
 Then connect your mobile or other external client to `relay.example.com:8586`.
@@ -143,15 +144,16 @@ Then connect your mobile or other external client to `relay.example.com:8586`.
 - `codex`
 - `gemini`
 
-`agentunnel` resolves these executables from `PATH` and runs the real CLI locally.
+`tunnel` resolves these executables from `PATH` and runs the real CLI locally.
 
 ## Development
 
 ```bash
-make build             # builds bin/agentunnel and bin/relay
+make build             # builds bin/tunnel and bin/relay
+make install           # installs tunnel and relay to ~/.local/bin
 make test              # go test ./...
 make test-relay        # focused relay/protocol contract tests
-make agentunnel LAUNCHER=claude   # run agentunnel directly
+make tunnel LAUNCHER=claude       # run tunnel directly
 make relay             # run relay server
 ```
 

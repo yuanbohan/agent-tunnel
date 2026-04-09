@@ -6,7 +6,7 @@ This document describes the relay-facing contract for clients and agents.
 
 The current protocol is built around these boundaries:
 
-- `session_id` identifies one running `agentunnel` process; relay reconnects keep the same `session_id`, while a fresh agent launch gets a new one
+- `session_id` identifies one running `tunnel` process; relay reconnects keep the same `session_id`, while a fresh agent launch gets a new one
 - the owning agent is the authority for the current session transcript and for `seq`, `ts`, and `latest_seq`
 - the relay is a discovery, fanout, and proxy layer; it does not retain the session frame array
 - `GET /api/updates/ws` is a best-effort live channel
@@ -74,7 +74,7 @@ Notes:
 
 The current replay contract is agent-owned.
 
-- `agentunnel` appends PTY output into a bounded in-memory history buffer for the lifetime of the running session
+- `tunnel` appends PTY output into a bounded in-memory history buffer for the lifetime of the running session
 - each retained entry is a `ReplayFrame` with `seq`, `data_b64`, `cols`, `rows`, and `ts`
 - the relay stores metadata, owner connection state, and pending history-request bookkeeping, but not the transcript itself
 - when a client fetches `/api/sessions/:id/frames`, the relay issues a `history_request` to the connected agent and returns the agent's `history_response`
@@ -150,7 +150,7 @@ GET /api/sessions/sess-1/frames?from=101&to=120
 
 ## Frames On `/agent/ws`
 
-`/agent/ws` is a bidirectional, session-scoped websocket between the relay and the owning `agentunnel` process.
+`/agent/ws` is a bidirectional, session-scoped websocket between the relay and the owning `tunnel` process.
 
 ### Agent -> Relay
 
@@ -399,8 +399,8 @@ Instead:
 
 1. the client sends structured input
 2. the relay validates and forwards it to the owning session
-3. `agentunnel` translates supported `input_key` events into PTY input bytes
-4. `agentunnel` writes those bytes into the local PTY stdin
+3. `tunnel` translates supported `input_key` events into PTY input bytes
+4. `tunnel` writes those bytes into the local PTY stdin
 
 This keeps terminal behavior close to the PTY owner and avoids embedding terminal-emulation logic in the relay.
 
