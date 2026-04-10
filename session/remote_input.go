@@ -13,20 +13,9 @@ func EncodeRemoteSubmitInput(text string) [][]byte {
 	}
 }
 
-func EncodeRemoteKeyInput(key string, ctrl, alt, shift bool) ([]byte, bool) {
+func EncodeRemoteKeyInput(key string) ([]byte, bool) {
 	normalized := strings.ToUpper(strings.TrimSpace(key))
 	if normalized == "" {
-		return nil, false
-	}
-
-	if ctrl && !alt && len(normalized) == 1 {
-		ch := normalized[0]
-		if ch >= 'A' && ch <= 'Z' {
-			return []byte{ch - 'A' + 1}, true
-		}
-	}
-
-	if ctrl || alt {
 		return nil, false
 	}
 
@@ -58,7 +47,6 @@ func EncodeRemoteKeyInput(key string, ctrl, alt, shift bool) ([]byte, bool) {
 	case "DELETE":
 		return []byte("\x1b[3~"), true
 	default:
-		_ = shift
 		return nil, false
 	}
 }

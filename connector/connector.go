@@ -3,6 +3,7 @@ package connector
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"sync"
 	"time"
@@ -31,10 +32,13 @@ var defaultReconnectBackoff = []time.Duration{
 }
 
 const defaultPendingInputLimit = 128
+const defaultWSWriteTimeout = 5 * time.Second
 
 // Some terminal UIs only react to submit correctly when text and Enter arrive
 // as distinct input events instead of one combined PTY write.
 const defaultSubmitEnterGap = 120 * time.Millisecond
+
+var errOutboundBackpressure = errors.New("connector outbound backpressure")
 
 // Connector is the one place where the local runtime meets the relay protocol.
 //
@@ -42,10 +46,10 @@ const defaultSubmitEnterGap = 120 * time.Millisecond
 // - session.Hub output fanout via WriteOutput()
 //
 // Downstream consumer:
-// - relay `/agent/ws`, which receives register/output frames
+// - relay `/agent/ws`, which receives register/activity/attach frames
 //
 // Reverse data path:
-// - relay input frames come back through handleMessage() into the bound Hub
+// - relay input frames come back through handleInbound() into the bound Hub
 type Connector struct {
 	url    string
 	token  string
@@ -54,11 +58,12 @@ type Connector struct {
 
 	initialCols int
 	initialRows int
-	outbound    chan protocol.Message
+	outbound    chan outboundFrame
+	ephemeral   chan outboundFrame
 	dialer      *websocket.Dialer
 	hubMu       sync.RWMutex
 	hub         *session.Hub
-	pendingIn   []protocol.Message
+	pendingIn   []protocol.AgentFrame
 	connectTTL  time.Duration
 
 	stateMu      sync.RWMutex
@@ -66,12 +71,32 @@ type Connector struct {
 	subscribers  map[chan State]struct{}
 	retryBackoff []time.Duration
 	sleep        func(context.Context, time.Duration) bool
-	history      *session.HistoryBuffer
+	mirror       *session.TerminalMirror
+	attachMu     sync.Mutex
+	attached     map[string]struct{}
+	writeTimeout time.Duration
+	now          func() time.Time
+
+	activityMu            sync.Mutex
+	lastPublishedActivity int
+
+	connMu       sync.Mutex
+	activeConn   connectionCloser
+	overflowChan chan error
+}
+
+type outboundFrame struct {
+	json   any
+	binary []byte
 }
 
 type readResult struct {
-	msg protocol.Message
-	err error
+	control *protocol.AgentFrame
+	err     error
+}
+
+type connectionCloser interface {
+	Close() error
 }
 
 func New(url, token string, info protocol.SessionInfo) *Connector {
@@ -79,12 +104,16 @@ func New(url, token string, info protocol.SessionInfo) *Connector {
 		url:          url,
 		token:        token,
 		info:         info,
-		outbound:     make(chan protocol.Message, 128),
+		outbound:     make(chan outboundFrame, 128),
+		ephemeral:    make(chan outboundFrame, 128),
 		dialer:       websocket.DefaultDialer,
 		state:        StateDisconnected,
 		subscribers:  make(map[chan State]struct{}),
 		retryBackoff: append([]time.Duration(nil), defaultReconnectBackoff...),
-		history:      session.NewHistoryBuffer(session.DefaultHistoryBufferBytes),
+		mirror:       session.NewTerminalMirror(0, 0),
+		attached:     make(map[string]struct{}),
+		writeTimeout: defaultWSWriteTimeout,
+		now:          time.Now,
 		sleep: func(ctx context.Context, d time.Duration) bool {
 			timer := time.NewTimer(d)
 			defer timer.Stop()
@@ -104,20 +133,28 @@ func (c *Connector) BindHub(hub *session.Hub) {
 		return
 	}
 
+	if cols, rows := hub.CurrentSize(); cols > 0 && rows > 0 {
+		c.applyResize(cols, rows, false)
+	}
+	hub.AddResizeListener("connector", func(cols, rows int) {
+		c.applyResize(cols, rows, true)
+	})
+
 	c.hubMu.Lock()
 	c.hub = hub
-	pending := append([]protocol.Message(nil), c.pendingIn...)
+	pending := append([]protocol.AgentFrame(nil), c.pendingIn...)
 	c.pendingIn = nil
 	c.hubMu.Unlock()
 
-	for _, msg := range pending {
-		c.deliverInput(msg)
+	for _, frame := range pending {
+		c.deliverInput(frame)
 	}
 }
 
 func (c *Connector) SetInitialSize(cols, rows int) {
 	c.initialCols = cols
 	c.initialRows = rows
+	c.applyResize(cols, rows, false)
 }
 
 func (c *Connector) SetInitialConnectTimeout(timeout time.Duration) {
@@ -186,22 +223,29 @@ func (c *Connector) WaitUntilConnected(ctx context.Context, timeout time.Duratio
 }
 
 func (c *Connector) WriteOutput(data []byte) error {
-	cols, rows := c.initialCols, c.initialRows
-	c.hubMu.RLock()
-	hub := c.hub
-	c.hubMu.RUnlock()
-	if hub != nil {
-		if currentCols, currentRows := hub.CurrentSize(); currentCols > 0 && currentRows > 0 {
-			cols, rows = currentCols, currentRows
-		}
+	dataCopy := append([]byte(nil), data...)
+
+	c.attachMu.Lock()
+	c.mirror.WriteOutput(dataCopy)
+	attached := make([]string, 0, len(c.attached))
+	for clientID := range c.attached {
+		attached = append(attached, clientID)
+	}
+	c.attachMu.Unlock()
+
+	now := c.currentTime().UTC()
+	lastActiveAt := protocol.UnixTimestamp(now)
+	c.setLastActiveAt(lastActiveAt)
+	if c.CurrentState() == StateConnected && c.shouldPublishActivity(lastActiveAt) {
+		c.enqueuePersistentJSON(protocol.ActivityFrame(lastActiveAt))
 	}
 
-	frame := c.history.AppendOutput(append([]byte(nil), data...), cols, rows, time.Now().UTC())
-	c.setLatestOutputMeta(frame.Seq, frame.TS)
-	msg := protocol.EncodeOutputFromReplayFrame(frame)
-	select {
-	case c.outbound <- msg:
-	default:
+	for _, clientID := range attached {
+		packet, err := protocol.EncodeTerminalBytesPacket(clientID, dataCopy)
+		if err != nil {
+			continue
+		}
+		c.enqueueEphemeralBinary(packet)
 	}
 	return nil
 }
@@ -251,7 +295,7 @@ func (c *Connector) runOnce(ctx context.Context, connectTimeout time.Duration) (
 		return false, err
 	}
 
-	if err := conn.WriteJSON(protocol.RegisterFrame(c.infoSnapshot())); err != nil {
+	if err := c.writeJSON(conn, protocol.RegisterFrame(c.infoSnapshot())); err != nil {
 		_ = conn.Close()
 		return false, err
 	}
@@ -262,14 +306,26 @@ func (c *Connector) runOnce(ctx context.Context, connectTimeout time.Duration) (
 
 func (c *Connector) serveConnection(ctx context.Context, conn *websocket.Conn) error {
 	defer conn.Close()
+	defer c.clearConnectionState()
+	defer c.setState(StateReconnecting)
 
+	done := make(chan struct{})
+	defer close(done)
 	incoming := make(chan readResult, 1)
-	go c.readLoop(conn, incoming)
+	overflow := make(chan error, 1)
+	c.setActiveConnection(conn, overflow)
+	defer c.clearActiveConnection()
+
+	go c.readLoop(conn, done, incoming)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case err := <-overflow:
+			if err != nil {
+				return err
+			}
 		case result, ok := <-incoming:
 			if !ok {
 				return nil
@@ -277,7 +333,7 @@ func (c *Connector) serveConnection(ctx context.Context, conn *websocket.Conn) e
 			if result.err != nil {
 				return result.err
 			}
-			if err := c.handleInboundMessage(conn, result.msg); err != nil {
+			if err := c.handleInbound(conn, result); err != nil {
 				return err
 			}
 			continue
@@ -287,6 +343,10 @@ func (c *Connector) serveConnection(ctx context.Context, conn *websocket.Conn) e
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case err := <-overflow:
+			if err != nil {
+				return err
+			}
 		case result, ok := <-incoming:
 			if !ok {
 				return nil
@@ -294,32 +354,53 @@ func (c *Connector) serveConnection(ctx context.Context, conn *websocket.Conn) e
 			if result.err != nil {
 				return result.err
 			}
-			if err := c.handleInboundMessage(conn, result.msg); err != nil {
+			if err := c.handleInbound(conn, result); err != nil {
 				return err
 			}
-		case msg := <-c.outbound:
-			if err := conn.WriteJSON(msg); err != nil {
+		case frame := <-c.ephemeral:
+			if err := c.writeOutboundFrame(conn, frame); err != nil {
+				return err
+			}
+		case frame := <-c.outbound:
+			if err := c.writeOutboundFrame(conn, frame); err != nil {
 				return err
 			}
 		}
 	}
 }
 
-func (c *Connector) handleInboundMessage(conn *websocket.Conn, msg protocol.Message) error {
-	switch msg.Type {
-	case "history_request":
-		if msg.RequestID == "" {
-			return nil
-		}
-		if msg.From != nil && msg.To != nil && *msg.From > *msg.To {
-			return nil
-		}
-		frames := c.history.Snapshot(msg.From, msg.To)
-		return conn.WriteJSON(protocol.EncodeHistoryResponse(msg.RequestID, frames))
-	default:
-		c.routeInput(msg)
+func (c *Connector) handleInbound(conn *websocket.Conn, result readResult) error {
+	if result.control == nil {
 		return nil
 	}
+
+	switch result.control.Type {
+	case "attach_open":
+		if result.control.ClientID == "" {
+			return nil
+		}
+		if err := c.handleAttachOpen(conn, result.control.ClientID); err != nil {
+			return err
+		}
+	case "attach_close":
+		if result.control.ClientID == "" {
+			return nil
+		}
+		c.handleAttachClose(result.control.ClientID)
+	case "input_text", "input_key":
+		c.routeInput(*result.control)
+	}
+	return nil
+}
+
+func (c *Connector) writeOutboundFrame(conn *websocket.Conn, frame outboundFrame) error {
+	if frame.binary != nil {
+		return c.writeBinary(conn, frame.binary)
+	}
+	if frame.json == nil {
+		return nil
+	}
+	return c.writeJSON(conn, frame.json)
 }
 
 func (c *Connector) infoSnapshot() protocol.SessionInfo {
@@ -328,14 +409,35 @@ func (c *Connector) infoSnapshot() protocol.SessionInfo {
 	return c.info
 }
 
-func (c *Connector) setLatestOutputMeta(seq uint64, ts time.Time) {
+func (c *Connector) setLastActiveAt(ts int) {
 	c.infoMu.Lock()
 	defer c.infoMu.Unlock()
-	c.info.LatestSeq = seq
-	if !ts.IsZero() {
+	if ts > 0 {
 		tsCopy := ts
 		c.info.LastActiveAt = &tsCopy
 	}
+}
+
+func (c *Connector) currentTime() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
+}
+
+func (c *Connector) shouldPublishActivity(lastActiveAt int) bool {
+	if lastActiveAt <= 0 {
+		return false
+	}
+
+	c.activityMu.Lock()
+	defer c.activityMu.Unlock()
+
+	if c.lastPublishedActivity == lastActiveAt {
+		return false
+	}
+	c.lastPublishedActivity = lastActiveAt
+	return true
 }
 
 func (c *Connector) initialConnectTimeout(attempt int) time.Duration {
@@ -394,31 +496,37 @@ func (c *Connector) pushState(ch chan State, state State) {
 	}
 }
 
-func (c *Connector) readLoop(conn *websocket.Conn, incoming chan<- readResult) {
+func (c *Connector) readLoop(conn *websocket.Conn, done <-chan struct{}, incoming chan<- readResult) {
 	defer close(incoming)
 
 	for {
-		_, raw, err := conn.ReadMessage()
+		messageType, raw, err := conn.ReadMessage()
 		if err != nil {
-			incoming <- readResult{err: err}
+			if !deliverReadResult(done, incoming, readResult{err: err}) {
+				return
+			}
 			return
 		}
-
-		var msg protocol.Message
-		if err := json.Unmarshal(raw, &msg); err != nil {
+		if messageType != websocket.TextMessage {
 			continue
 		}
 
-		incoming <- readResult{msg: msg}
+		var frame protocol.AgentFrame
+		if err := json.Unmarshal(raw, &frame); err != nil {
+			continue
+		}
+		if !deliverReadResult(done, incoming, readResult{control: &frame}) {
+			return
+		}
 	}
 }
 
-func (c *Connector) routeInput(msg protocol.Message) {
+func (c *Connector) routeInput(frame protocol.AgentFrame) {
 	c.hubMu.RLock()
 	hub := c.hub
 	c.hubMu.RUnlock()
 	if hub != nil {
-		c.deliverInputToHub(hub, msg)
+		c.deliverInputToHub(hub, frame)
 		return
 	}
 
@@ -426,37 +534,184 @@ func (c *Connector) routeInput(msg protocol.Message) {
 	if c.hub != nil {
 		hub = c.hub
 		c.hubMu.Unlock()
-		c.deliverInputToHub(hub, msg)
+		c.deliverInputToHub(hub, frame)
 		return
 	}
 	if len(c.pendingIn) >= defaultPendingInputLimit {
 		c.pendingIn = c.pendingIn[1:]
 	}
-	c.pendingIn = append(c.pendingIn, msg)
+	c.pendingIn = append(c.pendingIn, frame)
 	c.hubMu.Unlock()
 }
 
-func (c *Connector) deliverInput(msg protocol.Message) {
+func (c *Connector) deliverInput(frame protocol.AgentFrame) {
 	c.hubMu.RLock()
 	hub := c.hub
 	c.hubMu.RUnlock()
 	if hub == nil {
 		return
 	}
-	c.deliverInputToHub(hub, msg)
+	c.deliverInputToHub(hub, frame)
 }
 
-func (c *Connector) deliverInputToHub(hub *session.Hub, msg protocol.Message) {
-	switch msg.Type {
+func (c *Connector) deliverInputToHub(hub *session.Hub, frame protocol.AgentFrame) {
+	switch frame.Type {
 	case "input_text":
-		if msg.Submit {
-			_ = hub.WriteInputSequenceWithGap(defaultSubmitEnterGap, session.EncodeRemoteSubmitInput(msg.Text)...)
+		if frame.Submit {
+			_ = hub.WriteInputSequenceWithGap(defaultSubmitEnterGap, session.EncodeRemoteSubmitInput(frame.Text)...)
 			return
 		}
-		_ = hub.WriteInput(session.EncodeRemoteTextInput(msg.Text))
+		_ = hub.WriteInput(session.EncodeRemoteTextInput(frame.Text))
 	case "input_key":
-		if data, ok := session.EncodeRemoteKeyInput(msg.Key, msg.Ctrl, msg.Alt, msg.Shift); ok {
+		if data, ok := session.EncodeRemoteKeyInput(frame.Key); ok {
 			_ = hub.WriteInput(data)
 		}
+	}
+}
+
+func (c *Connector) handleAttachOpen(conn *websocket.Conn, clientID string) error {
+	c.attachMu.Lock()
+	snapshot, cols, rows := c.mirror.Snapshot()
+	c.attached[clientID] = struct{}{}
+	c.attachMu.Unlock()
+
+	if err := c.writeOutboundFrame(conn, outboundFrame{
+		json: protocol.AttachReadyFrame(clientID, cols, rows),
+	}); err != nil {
+		return err
+	}
+	if len(snapshot) > 0 {
+		if packet, err := protocol.EncodeTerminalBytesPacket(clientID, snapshot); err == nil {
+			if err := c.writeOutboundFrame(conn, outboundFrame{binary: packet}); err != nil {
+				return err
+			}
+		}
+	}
+	return c.writeOutboundFrame(conn, outboundFrame{
+		json: protocol.SnapshotDoneFrame(clientID),
+	})
+}
+
+func (c *Connector) handleAttachClose(clientID string) {
+	c.attachMu.Lock()
+	defer c.attachMu.Unlock()
+	delete(c.attached, clientID)
+}
+
+func (c *Connector) applyResize(cols, rows int, emit bool) {
+	if cols <= 0 || rows <= 0 {
+		return
+	}
+
+	c.attachMu.Lock()
+	c.mirror.Resize(cols, rows)
+	hasAttached := len(c.attached) > 0
+	c.attachMu.Unlock()
+
+	if emit && hasAttached {
+		c.enqueueEphemeralJSON(protocol.ResizeFrame(cols, rows))
+	}
+}
+
+func (c *Connector) enqueuePersistentJSON(v any) {
+	if !c.tryEnqueue(c.outbound, outboundFrame{json: v}) {
+		c.signalOverflow(errOutboundBackpressure)
+	}
+}
+
+func (c *Connector) enqueueEphemeralJSON(v any) {
+	if !c.tryEnqueue(c.ephemeral, outboundFrame{json: v}) {
+		c.signalOverflow(errOutboundBackpressure)
+	}
+}
+
+func (c *Connector) enqueueEphemeralBinary(payload []byte) {
+	if !c.tryEnqueue(c.ephemeral, outboundFrame{binary: append([]byte(nil), payload...)}) {
+		c.signalOverflow(errOutboundBackpressure)
+	}
+}
+
+func (c *Connector) clearConnectionState() {
+	c.attachMu.Lock()
+	c.attached = make(map[string]struct{})
+	c.attachMu.Unlock()
+
+	for {
+		select {
+		case <-c.ephemeral:
+		case <-c.outbound:
+		default:
+			return
+		}
+	}
+}
+
+func (c *Connector) tryEnqueue(ch chan outboundFrame, frame outboundFrame) bool {
+	select {
+	case ch <- frame:
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *Connector) signalOverflow(err error) {
+	c.connMu.Lock()
+	overflow := c.overflowChan
+	conn := c.activeConn
+	c.connMu.Unlock()
+
+	if overflow != nil {
+		select {
+		case overflow <- err:
+		default:
+		}
+	}
+	if conn != nil {
+		_ = conn.Close()
+	}
+}
+
+func (c *Connector) setActiveConnection(conn connectionCloser, overflow chan error) {
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
+	c.activeConn = conn
+	c.overflowChan = overflow
+}
+
+func (c *Connector) clearActiveConnection() {
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
+	c.activeConn = nil
+	c.overflowChan = nil
+}
+
+func (c *Connector) writeJSON(conn *websocket.Conn, v any) error {
+	if err := c.setWriteDeadline(conn); err != nil {
+		return err
+	}
+	return conn.WriteJSON(v)
+}
+
+func (c *Connector) writeBinary(conn *websocket.Conn, payload []byte) error {
+	if err := c.setWriteDeadline(conn); err != nil {
+		return err
+	}
+	return conn.WriteMessage(websocket.BinaryMessage, payload)
+}
+
+func (c *Connector) setWriteDeadline(conn *websocket.Conn) error {
+	if c.writeTimeout <= 0 {
+		return nil
+	}
+	return conn.SetWriteDeadline(time.Now().Add(c.writeTimeout))
+}
+
+func deliverReadResult(done <-chan struct{}, incoming chan<- readResult, result readResult) bool {
+	select {
+	case incoming <- result:
+		return true
+	case <-done:
+		return false
 	}
 }

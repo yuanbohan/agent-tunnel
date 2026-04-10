@@ -1,14 +1,16 @@
 # Agent Tunnel Architecture
 
-This document explains the stable shape of the system.
+This document describes the current system shape for the attach-based protocol.
 
 ## System Shape
 
-`tunnel` owns the real local agent process, its PTY, and the current session transcript. Every supported launcher follows the same path: one local PTY child, one session hub, one outbound relay connector, and no launcher-specific sidecar.
+`tunnel` owns the real local agent process, its PTY, and the authoritative current terminal state for that session. Every supported launcher follows the same path: one local PTY child, one session hub, one headless terminal mirror, one outbound relay connector, and no launcher-specific sidecar.
 
-The relay exposes authenticated APIs so external clients can observe live output, send input, list live sessions, and fetch replay for a connected session. The relay is not the history authority. It proxies replay reads to the owning agent.
+The relay exposes authenticated APIs so external clients can discover live sessions, attach to one connected session, send structured input, and observe reconnect lifecycle. The relay is not the terminal-state authority and it does not retain transcript history.
 
-The local terminal is the primary and most complete view of the PTY session. The remote path is intentionally lighter weight: `GET /api/updates/ws` is a best-effort live channel, while `GET /api/sessions/:id/frames` is the standard recovery path for the agent-owned transcript while the session is `connected`.
+Protocol-facing timestamps such as `started_at` and `last_active_at` are Unix timestamps encoded as JSON integers in seconds.
+
+The local terminal is still the primary and most complete view of the PTY session. Remote access is session-scoped: a client attaches to one session, receives a current-screen snapshot, and then receives subsequent live PTY bytes on that same attach.
 
 `tunnel` treats relay availability in two phases:
 
@@ -19,49 +21,48 @@ On macOS, after startup reaches a live local session, `tunnel` also attempts idl
 
 ```text
 local machine
-┌─────────────────────────────────────────────────────────────────────┐
-│                               tunnel                                │
-│                                                                     │
-│  launcher resolve                                                   │
-│        │                                                            │
-│        ▼                                                            │
-│  local runtime                                                      │
-│  - claude / codex / gemini PTY child                                │
-│        │                                                            │
-│        ▼                                                            │
-│     session hub                                                     │
-│  - PTY output fanout                                                │
-│  - PTY input routing                                                │
-│  - PTY size tracking                                                │
-│        │                           │                                │
-│        ▼                           ▼                                │
-│  local terminal sink         relay connector                        │
-│                              - history buffer ownership             │
-│                              - seq / ts / latest_seq authorship     │
-│                              - register / output / history_response │
-└───────────────────────────────────┬─────────────────────────────────┘
-                                    │
-                                    ▼
-                     ┌────────────────────────────────────┐
-                     │            relay server            │
-                     │  - auth                            │
-                     │  - live session registry           │
-                     │  - reconnect grace state           │
-                     │  - pending history request waiters │
-                     │  - /frames proxy                   │
-                     │  - global client update fanout     │
-                     └─────────────────┬──────────────────┘
-                                       │
-                    ┌──────────────────┴──────────────────┐
-                    ▼                                     ▼
-             mobile / web client A                 mobile / web client B
+┌──────────────────────────────────────────────────────────────────┐
+│                              tunnel                              │
+│                                                                  │
+│  launcher resolve                                                │
+│        │                                                         │
+│        ▼                                                         │
+│  local runtime                                                   │
+│  - claude / codex / gemini PTY child                             │
+│        │                                                         │
+│        ▼                                                         │
+│     session hub                                                  │
+│  - PTY output fanout                                             │
+│  - PTY input routing                                             │
+│  - PTY size tracking                                             │
+│        │                    │                     │              │
+│        ▼                    ▼                     ▼              │
+│  local terminal sink   terminal mirror      relay connector      │
+│                         - current screen     - register           │
+│                         - snapshot bytes     - activity / resize  │
+│                         - live attach fanout - attach routing     │
+└────────────────────────────────┬─────────────────────────────────┘
+                                 │
+                                 ▼
+                    ┌───────────────────────────────────┐
+                    │           relay server            │
+                    │  - auth                           │
+                    │  - live session registry          │
+                    │  - reconnect grace state          │
+                    │  - session attach websocket       │
+                    │  - agent/client routing           │
+                    └────────────────┬──────────────────┘
+                                     │
+                   ┌─────────────────┴─────────────────┐
+                   ▼                                   ▼
+            mobile / web client A               mobile / web client B
 ```
 
 ## Major Responsibilities
 
 ### `tunnel`
 
-`tunnel` is the PTY owner and the history authority for one running session.
+`tunnel` is the PTY owner and the authority for current terminal state for one running session.
 
 It owns:
 
@@ -69,13 +70,13 @@ It owns:
 - PTY lifecycle and local terminal raw mode
 - macOS idle sleep-prevention helper lifecycle
 - startup relay wait and background reconnect policy
-- fanout of PTY output to the local terminal and relay connector
-- bounded in-memory output history for the lifetime of the running session
-- agent-authored `seq`, `ts`, `last_active_at`, and `latest_seq` metadata
+- fanout of PTY output to the local terminal, terminal mirror, and relay connector
+- the authoritative headless terminal mirror for the currently visible screen
+- session-scoped attach snapshot creation
+- agent-authored `last_active_at` metadata
 - forwarding remote input back into the PTY
 - translating structured remote key input into PTY bytes
-- attaching current terminal `cols` and `rows` to every uploaded output frame
-- answering proxied `history_request` messages with snapshots of its local history buffer
+- session-wide resize authority, which continues to follow the local terminal in this phase
 
 ### Relay
 
@@ -84,56 +85,76 @@ The relay is a live broker, not durable storage and not a semantic interpreter o
 It owns:
 
 - client and agent authentication
-- current live-session snapshots
+- current live-session snapshots for discovery
 - `connected` / `reconnecting` session lifecycle state with a short reconnect grace window
 - the owner websocket for each live session
-- pending `/frames` request bookkeeping keyed by relay-issued `request_id`
-- proxied `GET /api/sessions/:id/frames` requests while the owning agent is connected
-- global update fanout for connected clients
+- client attach websockets for connected sessions
+- routing JSON control messages and client-scoped binary terminal bytes between clients and the owning agent
+- closing active attaches promptly when the owning agent disappears
 
 The relay does not own:
 
 - session creation beyond registration by an agent
-- durable history
-- the frame array backing replay
-- session-history authority
+- transcript history
+- terminal emulation
+- snapshot generation
 - preview rendering
 - content interpretation of terminal output
 - end-to-end guarantees that a remote client observed every PTY byte
 
 ### Client
 
-The client is responsible for combining best-effort live output with replay recovery.
+The client is responsible for rendering a session-scoped attach correctly.
 
 It should:
 
-- use `GET /api/updates/ws` as the foreground live channel
-- use `GET /api/sessions/:id/frames` to recover missed transcript while the session is `connected`
 - use `GET /api/sessions` to discover `connected` versus `reconnecting`
-- treat the replay data as terminal transcript, not as an exact input log
+- use `GET /api/sessions/:id/attach/ws` to attach to one connected session
+- when running in a browser, open the attach websocket from the same origin as the relay; native clients may omit `Origin`
+- size its terminal emulator from the initial `attached` control message before feeding subsequent binary bytes
+- treat binary bytes before `snapshot_done` as snapshot bytes and binary bytes after it as live PTY bytes
+- rebuild terminal state from a fresh attach after disconnect instead of assuming transcript replay
 
-## How The Agent Maintains Frames
+## Attach Flow
 
-The transcript is maintained entirely on the agent side.
+The remote attach path is:
 
-1. PTY output enters `session.Hub`.
-2. `connector.WriteOutput()` reads the current terminal size from the hub and appends the bytes into `session.HistoryBuffer`.
-3. `HistoryBuffer.AppendOutput()` creates a `ReplayFrame` with the next strictly increasing `seq`, the current UTC `ts`, and the current `cols` / `rows`.
-4. The history buffer keeps those replay frames in memory under a byte budget and evicts the oldest frames when necessary.
-5. The connector updates the session snapshot metadata it will advertise to the relay, including `latest_seq` and `last_active_at`.
-6. The connector emits the same frame as a live `output` message over `/agent/ws`.
+```text
+client opens /api/sessions/:id/attach/ws
+→ relay authenticates and checks session state
+→ relay allocates relay-scoped client_id
+→ relay sends attach_open to the owning agent
+→ agent terminal mirror atomically:
+     - captures current cols / rows
+     - serializes the current visible terminal state
+     - registers the attached client for subsequent live bytes
+→ relay sends attached { session_id, cols, rows }
+→ relay forwards snapshot bytes as binary frames
+→ relay sends snapshot_done
+→ relay forwards subsequent live PTY bytes as binary frames
+```
 
-This means live output and replay are two views of the same agent-authored frame model. The relay does not re-sequence or timestamp frames on the way through.
+The critical invariant is gap-free handoff: there must be no byte gap between the snapshot point and the first later live bytes for that attached client.
 
-The retained transcript is output-only. Input may appear inside replay only when the terminal application echoes it back as output.
+## Terminal Mirror
+
+The terminal mirror exists to make current-screen recovery precise without transcript replay.
+
+- it is fed from the same PTY output stream seen by the local terminal
+- it preserves the currently visible terminal state, not transcript history
+- it is the source of snapshot bytes on attach
+- it fans out subsequent live bytes to attached clients after the snapshot boundary
+- it follows PTY resize updates owned by the local terminal session
+
+The current implementation uses `github.com/gitpod-io/xterm-go`, an xterm-compatible headless engine with serialization support, so the snapshot path can restore alternate screen state, colors, cursor state, and other modern TUI behavior without a hand-written ANSI screen walker.
 
 ## Remote Input Flow
 
 Remote input still flows through the relay, but translation into PTY bytes remains agent-owned.
 
 ```text
-client input frame
-→ relay
+client input message
+→ relay attach websocket
 → owning agent websocket
 → tunnel connector
 → structured input translation:
@@ -145,52 +166,21 @@ client input frame
 
 This keeps terminal behavior close to the PTY owner and avoids embedding terminal emulation inside the relay.
 
-## How The Relay Proxies History To Mobile
+## Resize Flow
 
-`GET /api/sessions/:id/frames` is an HTTP proxy into the owning agent's in-memory history buffer.
-
-1. A mobile client calls `GET /api/sessions/:id/frames` with optional inclusive `from` and `to`.
-2. The relay authenticates the request, validates query bounds, and looks up the live session in the registry.
-3. If the session is missing, the relay returns `404 session_not_found`. If the session is currently `reconnecting`, the relay returns `409 session_reconnecting`.
-4. For a `connected` session, the registry allocates a pending waiter keyed by a relay-issued `request_id` and binds it to the current owner websocket.
-5. The relay sends `history_request { request_id, from, to }` over `/agent/ws`.
-6. `tunnel` snapshots its local `HistoryBuffer` for the requested bounds and replies with `history_response { request_id, frames }`.
-7. The relay matches the response to the pending waiter and returns the `frames` array as the HTTP response body.
-8. If the agent disconnects before replying, the pending request fails and the HTTP request resolves as reconnecting or timeout behavior. If the agent returns malformed replay payloads, the relay returns `502 invalid_agent_response`.
-
-The relay validates request correlation and basic replay-frame shape before returning replay data, but it still relies on the owning agent as the source of truth for transcript contents.
-
-## Live Output And Recovery
-
-The live path and recovery path are intentionally separate.
-
-### Live Path
+PTY size remains local-terminal-owned in this phase.
 
 ```text
-PTY output
-→ session hub
-→ local terminal sink
-→ connector history append + seq / ts assignment
-→ output frame over /agent/ws
-→ relay registry metadata update
-→ /api/updates/ws fanout
-→ clients
+local terminal resize
+→ session hub updates cols / rows
+→ local PTY resize
+→ terminal mirror updates size
+→ connector sends resize metadata to relay
+→ relay forwards resize control message to each attached client
+→ remote clients resize their terminal emulator
 ```
 
-`GET /api/updates/ws` is a best-effort stream. It is optimized for foreground observation, not guaranteed delivery.
-
-### Recovery Path
-
-```text
-client loses /api/updates/ws
-→ client reconnects /api/updates/ws
-→ client fetches /api/sessions/:id/frames as needed
-→ relay proxies history_request to connected owning agent
-→ agent snapshots local history buffer
-→ relay returns replay frames
-```
-
-Clients should think of `/frames` as "ask the current agent what transcript it still has", not "read history stored inside the relay."
+Remote clients follow the PTY size. They do not compete to become size authority in this revision.
 
 ## Startup And Relay Continuity
 
@@ -214,21 +204,22 @@ tunnel launch
 The session lifecycle is centered on one running agent process.
 
 1. The agent registers over `/agent/ws`; the relay marks the session `connected`.
-2. If the agent websocket drops, the relay keeps the session in the registry as `reconnecting` for a bounded grace window.
-3. During `reconnecting`, the session remains discoverable in `GET /api/sessions`, but `/frames`, live output, and remote input are unavailable.
-4. If the same running agent reconnects with the same `session_id`, it re-registers, the relay swaps ownership back to the new websocket, and the session becomes `connected` again without changing transcript authority.
-5. If the reconnect grace window expires, the relay removes the session and emits `session_removed` to live clients.
+2. Clients may attach only while the session is `connected`.
+3. If the agent websocket drops, the relay closes active attaches and keeps the session in the registry as `reconnecting` for a bounded grace window.
+4. During `reconnecting`, the session remains discoverable in `GET /api/sessions`, but attaches and remote input are unavailable.
+5. If the same running agent reconnects with the same `session_id`, it re-registers and the session becomes `connected` again.
+6. If the reconnect grace window expires, the relay removes the session.
 
-Closing the agent process ends the session. A later agent launch starts a different session with a different `session_id` and a fresh in-memory history buffer.
+Closing the agent process ends the session. A later agent launch starts a different session with a different `session_id`.
 
 ## Package Map
 
 - `cmd/agentunnel`: local `tunnel` entrypoint
-- `session/`: PTY ownership, local terminal handling, output/input hub, and history buffer
-- `connector/`: outbound relay connection, live output upload, and history-request handling
+- `session/`: PTY ownership, local terminal handling, hub fanout, resize state, and terminal mirror
+- `connector/`: outbound relay connection, session registration, attach routing, and activity / resize signaling
 - `cmd/relay`: relay entrypoint
-- `relay/`: live session registry, reconnect state, pending replay bookkeeping, and HTTP / WebSocket handlers
-- `protocol/`: shared wire types
+- `relay/`: live session registry, reconnect state, attach lifecycle, and HTTP / WebSocket handlers
+- `protocol/`: shared attach-oriented wire types
 
 ## Related Documents
 

@@ -1,108 +1,21 @@
 package protocol
 
-import (
-	"encoding/base64"
-	"time"
-)
+import "time"
 
-// Message is the agent-side JSON frame exchanged over session-scoped WebSockets.
-// Type is one of "input_text", "input_key", or "output".
+func UnixTimestamp(t time.Time) int {
+	if t.IsZero() {
+		return 0
+	}
+	return int(t.Unix())
+}
+
+// Message is the structured input envelope used internally when forwarding
+// session-scoped client input into the local PTY owner.
 type Message struct {
-	Type      string        `json:"type"`
-	Seq       uint64        `json:"seq,omitempty"`
-	DataB64   string        `json:"data_b64,omitempty"` // base64-encoded bytes for output frames
-	Frames    []ReplayFrame `json:"frames,omitempty"`
-	Text      string        `json:"text,omitempty"`
-	Submit    bool          `json:"submit,omitempty"`
-	Key       string        `json:"key,omitempty"`
-	Cols      int           `json:"cols,omitempty"`
-	Rows      int           `json:"rows,omitempty"`
-	Ctrl      bool          `json:"ctrl,omitempty"`
-	Alt       bool          `json:"alt,omitempty"`
-	Shift     bool          `json:"shift,omitempty"`
-	RequestID string        `json:"request_id,omitempty"`
-	From      *uint64       `json:"from,omitempty"`
-	To        *uint64       `json:"to,omitempty"`
-	TS        *time.Time    `json:"ts,omitempty"`
-}
-
-type ReplayFrame struct {
-	Seq     uint64    `json:"seq"`
-	DataB64 string    `json:"data_b64"`
-	Cols    int       `json:"cols"`
-	Rows    int       `json:"rows"`
-	TS      time.Time `json:"ts"`
-}
-
-type SessionState string
-
-const (
-	SessionStateConnected    SessionState = "connected"
-	SessionStateReconnecting SessionState = "reconnecting"
-)
-
-// EncodeOutput wraps raw PTY bytes into an output Message.
-func EncodeOutput(b []byte) Message {
-	return EncodeOutputWithSeq(0, b)
-}
-
-// EncodeOutputWithSeq wraps raw PTY bytes and a sequence into an output Message.
-func EncodeOutputWithSeq(seq uint64, b []byte) Message {
-	return EncodeOutputWithSeqAndSize(seq, b, 0, 0)
-}
-
-// EncodeOutputWithSeqAndSize wraps raw PTY bytes, sequence, and terminal size
-// into an output Message.
-func EncodeOutputWithSeqAndSize(seq uint64, b []byte, cols, rows int) Message {
-	return EncodeOutputWithSeqAndSizeAndTime(seq, b, cols, rows, time.Time{})
-}
-
-func EncodeReplayFrame(seq uint64, b []byte, cols, rows int, ts time.Time) ReplayFrame {
-	return ReplayFrame{
-		Seq:     seq,
-		DataB64: base64.StdEncoding.EncodeToString(b),
-		Cols:    cols,
-		Rows:    rows,
-		TS:      ts,
-	}
-}
-
-func EncodeOutputWithSeqAndSizeAndTime(seq uint64, b []byte, cols, rows int, ts time.Time) Message {
-	frame := EncodeReplayFrame(seq, b, cols, rows, ts)
-	return EncodeOutputFromReplayFrame(frame)
-}
-
-func EncodeOutputFromReplayFrame(frame ReplayFrame) Message {
-	msg := Message{
-		Type:    "output",
-		Seq:     frame.Seq,
-		DataB64: frame.DataB64,
-		Cols:    frame.Cols,
-		Rows:    frame.Rows,
-	}
-	if !frame.TS.IsZero() {
-		tsCopy := frame.TS
-		msg.TS = &tsCopy
-	}
-	return msg
-}
-
-func EncodeHistoryRequest(requestID string, from, to *uint64) Message {
-	return Message{
-		Type:      "history_request",
-		RequestID: requestID,
-		From:      from,
-		To:        to,
-	}
-}
-
-func EncodeHistoryResponse(requestID string, frames []ReplayFrame) Message {
-	cp := append([]ReplayFrame(nil), frames...)
-	return Message{
-		Type:      "history_response",
-		RequestID: requestID,
-		Frames:    cp,
-	}
+	Type   string `json:"type"`
+	Text   string `json:"text,omitempty"`
+	Submit bool   `json:"submit,omitempty"`
+	Key    string `json:"key,omitempty"`
 }
 
 func EncodeInputText(text string, submit bool) Message {
@@ -113,33 +26,19 @@ func EncodeInputText(text string, submit bool) Message {
 	}
 }
 
-func EncodeInputKey(key string, ctrl, alt, shift bool) Message {
+func EncodeInputKey(key string) Message {
 	return Message{
-		Type:  "input_key",
-		Key:   key,
-		Ctrl:  ctrl,
-		Alt:   alt,
-		Shift: shift,
+		Type: "input_key",
+		Key:  key,
 	}
 }
 
-// DecodeDataB64 decodes the base64 data_b64 field of an output Message.
-func DecodeDataB64(m Message) ([]byte, error) {
-	return base64.StdEncoding.DecodeString(m.DataB64)
-}
+type SessionState string
 
-func ReplayFrameFromOutputMessage(m Message) (ReplayFrame, bool) {
-	if m.Type != "output" || m.Seq == 0 || m.DataB64 == "" || m.TS == nil || m.TS.IsZero() {
-		return ReplayFrame{}, false
-	}
-	return ReplayFrame{
-		Seq:     m.Seq,
-		DataB64: m.DataB64,
-		Cols:    m.Cols,
-		Rows:    m.Rows,
-		TS:      *m.TS,
-	}, true
-}
+const (
+	SessionStateConnected    SessionState = "connected"
+	SessionStateReconnecting SessionState = "reconnecting"
+)
 
 // SessionInfo describes a live agent session registered with the relay.
 type SessionInfo struct {
@@ -148,16 +47,23 @@ type SessionInfo struct {
 	Label          string       `json:"label,omitempty"`
 	CWD            string       `json:"cwd"`
 	CommandPreview string       `json:"command_preview"`
-	StartedAt      time.Time    `json:"started_at"`
-	LastActiveAt   *time.Time   `json:"last_active_at,omitempty"`
+	StartedAt      int          `json:"started_at"`
+	LastActiveAt   *int         `json:"last_active_at,omitempty"`
 	State          SessionState `json:"state,omitempty"`
-	LatestSeq      uint64       `json:"latest_seq"`
 }
 
 // AgentFrame is the JSON envelope sent over the agent WebSocket to the relay.
 type AgentFrame struct {
-	Type    string       `json:"type"`
-	Session *SessionInfo `json:"session,omitempty"`
+	Type         string       `json:"type"`
+	Session      *SessionInfo `json:"session,omitempty"`
+	ClientID     string       `json:"client_id,omitempty"`
+	Reason       string       `json:"reason,omitempty"`
+	Text         string       `json:"text,omitempty"`
+	Submit       bool         `json:"submit,omitempty"`
+	Key          string       `json:"key,omitempty"`
+	Cols         int          `json:"cols,omitempty"`
+	Rows         int          `json:"rows,omitempty"`
+	LastActiveAt *int         `json:"last_active_at,omitempty"`
 }
 
 // RegisterFrame builds an AgentFrame of type "register".
@@ -168,35 +74,140 @@ func RegisterFrame(info SessionInfo) AgentFrame {
 	}
 }
 
-// ClientInputMessage is the client-to-relay envelope used by /api/updates/ws.
-type ClientInputMessage struct {
-	SessionID string `json:"session_id"`
-	Type      string `json:"type"`
-	Text      string `json:"text,omitempty"`
-	Submit    bool   `json:"submit,omitempty"`
-	Key       string `json:"key,omitempty"`
-	Ctrl      bool   `json:"ctrl,omitempty"`
-	Alt       bool   `json:"alt,omitempty"`
-	Shift     bool   `json:"shift,omitempty"`
-}
-
-func EncodeClientInputText(sessionID, text string, submit bool) ClientInputMessage {
-	return ClientInputMessage{
-		SessionID: sessionID,
-		Type:      "input_text",
-		Text:      text,
-		Submit:    submit,
+func ActivityFrame(lastActiveAt int) AgentFrame {
+	tsCopy := lastActiveAt
+	return AgentFrame{
+		Type:         "activity",
+		LastActiveAt: &tsCopy,
 	}
 }
 
-func EncodeClientInputKey(sessionID, key string, ctrl, alt, shift bool) ClientInputMessage {
-	return ClientInputMessage{
+func ResizeFrame(cols, rows int) AgentFrame {
+	return AgentFrame{
+		Type: "resize",
+		Cols: cols,
+		Rows: rows,
+	}
+}
+
+func AttachOpenFrame(clientID string) AgentFrame {
+	return AgentFrame{
+		Type:     "attach_open",
+		ClientID: clientID,
+	}
+}
+
+func AttachReadyFrame(clientID string, cols, rows int) AgentFrame {
+	return AgentFrame{
+		Type:     "attach_ready",
+		ClientID: clientID,
+		Cols:     cols,
+		Rows:     rows,
+	}
+}
+
+func SnapshotDoneFrame(clientID string) AgentFrame {
+	return AgentFrame{
+		Type:     "snapshot_done",
+		ClientID: clientID,
+	}
+}
+
+func AttachCloseFrame(clientID, reason string) AgentFrame {
+	return AgentFrame{
+		Type:     "attach_close",
+		ClientID: clientID,
+		Reason:   reason,
+	}
+}
+
+func ForwardInputTextFrame(clientID, text string, submit bool) AgentFrame {
+	return AgentFrame{
+		Type:     "input_text",
+		ClientID: clientID,
+		Text:     text,
+		Submit:   submit,
+	}
+}
+
+func ForwardInputKeyFrame(clientID, key string) AgentFrame {
+	return AgentFrame{
+		Type:     "input_key",
+		ClientID: clientID,
+		Key:      key,
+	}
+}
+
+type AttachControlMessage struct {
+	Type      string `json:"type"`
+	SessionID string `json:"session_id,omitempty"`
+	Cols      int    `json:"cols,omitempty"`
+	Rows      int    `json:"rows,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+func AttachedMessage(sessionID string, cols, rows int) AttachControlMessage {
+	return AttachControlMessage{
+		Type:      "attached",
 		SessionID: sessionID,
-		Type:      "input_key",
-		Key:       key,
-		Ctrl:      ctrl,
-		Alt:       alt,
-		Shift:     shift,
+		Cols:      cols,
+		Rows:      rows,
+	}
+}
+
+func SnapshotDoneMessage() AttachControlMessage {
+	return AttachControlMessage{
+		Type: "snapshot_done",
+	}
+}
+
+func ResizeMessage(cols, rows int) AttachControlMessage {
+	return AttachControlMessage{
+		Type: "resize",
+		Cols: cols,
+		Rows: rows,
+	}
+}
+
+func ClosingMessage(reason string) AttachControlMessage {
+	return AttachControlMessage{
+		Type:   "closing",
+		Reason: reason,
+	}
+}
+
+// ClientInputMessage is the client-to-relay envelope used by the
+// session-scoped attach WebSocket.
+type ClientInputMessage struct {
+	Type   string `json:"type"`
+	Text   string `json:"text,omitempty"`
+	Submit bool   `json:"submit,omitempty"`
+	Key    string `json:"key,omitempty"`
+}
+
+func EncodeClientInputText(text string, submit bool) ClientInputMessage {
+	return ClientInputMessage{
+		Type:   "input_text",
+		Text:   text,
+		Submit: submit,
+	}
+}
+
+func EncodeClientInputKey(key string) ClientInputMessage {
+	return ClientInputMessage{
+		Type: "input_key",
+		Key:  key,
+	}
+}
+
+func (m ClientInputMessage) AgentFrame(clientID string) AgentFrame {
+	switch m.Type {
+	case "input_text":
+		return ForwardInputTextFrame(clientID, m.Text, m.Submit)
+	case "input_key":
+		return ForwardInputKeyFrame(clientID, m.Key)
+	default:
+		return AgentFrame{Type: m.Type, ClientID: clientID}
 	}
 }
 
@@ -205,47 +216,8 @@ func (m ClientInputMessage) AgentMessage() Message {
 	case "input_text":
 		return EncodeInputText(m.Text, m.Submit)
 	case "input_key":
-		return EncodeInputKey(m.Key, m.Ctrl, m.Alt, m.Shift)
+		return EncodeInputKey(m.Key)
 	default:
 		return Message{Type: m.Type}
-	}
-}
-
-// ClientUpdateMessage is the client-facing multiplexed envelope used by the
-// global relay stream. Unlike Message, it always carries session identity so a
-// single foreground connection can route live output for many sessions.
-type ClientUpdateMessage struct {
-	SessionID string     `json:"session_id"`
-	Type      string     `json:"type"`
-	Seq       uint64     `json:"seq,omitempty"`
-	DataB64   string     `json:"data_b64,omitempty"`
-	Cols      int        `json:"cols,omitempty"`
-	Rows      int        `json:"rows,omitempty"`
-	Reason    string     `json:"reason,omitempty"`
-	TS        *time.Time `json:"ts,omitempty"`
-}
-
-func EncodeClientOutput(sessionID string, seq uint64, b []byte, cols, rows int, ts time.Time) ClientUpdateMessage {
-	return EncodeClientOutputFrame(sessionID, EncodeReplayFrame(seq, b, cols, rows, ts))
-}
-
-func EncodeClientOutputFrame(sessionID string, frame ReplayFrame) ClientUpdateMessage {
-	tsCopy := frame.TS
-	return ClientUpdateMessage{
-		SessionID: sessionID,
-		Type:      "output",
-		Seq:       frame.Seq,
-		DataB64:   frame.DataB64,
-		Cols:      frame.Cols,
-		Rows:      frame.Rows,
-		TS:        &tsCopy,
-	}
-}
-
-func EncodeClientSessionRemoved(sessionID, reason string) ClientUpdateMessage {
-	return ClientUpdateMessage{
-		SessionID: sessionID,
-		Type:      "session_removed",
-		Reason:    reason,
 	}
 }

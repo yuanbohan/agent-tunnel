@@ -1,15 +1,15 @@
 package relay
 
 import (
-	"context"
-	"encoding/base64"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
-	"strconv"
+	"net/url"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -19,7 +19,6 @@ import (
 const (
 	defaultWSSinkBufferSize       = 64
 	defaultWSWriteTimeout         = 5 * time.Second
-	defaultHistoryRequestTimeout  = 5 * time.Second
 	defaultAgentReadTimeout       = 30 * time.Second
 	defaultAgentPingInterval      = 10 * time.Second
 	defaultAgentPingWriteTimeout  = 5 * time.Second
@@ -32,12 +31,7 @@ var (
 	errWSSinkClosed         = errors.New("websocket sink closed")
 	errWSSinkBackpressure   = errors.New("websocket sink backpressure")
 	errInvalidAgentRegister = errors.New("invalid agent register frame")
-	errHistoryResponseProto = errors.New("invalid history response frame")
-	nextSinkID              uint64
-	nextHistoryRequestID    uint64
-	clientUpdateSinkFactory = func(conn *websocket.Conn, tracker *wsTrafficTracker) clientUpdateSink {
-		return newWSClientUpdateSink(conn, tracker, defaultWSSinkBufferSize, defaultWSWriteTimeout)
-	}
+	errAgentPeerInactive    = errors.New("agent peer inactive")
 )
 
 type HandlerConfig struct {
@@ -46,7 +40,6 @@ type HandlerConfig struct {
 	Password               string
 	AgentToken             string
 	Logger                 *Logger
-	HistoryRequestTimeout  time.Duration
 	AgentReadTimeout       time.Duration
 	AgentPingInterval      time.Duration
 	AgentPingWriteTimeout  time.Duration
@@ -60,10 +53,7 @@ type wsAgentPeer struct {
 	tracker      *wsTrafficTracker
 	writeTimeout time.Duration
 	mu           sync.Mutex
-}
-
-type historyProxyErrorBody struct {
-	Reason string `json:"reason"`
+	active       bool
 }
 
 type wsConn interface {
@@ -77,12 +67,16 @@ func newWSAgentPeer(conn *websocket.Conn, tracker *wsTrafficTracker) *wsAgentPee
 		conn:         conn,
 		tracker:      tracker,
 		writeTimeout: defaultWSWriteTimeout,
+		active:       true,
 	}
 }
 
-func (p *wsAgentPeer) Send(msg protocol.Message) error {
+func (p *wsAgentPeer) SendJSON(msg any) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if !p.active {
+		return errAgentPeerInactive
+	}
 
 	if p.writeTimeout > 0 {
 		if err := p.conn.SetWriteDeadline(time.Now().Add(p.writeTimeout)); err != nil {
@@ -105,10 +99,44 @@ func (p *wsAgentPeer) Send(msg protocol.Message) error {
 	return nil
 }
 
+func (p *wsAgentPeer) SendBinary(payload []byte) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.active {
+		return errAgentPeerInactive
+	}
+
+	if p.writeTimeout > 0 {
+		if err := p.conn.SetWriteDeadline(time.Now().Add(p.writeTimeout)); err != nil {
+			if p.tracker != nil {
+				p.tracker.NoteDisconnectError(err)
+			}
+			return err
+		}
+	}
+	if err := p.conn.WriteMessage(websocket.BinaryMessage, payload); err != nil {
+		if p.tracker != nil {
+			p.tracker.NoteDisconnectError(err)
+		}
+		return err
+	}
+	if p.tracker != nil {
+		p.tracker.RecordOutbound(len(payload))
+	}
+	return nil
+}
+
 func (p *wsAgentPeer) Close() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.active = false
 	return p.conn.Close()
+}
+
+func (p *wsAgentPeer) Deactivate() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.active = false
 }
 
 func NewHandler(cfg HandlerConfig) http.Handler {
@@ -153,14 +181,10 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 	if clientPingWriteTimeout <= 0 {
 		clientPingWriteTimeout = defaultClientPingWriteTimeout
 	}
-	historyRequestTimeout := cfg.HistoryRequestTimeout
-	if historyRequestTimeout <= 0 {
-		historyRequestTimeout = defaultHistoryRequestTimeout
-	}
 
 	mux := http.NewServeMux()
 	agentUpgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-	clientUpgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	clientUpgrader := websocket.Upgrader{CheckOrigin: checkAttachOrigin}
 
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -181,75 +205,6 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(registry.List())
-	})
-
-	mux.HandleFunc("/api/updates/ws", func(w http.ResponseWriter, r *http.Request) {
-		if !checkBasicAuth(r, cfg.User, cfg.Password) {
-			logAuthFailed(logger, r, "basic")
-			w.Header().Set("WWW-Authenticate", `Basic realm="agentunnel relay"`)
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		conn, err := clientUpgrader.Upgrade(w, r, nil)
-		if err != nil {
-			logWSUpgradeFailed(logger, r, "client")
-			return
-		}
-		defer conn.Close()
-		tracker := newWSTrafficTracker(r.URL.Path, r.RemoteAddr, requestIDFromRequest(r))
-		fields := []Field{
-			String("path", r.URL.Path),
-			String("remote_addr", r.RemoteAddr),
-		}
-		if requestID := requestIDFromRequest(r); requestID != "" {
-			fields = append(fields, String("request_id", requestID))
-		}
-		logger.Info("updates_ws_connected", fields...)
-		var loopErr error
-		defer func() {
-			fields := tracker.SummaryFields(time.Now())
-			fields = append(fields, disconnectLogFields(tracker.DisconnectError(loopErr))...)
-			logger.Info("updates_ws_disconnected", fields...)
-		}()
-		conn.SetReadLimit(1 << 20)
-		_ = conn.SetReadDeadline(time.Now().Add(clientReadTimeout))
-		conn.SetPongHandler(func(string) error {
-			return conn.SetReadDeadline(time.Now().Add(clientReadTimeout))
-		})
-
-		sinkID := "updates-" + strconv.FormatUint(atomic.AddUint64(&nextSinkID, 1), 10)
-		sink := clientUpdateSinkFactory(conn, tracker)
-		registry.AddUpdateSink(sinkID, sink)
-		defer func() {
-			registry.RemoveUpdateSink(sinkID)
-			_ = sink.Close()
-		}()
-
-		stopPings := startWSPingLoop(conn, clientPingInterval, clientPingWriteTimeout)
-		defer close(stopPings)
-
-		for {
-			var msg protocol.ClientInputMessage
-			payload, err := readWSJSON(conn, &msg)
-			if err != nil {
-				loopErr = err
-				return
-			}
-			tracker.RecordInbound(len(payload))
-			if msg.SessionID == "" {
-				continue
-			}
-			switch msg.Type {
-			case "input_text":
-			case "input_key":
-				if msg.Key == "" {
-					continue
-				}
-			default:
-				continue
-			}
-			_ = registry.WriteInput(msg.SessionID, msg.AgentMessage())
-		}
 	})
 
 	mux.HandleFunc("/agent/ws", func(w http.ResponseWriter, r *http.Request) {
@@ -298,9 +253,6 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 		}
 
 		peer := newWSAgentPeer(conn, tracker)
-		// The relay treats the agent websocket as the owner of this live session.
-		// All later output mutations are validated against this
-		// owner so stale connections cannot keep mutating a replaced session.
 		registry.Register(*register.Session, peer)
 		defer registry.DisconnectIfOwner(register.Session.SessionID, peer)
 		tracker.SetSessionID(register.Session.SessionID)
@@ -319,34 +271,46 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 		defer close(stopPings)
 
 		for {
-			var msg protocol.Message
-			payload, err := readWSJSON(conn, &msg)
+			messageType, payload, err := conn.ReadMessage()
 			if err != nil {
 				loopErr = err
 				return
 			}
 			tracker.RecordInbound(len(payload))
-			switch msg.Type {
-			case "output":
-				frame, ok := protocol.ReplayFrameFromOutputMessage(msg)
-				if !ok {
+
+			switch messageType {
+			case websocket.BinaryMessage:
+				packet, err := protocol.DecodeAttachPacket(payload)
+				if err != nil {
 					continue
 				}
-				registry.TouchOutputIfOwner(register.Session.SessionID, peer, frame)
-			case "history_response":
-				if msg.RequestID == "" {
-					if registry.PendingHistoryCountIfOwner(register.Session.SessionID, peer) == 1 {
-						registry.FailPendingHistoryRequestsIfOwner(register.Session.SessionID, peer, errHistoryResponseProto)
+				registry.RouteTerminalBytesIfOwner(register.Session.SessionID, peer, packet)
+			case websocket.TextMessage:
+				var frame protocol.AgentFrame
+				if err := json.Unmarshal(payload, &frame); err != nil {
+					continue
+				}
+				switch frame.Type {
+				case "activity":
+					if frame.LastActiveAt != nil {
+						registry.TouchActivityIfOwner(register.Session.SessionID, peer, *frame.LastActiveAt)
 					}
-					continue
-				}
-				if !validHistoryResponse(msg) {
-					registry.FailHistoryRequest(register.Session.SessionID, msg.RequestID, errHistoryResponseProto)
-					continue
-				}
-				if !registry.ResolveHistoryRequest(register.Session.SessionID, peer, msg.RequestID, msg.Frames) &&
-					registry.PendingHistoryCountIfOwner(register.Session.SessionID, peer) == 1 {
-					registry.FailPendingHistoryRequestsIfOwner(register.Session.SessionID, peer, errHistoryResponseProto)
+				case "resize":
+					if frame.Cols > 0 && frame.Rows > 0 {
+						registry.RouteResizeIfOwner(register.Session.SessionID, peer, frame.Cols, frame.Rows)
+					}
+				case "attach_ready":
+					if frame.ClientID != "" && frame.Cols > 0 && frame.Rows > 0 {
+						registry.RouteAttachReadyIfOwner(register.Session.SessionID, peer, frame.ClientID, frame.Cols, frame.Rows)
+					}
+				case "snapshot_done":
+					if frame.ClientID != "" {
+						registry.RouteSnapshotDoneIfOwner(register.Session.SessionID, peer, frame.ClientID)
+					}
+				case "attach_close":
+					if frame.ClientID != "" {
+						registry.RouteAttachCloseIfOwner(register.Session.SessionID, peer, frame.ClientID, frame.Reason)
+					}
 				}
 			}
 		}
@@ -361,75 +325,198 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 		}
 
 		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-		if len(parts) != 4 || parts[0] != "api" || parts[1] != "sessions" {
+		if len(parts) != 5 || parts[0] != "api" || parts[1] != "sessions" || parts[3] != "attach" || parts[4] != "ws" {
 			http.NotFound(w, r)
+			return
+		}
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 
 		sessionID := parts[2]
-		switch parts[3] {
-		case "frames":
-			if r.Method != http.MethodGet {
-				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-				return
-			}
-			from, hasFrom, err := parseOptionalUintQuery(r, "from")
-			if err != nil {
-				http.Error(w, "bad request", http.StatusBadRequest)
-				return
-			}
-			to, hasTo, err := parseOptionalUintQuery(r, "to")
-			if err != nil {
-				http.Error(w, "bad request", http.StatusBadRequest)
-				return
-			}
-			if hasFrom && hasTo && from > to {
-				http.Error(w, "bad request", http.StatusBadRequest)
-				return
-			}
-			requestID := "history-" + strconv.FormatUint(atomic.AddUint64(&nextHistoryRequestID, 1), 10)
-			peer, resultCh, err := registry.StartHistoryRequest(sessionID, requestID)
-			if err != nil {
-				writeHistoryProxyError(w, err)
-				return
-			}
-			if err := peer.Send(protocol.EncodeHistoryRequest(requestID, optionalUint64Ptr(from, hasFrom), optionalUint64Ptr(to, hasTo))); err != nil {
-				_ = registry.FailHistoryRequest(sessionID, requestID, ErrSessionReconnecting)
-				writeHistoryProxyError(w, ErrSessionReconnecting)
-				return
-			}
-
-			timer := time.NewTimer(historyRequestTimeout)
-			defer timer.Stop()
-
-			select {
-			case <-r.Context().Done():
-				_ = registry.FailHistoryRequest(sessionID, requestID, r.Context().Err())
-				return
-			case result, ok := <-resultCh:
-				if !ok {
-					writeHistoryProxyError(w, errHistoryResponseProto)
-					return
-				}
-				if result.err != nil {
-					writeHistoryProxyError(w, result.err)
-					return
-				}
-				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(result.frames)
-				return
-			case <-timer.C:
-				_ = registry.FailHistoryRequest(sessionID, requestID, context.DeadlineExceeded)
-				writeHistoryProxyError(w, context.DeadlineExceeded)
-				return
-			}
-		default:
-			http.NotFound(w, r)
+		info, ok := registry.Session(sessionID)
+		if !ok {
+			writeJSONError(w, http.StatusNotFound, "session_not_found")
 			return
+		}
+		if info.State != protocol.SessionStateConnected {
+			writeJSONError(w, http.StatusConflict, "session_reconnecting")
+			return
+		}
+
+		clientID, err := newClientID()
+		if err != nil {
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		conn, err := clientUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			logWSUpgradeFailed(logger, r, "attach")
+			return
+		}
+		defer conn.Close()
+		tracker := newWSTrafficTracker(r.URL.Path, r.RemoteAddr, requestIDFromRequest(r))
+		tracker.SetSessionID(sessionID)
+		fields := []Field{
+			String("path", r.URL.Path),
+			String("remote_addr", r.RemoteAddr),
+			String("session_id", sessionID),
+		}
+		if requestID := requestIDFromRequest(r); requestID != "" {
+			fields = append(fields, String("request_id", requestID))
+		}
+		logger.Info("attach_ws_connected", fields...)
+		var loopErr error
+		defer func() {
+			fields := tracker.SummaryFields(time.Now())
+			fields = append(fields, disconnectLogFields(tracker.DisconnectError(loopErr))...)
+			logger.Info("attach_ws_disconnected", fields...)
+		}()
+		conn.SetReadLimit(1 << 20)
+		_ = conn.SetReadDeadline(time.Now().Add(clientReadTimeout))
+		conn.SetPongHandler(func(string) error {
+			return conn.SetReadDeadline(time.Now().Add(clientReadTimeout))
+		})
+
+		attachPeer := newWSAttachPeer(conn, tracker, defaultWSSinkBufferSize, defaultWSWriteTimeout)
+		owner, err := registry.StartAttach(sessionID, clientID, attachPeer)
+		if err != nil {
+			loopErr = err
+			_ = attachPeer.Close(reasonForAttachStartError(err))
+			return
+		}
+		defer registry.DetachClient(sessionID, clientID, "client_closed")
+
+		if err := owner.SendJSON(protocol.AttachOpenFrame(clientID)); err != nil {
+			loopErr = err
+			_ = registry.DetachClient(sessionID, clientID, "session_reconnecting")
+			return
+		}
+
+		stopPings := startWSPingLoop(conn, clientPingInterval, clientPingWriteTimeout)
+		defer close(stopPings)
+
+		for {
+			var msg protocol.ClientInputMessage
+			payload, err := readWSJSON(conn, &msg)
+			if err != nil {
+				loopErr = err
+				return
+			}
+			tracker.RecordInbound(len(payload))
+			switch msg.Type {
+			case "input_text":
+			case "input_key":
+				if msg.Key == "" && msg.Type == "input_key" {
+					continue
+				}
+			default:
+				continue
+			}
+			if err := registry.WriteAttachInput(sessionID, msg.AgentFrame(clientID)); err != nil {
+				loopErr = err
+				return
+			}
 		}
 	})
 
 	return logRequests(logger, mux)
+}
+
+func writeJSONError(w http.ResponseWriter, status int, reason string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"reason": reason})
+}
+
+func checkAttachOrigin(r *http.Request) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return true
+	}
+
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed.Host == "" || parsed.Scheme == "" {
+		return false
+	}
+	return sameAttachOrigin(parsed.Scheme, parsed.Host, attachRequestScheme(r), attachRequestHost(r))
+}
+
+func attachRequestHost(r *http.Request) string {
+	if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-Host")); forwarded != "" {
+		if comma := strings.IndexByte(forwarded, ','); comma >= 0 {
+			forwarded = forwarded[:comma]
+		}
+		return strings.TrimSpace(forwarded)
+	}
+	return strings.TrimSpace(r.Host)
+}
+
+func attachRequestScheme(r *http.Request) string {
+	if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); forwarded != "" {
+		if comma := strings.IndexByte(forwarded, ','); comma >= 0 {
+			forwarded = forwarded[:comma]
+		}
+		return strings.ToLower(strings.TrimSpace(forwarded))
+	}
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
+}
+
+func sameAttachOrigin(originScheme, originHost, requestScheme, requestHost string) bool {
+	if !strings.EqualFold(strings.TrimSpace(originScheme), strings.TrimSpace(requestScheme)) {
+		return false
+	}
+	return strings.EqualFold(normalizeAttachHost(originHost, originScheme), normalizeAttachHost(requestHost, requestScheme))
+}
+
+func normalizeAttachHost(host, scheme string) string {
+	host = strings.TrimSpace(host)
+	scheme = strings.ToLower(strings.TrimSpace(scheme))
+	parsed := &url.URL{Scheme: scheme, Host: host}
+	name := strings.ToLower(parsed.Hostname())
+	port := parsed.Port()
+	if port == "" || isDefaultPortForScheme(port, scheme) {
+		return name
+	}
+	return net.JoinHostPort(name, port)
+}
+
+func isDefaultPortForScheme(port, scheme string) bool {
+	return (scheme == "http" && port == "80") || (scheme == "https" && port == "443")
+}
+
+func reasonForAttachStartError(err error) string {
+	switch {
+	case errors.Is(err, ErrSessionNotFound):
+		return "session_removed"
+	case errors.Is(err, ErrSessionReconnecting):
+		return "session_reconnecting"
+	default:
+		return "session_removed"
+	}
+}
+
+func newClientID() (string, error) {
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", err
+	}
+	var raw [36]byte
+	hex.Encode(raw[0:8], buf[0:4])
+	raw[8] = '-'
+	hex.Encode(raw[9:13], buf[4:6])
+	raw[13] = '-'
+	hex.Encode(raw[14:18], buf[6:8])
+	raw[18] = '-'
+	hex.Encode(raw[19:23], buf[8:10])
+	raw[23] = '-'
+	hex.Encode(raw[24:36], buf[10:16])
+	return string(raw[:]), nil
 }
 
 func logAuthFailed(logger *Logger, r *http.Request, authType string) {
@@ -475,78 +562,28 @@ func disconnectLogFields(err error) []Field {
 	return fields
 }
 
-func optionalUint64Ptr(v uint64, ok bool) *uint64 {
-	if !ok {
-		return nil
-	}
-	cp := v
-	return &cp
-}
-
-func validHistoryResponse(msg protocol.Message) bool {
-	if msg.Type != "history_response" || msg.RequestID == "" {
-		return false
-	}
-	for _, frame := range msg.Frames {
-		if frame.Seq == 0 || frame.DataB64 == "" || frame.TS.IsZero() {
-			return false
-		}
-		if _, err := base64.StdEncoding.DecodeString(frame.DataB64); err != nil {
-			return false
-		}
-	}
-	return true
-}
-
-func writeHistoryProxyError(w http.ResponseWriter, err error) {
-	status := http.StatusBadGateway
-	reason := "invalid_agent_response"
-
-	switch {
-	case errors.Is(err, ErrSessionNotFound):
-		status = http.StatusNotFound
-		reason = "session_not_found"
-	case errors.Is(err, ErrSessionReconnecting):
-		status = http.StatusConflict
-		reason = "session_reconnecting"
-	case errors.Is(err, context.DeadlineExceeded):
-		status = http.StatusGatewayTimeout
-		reason = "upstream_timeout"
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(historyProxyErrorBody{Reason: reason})
-}
-
 func startWSPingLoop(conn *websocket.Conn, interval, writeTimeout time.Duration) chan struct{} {
 	stop := make(chan struct{})
+	if interval <= 0 {
+		return stop
+	}
+
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
-
 		for {
 			select {
 			case <-stop:
 				return
 			case <-ticker.C:
-				if err := conn.WriteControl(websocket.PingMessage, []byte("ping"), time.Now().Add(writeTimeout)); err != nil {
-					return
+				deadline := time.Now().Add(writeTimeout)
+				if writeTimeout <= 0 {
+					deadline = time.Time{}
 				}
+				_ = conn.WriteControl(websocket.PingMessage, nil, deadline)
 			}
 		}
 	}()
-	return stop
-}
 
-func parseOptionalUintQuery(r *http.Request, key string) (uint64, bool, error) {
-	if !r.URL.Query().Has(key) {
-		return 0, false, nil
-	}
-	value := r.URL.Query().Get(key)
-	parsed, err := strconv.ParseUint(value, 10, 64)
-	if err != nil {
-		return 0, false, err
-	}
-	return parsed, true, nil
+	return stop
 }

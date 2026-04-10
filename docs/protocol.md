@@ -1,18 +1,21 @@
 # Agent Tunnel Relay Protocol
 
-This document describes the relay-facing contract for clients and agents.
+This document describes the current relay-facing contract for clients and agents.
+
+It supersedes the older replay/frame model. Clients should build against this attach-based protocol, not against `/api/updates/ws`, `/api/sessions/:id/frames`, `ReplayFrame`, or `latest_seq`.
 
 ## Core Model
 
 The current protocol is built around these boundaries:
 
-- `session_id` identifies one running `tunnel` process; relay reconnects keep the same `session_id`, while a fresh agent launch gets a new one
-- the owning agent is the authority for the current session transcript and for `seq`, `ts`, and `latest_seq`
-- the relay is a discovery, fanout, and proxy layer; it does not retain the session frame array
-- `GET /api/updates/ws` is a best-effort live channel
-- `GET /api/sessions/:id/frames` is the standard recovery path for agent-owned output while the session is `connected`
-- transcript history is output-only; there is no exact input log in this protocol revision
-- the local terminal remains the most complete view of the PTY session
+- `session_id` identifies one running `tunnel` process. Relay reconnects for that process keep the same `session_id`. A fresh agent launch gets a fresh `session_id`.
+- The owning agent is the authority for the current terminal state of that session.
+- The relay is a discovery, auth, routing, and reconnect-lifecycle layer. It does not retain transcript history and does not emulate the terminal.
+- Remote viewing is session-scoped: a client attaches to one session, receives a current-state snapshot, and then receives subsequent live PTY bytes on that same attach.
+- Remote recovery in this revision is current-state recovery only. There is no transcript replay API.
+- The local terminal remains the most complete and authoritative foreground view of the PTY session.
+
+All protocol timestamps are Unix timestamps represented as JSON integers in seconds.
 
 ## Endpoint Inventory
 
@@ -20,9 +23,13 @@ The current protocol is built around these boundaries:
 |----------|------|------|------|---------|
 | `GET /healthz` | Any | None | HTTP | Health check |
 | `GET /api/sessions` | Client | Basic Auth | HTTP | Current live session snapshot |
-| `GET /api/sessions/:id/frames?from=<seq>&to=<seq>` | Client | Basic Auth | HTTP | Proxy a replay request to the connected owning agent |
-| `GET /api/updates/ws` | Client | Basic Auth | WebSocket | Best-effort global live output updates and structured client input |
-| `GET /agent/ws` | Agent | Bearer | WebSocket | Agent registration, live output upload, proxied history requests, and forwarded client input |
+| `GET /api/sessions/:id/attach/ws` | Client | Basic Auth | WebSocket | Attach to one live session for snapshot, live bytes, resize events, and session-scoped structured input |
+| `GET /agent/ws` | Agent | Bearer | WebSocket | Agent registration, attach control, activity and resize metadata, structured input forwarding, and client-routed terminal byte delivery |
+
+Removed from the product contract:
+
+- `GET /api/updates/ws`
+- `GET /api/sessions/:id/frames`
 
 ## Auth Headers
 
@@ -40,12 +47,14 @@ Authorization: Bearer <token>
 
 WebSocket attach notes:
 
-- clients attach to `GET /api/updates/ws` with the same Basic Auth credentials as the HTTP endpoints
+- clients attach to `GET /api/sessions/:id/attach/ws` with the same Basic Auth credentials as the HTTP endpoints
+- browser clients must present a same-origin `Origin` header for the relay host; cross-origin browser attaches are rejected
+- native clients that omit `Origin` are allowed
 - agents attach to `GET /agent/ws` with the bearer token
 
 ## Session Snapshot
 
-`GET /api/sessions` returns an array of `SessionInfo`:
+`GET /api/sessions` returns an array of `SessionInfo` objects:
 
 ```json
 {
@@ -54,10 +63,9 @@ WebSocket attach notes:
   "label": "api-fix",
   "cwd": "/repo",
   "command_preview": "codex --profile prod",
-  "started_at": "2026-04-05T08:00:00Z",
-  "last_active_at": "2026-04-05T08:03:00Z",
-  "state": "connected",
-  "latest_seq": 42
+  "started_at": 1775376000,
+  "last_active_at": 1775376180,
+  "state": "connected"
 }
 ```
 
@@ -65,246 +73,134 @@ Notes:
 
 - `label` may be omitted when empty
 - `last_active_at` may be omitted when unknown
-- `state` is `connected` when the relay currently has an owning agent websocket and `reconnecting` during the short post-disconnect grace window
-- `latest_seq` is the highest output sequence the relay currently knows for that live session from agent-authored metadata
-- `reconnecting` sessions remain discoverable briefly, but they do not serve `/frames` or accept remote input until the owning agent reconnects
-- there is no pushed session-state update on `GET /api/updates/ws` in this protocol revision; clients should refetch `GET /api/sessions` to observe state changes
+- `started_at` and `last_active_at` are Unix timestamps in seconds
+- `state` is `connected` when the relay currently has an owning agent websocket
+- `state` is `reconnecting` during the short post-disconnect grace window
+- `reconnecting` sessions remain discoverable briefly, but they do not accept new attaches or remote input until the owning agent reconnects
+- `last_active_at` is agent-authored best-effort activity metadata. It is useful for discovery and sorting, not a delivery guarantee
 
-## History Ownership And Replay
+## Attach Lifecycle
 
-The current replay contract is agent-owned.
+`GET /api/sessions/:id/attach/ws` is the client-facing session attach websocket.
 
-- `tunnel` appends PTY output into a bounded in-memory history buffer for the lifetime of the running session
-- each retained entry is a `ReplayFrame` with `seq`, `data_b64`, `cols`, `rows`, and `ts`
-- the relay stores metadata, owner connection state, and pending history-request bookkeeping, but not the transcript itself
-- when a client fetches `/api/sessions/:id/frames`, the relay issues a `history_request` to the connected agent and returns the agent's `history_response`
+The attach contract is:
 
-Replay flow:
+1. the client authenticates and opens `GET /api/sessions/:id/attach/ws`
+2. the relay verifies that the session exists and is currently `connected`
+3. the relay allocates a relay-scoped `client_id` and sends `attach_open` to the owning agent
+4. the agent atomically:
+   - captures the current terminal size
+   - serializes the current visible terminal state into snapshot bytes
+   - registers that attached client for subsequent live-byte delivery
+5. the agent sends `attach_ready`
+6. the agent sends snapshot bytes
+7. the agent sends `snapshot_done`
+8. subsequent terminal byte packets on that attach are live PTY bytes
 
-1. the client calls `GET /api/sessions/:id/frames` with optional inclusive `from` and `to`
-2. the relay authenticates the request, validates query bounds, and looks up the live session
-3. if the session is `connected`, the relay allocates a `request_id`, records a pending waiter, and sends `history_request` over `/agent/ws`
-4. the agent snapshots its local history buffer for the requested bounds and replies with `history_response`
-5. the relay matches the response by `request_id` and returns the `frames` array as the HTTP response body
+The no-gap rule:
 
-The history is a terminal output transcript, not an exact input log. Locally typed characters and remote input only appear in replay when the terminal application echoes them.
+- there must be no byte gap between the serialized snapshot point and the first subsequent live bytes for that attached client
 
-## Replay Frames
+Client recovery rule:
 
-`GET /api/sessions/:id/frames?from=<seq>&to=<seq>` returns a JSON array. Both query parameters are optional and inclusive. The response body is the array itself, not an envelope object.
+- when an attach drops or closes, the client should create a fresh terminal emulator state and open a fresh attach
+- clients must not treat reconnect as transcript replay
 
-```json
-[
-  {
-    "seq": 41,
-    "data_b64": "b25l",
-    "cols": 120,
-    "rows": 40,
-    "ts": "2026-04-06T02:10:01Z"
-  },
-  {
-    "seq": 42,
-    "data_b64": "dHdv",
-    "cols": 132,
-    "rows": 43,
-    "ts": "2026-04-06T02:10:02Z"
-  }
-]
-```
+## Client Attach WebSocket
 
-Field semantics:
+`GET /api/sessions/:id/attach/ws` is a mixed websocket:
 
-- `seq`: strictly increasing output sequence number within the live session for frames the owning agent recorded
-- `data_b64`: base64-encoded PTY output bytes
-- `cols` / `rows`: terminal size metadata captured for that frame
-- `ts`: agent-authored UTC timestamp recorded when the frame is appended to the agent-side history buffer
+- relay-to-client control messages are JSON text frames
+- relay-to-client terminal data is binary websocket frames carrying raw terminal bytes
+- client-to-relay structured input is JSON text frames
 
-Query behavior:
+### Relay -> Client Control Messages
 
-- no `from` or `to`: return every currently retained frame from the owning agent
-- only `from`: return frames with `seq >= from`
-- only `to`: return frames with `seq <= to`
-- both `from` and `to`: return frames in the closed range `[from, to]`
-- if both are present and `from > to`: return `400 Bad Request`
+#### `attached`
 
-Status behavior:
-
-- `404 Not Found` with `{"reason":"session_not_found"}` when the session is unknown or the reconnect grace window has expired
-- `409 Conflict` with `{"reason":"session_reconnecting"}` when the session is listed but currently has no connected owning agent
-- `502 Bad Gateway` with `{"reason":"invalid_agent_response"}` when the agent returns a malformed history response
-- `504 Gateway Timeout` with `{"reason":"upstream_timeout"}` when the relay does not receive a history response before timeout
-
-Recovery notes:
-
-- `/api/sessions/:id/frames` is the standard replay path after a client reconnects to `GET /api/updates/ws`
-- replay is limited to the output frames the owning agent still retains in memory for that still-running session
-- `seq` does not prove complete end-to-end delivery from the local PTY to a remote client; it orders agent-recorded frames only
-
-Example requests:
-
-```text
-GET /api/sessions/sess-1/frames
-GET /api/sessions/sess-1/frames?from=101
-GET /api/sessions/sess-1/frames?from=101&to=120
-```
-
-## Frames On `/agent/ws`
-
-`/agent/ws` is a bidirectional, session-scoped websocket between the relay and the owning `tunnel` process.
-
-### Agent -> Relay
-
-`register`
+This is always the first message on a successful attach.
 
 ```json
 {
-  "type": "register",
-  "session": {
-    "session_id": "sess-1",
-    "launcher": "codex",
-    "cwd": "/repo",
-    "command_preview": "codex --profile prod",
-    "started_at": "2026-04-05T08:00:00Z",
-    "last_active_at": "2026-04-05T08:03:00Z",
-    "latest_seq": 42
-  }
-}
-```
-
-Notes:
-
-- `register` must be the first agent frame on the websocket
-- the relay treats that websocket as the owner of the live session
-- on first connect, `last_active_at` may be omitted and `latest_seq` may be `0`
-- on reconnect, the registering agent may advertise its current `last_active_at` and `latest_seq` so the relay can continue exposing the same live-session metadata
-
-`output`
-
-```json
-{
-  "type": "output",
-  "seq": 42,
-  "data_b64": "SGVsbG8=",
-  "cols": 132,
-  "rows": 43,
-  "ts": "2026-04-06T02:10:02Z"
-}
-```
-
-Notes:
-
-- agent output carries agent-authored `seq` and `ts`
-- every agent output frame must include `cols` and `rows`
-- the relay forwards live output with the same `seq`, `ts`, `cols`, and `rows` it received from the agent
-- there is no standalone `resize` event in this protocol revision
-
-`history_response`
-
-```json
-{
-  "type": "history_response",
-  "request_id": "history-1",
-  "frames": [
-    {
-      "seq": 101,
-      "data_b64": "b25l",
-      "cols": 120,
-      "rows": 40,
-      "ts": "2026-04-06T02:10:01Z"
-    }
-  ]
-}
-```
-
-Notes:
-
-- `request_id` must match a relay-issued `history_request`
-- every replay frame in `frames` must include non-zero `seq`, non-empty `data_b64`, and non-zero `ts`
-- the relay treats malformed or mismatched history responses as upstream protocol errors
-
-### Relay -> Agent
-
-`history_request`
-
-```json
-{
-  "type": "history_request",
-  "request_id": "history-1",
-  "from": 101,
-  "to": 120
-}
-```
-
-Notes:
-
-- `from` and `to` are optional and inclusive
-- the relay sends this message only for a currently `connected` session
-- the agent should answer with one `history_response` carrying the requested snapshot of its local in-memory history
-
-`input_text`
-
-```json
-{
-  "type": "input_text",
-  "text": "hello",
-  "submit": false
-}
-```
-
-`input_key`
-
-```json
-{
-  "type": "input_key",
-  "key": "TAB",
-  "ctrl": false,
-  "alt": false,
-  "shift": false
-}
-```
-
-Once the relay chooses the target session, forwarded agent input is the same logical payload as client input, but without `session_id`.
-
-## Frames On `GET /api/updates/ws`
-
-`GET /api/updates/ws` is the client-facing multiplexed websocket. It carries best-effort live output for many sessions on one connection, plus client-to-relay input events.
-
-### Relay -> Client
-
-`output`
-
-```json
-{
+  "type": "attached",
   "session_id": "sess-1",
-  "type": "output",
-  "seq": 42,
-  "data_b64": "SGVsbG8=",
   "cols": 132,
-  "rows": 43,
-  "ts": "2026-04-06T02:10:02Z"
+  "rows": 43
 }
 ```
 
 Notes:
 
-- relay-to-client output preserves the agent-authored `seq`, `ts`, `cols`, and `rows`
-- this channel is best-effort; clients should not assume it contains a complete transcript
+- `cols` and `rows` define the terminal size the client must apply before feeding subsequent binary bytes into its terminal emulator
+- after `attached`, the client should expect snapshot bytes, then `snapshot_done`
 
-`session_removed`
+#### `snapshot_done`
 
 ```json
 {
-  "session_id": "sess-1",
-  "type": "session_removed",
-  "reason": "session_removed"
+  "type": "snapshot_done"
 }
 ```
 
-The relay emits `session_removed` when a live session expires from the registry, including after reconnect grace expiry.
+Notes:
 
-### Client -> Relay
+- this marks the end of the initial current-state snapshot
+- after this point, all subsequent binary frames are live PTY bytes
+- binary bytes before `snapshot_done` and after `snapshot_done` should both be fed into the same terminal emulator in arrival order
 
-#### `input_text`
+#### `resize`
+
+```json
+{
+  "type": "resize",
+  "cols": 120,
+  "rows": 40
+}
+```
+
+Notes:
+
+- resize is session-wide and follows the PTY owner
+- remote clients must resize their terminal emulator to match
+- remote clients do not become the PTY size authority in this protocol revision
+
+#### `closing`
+
+```json
+{
+  "type": "closing",
+  "reason": "session_reconnecting"
+}
+```
+
+Known reasons:
+
+- `client_closed`
+- `session_reconnecting`
+- `session_removed`
+- `slow_client`
+
+Notes:
+
+- the relay should send `closing` before it closes the websocket when a reason is known
+- clients should key off the `reason` value, not off a particular websocket close code
+
+### Relay -> Client Binary Frames
+
+Each binary websocket frame carries raw terminal bytes.
+
+Rules:
+
+- the first binary frames after `attached` are the serialized snapshot bytes
+- after `snapshot_done`, binary frames are live PTY bytes
+- binary frames may split escape sequences arbitrarily; clients must feed bytes into a real terminal emulator rather than parse frame boundaries semantically
+- binary frames may be empty in theory but should be ignored in practice
+
+## Client -> Relay Structured Input
+
+Client input is session-scoped by the websocket path, so attach input messages do not include `session_id`.
+
+### `input_text`
 
 Use this for:
 
@@ -316,7 +212,6 @@ Use this for:
 
 ```json
 {
-  "session_id": "sess-1",
   "type": "input_text",
   "text": "hello",
   "submit": false
@@ -330,41 +225,24 @@ Rules:
 - plain character input belongs here, not in `input_key`
 - if `submit` is `false`, `input_text` does not imply `Enter`
 - if `submit` is `true`, the event is an atomic submit intent, not a best-effort client macro
-- when `submit` is `true`, the relay and owning agent must preserve ordering so the PTY receives `text` first and then the submit carriage return as one serialized operation for that session
-- when `submit` is `true`, the owning agent appends exactly one trailing carriage return (`\r`) beyond the provided text body
-- the appended carriage return must match the existing `input_key` handling for `ENTER` in the owning agent
+- when `submit` is `true`, the PTY owner must preserve ordering so the PTY receives `text` first and then one trailing carriage return as one serialized operation for that session
+- when `submit` is `true`, the PTY owner appends exactly one trailing carriage return (`\r`) beyond the provided text body
+- the appended carriage return must match the PTY-owner handling for `input_key("ENTER")`
 
-#### `input_key`
+### `input_key`
 
-Use this for special keys and modified keys.
-
-```json
-{
-  "session_id": "sess-1",
-  "type": "input_key",
-  "key": "TAB",
-  "ctrl": false,
-  "alt": false,
-  "shift": false
-}
-```
-
-Example:
+Use this for non-text special keys only.
 
 ```json
 {
-  "session_id": "sess-1",
   "type": "input_key",
-  "key": "C",
-  "ctrl": true,
-  "alt": false,
-  "shift": false
+  "key": "TAB"
 }
 ```
 
-## Supported `input_key` Values
+### Supported `input_key` Values
 
-The current relay contract should support at least:
+The current protocol should support at least:
 
 - `ENTER`
 - `BACKSPACE`
@@ -380,16 +258,212 @@ The current relay contract should support at least:
 - `PAGE_DOWN`
 - `DELETE`
 
-Recommended in the same revision:
+Notes:
 
-- single-character keys for control combinations, for example `key="C", ctrl=true`
-- `Ctrl+A-Z`
+- plain text characters such as `"a"` or `"C"` should use `input_text`
+- `input_key` is for non-text key semantics only
+- modifier combinations such as Ctrl/Alt/Shift shortcuts are out of scope for this protocol revision
+
+## HTTP Error Behavior For Attach
+
+Status behavior for `GET /api/sessions/:id/attach/ws` before websocket upgrade:
+
+- `404 Not Found` with `{"reason":"session_not_found"}` when the session is unknown or the reconnect grace window has expired
+- `409 Conflict` with `{"reason":"session_reconnecting"}` when the session is listed but currently has no connected owning agent
+- `401 Unauthorized` when Basic Auth is missing or invalid
+
+## Agent WebSocket
+
+`/agent/ws` is a bidirectional, session-scoped websocket between the relay and the owning `tunnel` process.
+
+It is a mixed websocket:
+
+- control messages are JSON text frames
+- client-routed terminal bytes are binary websocket frames
+
+## Agent -> Relay JSON Control Messages
+
+### `register`
+
+```json
+{
+  "type": "register",
+  "session": {
+    "session_id": "sess-1",
+    "launcher": "codex",
+    "cwd": "/repo",
+    "command_preview": "codex --profile prod",
+    "started_at": 1775376000,
+    "last_active_at": 1775376180
+  }
+}
+```
 
 Notes:
 
-- plain text characters such as `"a"` or `"C"` should normally use `input_text`
-- `input_key` is for non-text key semantics and modified shortcuts
-- `alt` and `shift` are part of the wire format, but v1 behavior is only guaranteed for documented supported combinations
+- `register` must be the first agent control frame on the websocket
+- the relay treats that websocket as the owner of the live session
+- on first connect, `last_active_at` may be omitted
+- on reconnect, the registering agent may advertise its current `last_active_at`
+
+### `activity`
+
+```json
+{
+  "type": "activity",
+  "last_active_at": 1775376180
+}
+```
+
+Notes:
+
+- this updates relay-visible session metadata
+- it is session-wide, not client-specific
+
+### `resize`
+
+```json
+{
+  "type": "resize",
+  "cols": 132,
+  "rows": 43
+}
+```
+
+Notes:
+
+- this is session-wide
+- the relay forwards it to every currently attached client for that session
+
+### `attach_ready`
+
+```json
+{
+  "type": "attach_ready",
+  "client_id": "4d2c6ec8-787a-49c9-b9a0-5dbd8d31b7b1",
+  "cols": 132,
+  "rows": 43
+}
+```
+
+Notes:
+
+- `client_id` is a relay-scoped identifier issued by the relay in `attach_open`
+- the relay translates this into the client-facing `attached` control message
+- after `attach_ready`, the agent may begin sending snapshot bytes for that `client_id`
+
+### `snapshot_done`
+
+```json
+{
+  "type": "snapshot_done",
+  "client_id": "4d2c6ec8-787a-49c9-b9a0-5dbd8d31b7b1"
+}
+```
+
+Notes:
+
+- this marks the boundary between snapshot bytes and live bytes for that attached client
+
+### `attach_close`
+
+```json
+{
+  "type": "attach_close",
+  "client_id": "4d2c6ec8-787a-49c9-b9a0-5dbd8d31b7b1",
+  "reason": "slow_client"
+}
+```
+
+Notes:
+
+- the agent uses this when it wants the relay to close one attached client
+- known reasons include `slow_client`
+
+## Relay -> Agent JSON Control Messages
+
+### `attach_open`
+
+```json
+{
+  "type": "attach_open",
+  "client_id": "4d2c6ec8-787a-49c9-b9a0-5dbd8d31b7b1"
+}
+```
+
+Notes:
+
+- the relay sends this after a client successfully upgrades `GET /api/sessions/:id/attach/ws`
+- `client_id` is a relay-scoped lowercase UUID string
+- the agent should treat `client_id` as opaque
+
+### `attach_close`
+
+```json
+{
+  "type": "attach_close",
+  "client_id": "4d2c6ec8-787a-49c9-b9a0-5dbd8d31b7b1",
+  "reason": "client_closed"
+}
+```
+
+Notes:
+
+- the relay sends this when the attached client socket closes or is no longer usable
+- known reasons include `client_closed` and `session_removed`
+
+### `input_text`
+
+```json
+{
+  "type": "input_text",
+  "client_id": "4d2c6ec8-787a-49c9-b9a0-5dbd8d31b7b1",
+  "text": "hello",
+  "submit": false
+}
+```
+
+### `input_key`
+
+```json
+{
+  "type": "input_key",
+  "client_id": "4d2c6ec8-787a-49c9-b9a0-5dbd8d31b7b1",
+  "key": "TAB"
+}
+```
+
+Notes:
+
+- once the relay chooses the target session, forwarded agent input is the same logical payload as client input, with the addition of relay-issued `client_id`
+- the PTY owner may ignore `client_id` for PTY behavior, but it is included for source attribution and future policy control
+
+## Agent -> Relay Binary Packet Format
+
+Binary websocket frames sent from agent to relay carry client-routed terminal bytes.
+
+Packet layout:
+
+```text
++------------+------------------+-------------------+
+| 1 byte     | 16 bytes         | remaining bytes   |
+| type       | client_id (UUID) | payload           |
++------------+------------------+-------------------+
+```
+
+Field semantics:
+
+- `type` is currently:
+  - `0x01` = `terminal_bytes`
+- `client_id` is the raw 16-byte UUID value corresponding to the lowercase UUID string used in JSON control frames
+- `payload` is raw terminal bytes for that attached client
+
+Rules:
+
+- the relay routes the payload to the matching attached client websocket as a binary frame
+- the relay must not inspect or transform terminal bytes
+- zero-length payloads should be ignored
+- binary packets for unknown `client_id` values should be ignored or dropped safely
 
 ## Key Mapping Ownership
 
@@ -397,30 +471,34 @@ The relay does not translate `input_key` into PTY bytes.
 
 Instead:
 
-1. the client sends structured input
-2. the relay validates and forwards it to the owning session
+1. the client sends structured input on the session attach websocket
+2. the relay validates and forwards it to the owning agent session
 3. `tunnel` translates supported `input_key` events into PTY input bytes
 4. `tunnel` writes those bytes into the local PTY stdin
 
 This keeps terminal behavior close to the PTY owner and avoids embedding terminal-emulation logic in the relay.
 
-## Size Metadata
+## Size Ownership
 
-- every replay frame carries `cols` and `rows`
-- live `output` websocket events on `GET /api/updates/ws` carry `cols` and `rows`
-- agent-uploaded `output` frames on `/agent/ws` carry `cols` and `rows`
-- there is no separate resize stream; size is part of each output frame contract
+- the PTY size follows the local terminal in this revision
+- size is communicated to remote clients through `attached` and `resize` control messages
+- there is no transcript/frame metadata carrying `cols` and `rows` on every terminal-byte event in this protocol revision
+- remote clients should follow resize events rather than attempt to become the PTY size authority
 
 ## Client Notes
 
-- clients should use `GET /api/sessions` to observe `connected` versus `reconnecting`
-- clients should reconnect `GET /api/updates/ws` for live output and use `/api/sessions/:id/frames` to recover missed transcript
+- clients should use `GET /api/sessions` to discover `connected` versus `reconnecting`
+- clients should use `GET /api/sessions/:id/attach/ws` as the foreground receive and input channel for one session
+- clients should create a fresh terminal emulator state when opening a fresh attach
+- clients should size the terminal emulator on `attached` before feeding binary bytes
+- clients should treat `snapshot_done` as the boundary after which binary bytes are live PTY output
 - the Android client expects a `baseUrl` with an explicit scheme such as `http://...`
 - clients may validate relay availability with `GET /api/sessions` or fallback `GET /healthz`
 
 ## Invariants
 
-- output replay remains live-only and in-memory on the owning agent
-- output `seq` is strictly increasing within one live session
-- replayed frames and live output fanout refer to the same output events
-- replayed frames and live output fanout use the same agent-authored `ts` for the same output frame
+- there is no output-history API in this protocol revision
+- reconnect recovery restores the current terminal state, not missed transcript history
+- the relay remains content-opaque with respect to PTY output
+- the local terminal remains the most complete live session view
+- attached clients for the same session observe the same PTY and therefore the same session-wide terminal size

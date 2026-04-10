@@ -88,7 +88,7 @@ func runWithArgs(args []string, stderr io.Writer) error {
 		Label:          parsed.Label,
 		CWD:            cwd,
 		CommandPreview: commandPreview,
-		StartedAt:      time.Now().UTC(),
+		StartedAt:      protocol.UnixTimestamp(time.Now().UTC()),
 	}
 
 	relay := newConnector(relayURL, parsed.RelayToken, info)
