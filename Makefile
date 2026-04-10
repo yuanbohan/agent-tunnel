@@ -23,6 +23,8 @@ DEPLOY_HOST ?= relay
 DEPLOY_RELAY_PATH ?= ~/relay
 ## DEPLOY_SERVICE: Systemd service name restarted by `make deploy`.
 DEPLOY_SERVICE ?= agentunnel-relay
+## DEPLOY_INSTALL_PATH: Installed relay path used by systemd ExecStart.
+DEPLOY_INSTALL_PATH ?= /usr/local/bin/relay
 
 # Internal paths shared by related targets.
 TUNNEL_PKG := ./cmd/agentunnel
@@ -127,7 +129,7 @@ install: build ## Install `tunnel` and `relay` into `$(INSTALL_DIR)`.
 
 deploy: build-linux ## Build, upload, and restart the relay on the remote host.
 	scp $(RELAY_BUILD_BIN) $(DEPLOY_HOST):$(DEPLOY_RELAY_PATH)
-	ssh $(DEPLOY_HOST) 'sudo systemctl restart $(DEPLOY_SERVICE)'
+	ssh $(DEPLOY_HOST) 'sudo install -m 0755 $(DEPLOY_RELAY_PATH) $(DEPLOY_INSTALL_PATH) && sudo systemctl restart $(DEPLOY_SERVICE)'
 
 clean: ## Remove built binaries from `$(BIN_DIR)`.
 	rm -rf "$(BIN_DIR)"

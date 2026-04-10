@@ -13,7 +13,8 @@ This guide covers deploying the relay server behind nginx with TLS on an Ubuntu 
 ## Server Layout
 
 ```text
-/root/relay                                  # relay binary
+/usr/local/bin/relay                         # installed relay binary (used by systemd)
+~/relay                                      # uploaded staging binary from dev machine
 /etc/systemd/system/agentunnel-relay.service # systemd unit
 /etc/nginx/sites-available/<domain>          # nginx site config
 /etc/letsencrypt/live/<domain>/              # TLS cert (managed by certbot)
