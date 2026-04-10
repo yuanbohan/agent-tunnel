@@ -76,7 +76,7 @@ If relay startup registration does not succeed within the startup wait window, `
 
 While reconnecting, `tunnel` keeps retrying in the background and shows a compact terminal status that local work continues.
 
-Startup banners are rendered as transient overlays so the launcher can paint over them without consuming an extra terminal row.
+Startup banners are rendered inline without consuming an extra terminal row.
 
 Healthy startup banners are printed in bright green. Degraded startup banners, such as relay reconnecting, are printed in red.
 

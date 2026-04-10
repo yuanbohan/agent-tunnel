@@ -9,7 +9,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -109,9 +108,6 @@ func runWithArgs(args []string, stderr io.Writer) error {
 	defer local.Restore()
 
 	sinkID, sink := local.SinkRegistration()
-	startupNotice := newStartupOverlay(stderr)
-	startupNotice.Arm()
-	sink = startupNotice.WrapSink(sink)
 	if cols, rows, sizeErr := local.CurrentSize(); sizeErr == nil {
 		relay.SetInitialSize(cols, rows)
 	}
@@ -125,7 +121,6 @@ func runWithArgs(args []string, stderr io.Writer) error {
 		return err
 	}
 	defer running.Close()
-	defer startupNotice.Clear()
 
 	relay.BindHub(running.Hub)
 
@@ -137,7 +132,7 @@ func runWithArgs(args []string, stderr io.Writer) error {
 		})
 	}
 
-	startupNotice.Show(startupBanner(command.Name, sessionID, parsed.RelayAddr, relay.CurrentState()))
+	fmt.Fprint(stderr, startupBanner(command.Name, sessionID, parsed.RelayAddr, relay.CurrentState()))
 
 	stateCh, cancelStates := relay.SubscribeStateChanges()
 	defer cancelStates()
@@ -199,99 +194,4 @@ func followRelayState(ctx context.Context, statusLine *session.StatusLine, state
 			}
 		}
 	}
-}
-
-type startupOverlay struct {
-	mu      sync.Mutex
-	writer  io.Writer
-	armed   bool
-	visible bool
-}
-
-func newStartupOverlay(writer io.Writer) *startupOverlay {
-	return &startupOverlay{writer: writer}
-}
-
-func (o *startupOverlay) Arm() {
-	if o == nil {
-		return
-	}
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	o.armed = true
-	o.visible = false
-}
-
-func (o *startupOverlay) Show(message string) {
-	if o == nil || o.writer == nil || message == "" {
-		return
-	}
-
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	if !o.armed {
-		return
-	}
-
-	fmt.Fprint(o.writer, message)
-	o.visible = true
-}
-
-func (o *startupOverlay) Clear() {
-	if o == nil || o.writer == nil {
-		return
-	}
-
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	if !o.visible {
-		o.armed = false
-		return
-	}
-
-	fmt.Fprint(o.writer, startupBannerClear)
-	o.armed = false
-	o.visible = false
-}
-
-func (o *startupOverlay) WrapSink(sink session.OutputSink) session.OutputSink {
-	if o == nil || sink == nil {
-		return sink
-	}
-	return startupOverlaySink{
-		overlay: o,
-		sink:    sink,
-	}
-}
-
-func (o *startupOverlay) consumeClearPrefix() []byte {
-	if o == nil {
-		return nil
-	}
-
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	if !o.armed {
-		return nil
-	}
-
-	o.armed = false
-	o.visible = false
-	return []byte(startupBannerClear)
-}
-
-type startupOverlaySink struct {
-	overlay *startupOverlay
-	sink    session.OutputSink
-}
-
-func (s startupOverlaySink) WriteOutput(data []byte) error {
-	if len(data) == 0 {
-		return nil
-	}
-
-	if prefix := s.overlay.consumeClearPrefix(); len(prefix) > 0 {
-		data = append(prefix, data...)
-	}
-	return s.sink.WriteOutput(data)
 }

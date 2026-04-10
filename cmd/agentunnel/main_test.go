@@ -61,15 +61,6 @@ func (f *fakeRelayConnector) WriteOutput([]byte) error {
 	return nil
 }
 
-type recordingSink struct {
-	buf bytes.Buffer
-}
-
-func (s *recordingSink) WriteOutput(data []byte) error {
-	_, err := s.buf.Write(data)
-	return err
-}
-
 func setTestEnv(t *testing.T) {
 	t.Helper()
 	for _, kv := range [][2]string{
@@ -247,44 +238,6 @@ func TestStartupBannerUsesRelayState(t *testing.T) {
 	}
 }
 
-func TestStartupOverlayClearsBannerBeforeFirstPTYOutput(t *testing.T) {
-	var stderr bytes.Buffer
-	overlay := newStartupOverlay(&stderr)
-	overlay.Arm()
-	overlay.Show(startupBanner("codex", "sess-123", "127.0.0.1:8586", connector.StateConnected))
-
-	sink := &recordingSink{}
-	wrapped := overlay.WrapSink(sink)
-
-	if err := wrapped.WriteOutput([]byte("codex ready")); err != nil {
-		t.Fatalf("WriteOutput error = %v", err)
-	}
-	if err := wrapped.WriteOutput([]byte("\n")); err != nil {
-		t.Fatalf("WriteOutput error = %v", err)
-	}
-
-	if got := stderr.String(); got != startupBanner("codex", "sess-123", "127.0.0.1:8586", connector.StateConnected) {
-		t.Fatalf("stderr = %q", got)
-	}
-	if got := sink.buf.String(); got != startupBannerClear+"codex ready\n" {
-		t.Fatalf("sink output = %q", got)
-	}
-}
-
-func TestStartupOverlayClearsVisibleBannerOnExitWithoutPTYOutput(t *testing.T) {
-	var stderr bytes.Buffer
-	overlay := newStartupOverlay(&stderr)
-	overlay.Arm()
-	overlay.Show(startupBanner("codex", "sess-123", "127.0.0.1:8586", connector.StateConnected))
-
-	overlay.Clear()
-
-	want := startupBanner("codex", "sess-123", "127.0.0.1:8586", connector.StateConnected) + startupBannerClear
-	if got := stderr.String(); got != want {
-		t.Fatalf("stderr = %q, want %q", got, want)
-	}
-}
-
 func TestRunWithArgsPrintsStartupBannerOnExit(t *testing.T) {
 	setTestEnv(t)
 
@@ -332,7 +285,7 @@ func TestRunWithArgsPrintsStartupBannerOnExit(t *testing.T) {
 		t.Fatalf("runWithArgs error = %v", err)
 	}
 
-	if got := stderr.String(); got != startupBanner("codex", sessionID, "127.0.0.1:8586", connector.StateConnected)+startupBannerClear {
+	if got := stderr.String(); got != startupBanner("codex", sessionID, "127.0.0.1:8586", connector.StateConnected) {
 		t.Fatalf("stderr = %q", got)
 	}
 }
@@ -384,7 +337,7 @@ func TestRunWithArgsPrintsReconnectingBannerAfterStartupWait(t *testing.T) {
 		t.Fatalf("runWithArgs error = %v", err)
 	}
 
-	if got := stderr.String(); got != startupBanner("codex", sessionID, "127.0.0.1:8586", connector.StateReconnecting)+startupBannerClear {
+	if got := stderr.String(); got != startupBanner("codex", sessionID, "127.0.0.1:8586", connector.StateReconnecting) {
 		t.Fatalf("stderr = %q", got)
 	}
 }
