@@ -140,6 +140,7 @@ func TestWSAgentPeerSendJSONSetsWriteDeadline(t *testing.T) {
 	peer := &wsAgentPeer{
 		conn:         conn,
 		writeTimeout: 5 * time.Second,
+		active:       true,
 	}
 
 	if err := peer.SendJSON(protocol.ActivityFrame(40)); err != nil {
@@ -161,10 +162,32 @@ func TestWSAgentPeerSendJSONReturnsDeadlineError(t *testing.T) {
 	peer := &wsAgentPeer{
 		conn:         conn,
 		writeTimeout: 5 * time.Second,
+		active:       true,
 	}
 
 	if err := peer.SendJSON(protocol.ActivityFrame(40)); err == nil || err.Error() != "deadline failed" {
 		t.Fatalf("SendJSON error = %v, want deadline failed", err)
+	}
+}
+
+func TestWSAgentPeerRejectsSendsAfterDeactivate(t *testing.T) {
+	conn := &mockWSConn{}
+	peer := &wsAgentPeer{
+		conn:         conn,
+		writeTimeout: 5 * time.Second,
+		active:       true,
+	}
+
+	peer.Deactivate()
+
+	if err := peer.SendJSON(protocol.ActivityFrame(40)); !errors.Is(err, errAgentPeerInactive) {
+		t.Fatalf("SendJSON error = %v, want errAgentPeerInactive", err)
+	}
+
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	if len(conn.messages) != 0 {
+		t.Fatalf("message count = %d, want 0", len(conn.messages))
 	}
 }
 

@@ -75,6 +75,10 @@ type Connector struct {
 	attachMu     sync.Mutex
 	attached     map[string]struct{}
 	writeTimeout time.Duration
+	now          func() time.Time
+
+	activityMu            sync.Mutex
+	lastPublishedActivity int
 
 	connMu       sync.Mutex
 	activeConn   connectionCloser
@@ -109,6 +113,7 @@ func New(url, token string, info protocol.SessionInfo) *Connector {
 		mirror:       session.NewTerminalMirror(0, 0),
 		attached:     make(map[string]struct{}),
 		writeTimeout: defaultWSWriteTimeout,
+		now:          time.Now,
 		sleep: func(ctx context.Context, d time.Duration) bool {
 			timer := time.NewTimer(d)
 			defer timer.Stop()
@@ -228,10 +233,10 @@ func (c *Connector) WriteOutput(data []byte) error {
 	}
 	c.attachMu.Unlock()
 
-	now := time.Now().UTC()
+	now := c.currentTime().UTC()
 	lastActiveAt := protocol.UnixTimestamp(now)
 	c.setLastActiveAt(lastActiveAt)
-	if c.CurrentState() == StateConnected {
+	if c.CurrentState() == StateConnected && c.shouldPublishActivity(lastActiveAt) {
 		c.enqueuePersistentJSON(protocol.ActivityFrame(lastActiveAt))
 	}
 
@@ -411,6 +416,28 @@ func (c *Connector) setLastActiveAt(ts int) {
 		tsCopy := ts
 		c.info.LastActiveAt = &tsCopy
 	}
+}
+
+func (c *Connector) currentTime() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
+}
+
+func (c *Connector) shouldPublishActivity(lastActiveAt int) bool {
+	if lastActiveAt <= 0 {
+		return false
+	}
+
+	c.activityMu.Lock()
+	defer c.activityMu.Unlock()
+
+	if c.lastPublishedActivity == lastActiveAt {
+		return false
+	}
+	c.lastPublishedActivity = lastActiveAt
+	return true
 }
 
 func (c *Connector) initialConnectTimeout(attempt int) time.Duration {

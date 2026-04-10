@@ -178,6 +178,91 @@ func TestConnectorReportsActivityToRelayAfterOutput(t *testing.T) {
 	}
 }
 
+func TestConnectorThrottlesActivityFramesWithinSameSecond(t *testing.T) {
+	received := make(chan protocol.AgentFrame, 3)
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("Upgrade returned error: %v", err)
+		}
+		defer conn.Close()
+
+		var register protocol.AgentFrame
+		if err := conn.ReadJSON(&register); err != nil {
+			t.Fatalf("ReadJSON register returned error: %v", err)
+		}
+
+		for i := 0; i < 2; i++ {
+			var frame protocol.AgentFrame
+			if err := conn.ReadJSON(&frame); err != nil {
+				t.Fatalf("ReadJSON activity %d returned error: %v", i, err)
+			}
+			received <- frame
+		}
+
+		_ = conn.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
+		var extra protocol.AgentFrame
+		if err := conn.ReadJSON(&extra); err != nil {
+			if strings.Contains(err.Error(), "i/o timeout") {
+				received <- protocol.AgentFrame{Type: "timeout"}
+				return
+			}
+			t.Fatalf("ReadJSON extra activity returned error: %v", err)
+		}
+		received <- extra
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	hub := session.NewHub(func([]byte) error { return nil }, func(int, int) error { return nil })
+	c := New(wsURL, "token", protocol.SessionInfo{
+		SessionID: "sess-1",
+		Launcher:  "codex",
+	})
+	c.BindHub(hub)
+	now := time.Unix(100, 0).UTC()
+	c.now = func() time.Time { return now }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Run(ctx)
+
+	if !c.WaitUntilConnected(ctx, time.Second) {
+		t.Fatal("WaitUntilConnected returned false, want true")
+	}
+
+	if err := c.WriteOutput([]byte("one")); err != nil {
+		t.Fatalf("WriteOutput first returned error: %v", err)
+	}
+	if err := c.WriteOutput([]byte("two")); err != nil {
+		t.Fatalf("WriteOutput second returned error: %v", err)
+	}
+	now = time.Unix(101, 0).UTC()
+	if err := c.WriteOutput([]byte("three")); err != nil {
+		t.Fatalf("WriteOutput third returned error: %v", err)
+	}
+
+	first := <-received
+	second := <-received
+	extra := <-received
+
+	if first.Type != "activity" || first.LastActiveAt == nil || *first.LastActiveAt != 100 {
+		t.Fatalf("first activity = %#v, want last_active_at=100", first)
+	}
+	if second.Type != "activity" || second.LastActiveAt == nil || *second.LastActiveAt != 101 {
+		t.Fatalf("second activity = %#v, want last_active_at=101", second)
+	}
+	if extra.Type != "timeout" {
+		t.Fatalf("extra frame = %#v, want timeout sentinel", extra)
+	}
+
+	info := c.infoSnapshot()
+	if info.LastActiveAt == nil || *info.LastActiveAt != 101 {
+		t.Fatalf("last_active_at = %v, want 101", info.LastActiveAt)
+	}
+}
+
 func TestConnectorUsesInitialSizeBeforeHubBind(t *testing.T) {
 	const clientID = "4d2c6ec8-787a-49c9-b9a0-5dbd8d31b7b1"
 

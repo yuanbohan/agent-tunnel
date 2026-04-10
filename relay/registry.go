@@ -22,6 +22,10 @@ type AgentPeer interface {
 	Close() error
 }
 
+type deactivatableAgentPeer interface {
+	Deactivate()
+}
+
 type AttachPeer interface {
 	SendControl(protocol.AttachControlMessage) error
 	SendBinary([]byte) error
@@ -76,6 +80,9 @@ func (r *Registry) Register(info protocol.SessionInfo, peer AgentPeer) {
 		}
 		if old.info.LastActiveAt != nil && (lastActiveAt == nil || *old.info.LastActiveAt > *lastActiveAt) {
 			lastActiveAt = old.info.LastActiveAt
+		}
+		if old.peer != peer {
+			deactivateAgentPeer(old.peer)
 		}
 		attached = takeAllAttachedLocked(old)
 	}
@@ -134,6 +141,7 @@ func (r *Registry) DisconnectIfOwner(sessionID string, owner AgentPeer) bool {
 	if live.removeTimer != nil {
 		live.removeTimer.Stop()
 	}
+	deactivateAgentPeer(owner)
 	sessionIDCopy := sessionID
 	live.removeTimer = time.AfterFunc(r.reconnectGrace, func() {
 		r.expireReconnectingSession(sessionIDCopy)
@@ -211,7 +219,13 @@ func (r *Registry) SendToOwner(sessionID string, payload any) error {
 	if peer == nil || state != protocol.SessionStateConnected {
 		return ErrSessionReconnecting
 	}
-	return peer.SendJSON(payload)
+	if err := peer.SendJSON(payload); err != nil {
+		if errors.Is(err, errAgentPeerInactive) {
+			return ErrSessionReconnecting
+		}
+		return err
+	}
+	return nil
 }
 
 func (r *Registry) StartAttach(sessionID, clientID string, client AttachPeer) (AgentPeer, error) {
@@ -443,4 +457,13 @@ func lastActiveTime(info protocol.SessionInfo) int {
 		return 0
 	}
 	return *info.LastActiveAt
+}
+
+func deactivateAgentPeer(peer AgentPeer) {
+	if peer == nil {
+		return
+	}
+	if deactivatable, ok := peer.(deactivatableAgentPeer); ok {
+		deactivatable.Deactivate()
+	}
 }

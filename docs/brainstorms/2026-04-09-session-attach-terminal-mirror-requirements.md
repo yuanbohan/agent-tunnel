@@ -106,10 +106,10 @@ flowchart TB
 ## Outstanding Questions
 
 ### Deferred to Planning
-- [Affects R7-R12][Technical] What exact session-scoped attach websocket contract best replaces `/api/updates/ws` and `/api/sessions/:id/frames` without adding a second relay connection per client?
-- [Affects R15-R17][Needs research] What headless terminal mirror gives the strongest fidelity for Claude/Codex-style TUIs while fitting this Go codebase cleanly?
-- [Affects R5][Technical] What exact close/error contract should attached clients observe when the session transitions to `reconnecting`?
-- [Affects R22-R23][Technical] What is the cleanest resize-subscription model inside `session.Hub` now that more than one local component needs resize notifications?
+- Affects R7-R12. Technical: What exact session-scoped attach websocket contract best replaces `/api/updates/ws` and `/api/sessions/:id/frames` without adding a second relay connection per client?
+- Affects R15-R17. Needs research: What headless terminal mirror gives the strongest fidelity for Claude/Codex-style TUIs while fitting this Go codebase cleanly?
+- Affects R5. Technical: What exact close/error contract should attached clients observe when the session transitions to `reconnecting`?
+- Affects R22-R23. Technical: What is the cleanest resize-subscription model inside `session.Hub` now that more than one local component needs resize notifications?
 
 ## Next Steps
 

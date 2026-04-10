@@ -356,6 +356,28 @@ func TestRegistryDisconnectSkipsStaleOwnerAfterReplacement(t *testing.T) {
 	}
 }
 
+func TestRegistryReplacementDeactivatesStaleOwnerPeer(t *testing.T) {
+	reg := NewRegistry()
+	oldPeer := &wsAgentPeer{conn: &mockWSConn{}, active: true}
+	client := &recordingAttachPeer{}
+
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, oldPeer)
+
+	startedOwner, err := reg.StartAttach("sess-1", "client-1", client)
+	if err != nil {
+		t.Fatalf("StartAttach returned error: %v", err)
+	}
+
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, &recordingPeer{})
+
+	if err := startedOwner.SendJSON(protocol.AttachOpenFrame("client-1")); !errors.Is(err, errAgentPeerInactive) {
+		t.Fatalf("stale owner SendJSON error = %v, want errAgentPeerInactive", err)
+	}
+	if reasons := client.CloseReasons(); len(reasons) != 1 || reasons[0] != "session_reconnecting" {
+		t.Fatalf("close reasons = %#v, want [session_reconnecting]", reasons)
+	}
+}
+
 func TestRegistryWriteInputReturnsReconnectingForDisconnectedSession(t *testing.T) {
 	reg := NewRegistry()
 	peer := &recordingPeer{}

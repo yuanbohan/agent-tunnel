@@ -31,6 +31,7 @@ var (
 	errWSSinkClosed         = errors.New("websocket sink closed")
 	errWSSinkBackpressure   = errors.New("websocket sink backpressure")
 	errInvalidAgentRegister = errors.New("invalid agent register frame")
+	errAgentPeerInactive    = errors.New("agent peer inactive")
 )
 
 type HandlerConfig struct {
@@ -52,6 +53,7 @@ type wsAgentPeer struct {
 	tracker      *wsTrafficTracker
 	writeTimeout time.Duration
 	mu           sync.Mutex
+	active       bool
 }
 
 type wsConn interface {
@@ -65,12 +67,16 @@ func newWSAgentPeer(conn *websocket.Conn, tracker *wsTrafficTracker) *wsAgentPee
 		conn:         conn,
 		tracker:      tracker,
 		writeTimeout: defaultWSWriteTimeout,
+		active:       true,
 	}
 }
 
 func (p *wsAgentPeer) SendJSON(msg any) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if !p.active {
+		return errAgentPeerInactive
+	}
 
 	if p.writeTimeout > 0 {
 		if err := p.conn.SetWriteDeadline(time.Now().Add(p.writeTimeout)); err != nil {
@@ -96,6 +102,9 @@ func (p *wsAgentPeer) SendJSON(msg any) error {
 func (p *wsAgentPeer) SendBinary(payload []byte) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if !p.active {
+		return errAgentPeerInactive
+	}
 
 	if p.writeTimeout > 0 {
 		if err := p.conn.SetWriteDeadline(time.Now().Add(p.writeTimeout)); err != nil {
@@ -120,7 +129,14 @@ func (p *wsAgentPeer) SendBinary(payload []byte) error {
 func (p *wsAgentPeer) Close() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.active = false
 	return p.conn.Close()
+}
+
+func (p *wsAgentPeer) Deactivate() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.active = false
 }
 
 func NewHandler(cfg HandlerConfig) http.Handler {

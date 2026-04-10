@@ -43,12 +43,17 @@ func TestDecodeAttachPacketRejectsShortHeader(t *testing.T) {
 }
 
 func TestDecodeAttachPacketRejectsEmptyPayload(t *testing.T) {
-	raw, err := EncodeTerminalBytesPacket("4d2c6ec8-787a-49c9-b9a0-5dbd8d31b7b1", nil)
-	if err != nil {
-		t.Fatalf("EncodeTerminalBytesPacket returned error: %v", err)
-	}
+	raw := make([]byte, attachPacketHeaderSize)
+	raw[0] = AttachPacketTypeTerminalBytes
 
-	_, err = DecodeAttachPacket(raw)
+	_, err := DecodeAttachPacket(raw)
+	if !errors.Is(err, ErrAttachPacketEmptyPayload) {
+		t.Fatalf("err = %v, want ErrAttachPacketEmptyPayload", err)
+	}
+}
+
+func TestEncodeAttachPacketRejectsEmptyPayload(t *testing.T) {
+	_, err := EncodeTerminalBytesPacket("4d2c6ec8-787a-49c9-b9a0-5dbd8d31b7b1", nil)
 	if !errors.Is(err, ErrAttachPacketEmptyPayload) {
 		t.Fatalf("err = %v, want ErrAttachPacketEmptyPayload", err)
 	}

@@ -39,6 +39,9 @@ func EncodeAttachPacket(packet AttachPacket) ([]byte, error) {
 	if packet.Type != AttachPacketTypeTerminalBytes {
 		return nil, fmt.Errorf("%w: 0x%02x", ErrAttachPacketUnknownType, packet.Type)
 	}
+	if len(packet.Payload) == 0 {
+		return nil, ErrAttachPacketEmptyPayload
+	}
 
 	clientID, err := parseAttachClientID(packet.ClientID)
 	if err != nil {
