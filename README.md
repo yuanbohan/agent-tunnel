@@ -39,7 +39,7 @@ export AGENTUNNEL_AGENT_TOKEN=agent-token
 make relay
 ```
 
-The relay listens on `0.0.0.0:8586` by default. Override the port with `--port`:
+The relay listens on `127.0.0.1:8586` by default. Override the port with `--port`:
 
 ```bash
 go run ./cmd/relay --port 9000
@@ -114,7 +114,9 @@ Stronger delivery guarantees, transcript history, and remote-driven PTY sizing a
 
 ## VPS Deployment
 
-On the remote host:
+See [docs/deployment.md](docs/deployment.md) for the full deployment guide covering nginx, TLS, systemd, automated deploys, and operational runbook.
+
+Quick start on the remote host:
 
 ```bash
 export AGENTUNNEL_BASIC_USER=ops
@@ -126,12 +128,16 @@ export AGENTUNNEL_AGENT_TOKEN=shared-agent-token
 On each developer machine:
 
 ```bash
-export AGENTUNNEL_RELAY_ADDR=relay.example.com:8586
+export AGENTUNNEL_RELAY_ADDR=relay.example.com:443
 export AGENTUNNEL_RELAY_TOKEN=shared-agent-token
 ./bin/tunnel --label "feature-branch" claude
 ```
 
-Then connect your mobile or other external client to `relay.example.com:8586`.
+Deploy updates with a single command:
+
+```bash
+make deploy
+```
 
 ## Supported Launchers
 
@@ -156,3 +162,4 @@ make relay             # run relay server
 
 See [docs/protocol.md](docs/protocol.md) for the full wire format specification.
 See [docs/tui-attach-flow.md](docs/tui-attach-flow.md) for the end-to-end snapshot, live-byte, relay, and client reconnect flow.
+See [docs/deployment.md](docs/deployment.md) for VPS deployment, nginx/TLS setup, and operations guide.
