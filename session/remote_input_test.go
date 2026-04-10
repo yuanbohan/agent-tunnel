@@ -40,12 +40,9 @@ func TestEncodeRemoteSubmitInputReturnsTextThenEnterChunks(t *testing.T) {
 
 func TestEncodeRemoteKeyInputMapsSupportedKeys(t *testing.T) {
 	tests := []struct {
-		name  string
-		key   string
-		ctrl  bool
-		alt   bool
-		shift bool
-		want  []byte
+		name string
+		key  string
+		want []byte
 	}{
 		{name: "tab", key: "TAB", want: []byte{'\t'}},
 		{name: "enter", key: "ENTER", want: []byte{'\r'}},
@@ -53,12 +50,11 @@ func TestEncodeRemoteKeyInputMapsSupportedKeys(t *testing.T) {
 		{name: "escape", key: "ESCAPE", want: []byte{0x1b}},
 		{name: "up", key: "UP", want: []byte("\x1b[A")},
 		{name: "delete", key: "DELETE", want: []byte("\x1b[3~")},
-		{name: "ctrl-c", key: "C", ctrl: true, want: []byte{0x03}},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := EncodeRemoteKeyInput(tc.key, tc.ctrl, tc.alt, tc.shift)
+			got, ok := EncodeRemoteKeyInput(tc.key)
 			if !ok {
 				t.Fatal("expected supported key")
 			}
@@ -71,21 +67,16 @@ func TestEncodeRemoteKeyInputMapsSupportedKeys(t *testing.T) {
 
 func TestEncodeRemoteKeyInputRejectsUnsupportedKeys(t *testing.T) {
 	tests := []struct {
-		name  string
-		key   string
-		ctrl  bool
-		alt   bool
-		shift bool
+		name string
+		key  string
 	}{
 		{name: "plain character", key: "a"},
-		{name: "alt combo", key: "X", alt: true},
-		{name: "ctrl non letter", key: "1", ctrl: true},
 		{name: "empty", key: ""},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := EncodeRemoteKeyInput(tc.key, tc.ctrl, tc.alt, tc.shift)
+			got, ok := EncodeRemoteKeyInput(tc.key)
 			if ok {
 				t.Fatalf("got supported result %#v, want unsupported", got)
 			}

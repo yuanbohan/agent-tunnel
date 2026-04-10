@@ -431,6 +431,47 @@ func TestHubResizeCallsOnResizeCallback(t *testing.T) {
 	}
 }
 
+func TestHubResizeCallsAllResizeListeners(t *testing.T) {
+	hub := NewHub(func([]byte) error { return nil }, func(int, int) error { return nil })
+
+	got := make(map[string][2]int)
+	hub.AddResizeListener("status", func(cols, rows int) {
+		got["status"] = [2]int{cols, rows}
+	})
+	hub.AddResizeListener("mirror", func(cols, rows int) {
+		got["mirror"] = [2]int{cols, rows}
+	})
+
+	if err := hub.Resize(132, 43); err != nil {
+		t.Fatalf("Resize returned error: %v", err)
+	}
+
+	if !reflect.DeepEqual(got["status"], [2]int{132, 43}) {
+		t.Fatalf("status listener got %v, want %v", got["status"], [2]int{132, 43})
+	}
+	if !reflect.DeepEqual(got["mirror"], [2]int{132, 43}) {
+		t.Fatalf("mirror listener got %v, want %v", got["mirror"], [2]int{132, 43})
+	}
+}
+
+func TestHubRemoveResizeListenerStopsCallbacks(t *testing.T) {
+	hub := NewHub(func([]byte) error { return nil }, func(int, int) error { return nil })
+
+	calls := 0
+	hub.AddResizeListener("status", func(cols, rows int) {
+		calls++
+	})
+	hub.RemoveResizeListener("status")
+
+	if err := hub.Resize(120, 40); err != nil {
+		t.Fatalf("Resize returned error: %v", err)
+	}
+
+	if calls != 0 {
+		t.Fatalf("calls = %d, want 0 after removal", calls)
+	}
+}
+
 func TestNextLocalTerminalSinkIDIsUnique(t *testing.T) {
 	first := nextLocalTerminalSinkID()
 	second := nextLocalTerminalSinkID()

@@ -234,8 +234,8 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
 	if gotInfo.SessionID == "" {
 		t.Fatal("SessionID = empty, want generated session id")
 	}
-	if gotInfo.StartedAt.IsZero() {
-		t.Fatal("StartedAt = zero, want current time")
+	if gotInfo.StartedAt <= 0 {
+		t.Fatal("StartedAt = 0, want current Unix timestamp")
 	}
 	if fakeConnector.runCalled != true {
 		t.Fatal("connector Run was not called")

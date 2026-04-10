@@ -15,12 +15,12 @@ type Hub struct {
 	resizePTY  func(int, int) error
 	sleep      func(time.Duration)
 
-	writeMu  sync.Mutex
-	mu       sync.RWMutex
-	sinks    map[string]OutputSink
-	cols     int
-	rows     int
-	onResize func(int, int)
+	writeMu sync.Mutex
+	mu      sync.RWMutex
+	sinks   map[string]OutputSink
+	cols    int
+	rows    int
+	resizes map[string]func(int, int)
 }
 
 func NewHub(writeInput func([]byte) error, resizePTY func(int, int) error) *Hub {
@@ -29,6 +29,7 @@ func NewHub(writeInput func([]byte) error, resizePTY func(int, int) error) *Hub 
 		resizePTY:  resizePTY,
 		sleep:      time.Sleep,
 		sinks:      make(map[string]OutputSink),
+		resizes:    make(map[string]func(int, int)),
 	}
 }
 
@@ -105,10 +106,13 @@ func (h *Hub) Resize(cols, rows int) error {
 	h.mu.Lock()
 	h.cols = cols
 	h.rows = rows
-	cb := h.onResize
+	callbacks := make([]func(int, int), 0, len(h.resizes))
+	for _, cb := range h.resizes {
+		callbacks = append(callbacks, cb)
+	}
 	h.mu.Unlock()
 
-	if cb != nil {
+	for _, cb := range callbacks {
 		cb(cols, rows)
 	}
 	return nil
@@ -121,7 +125,21 @@ func (h *Hub) CurrentSize() (int, int) {
 }
 
 func (h *Hub) OnResize(cb func(cols, rows int)) {
+	h.AddResizeListener("default", cb)
+}
+
+func (h *Hub) AddResizeListener(id string, cb func(cols, rows int)) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.onResize = cb
+	if cb == nil {
+		delete(h.resizes, id)
+		return
+	}
+	h.resizes[id] = cb
+}
+
+func (h *Hub) RemoveResizeListener(id string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.resizes, id)
 }

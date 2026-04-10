@@ -8,3 +8,5 @@ require (
 	golang.org/x/sys v0.42.0
 	golang.org/x/term v0.41.0
 )
+
+require github.com/gitpod-io/xterm-go v0.0.0-20260408140746-46436f1050ee

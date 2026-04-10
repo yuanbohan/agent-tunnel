@@ -2,6 +2,8 @@ package connector
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -11,10 +13,20 @@ import (
 	"testing"
 	"time"
 
+	xterm "github.com/gitpod-io/xterm-go"
 	"github.com/gorilla/websocket"
 	"yuanbohan/tunnel/protocol"
 	"yuanbohan/tunnel/session"
 )
+
+type recordingCloser struct {
+	closed atomic.Int32
+}
+
+func (c *recordingCloser) Close() error {
+	c.closed.Add(1)
+	return nil
+}
 
 func TestConnectorSendsRegisterBeforeStreamingOutput(t *testing.T) {
 	received := make(chan protocol.AgentFrame, 1)
@@ -107,8 +119,8 @@ func TestConnectorRoutesInputFrameIntoHub(t *testing.T) {
 	}
 }
 
-func TestConnectorStreamsOutputFramesToRelay(t *testing.T) {
-	received := make(chan protocol.Message, 1)
+func TestConnectorReportsActivityToRelayAfterOutput(t *testing.T) {
+	received := make(chan protocol.AgentFrame, 1)
 	upgrader := websocket.Upgrader{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -122,11 +134,11 @@ func TestConnectorStreamsOutputFramesToRelay(t *testing.T) {
 			t.Fatalf("ReadJSON register returned error: %v", err)
 		}
 
-		var msg protocol.Message
-		if err := conn.ReadJSON(&msg); err != nil {
-			t.Fatalf("ReadJSON output returned error: %v", err)
+		var frame protocol.AgentFrame
+		if err := conn.ReadJSON(&frame); err != nil {
+			t.Fatalf("ReadJSON activity returned error: %v", err)
 		}
-		received <- msg
+		received <- frame
 	}))
 	defer server.Close()
 
@@ -145,38 +157,31 @@ func TestConnectorStreamsOutputFramesToRelay(t *testing.T) {
 	defer cancel()
 	go c.Run(ctx)
 
+	if !c.WaitUntilConnected(ctx, time.Second) {
+		t.Fatal("WaitUntilConnected returned false, want true")
+	}
+
 	if err := c.WriteOutput([]byte("world")); err != nil {
 		t.Fatalf("WriteOutput returned error: %v", err)
 	}
 
 	select {
-	case msg := <-received:
-		if msg.Type != "output" {
-			t.Fatalf("Type = %q, want output", msg.Type)
+	case frame := <-received:
+		if frame.Type != "activity" {
+			t.Fatalf("Type = %q, want activity", frame.Type)
 		}
-		if msg.Seq != 1 {
-			t.Fatalf("Seq = %d, want 1", msg.Seq)
-		}
-		data, err := protocol.DecodeDataB64(msg)
-		if err != nil {
-			t.Fatalf("DecodeDataB64 returned error: %v", err)
-		}
-		if string(data) != "world" {
-			t.Fatalf("output = %q, want world", string(data))
-		}
-		if msg.TS == nil || msg.TS.IsZero() {
-			t.Fatalf("TS = %v, want non-zero timestamp", msg.TS)
-		}
-		if msg.Cols != 120 || msg.Rows != 40 {
-			t.Fatalf("size = %dx%d, want 120x40", msg.Cols, msg.Rows)
+		if frame.LastActiveAt == nil || *frame.LastActiveAt <= 0 {
+			t.Fatalf("LastActiveAt = %v, want non-zero timestamp", frame.LastActiveAt)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for output")
+		t.Fatal("timed out waiting for activity")
 	}
 }
 
 func TestConnectorUsesInitialSizeBeforeHubBind(t *testing.T) {
-	received := make(chan protocol.Message, 1)
+	const clientID = "4d2c6ec8-787a-49c9-b9a0-5dbd8d31b7b1"
+
+	received := make(chan protocol.AgentFrame, 1)
 	upgrader := websocket.Upgrader{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -190,11 +195,15 @@ func TestConnectorUsesInitialSizeBeforeHubBind(t *testing.T) {
 			t.Fatalf("ReadJSON register returned error: %v", err)
 		}
 
-		var msg protocol.Message
-		if err := conn.ReadJSON(&msg); err != nil {
-			t.Fatalf("ReadJSON output returned error: %v", err)
+		if err := conn.WriteJSON(protocol.AttachOpenFrame(clientID)); err != nil {
+			t.Fatalf("WriteJSON attach_open returned error: %v", err)
 		}
-		received <- msg
+
+		var frame protocol.AgentFrame
+		if err := conn.ReadJSON(&frame); err != nil {
+			t.Fatalf("ReadJSON attach_ready returned error: %v", err)
+		}
+		received <- frame
 	}))
 	defer server.Close()
 
@@ -209,26 +218,19 @@ func TestConnectorUsesInitialSizeBeforeHubBind(t *testing.T) {
 	defer cancel()
 	go c.Run(ctx)
 
-	if err := c.WriteOutput([]byte("hello")); err != nil {
-		t.Fatalf("WriteOutput returned error: %v", err)
-	}
-
 	select {
-	case msg := <-received:
-		if msg.Type != "output" {
-			t.Fatalf("Type = %q, want output", msg.Type)
+	case frame := <-received:
+		if frame.Type != "attach_ready" {
+			t.Fatalf("Type = %q, want attach_ready", frame.Type)
 		}
-		if msg.Seq != 1 {
-			t.Fatalf("Seq = %d, want 1", msg.Seq)
+		if frame.ClientID != clientID {
+			t.Fatalf("ClientID = %q, want %q", frame.ClientID, clientID)
 		}
-		if msg.TS == nil || msg.TS.IsZero() {
-			t.Fatalf("TS = %v, want non-zero timestamp", msg.TS)
-		}
-		if msg.Cols != 120 || msg.Rows != 40 {
-			t.Fatalf("size = %dx%d, want 120x40", msg.Cols, msg.Rows)
+		if frame.Cols != 120 || frame.Rows != 40 {
+			t.Fatalf("size = %dx%d, want 120x40", frame.Cols, frame.Rows)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for output frame")
+		t.Fatal("timed out waiting for attach_ready frame")
 	}
 }
 
@@ -241,7 +243,7 @@ func TestConnectorRoutesStructuredInputFramesIntoHub(t *testing.T) {
 		{name: "input text", message: protocol.EncodeInputText("hello", false), want: []string{"hello"}},
 		{name: "input text submit", message: protocol.EncodeInputText("hello", true), want: []string{"hello", "\r"}},
 		{name: "empty input text submit", message: protocol.EncodeInputText("", true), want: []string{"\r"}},
-		{name: "input key", message: protocol.EncodeInputKey("TAB", false, false, false), want: []string{"\t"}},
+		{name: "input key", message: protocol.EncodeInputKey("TAB"), want: []string{"\t"}},
 	}
 
 	for _, tc := range tests {
@@ -299,6 +301,287 @@ func TestConnectorRoutesStructuredInputFramesIntoHub(t *testing.T) {
 	}
 }
 
+func TestConnectorAttachOpenSendsSnapshotThenLiveBytes(t *testing.T) {
+	const clientID = "4d2c6ec8-787a-49c9-b9a0-5dbd8d31b7b1"
+
+	registerSeen := make(chan struct{}, 1)
+	allowAttach := make(chan struct{})
+	attachReadyCh := make(chan protocol.AgentFrame, 1)
+	snapshotCh := make(chan protocol.AttachPacket, 1)
+	snapshotDoneCh := make(chan protocol.AgentFrame, 1)
+	livePacketCh := make(chan protocol.AttachPacket, 1)
+	doneReading := make(chan struct{}, 1)
+
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("Upgrade returned error: %v", err)
+		}
+		defer conn.Close()
+
+		var register protocol.AgentFrame
+		if err := conn.ReadJSON(&register); err != nil {
+			t.Fatalf("ReadJSON register returned error: %v", err)
+		}
+		registerSeen <- struct{}{}
+
+		<-allowAttach
+		if err := conn.WriteJSON(protocol.AttachOpenFrame(clientID)); err != nil {
+			t.Fatalf("WriteJSON attach_open returned error: %v", err)
+		}
+
+		sawSnapshot := false
+		sawSnapshotDone := false
+		for {
+			messageType, payload, err := conn.ReadMessage()
+			if err != nil {
+				t.Fatalf("ReadMessage returned error: %v", err)
+			}
+
+			switch messageType {
+			case websocket.TextMessage:
+				var frame protocol.AgentFrame
+				if err := json.Unmarshal(payload, &frame); err != nil {
+					t.Fatalf("Unmarshal text frame returned error: %v", err)
+				}
+				switch frame.Type {
+				case "attach_ready":
+					attachReadyCh <- frame
+				case "snapshot_done":
+					sawSnapshotDone = true
+					snapshotDoneCh <- frame
+				case "activity":
+					continue
+				default:
+					continue
+				}
+			case websocket.BinaryMessage:
+				packet, err := protocol.DecodeAttachPacket(payload)
+				if err != nil {
+					t.Fatalf("DecodeAttachPacket returned error: %v", err)
+				}
+				if !sawSnapshot {
+					sawSnapshot = true
+					snapshotCh <- packet
+				} else {
+					if !sawSnapshotDone {
+						t.Fatal("received live packet before snapshot_done")
+					}
+					livePacketCh <- packet
+					if err := conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond)); err != nil {
+						t.Fatalf("SetReadDeadline returned error: %v", err)
+					}
+					for {
+						messageType, payload, err := conn.ReadMessage()
+						if err != nil {
+							if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+								doneReading <- struct{}{}
+								return
+							}
+							t.Fatalf("ReadMessage after live packet returned error: %v", err)
+						}
+						if messageType != websocket.BinaryMessage {
+							continue
+						}
+						packet, err := protocol.DecodeAttachPacket(payload)
+						if err != nil {
+							t.Fatalf("DecodeAttachPacket after live packet returned error: %v", err)
+						}
+						if string(packet.Payload) == "live bytes" {
+							t.Fatalf("received duplicate live packet for %q", clientID)
+						}
+					}
+				}
+			}
+		}
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	c := New(wsURL, "token", protocol.SessionInfo{
+		SessionID: "sess-1",
+		Launcher:  "codex",
+	})
+	c.applyResize(120, 40, false)
+	c.mirror.WriteOutput([]byte("snapshot line"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Run(ctx)
+
+	select {
+	case <-registerSeen:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for register")
+	}
+
+	close(allowAttach)
+
+	var attachReady protocol.AgentFrame
+	select {
+	case attachReady = <-attachReadyCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for attach_ready")
+	}
+	if attachReady.ClientID != clientID || attachReady.Cols != 120 || attachReady.Rows != 40 {
+		t.Fatalf("attach_ready = %#v, want client id %s size 120x40", attachReady, clientID)
+	}
+
+	var snapshot protocol.AttachPacket
+	select {
+	case snapshot = <-snapshotCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for snapshot packet")
+	}
+	if snapshot.ClientID != clientID {
+		t.Fatalf("snapshot client_id = %q, want %q", snapshot.ClientID, clientID)
+	}
+
+	restored := xterm.New(xterm.WithCols(attachReady.Cols), xterm.WithRows(attachReady.Rows), xterm.WithScrollback(0))
+	_, _ = restored.Write(snapshot.Payload)
+	if !strings.Contains(restored.String(), "snapshot line") {
+		t.Fatalf("restored snapshot = %q, want snapshot content", restored.String())
+	}
+
+	if err := c.WriteOutput([]byte("live bytes")); err != nil {
+		t.Fatalf("WriteOutput returned error: %v", err)
+	}
+
+	select {
+	case frame := <-snapshotDoneCh:
+		if frame.ClientID != clientID {
+			t.Fatalf("snapshot_done = %#v, want client id %s", frame, clientID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for snapshot_done")
+	}
+
+	select {
+	case packet := <-livePacketCh:
+		if packet.ClientID != clientID {
+			t.Fatalf("live packet client_id = %q, want %q", packet.ClientID, clientID)
+		}
+		if string(packet.Payload) != "live bytes" {
+			t.Fatalf("live packet payload = %q, want %q", string(packet.Payload), "live bytes")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for live packet")
+	}
+
+	select {
+	case <-doneReading:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for duplicate-live verification")
+	}
+}
+
+func TestConnectorAttachOpenBypassesFullEphemeralQueue(t *testing.T) {
+	const clientID = "4d2c6ec8-787a-49c9-b9a0-5dbd8d31b7b1"
+
+	attachReadyCh := make(chan protocol.AgentFrame, 1)
+	snapshotCh := make(chan protocol.AttachPacket, 1)
+	snapshotDoneCh := make(chan protocol.AgentFrame, 1)
+
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("Upgrade returned error: %v", err)
+		}
+		defer conn.Close()
+
+		for {
+			messageType, payload, err := conn.ReadMessage()
+			if err != nil {
+				t.Fatalf("ReadMessage returned error: %v", err)
+			}
+
+			switch messageType {
+			case websocket.TextMessage:
+				var frame protocol.AgentFrame
+				if err := json.Unmarshal(payload, &frame); err != nil {
+					t.Fatalf("Unmarshal text frame returned error: %v", err)
+				}
+				switch frame.Type {
+				case "attach_ready":
+					attachReadyCh <- frame
+				case "snapshot_done":
+					snapshotDoneCh <- frame
+					return
+				default:
+					t.Fatalf("frame.Type = %q, want attach_ready or snapshot_done before queued ephemerals", frame.Type)
+				}
+			case websocket.BinaryMessage:
+				packet, err := protocol.DecodeAttachPacket(payload)
+				if err != nil {
+					t.Fatalf("DecodeAttachPacket returned error: %v", err)
+				}
+				snapshotCh <- packet
+			}
+		}
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Dial returned error: %v", err)
+	}
+	defer conn.Close()
+
+	c := New(wsURL, "token", protocol.SessionInfo{
+		SessionID: "sess-1",
+		Launcher:  "codex",
+	})
+	c.applyResize(120, 40, false)
+	c.mirror.WriteOutput([]byte("snapshot line"))
+	for i := 0; i < cap(c.ephemeral); i++ {
+		c.ephemeral <- outboundFrame{json: protocol.ActivityFrame(i + 1)}
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- c.handleAttachOpen(conn, clientID)
+	}()
+
+	select {
+	case frame := <-attachReadyCh:
+		if frame.Type != "attach_ready" || frame.ClientID != clientID {
+			t.Fatalf("attach_ready = %#v, want attach_ready for %s", frame, clientID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for attach_ready")
+	}
+
+	select {
+	case packet := <-snapshotCh:
+		if packet.ClientID != clientID {
+			t.Fatalf("snapshot client_id = %q, want %q", packet.ClientID, clientID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for snapshot packet")
+	}
+
+	select {
+	case frame := <-snapshotDoneCh:
+		if frame.Type != "snapshot_done" || frame.ClientID != clientID {
+			t.Fatalf("snapshot_done = %#v, want snapshot_done for %s", frame, clientID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for snapshot_done")
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("handleAttachOpen returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for handleAttachOpen to finish")
+	}
+}
+
 func TestConnectorSubmitInputWritesSeparateDelayedChunks(t *testing.T) {
 	type inputEvent struct {
 		data string
@@ -319,7 +602,7 @@ func TestConnectorSubmitInputWritesSeparateDelayedChunks(t *testing.T) {
 		Launcher:  "codex",
 	})
 
-	c.deliverInputToHub(hub, protocol.EncodeInputText("hello", true))
+	c.deliverInputToHub(hub, protocol.ForwardInputTextFrame("", "hello", true))
 
 	if len(events) != 2 {
 		t.Fatalf("len(events) = %d, want 2", len(events))
@@ -337,7 +620,7 @@ func TestConnectorSubmitInputWritesSeparateDelayedChunks(t *testing.T) {
 	}
 }
 
-func TestConnectorBuffersOutputAcrossReconnectWithoutLeakingOldWriter(t *testing.T) {
+func TestConnectorReconnectDoesNotReplayOldOutput(t *testing.T) {
 	firstUpgrader := websocket.Upgrader{}
 	firstServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := firstUpgrader.Upgrade(w, r, nil)
@@ -370,7 +653,7 @@ func TestConnectorBuffersOutputAcrossReconnectWithoutLeakingOldWriter(t *testing
 		t.Fatalf("WriteOutput returned error: %v", err)
 	}
 
-	received := make(chan protocol.Message, 1)
+	received := make(chan protocol.AgentFrame, 1)
 	secondUpgrader := websocket.Upgrader{}
 	secondServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := secondUpgrader.Upgrade(w, r, nil)
@@ -383,16 +666,20 @@ func TestConnectorBuffersOutputAcrossReconnectWithoutLeakingOldWriter(t *testing
 		if err := conn.ReadJSON(&register); err != nil {
 			t.Fatalf("ReadJSON second register returned error: %v", err)
 		}
-		if register.Session == nil || register.Session.LatestSeq != 1 {
-			t.Fatalf("register session = %#v, want latest_seq 1", register.Session)
+		if register.Session == nil || register.Session.LastActiveAt == nil || *register.Session.LastActiveAt <= 0 {
+			t.Fatalf("register session = %#v, want non-zero last_active_at", register.Session)
 		}
 
-		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-		var msg protocol.Message
-		if err := conn.ReadJSON(&msg); err != nil {
-			t.Fatalf("ReadJSON second output returned error: %v", err)
+		_ = conn.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
+		var frame protocol.AgentFrame
+		if err := conn.ReadJSON(&frame); err != nil {
+			if !strings.Contains(err.Error(), "i/o timeout") {
+				t.Fatalf("ReadJSON second activity returned error: %v", err)
+			}
+			received <- protocol.AgentFrame{Type: "none"}
+			return
 		}
-		received <- msg
+		received <- frame
 	}))
 	defer secondServer.Close()
 
@@ -405,22 +692,12 @@ func TestConnectorBuffersOutputAcrossReconnectWithoutLeakingOldWriter(t *testing
 	}()
 
 	select {
-	case msg := <-received:
-		if msg.Type != "output" {
-			t.Fatalf("Type = %q, want output", msg.Type)
-		}
-		data, err := protocol.DecodeDataB64(msg)
-		if err != nil {
-			t.Fatalf("DecodeDataB64 returned error: %v", err)
-		}
-		if string(data) != "persisted" {
-			t.Fatalf("output = %q, want persisted", string(data))
-		}
-		if msg.Seq != 1 {
-			t.Fatalf("Seq = %d, want 1", msg.Seq)
+	case frame := <-received:
+		if frame.Type != "none" {
+			t.Fatalf("frame = %#v, want no replay after reconnect", frame)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for reconnected output")
+		t.Fatal("timed out waiting for reconnect check")
 	}
 
 	cancel()
@@ -520,8 +797,51 @@ func TestConnectorWaitUntilConnectedReturnsTrueAfterRegister(t *testing.T) {
 	}
 }
 
-func TestConnectorAnswersHistoryRequestsFromAgentBuffer(t *testing.T) {
-	received := make(chan protocol.Message, 1)
+func TestConnectorQueueOverflowClosesActiveConnection(t *testing.T) {
+	c := New("ws://relay.test", "token", protocol.SessionInfo{
+		SessionID: "sess-1",
+		Launcher:  "codex",
+	})
+	c.ephemeral = make(chan outboundFrame, 1)
+	c.ephemeral <- outboundFrame{json: protocol.ActivityFrame(1)}
+
+	overflow := make(chan error, 1)
+	closer := &recordingCloser{}
+	c.setActiveConnection(closer, overflow)
+	defer c.clearActiveConnection()
+
+	c.enqueueEphemeralBinary([]byte("overflow"))
+
+	select {
+	case err := <-overflow:
+		if !errors.Is(err, errOutboundBackpressure) {
+			t.Fatalf("overflow err = %v, want errOutboundBackpressure", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for overflow signal")
+	}
+
+	if closer.closed.Load() != 1 {
+		t.Fatalf("closed = %d, want 1", closer.closed.Load())
+	}
+}
+
+func TestDeliverReadResultStopsWhenDoneClosed(t *testing.T) {
+	done := make(chan struct{})
+	incoming := make(chan readResult, 1)
+	incoming <- readResult{}
+	close(done)
+
+	if ok := deliverReadResult(done, incoming, readResult{err: errors.New("closed")}); ok {
+		t.Fatal("deliverReadResult returned true, want false")
+	}
+}
+
+func TestConnectorAttachCloseStopsLiveDelivery(t *testing.T) {
+	const clientID = "4d2c6ec8-787a-49c9-b9a0-5dbd8d31b7b1"
+
+	attachClosed := make(chan struct{}, 1)
+	livePacketCh := make(chan protocol.AttachPacket, 1)
 	upgrader := websocket.Upgrader{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -535,23 +855,43 @@ func TestConnectorAnswersHistoryRequestsFromAgentBuffer(t *testing.T) {
 			t.Fatalf("ReadJSON register returned error: %v", err)
 		}
 
-		from := uint64(1)
-		to := uint64(1)
-		if err := conn.WriteJSON(protocol.EncodeHistoryRequest("req-1", &from, &to)); err != nil {
-			t.Fatalf("WriteJSON history request returned error: %v", err)
+		if err := conn.WriteJSON(protocol.AttachOpenFrame(clientID)); err != nil {
+			t.Fatalf("WriteJSON attach_open returned error: %v", err)
 		}
 
 		deadline := time.Now().Add(2 * time.Second)
-		for {
+		sawSnapshotDone := false
+		for !sawSnapshotDone {
 			_ = conn.SetReadDeadline(deadline)
-			var msg protocol.Message
-			if err := conn.ReadJSON(&msg); err != nil {
-				t.Fatalf("ReadJSON returned error: %v", err)
+			messageType, payload, err := conn.ReadMessage()
+			if err != nil {
+				t.Fatalf("ReadMessage returned error: %v", err)
 			}
-			if msg.Type == "history_response" {
-				received <- msg
-				return
+			if messageType != websocket.TextMessage {
+				continue
 			}
+			var frame protocol.AgentFrame
+			if err := json.Unmarshal(payload, &frame); err != nil {
+				t.Fatalf("Unmarshal returned error: %v", err)
+			}
+			if frame.Type == "snapshot_done" {
+				sawSnapshotDone = true
+			}
+		}
+
+		if err := conn.WriteJSON(protocol.AttachCloseFrame(clientID, "client_closed")); err != nil {
+			t.Fatalf("WriteJSON attach_close returned error: %v", err)
+		}
+		attachClosed <- struct{}{}
+
+		_ = conn.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
+		messageType, payload, err := conn.ReadMessage()
+		if err == nil && messageType == websocket.BinaryMessage {
+			packet, err := protocol.DecodeAttachPacket(payload)
+			if err != nil {
+				t.Fatalf("DecodeAttachPacket returned error: %v", err)
+			}
+			livePacketCh <- packet
 		}
 	}))
 	defer server.Close()
@@ -561,30 +901,24 @@ func TestConnectorAnswersHistoryRequestsFromAgentBuffer(t *testing.T) {
 		SessionID: "sess-1",
 		Launcher:  "codex",
 	})
-	if err := c.WriteOutput([]byte("hello")); err != nil {
-		t.Fatalf("WriteOutput returned error: %v", err)
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go c.Run(ctx)
 
 	select {
-	case msg := <-received:
-		if msg.RequestID != "req-1" {
-			t.Fatalf("RequestID = %q, want req-1", msg.RequestID)
-		}
-		if len(msg.Frames) != 1 {
-			t.Fatalf("len(Frames) = %d, want 1", len(msg.Frames))
-		}
-		if msg.Frames[0].Seq != 1 || msg.Frames[0].DataB64 != "aGVsbG8=" {
-			t.Fatalf("frame = %#v, want seq 1 hello", msg.Frames[0])
-		}
-		if msg.Frames[0].TS.IsZero() {
-			t.Fatal("expected non-zero timestamp")
-		}
+	case <-attachClosed:
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for history response")
+		t.Fatal("timed out waiting for attach_close")
+	}
+
+	if err := c.WriteOutput([]byte("hello")); err != nil {
+		t.Fatalf("WriteOutput returned error: %v", err)
+	}
+
+	select {
+	case packet := <-livePacketCh:
+		t.Fatalf("packet = %#v, want no live packet after attach_close", packet)
+	case <-time.After(500 * time.Millisecond):
 	}
 }
 
