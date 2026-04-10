@@ -41,28 +41,6 @@ func TestRegisterFrameRoundTrip(t *testing.T) {
 	}
 }
 
-func TestActivityFrameRoundTrip(t *testing.T) {
-	ts := 1775736000
-	frame := ActivityFrame(ts)
-
-	raw, err := json.Marshal(frame)
-	if err != nil {
-		t.Fatalf("Marshal returned error: %v", err)
-	}
-
-	var decoded AgentFrame
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("Unmarshal returned error: %v", err)
-	}
-
-	if decoded.Type != "activity" {
-		t.Fatalf("Type = %q, want activity", decoded.Type)
-	}
-	if decoded.LastActiveAt == nil || *decoded.LastActiveAt != ts {
-		t.Fatalf("LastActiveAt = %v, want %v", decoded.LastActiveAt, ts)
-	}
-}
-
 func TestAttachOpenFrameRoundTrip(t *testing.T) {
 	frame := AttachOpenFrame("4d2c6ec8-787a-49c9-b9a0-5dbd8d31b7b1")
 
@@ -106,7 +84,6 @@ func TestSessionSummaryJSONUsesStableFieldNames(t *testing.T) {
 		Label:          "docs",
 		CWD:            "/Users/test/project",
 		CommandPreview: "gemini",
-		State:          SessionStateConnected,
 	}
 
 	raw, err := json.Marshal(info)
@@ -121,7 +98,6 @@ func TestSessionSummaryJSONUsesStableFieldNames(t *testing.T) {
 		"label",
 		"cwd",
 		"command_preview",
-		"state",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("json = %s, want field %q", got, want)
@@ -145,11 +121,8 @@ func TestSessionSummaryOmittedUnsetOptionalFields(t *testing.T) {
 		t.Fatalf("Marshal returned error: %v", err)
 	}
 
-	if strings.Contains(string(raw), "last_active_at") {
-		t.Fatalf("json = %s, did not expect last_active_at", raw)
-	}
-	if strings.Contains(string(raw), "state") {
-		t.Fatalf("json = %s, did not expect state", raw)
+	if strings.Contains(string(raw), `"label":`) {
+		t.Fatalf("json = %s, did not expect label", raw)
 	}
 }
 

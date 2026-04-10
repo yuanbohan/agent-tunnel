@@ -153,21 +153,17 @@ func (p *recordingAttachPeer) CloseReasons() []string {
 	return append([]string(nil), p.closeReason...)
 }
 
-func TestRegistryRegisterAndListSortedByLastActive(t *testing.T) {
+func TestRegistryRegisterAndListSortedByStartedAt(t *testing.T) {
 	reg := NewRegistry()
-	olderActive := 20
-	newerActive := 30
 	older := protocol.SessionInfo{
-		SessionID:    "a",
-		Launcher:     "codex",
-		StartedAt:    10,
-		LastActiveAt: &olderActive,
+		SessionID: "a",
+		Launcher:  "codex",
+		StartedAt: 10,
 	}
 	newer := protocol.SessionInfo{
-		SessionID:    "b",
-		Launcher:     "gemini",
-		StartedAt:    11,
-		LastActiveAt: &newerActive,
+		SessionID: "b",
+		Launcher:  "gemini",
+		StartedAt: 11,
 	}
 
 	reg.Register(older, fakeAgentPeer{})
@@ -180,9 +176,6 @@ func TestRegistryRegisterAndListSortedByLastActive(t *testing.T) {
 	if got[0].SessionID != "b" || got[1].SessionID != "a" {
 		t.Fatalf("order = %#v, want b before a", got)
 	}
-	if got[0].State != protocol.SessionStateConnected || got[1].State != protocol.SessionStateConnected {
-		t.Fatalf("states = %#v, want connected", got)
-	}
 }
 
 func TestRegistryMissingSessionErrors(t *testing.T) {
@@ -190,29 +183,6 @@ func TestRegistryMissingSessionErrors(t *testing.T) {
 
 	if err := reg.WriteAttachInput("missing", protocol.ForwardInputTextFrame("", "x", false)); err != ErrSessionNotFound {
 		t.Fatalf("WriteAttachInput error = %v, want ErrSessionNotFound", err)
-	}
-}
-
-func TestRegistryTouchActivityUpdatesLastActive(t *testing.T) {
-	reg := NewRegistry()
-	info := protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex", StartedAt: 10}
-	peer := fakeAgentPeer{}
-	reg.Register(info, peer)
-
-	now := 40
-	if ok := reg.TouchActivityIfOwner("sess-1", peer, now); !ok {
-		t.Fatal("TouchActivityIfOwner returned false, want true")
-	}
-
-	got := reg.List()
-	if len(got) != 1 {
-		t.Fatalf("len(List()) = %d, want 1", len(got))
-	}
-	if got[0].LastActiveAt == nil || *got[0].LastActiveAt != now {
-		t.Fatalf("LastActiveAt = %v, want %v", got[0].LastActiveAt, now)
-	}
-	if got[0].State != protocol.SessionStateConnected {
-		t.Fatalf("State = %q, want connected", got[0].State)
 	}
 }
 
@@ -233,7 +203,7 @@ func TestRegistryReplaceSessionIDLogsSessionReplaced(t *testing.T) {
 	}
 }
 
-func TestRegistryDisconnectMarksSessionReconnectingAndClosesAttaches(t *testing.T) {
+func TestRegistryDisconnectRemovesSessionAndClosesAttaches(t *testing.T) {
 	reg := NewRegistry()
 	peer := &recordingPeer{}
 	attachPeer := &recordingAttachPeer{}
@@ -247,28 +217,24 @@ func TestRegistryDisconnectMarksSessionReconnectingAndClosesAttaches(t *testing.
 		t.Fatal("DisconnectIfOwner returned false, want true")
 	}
 
-	info, ok := reg.Session("sess-1")
-	if !ok {
-		t.Fatal("Session returned false after disconnect, want true")
+	if _, ok := reg.Session("sess-1"); ok {
+		t.Fatal("Session returned true after disconnect, want false")
 	}
-	if info.State != protocol.SessionStateReconnecting {
-		t.Fatalf("State = %q, want reconnecting", info.State)
+	if got := reg.List(); len(got) != 0 {
+		t.Fatalf("len(List()) = %d, want 0", len(got))
 	}
-	if reasons := attachPeer.CloseReasons(); len(reasons) != 1 || reasons[0] != "session_reconnecting" {
-		t.Fatalf("close reasons = %#v, want [session_reconnecting]", reasons)
+	if reasons := attachPeer.CloseReasons(); len(reasons) != 1 || reasons[0] != "session_offline" {
+		t.Fatalf("close reasons = %#v, want [session_offline]", reasons)
 	}
 }
 
-func TestRegistryReconnectWithinGraceRestoresConnectedAndKeepsNewestMetadata(t *testing.T) {
+func TestRegistryReconnectAfterDisconnectRegistersNewOnlineSession(t *testing.T) {
 	reg := NewRegistry()
-	reg.reconnectGrace = 30 * time.Millisecond
 	oldPeer := &recordingPeer{}
-	oldActive := 40
 	reg.Register(protocol.SessionInfo{
-		SessionID:    "sess-1",
-		Launcher:     "codex",
-		StartedAt:    10,
-		LastActiveAt: &oldActive,
+		SessionID: "sess-1",
+		Launcher:  "codex",
+		StartedAt: 10,
 	}, oldPeer)
 
 	if disconnected := reg.DisconnectIfOwner("sess-1", oldPeer); !disconnected {
@@ -276,31 +242,23 @@ func TestRegistryReconnectWithinGraceRestoresConnectedAndKeepsNewestMetadata(t *
 	}
 
 	newPeer := &recordingPeer{}
-	newActive := 50
 	reg.Register(protocol.SessionInfo{
-		SessionID:    "sess-1",
-		Launcher:     "codex",
-		StartedAt:    10,
-		LastActiveAt: &newActive,
+		SessionID: "sess-1",
+		Launcher:  "codex",
+		StartedAt: 10,
 	}, newPeer)
-
-	time.Sleep(2 * reg.reconnectGrace)
 
 	info, ok := reg.Session("sess-1")
 	if !ok {
 		t.Fatal("Session returned false after reconnect, want true")
 	}
-	if info.State != protocol.SessionStateConnected {
-		t.Fatalf("State = %q, want connected", info.State)
-	}
-	if info.LastActiveAt == nil || *info.LastActiveAt != newActive {
-		t.Fatalf("LastActiveAt = %v, want %v", info.LastActiveAt, newActive)
+	if info.SessionID != "sess-1" {
+		t.Fatalf("SessionID = %q, want sess-1", info.SessionID)
 	}
 }
 
-func TestRegistryDisconnectGraceExpiryRemovesSessionOnce(t *testing.T) {
+func TestRegistryDisconnectRemovesSessionImmediately(t *testing.T) {
 	reg := NewRegistry()
-	reg.reconnectGrace = 20 * time.Millisecond
 	peer := &recordingPeer{}
 	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, peer)
 
@@ -308,10 +266,9 @@ func TestRegistryDisconnectGraceExpiryRemovesSessionOnce(t *testing.T) {
 		t.Fatal("DisconnectIfOwner returned false, want true")
 	}
 
-	waitForCondition(t, time.Second, func() bool {
-		_, ok := reg.Session("sess-1")
-		return !ok
-	})
+	if _, ok := reg.Session("sess-1"); ok {
+		t.Fatal("Session returned true after disconnect, want false")
+	}
 }
 
 func TestRegistryDisconnectSkipsStaleOwnerAfterReplacement(t *testing.T) {
@@ -330,8 +287,8 @@ func TestRegistryDisconnectSkipsStaleOwnerAfterReplacement(t *testing.T) {
 	if !ok {
 		t.Fatal("Session returned false, want true")
 	}
-	if info.State != protocol.SessionStateConnected {
-		t.Fatalf("State = %q, want connected", info.State)
+	if info.SessionID != "sess-1" {
+		t.Fatalf("SessionID = %q, want sess-1", info.SessionID)
 	}
 	if err := reg.WriteAttachInput("sess-1", protocol.ForwardInputTextFrame("", "ping", false)); err != nil {
 		t.Fatalf("WriteAttachInput returned error after stale-owner disconnect: %v", err)
@@ -362,20 +319,20 @@ func TestRegistryReplacementDeactivatesStaleOwnerPeer(t *testing.T) {
 	if err := startedOwner.SendJSON(protocol.AttachOpenFrame("client-1")); !errors.Is(err, errAgentPeerInactive) {
 		t.Fatalf("stale owner SendJSON error = %v, want errAgentPeerInactive", err)
 	}
-	if reasons := client.CloseReasons(); len(reasons) != 1 || reasons[0] != "session_reconnecting" {
-		t.Fatalf("close reasons = %#v, want [session_reconnecting]", reasons)
+	if reasons := client.CloseReasons(); len(reasons) != 1 || reasons[0] != "session_offline" {
+		t.Fatalf("close reasons = %#v, want [session_offline]", reasons)
 	}
 }
 
-func TestRegistryWriteAttachInputReturnsReconnectingForDisconnectedSession(t *testing.T) {
+func TestRegistryWriteAttachInputReturnsNotFoundForDisconnectedSession(t *testing.T) {
 	reg := NewRegistry()
 	peer := &recordingPeer{}
 	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, peer)
 	reg.DisconnectIfOwner("sess-1", peer)
 
 	err := reg.WriteAttachInput("sess-1", protocol.ForwardInputTextFrame("", "ping", false))
-	if !errors.Is(err, ErrSessionReconnecting) {
-		t.Fatalf("WriteAttachInput error = %v, want ErrSessionReconnecting", err)
+	if !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("WriteAttachInput error = %v, want ErrSessionNotFound", err)
 	}
 	if frames := peer.Frames(); len(frames) != 0 {
 		t.Fatalf("frames = %#v, want none", frames)
@@ -616,7 +573,6 @@ func TestRegistrySnapshotJSONRoundTrip(t *testing.T) {
 		CWD:            "/tmp/project",
 		CommandPreview: "codex",
 		StartedAt:      10,
-		State:          protocol.SessionStateConnected,
 	}
 
 	raw, err := json.Marshal(info)
@@ -631,8 +587,8 @@ func TestRegistrySnapshotJSONRoundTrip(t *testing.T) {
 	if decoded.SessionID != "sess-1" {
 		t.Fatalf("SessionID = %q, want sess-1", decoded.SessionID)
 	}
-	if decoded.State != protocol.SessionStateConnected {
-		t.Fatalf("State = %q, want connected", decoded.State)
+	if decoded.StartedAt != 10 {
+		t.Fatalf("StartedAt = %d, want 10", decoded.StartedAt)
 	}
 }
 

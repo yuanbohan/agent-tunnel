@@ -104,8 +104,8 @@ This is enough to make a clear planning choice: prefer `xterm-go` over older VT 
 - Preserve local-terminal PTY size as the authority in this phase.
   Rationale: one PTY cannot satisfy conflicting local and remote dimensions simultaneously. Remote clients should follow resize events rather than compete for size ownership.
 
-- Track session activity separately from terminal byte delivery.
-  Rationale: once relay no longer receives every output byte for every session by default, `last_active_at` can no longer piggyback on uploaded output frames. The agent should send lightweight activity metadata to keep session snapshots useful.
+- Keep session discovery minimal and online-only.
+  Rationale: the relay only needs to expose sessions that are currently online and attachable. Discovery does not need extra metadata beyond the session registration payload.
 
 - Treat `reconnecting` as attach-unavailable and close existing attach sockets promptly on disconnect.
   Rationale: stale attaches are worse than explicit reconnect behavior. The client can rediscover state and obtain a fresh snapshot after the agent reconnects.
@@ -124,7 +124,6 @@ This is enough to make a clear planning choice: prefer `xterm-go` over older VT 
 
 - The exact binary packet header used on `/agent/ws` for client-routed terminal bytes can be finalized during implementation as long as it is compact, test-covered, and clearly separate from JSON control frames.
 - The exact close-code and close-reason mapping for `attach/ws` disconnects can be finalized during implementation.
-- The exact debounce/throttle policy for activity metadata can be tuned during implementation as long as `last_active_at` remains useful and low-overhead.
 
 ## High-Level Technical Design
 
@@ -165,7 +164,7 @@ flowchart TB
 flowchart TB
     U1[Unit 1\nProtocol simplification and attach contracts]
     U2[Unit 2\nAgent terminal mirror with xterm-go]
-    U3[Unit 3\nConnector attach multiplexing and activity updates]
+    U3[Unit 3\nConnector attach multiplexing]
     U4[Unit 4\nRelay attach websocket and registry cleanup]
     U5[Unit 5\nDocs, contract alignment, and supersession cleanup]
 
@@ -196,7 +195,6 @@ flowchart TB
 - Keep `register` and `SessionInfo`, but trim `SessionInfo` down to fields still meaningful without history replay.
 - Define JSON control-message helpers for:
   - session registration
-  - session activity updates
   - attach open / attach close
   - attach resize
   - session-scoped structured input
@@ -272,7 +270,7 @@ flowchart TB
 
 - [ ] **Unit 3: Refactor the connector into an attach multiplexer instead of a continuous output uploader**
 
-**Goal:** Make the connector own attach lifecycle, mirror-backed snapshot delivery, per-client live-byte forwarding, and lightweight activity metadata.
+**Goal:** Make the connector own attach lifecycle, mirror-backed snapshot delivery, and per-client live-byte forwarding.
 
 **Requirements:** R1-R12, R18-R23
 
@@ -290,7 +288,6 @@ flowchart TB
 - Remove the continuous replay/output upload model from `connector.WriteOutput`.
 - Keep `WriteOutput` responsible for:
   - updating the local terminal mirror
-  - updating agent-side activity metadata
   - forwarding live bytes only to currently attached remote clients
 - Teach the connector to process new relay controls:
   - `attach_open`
@@ -300,7 +297,6 @@ flowchart TB
 - When an attach opens, ask the mirror for an atomic size + snapshot + live subscriber, send initial resize control, then send snapshot bytes, then begin streaming live packets for that client.
 - Maintain per-client buffered queues and drop slow attaches rather than allowing one stalled client to block PTY progress or other attaches.
 - Preserve existing reconnect/session-id behavior across relay reconnects for the owning process.
-- Send low-overhead activity updates so `GET /api/sessions` can still expose meaningful `last_active_at` even when no client is attached.
 
 **Execution note:** Start with failing connector tests for attach-open snapshot delivery, multi-client live fanout, and no-output-upload-without-attach behavior.
 
@@ -316,7 +312,6 @@ flowchart TB
 - Edge case: a slow attached client is dropped without blocking PTY output or other clients.
 - Edge case: relay reconnect preserves the same `session_id`, and later attach-open still produces a current-state snapshot.
 - Error path: malformed or unknown relay control frames do not break the connector loop.
-- Integration: activity metadata updates continue to advance `last_active_at` without replay frames.
 
 **Verification:**
 - The connector becomes an attach/session transport instead of a replay-history uploader.
@@ -341,9 +336,7 @@ flowchart TB
 - Keep `relay/registry.go` focused on:
   - live session snapshots
   - owner peer replacement
-  - `connected` / `reconnecting`
-  - reconnect grace expiry
-  - current activity metadata
+  - online-only discovery
   - attached-client bookkeeping
 - Add `GET /api/sessions/:id/attach/ws` as the client-facing attach websocket.
 - Remove `GET /api/updates/ws` and `GET /api/sessions/:id/frames`.
@@ -354,7 +347,7 @@ flowchart TB
   - register the client sink
   - send `attach_open` to the agent peer
 - Route agent binary data packets to the matching attach sink without interpreting terminal bytes.
-- Route agent JSON resize/close/activity controls appropriately.
+- Route agent JSON resize and attach lifecycle controls appropriately.
 - Forward session-scoped structured input from the attach websocket to the owning agent peer.
 - On agent disconnect, move the session to `reconnecting` and close any active attach sockets for that session promptly.
 
@@ -420,7 +413,7 @@ flowchart TB
 - Existing contract-style tests in `protocol/relay_types_test.go` and `relay/server_test.go`
 
 **Test scenarios:**
-- Happy path: session snapshot JSON still includes stable discovery fields and reconnect state.
+- Happy path: session snapshot JSON still includes stable discovery fields.
 - Regression: no test or doc text still references `/api/sessions/:id/frames`, `/api/updates/ws`, `ReplayFrame`, `history_request`, or `latest_seq`.
 - Regression: docs and tests agree that reconnect means fresh attach plus fresh snapshot, not transcript replay.
 - Regression: the superseded plan is no longer marked active.
@@ -434,7 +427,6 @@ flowchart TB
 - **Protocol shape:** The shared contract shifts from replay/history/control-envelopes plus global updates to session-scoped attach control plus raw client-routed data packets.
 - **State ownership:** Terminal-state authority moves decisively to the agent-side mirror; the relay tracks discovery and lifecycle only.
 - **Client behavior:** Reconnect strategy changes from "catch up on missed frames" to "reattach and restore current state."
-- **Observability:** `last_active_at` needs a new lightweight metadata path because replay-frame uploads no longer carry activity implicitly.
 - **UI/UX boundary:** Remote clients lose transcript recovery by design but gain a cleaner current-state attach model.
 
 ## Alternative Approaches Considered
@@ -451,7 +443,6 @@ flowchart TB
 | `xterm-go` still diverges from real Claude/Codex traffic despite xterm.js conformance | Hide the engine behind a narrow mirror interface, add repo-specific golden/round-trip tests, and keep `@xterm/headless` as an implementation fallback rather than rewriting the transport |
 | Snapshot/live handoff drops a byte under concurrent output | Make mirror attach atomic: snapshot + subscriber registration happen under one lock |
 | Slow remote clients back up the agent or relay | Use per-client buffered queues and drop slow attaches explicitly |
-| Relay session listing loses meaningful activity timestamps | Add low-overhead activity metadata updates from the connector |
 | PTY size state drifts between local terminal, mirror, and remote clients | Centralize size ownership in `session.Hub` and fan out resize notifications to all subscribers |
 | The repo ends up carrying two contradictory plans | Mark `docs/plans/2026-04-09-001-feat-agent-side-session-history-plan.md` as superseded in the same documentation change |
 
@@ -460,7 +451,7 @@ flowchart TB
 - The docs should explicitly say that reconnect behavior is "reattach and restore current state," not transcript recovery.
 - The docs should also say that the local terminal remains the most complete and authoritative live view.
 - Remote attach sockets should be treated as session-scoped foreground channels; discovery continues through `GET /api/sessions`.
-- Activity and reconnect state matter more than sequence counters now; any stale `seq` terminology should be removed rather than repurposed.
+- Online presence now matters more than sequence counters; any stale `seq` terminology should be removed rather than repurposed.
 
 ## Sources & References
 

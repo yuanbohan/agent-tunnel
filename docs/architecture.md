@@ -6,9 +6,9 @@ This document describes the current system shape for the attach-based protocol.
 
 `tunnel` owns the real local agent process, its PTY, and the authoritative current terminal state for that session. Every supported launcher follows the same path: one local PTY child, one session hub, one headless terminal mirror, one outbound relay connector, and no launcher-specific sidecar.
 
-The relay exposes authenticated APIs so external clients can discover live sessions, attach to one connected session, send structured input, and observe reconnect lifecycle. The relay is not the terminal-state authority and it does not retain transcript history.
+The relay exposes authenticated APIs so external clients can discover live sessions, attach to one online session, and send structured input. The relay is not the terminal-state authority and it does not retain transcript history.
 
-Protocol-facing timestamps such as `started_at` and `last_active_at` are Unix timestamps encoded as JSON integers in seconds.
+Protocol-facing timestamps such as `started_at` are Unix timestamps encoded as JSON integers in seconds.
 
 The local terminal is still the primary and most complete view of the PTY session. Remote access is session-scoped: a client attaches to one session, receives a current-screen snapshot, and then receives subsequent live PTY bytes on that same attach.
 
@@ -37,7 +37,7 @@ local machine
 │        ▼                    ▼                     ▼              │
 │  local terminal sink   terminal mirror      relay connector      │
 │                         - current screen     - register           │
-│                         - snapshot bytes     - activity / resize  │
+│                         - snapshot bytes     - resize             │
 │                         - live attach fanout - attach routing     │
 └────────────────────────────────┬─────────────────────────────────┘
                                  │
@@ -46,7 +46,7 @@ local machine
                     │           relay server            │
                     │  - auth                           │
                     │  - live session registry          │
-                    │  - reconnect grace state          │
+                    │  - online session registry        │
                     │  - session attach websocket       │
                     │  - agent/client routing           │
                     └────────────────┬──────────────────┘
@@ -70,7 +70,6 @@ It owns:
 - fanout of PTY output to the local terminal, terminal mirror, and relay connector
 - the authoritative headless terminal mirror for the currently visible screen
 - session-scoped attach snapshot creation
-- agent-authored `last_active_at` metadata
 - forwarding remote input back into the PTY
 - translating structured remote key input into PTY bytes
 - session-wide resize authority, which continues to follow the local terminal in this phase
@@ -83,9 +82,9 @@ It owns:
 
 - client and agent authentication
 - current live-session snapshots for discovery
-- `connected` / `reconnecting` session lifecycle state with a short reconnect grace window
+- current online-session discovery and immediate offline removal when the owning agent disconnects
 - the owner websocket for each live session
-- client attach websockets for connected sessions
+- client attach websockets for online sessions
 - routing JSON control messages and client-scoped binary terminal bytes between clients and the owning agent
 - closing active attaches promptly when the owning agent disappears
 
@@ -105,8 +104,8 @@ The client is responsible for rendering a session-scoped attach correctly.
 
 It should:
 
-- use `GET /api/sessions` to discover `connected` versus `reconnecting`
-- use `GET /api/sessions/:id/attach/ws` to attach to one connected session
+- use `GET /api/sessions` to discover currently online sessions
+- use `GET /api/sessions/:id/attach/ws` to attach to one online session
 - when running in a browser, open the attach websocket from the same origin as the relay; native clients may omit `Origin`
 - size its terminal emulator from the initial `attached` control message before feeding subsequent binary bytes
 - treat binary bytes before `snapshot_done` as snapshot bytes and binary bytes after it as live PTY bytes
@@ -118,7 +117,7 @@ The remote attach path is:
 
 ```text
 client opens /api/sessions/:id/attach/ws
-→ relay authenticates and checks session state
+→ relay authenticates and checks that the session is online
 → relay allocates relay-scoped client_id
 → relay sends attach_open to the owning agent
 → agent terminal mirror atomically:
@@ -200,12 +199,11 @@ tunnel launch
 
 The session lifecycle is centered on one running agent process.
 
-1. The agent registers over `/agent/ws`; the relay marks the session `connected`.
-2. Clients may attach only while the session is `connected`.
-3. If the agent websocket drops, the relay closes active attaches and keeps the session in the registry as `reconnecting` for a bounded grace window.
-4. During `reconnecting`, the session remains discoverable in `GET /api/sessions`, but attaches and remote input are unavailable.
-5. If the same running agent reconnects with the same `session_id`, it re-registers and the session becomes `connected` again.
-6. If the reconnect grace window expires, the relay removes the session.
+1. The agent registers over `/agent/ws`; the session becomes discoverable.
+2. Clients may attach only while the session is online.
+3. If the agent websocket drops, the relay closes active attaches and removes the session from `GET /api/sessions` immediately.
+4. While the agent is offline, attaches and remote input are unavailable because the session is no longer discoverable.
+5. If the same running agent reconnects with the same `session_id`, it re-registers and the session becomes discoverable again.
 
 Closing the agent process ends the session. A later agent launch starts a different session with a different `session_id`.
 
@@ -213,9 +211,9 @@ Closing the agent process ends the session. A later agent launch starts a differ
 
 - `cmd/agentunnel`: local `tunnel` entrypoint
 - `session/`: PTY ownership, local terminal handling, hub fanout, resize state, and terminal mirror
-- `connector/`: outbound relay connection, session registration, attach routing, and activity / resize signaling
+- `connector/`: outbound relay connection, session registration, attach routing, and resize signaling
 - `cmd/relay`: relay entrypoint
-- `relay/`: live session registry, reconnect state, attach lifecycle, and HTTP / WebSocket handlers
+- `relay/`: live session registry, attach lifecycle, and HTTP / WebSocket handlers
 - `protocol/`: shared attach-oriented wire types
 
 ## Related Documents

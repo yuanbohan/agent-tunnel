@@ -264,10 +264,6 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 					continue
 				}
 				switch frame.Type {
-				case "activity":
-					if frame.LastActiveAt != nil {
-						registry.TouchActivityIfOwner(register.Session.SessionID, peer, *frame.LastActiveAt)
-					}
 				case "resize":
 					if frame.Cols > 0 && frame.Rows > 0 {
 						registry.RouteResizeIfOwner(register.Session.SessionID, peer, frame.Cols, frame.Rows)
@@ -308,13 +304,8 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 		}
 
 		sessionID := parts[2]
-		info, ok := registry.Session(sessionID)
-		if !ok {
+		if _, ok := registry.Session(sessionID); !ok {
 			writeJSONError(w, http.StatusNotFound, "session_not_found")
-			return
-		}
-		if info.State != protocol.SessionStateConnected {
-			writeJSONError(w, http.StatusConflict, "session_reconnecting")
 			return
 		}
 
@@ -364,7 +355,7 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 
 		if err := owner.SendJSON(protocol.AttachOpenFrame(clientID)); err != nil {
 			loopErr = err
-			_ = registry.DetachClient(sessionID, clientID, "session_reconnecting")
+			_ = registry.DetachClient(sessionID, clientID, "session_offline")
 			return
 		}
 
@@ -466,11 +457,11 @@ func isDefaultPortForScheme(port, scheme string) bool {
 func reasonForAttachStartError(err error) string {
 	switch {
 	case errors.Is(err, ErrSessionNotFound):
-		return "session_removed"
-	case errors.Is(err, ErrSessionReconnecting):
-		return "session_reconnecting"
+		return "session_offline"
+	case errors.Is(err, ErrSessionOffline):
+		return "session_offline"
 	default:
-		return "session_removed"
+		return "session_offline"
 	}
 }
 

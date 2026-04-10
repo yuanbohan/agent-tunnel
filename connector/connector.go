@@ -46,7 +46,7 @@ var errOutboundBackpressure = errors.New("connector outbound backpressure")
 // - session.Hub output fanout via WriteOutput()
 //
 // Downstream consumer:
-// - relay `/agent/ws`, which receives register/activity/attach frames
+// - relay `/agent/ws`, which receives register/attach frames
 //
 // Reverse data path:
 // - relay input frames come back through handleInbound() into the bound Hub
@@ -75,10 +75,6 @@ type Connector struct {
 	attachMu     sync.Mutex
 	attached     map[string]struct{}
 	writeTimeout time.Duration
-	now          func() time.Time
-
-	activityMu            sync.Mutex
-	lastPublishedActivity int
 
 	connMu       sync.Mutex
 	activeConn   connectionCloser
@@ -113,7 +109,6 @@ func New(url, token string, info protocol.SessionInfo) *Connector {
 		mirror:       session.NewTerminalMirror(0, 0),
 		attached:     make(map[string]struct{}),
 		writeTimeout: defaultWSWriteTimeout,
-		now:          time.Now,
 		sleep: func(ctx context.Context, d time.Duration) bool {
 			timer := time.NewTimer(d)
 			defer timer.Stop()
@@ -232,13 +227,6 @@ func (c *Connector) WriteOutput(data []byte) error {
 		attached = append(attached, clientID)
 	}
 	c.attachMu.Unlock()
-
-	now := c.currentTime().UTC()
-	lastActiveAt := protocol.UnixTimestamp(now)
-	c.setLastActiveAt(lastActiveAt)
-	if c.CurrentState() == StateConnected && c.shouldPublishActivity(lastActiveAt) {
-		c.enqueuePersistentJSON(protocol.ActivityFrame(lastActiveAt))
-	}
 
 	for _, clientID := range attached {
 		packet, err := protocol.EncodeTerminalBytesPacket(clientID, dataCopy)
@@ -407,37 +395,6 @@ func (c *Connector) infoSnapshot() protocol.SessionInfo {
 	c.infoMu.RLock()
 	defer c.infoMu.RUnlock()
 	return c.info
-}
-
-func (c *Connector) setLastActiveAt(ts int) {
-	c.infoMu.Lock()
-	defer c.infoMu.Unlock()
-	if ts > 0 {
-		tsCopy := ts
-		c.info.LastActiveAt = &tsCopy
-	}
-}
-
-func (c *Connector) currentTime() time.Time {
-	if c.now != nil {
-		return c.now()
-	}
-	return time.Now()
-}
-
-func (c *Connector) shouldPublishActivity(lastActiveAt int) bool {
-	if lastActiveAt <= 0 {
-		return false
-	}
-
-	c.activityMu.Lock()
-	defer c.activityMu.Unlock()
-
-	if c.lastPublishedActivity == lastActiveAt {
-		return false
-	}
-	c.lastPublishedActivity = lastActiveAt
-	return true
 }
 
 func (c *Connector) initialConnectTimeout(attempt int) time.Duration {

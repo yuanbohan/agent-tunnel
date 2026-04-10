@@ -4,7 +4,7 @@ Launch a terminal agent locally and expose the running PTY through a relay-backe
 
 The remote contract is attach-only: clients discover live sessions with `GET /api/sessions`, then attach to one session with `GET /api/sessions/:id/attach/ws`. On attach, the owning `tunnel` process sends a current-screen snapshot and then continues streaming live PTY bytes on that same websocket.
 
-`tunnel` starts a real CLI such as `claude`, `codex`, or `gemini`, keeps the launching terminal interactive, and registers the session with a relay server. The relay is API-only: it authenticates clients and agents, lists live sessions, brokers session-scoped attaches, forwards structured input, and manages reconnect lifecycle. It does not retain transcript history and it does not emulate the terminal.
+`tunnel` starts a real CLI such as `claude`, `codex`, or `gemini`, keeps the launching terminal interactive, and registers the session with a relay server. The relay is API-only: it authenticates clients and agents, lists live sessions, brokers session-scoped attaches, and forwards structured input. It does not retain transcript history and it does not emulate the terminal.
 
 On startup, `tunnel` gives relay registration a short first chance to succeed. If that startup window expires, local terminal work still begins and `tunnel` continues reconnecting to the relay in the background. Runtime relay outages do not interrupt the local terminal session.
 
@@ -84,8 +84,8 @@ Healthy startup banners are printed in bright green. Degraded startup banners, s
 
 Point your client at the relay with HTTP Basic Auth and use the relay APIs:
 
-- `GET /api/sessions` to list live sessions and their `state` (`connected` or `reconnecting`)
-- `GET /api/sessions/:id/attach/ws` to attach to one connected session
+- `GET /api/sessions` to list sessions whose owning agent is currently online
+- `GET /api/sessions/:id/attach/ws` to attach to one online session
 
 Browser attach clients must be same-origin with the relay. Native clients that do not send an `Origin` header remain supported.
 
@@ -104,11 +104,11 @@ If the attach drops, the client should create a fresh terminal emulator state an
 The current remote model is:
 
 - `tunnel` owns the PTY and maintains the authoritative headless terminal mirror for that running session
-- the relay stores live session metadata such as `state`, `started_at`, and `last_active_at`
-- `started_at` and `last_active_at` are Unix timestamps encoded as JSON integers in seconds
+- the relay stores live session metadata such as `started_at`
+- `started_at` is a Unix timestamp encoded as a JSON integer in seconds
 - a remote attach asks the agent for the current visible screen, not for old output history
 - after the initial snapshot, the same attach continues as an ordered live byte stream for that client
-- if the owning agent disconnects, the relay closes active attaches and the session becomes `reconnecting` briefly
+- if the owning agent disconnects, the relay closes active attaches and removes the session from discovery immediately
 
 Stronger delivery guarantees, transcript history, and remote-driven PTY sizing are out of scope for this protocol revision.
 

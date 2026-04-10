@@ -54,7 +54,7 @@ Current state from repo research:
 
 ### Relevant Code and Patterns
 
-- `connector/connector.go` owns the agent-side snapshot handoff, live-byte forwarding, activity publication, and reconnect state. It is the right place to pin no-gap attach behavior and malformed inbound-control handling.
+- `connector/connector.go` owns the agent-side snapshot handoff, live-byte forwarding, and relay connection lifecycle. It is the right place to pin no-gap attach behavior and malformed inbound-control handling.
 - `relay/server.go` owns both websocket entrypoints and the HTTP pre-upgrade contract. It is the right place to tighten message-type validation and attach-start failure behavior.
 - `relay/registry.go` owns live session state, attach membership, reconnect lifecycle, and owner/client routing. It is the right place to collapse dead input wrappers and harden pending-attach cleanup behavior.
 - `protocol/message.go` is the current type-surface hotspot for redundant input/control envelopes.
