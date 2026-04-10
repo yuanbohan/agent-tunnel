@@ -76,7 +76,9 @@ If relay startup registration does not succeed within the startup wait window, `
 
 While reconnecting, `tunnel` keeps retrying in the background and shows a compact terminal status that local work continues.
 
-Healthy startup banners are printed in green. Degraded startup banners, such as relay reconnecting, are printed in red.
+Startup banners are rendered inline without consuming an extra terminal row.
+
+Healthy startup banners are printed in bright green. Degraded startup banners, such as relay reconnecting, are printed in red.
 
 ### 3. Connect a client
 

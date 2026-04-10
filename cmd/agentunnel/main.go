@@ -21,10 +21,12 @@ import (
 const startupRelayWait = 10 * time.Second
 
 const (
-	startupBannerGreen = "\x1b[32m"
+	startupBannerGreen = "\x1b[92m"
 	startupBannerRed   = "\x1b[31m"
 	startupBannerReset = "\x1b[0m"
 )
+
+const startupBannerClear = "\r\x1b[2K"
 
 type relayConnector interface {
 	session.OutputSink
@@ -168,7 +170,7 @@ func startupBanner(launcherName, sessionID, relayAddr string, state connector.St
 	if state != connector.StateConnected {
 		color = startupBannerRed
 	}
-	return fmt.Sprintf("%s▶ tunnel %s — session %s; relay %s (%s)%s\n", color, launcherName, sessionID, status, relayAddr, startupBannerReset)
+	return fmt.Sprintf("%s%s▶ tunnel %s — session %s; relay %s (%s)%s\r", startupBannerClear, color, launcherName, sessionID, status, relayAddr, startupBannerReset)
 }
 
 func followRelayState(ctx context.Context, statusLine *session.StatusLine, stateCh <-chan connector.State) {

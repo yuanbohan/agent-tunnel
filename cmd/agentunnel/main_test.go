@@ -230,10 +230,10 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
 }
 
 func TestStartupBannerUsesRelayState(t *testing.T) {
-	if got := startupBanner("codex", "sess-123", "127.0.0.1:8586", connector.StateConnected); got != "\x1b[32m▶ tunnel codex — session sess-123; relay connected (127.0.0.1:8586)\x1b[0m\n" {
+	if got := startupBanner("codex", "sess-123", "127.0.0.1:8586", connector.StateConnected); got != "\r\x1b[2K\x1b[92m▶ tunnel codex — session sess-123; relay connected (127.0.0.1:8586)\x1b[0m\r" {
 		t.Fatalf("connected banner = %q", got)
 	}
-	if got := startupBanner("codex", "sess-456", "127.0.0.1:8586", connector.StateReconnecting); got != "\x1b[31m▶ tunnel codex — session sess-456; relay reconnecting (127.0.0.1:8586)\x1b[0m\n" {
+	if got := startupBanner("codex", "sess-456", "127.0.0.1:8586", connector.StateReconnecting); got != "\r\x1b[2K\x1b[31m▶ tunnel codex — session sess-456; relay reconnecting (127.0.0.1:8586)\x1b[0m\r" {
 		t.Fatalf("reconnecting banner = %q", got)
 	}
 }
