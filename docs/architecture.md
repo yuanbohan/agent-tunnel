@@ -17,8 +17,6 @@ The local terminal is still the primary and most complete view of the PTY sessio
 - startup gating: it gives relay registration a bounded first chance before entering the local terminal session
 - post-startup continuity: once the local session has begun, relay outages only affect remote visibility and control; local terminal work continues while the connector retries in the background
 
-On macOS, after startup reaches a live local session, `tunnel` also attempts idle sleep prevention for the lifetime of the `tunnel` process. That host-level helper is best-effort: startup continues if it cannot be enabled, but the startup banner reports the result.
-
 ```text
 local machine
 ┌──────────────────────────────────────────────────────────────────┐
@@ -68,7 +66,6 @@ It owns:
 
 - launcher resolution
 - PTY lifecycle and local terminal raw mode
-- macOS idle sleep-prevention helper lifecycle
 - startup relay wait and background reconnect policy
 - fanout of PTY output to the local terminal, terminal mirror, and relay connector
 - the authoritative headless terminal mirror for the currently visible screen

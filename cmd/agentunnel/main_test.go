@@ -86,7 +86,6 @@ func TestRunWithArgsStopsBeforeStartingSessionWhenLocalTerminalPreparationFails(
 	oldPrepare := prepareLocalTerminal
 	oldStartSession := startSession
 	oldStartLocalTerminal := startLocalTerminal
-	oldStartSleepPrevention := startSleepPrevention
 	oldWaitForExit := waitForExit
 	oldNewConnector := newConnector
 	t.Cleanup(func() {
@@ -94,7 +93,6 @@ func TestRunWithArgsStopsBeforeStartingSessionWhenLocalTerminalPreparationFails(
 		prepareLocalTerminal = oldPrepare
 		startSession = oldStartSession
 		startLocalTerminal = oldStartLocalTerminal
-		startSleepPrevention = oldStartSleepPrevention
 		waitForExit = oldWaitForExit
 		newConnector = oldNewConnector
 	})
@@ -114,12 +112,6 @@ func TestRunWithArgsStopsBeforeStartingSessionWhenLocalTerminalPreparationFails(
 		return nil, nil
 	}
 
-	startedSleepPrevention := false
-	startSleepPrevention = func(int) sleepPrevention {
-		startedSleepPrevention = true
-		return newSleepPrevention(sleepPreventionActive, nil)
-	}
-
 	newConnector = func(url, token string, info protocol.SessionInfo) relayConnector {
 		return &fakeRelayConnector{waitConnected: true, state: connector.StateConnected}
 	}
@@ -132,9 +124,6 @@ func TestRunWithArgsStopsBeforeStartingSessionWhenLocalTerminalPreparationFails(
 	if startedSession {
 		t.Fatal("runWithArgs started the child session before local terminal preparation succeeded")
 	}
-	if startedSleepPrevention {
-		t.Fatal("runWithArgs started sleep prevention before local terminal preparation succeeded")
-	}
 }
 
 func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
@@ -144,7 +133,6 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
 	oldPrepare := prepareLocalTerminal
 	oldStartSession := startSession
 	oldStartLocalTerminal := startLocalTerminal
-	oldStartSleepPrevention := startSleepPrevention
 	oldWaitForExit := waitForExit
 	oldNewConnector := newConnector
 	t.Cleanup(func() {
@@ -152,7 +140,6 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
 		prepareLocalTerminal = oldPrepare
 		startSession = oldStartSession
 		startLocalTerminal = oldStartLocalTerminal
-		startSleepPrevention = oldStartSleepPrevention
 		waitForExit = oldWaitForExit
 		newConnector = oldNewConnector
 	})
@@ -179,17 +166,11 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
 	var gotSinks map[string]session.OutputSink
 	var gotPath string
 	var gotArgs []string
-	startedSleepPrevention := false
 	startSession = func(_ context.Context, path string, args []string, sinks map[string]session.OutputSink) (*session.Running, error) {
 		gotPath = path
 		gotArgs = append([]string(nil), args...)
 		gotSinks = sinks
 		return nil, wantErr
-	}
-
-	startSleepPrevention = func(int) sleepPrevention {
-		startedSleepPrevention = true
-		return newSleepPrevention(sleepPreventionActive, nil)
 	}
 
 	waitForExit = func(context.Context, <-chan struct{}, <-chan error) error {
@@ -243,31 +224,27 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
 	if fakeConnector.connectTTL != startupRelayWait {
 		t.Fatalf("initial connect timeout = %v, want %v", fakeConnector.connectTTL, startupRelayWait)
 	}
-	if startedSleepPrevention {
-		t.Fatal("sleep prevention should not start when session start fails")
-	}
 	if got := stderr.String(); got != "" {
 		t.Fatalf("stderr = %q, want no startup banner when session start fails", got)
 	}
 }
 
 func TestStartupBannerUsesRelayState(t *testing.T) {
-	if got := startupBanner("codex", "sess-123", "127.0.0.1:8586", connector.StateConnected, sleepPreventionActive); got != "\x1b[32m▶ tunnel codex — session sess-123; relay connected (127.0.0.1:8586); sleep prevented\x1b[0m\n" {
+	if got := startupBanner("codex", "sess-123", "127.0.0.1:8586", connector.StateConnected); got != "\x1b[32m▶ tunnel codex — session sess-123; relay connected (127.0.0.1:8586)\x1b[0m\n" {
 		t.Fatalf("connected banner = %q", got)
 	}
-	if got := startupBanner("codex", "sess-456", "127.0.0.1:8586", connector.StateReconnecting, sleepPreventionFailed); got != "\x1b[31m▶ tunnel codex — session sess-456; relay reconnecting (127.0.0.1:8586); sleep prevention failed\x1b[0m\n" {
+	if got := startupBanner("codex", "sess-456", "127.0.0.1:8586", connector.StateReconnecting); got != "\x1b[31m▶ tunnel codex — session sess-456; relay reconnecting (127.0.0.1:8586)\x1b[0m\n" {
 		t.Fatalf("reconnecting banner = %q", got)
 	}
 }
 
-func TestRunWithArgsPrintsStartupBannerWithSleepStatusAndStopsSleepPreventionOnExit(t *testing.T) {
+func TestRunWithArgsPrintsStartupBannerOnExit(t *testing.T) {
 	setTestEnv(t)
 
 	oldResolve := resolveLauncher
 	oldPrepare := prepareLocalTerminal
 	oldStartSession := startSession
 	oldStartLocalTerminal := startLocalTerminal
-	oldStartSleepPrevention := startSleepPrevention
 	oldWaitForExit := waitForExit
 	oldNewConnector := newConnector
 	t.Cleanup(func() {
@@ -275,7 +252,6 @@ func TestRunWithArgsPrintsStartupBannerWithSleepStatusAndStopsSleepPreventionOnE
 		prepareLocalTerminal = oldPrepare
 		startSession = oldStartSession
 		startLocalTerminal = oldStartLocalTerminal
-		startSleepPrevention = oldStartSleepPrevention
 		waitForExit = oldWaitForExit
 		newConnector = oldNewConnector
 	})
@@ -296,16 +272,6 @@ func TestRunWithArgsPrintsStartupBannerWithSleepStatusAndStopsSleepPreventionOnE
 	startLocalTerminal = func(context.Context, *session.LocalTerminal, *session.Hub) <-chan struct{} {
 		close(done)
 		return done
-	}
-
-	stopCalls := 0
-	startSleepPrevention = func(pid int) sleepPrevention {
-		if pid != os.Getpid() {
-			t.Fatalf("pid = %d, want %d", pid, os.Getpid())
-		}
-		return newSleepPrevention(sleepPreventionActive, func() {
-			stopCalls++
-		})
 	}
 
 	var sessionID string
@@ -319,22 +285,18 @@ func TestRunWithArgsPrintsStartupBannerWithSleepStatusAndStopsSleepPreventionOnE
 		t.Fatalf("runWithArgs error = %v", err)
 	}
 
-	if got := stderr.String(); got != startupBanner("codex", sessionID, "127.0.0.1:8586", connector.StateConnected, sleepPreventionActive) {
+	if got := stderr.String(); got != startupBanner("codex", sessionID, "127.0.0.1:8586", connector.StateConnected) {
 		t.Fatalf("stderr = %q", got)
-	}
-	if stopCalls != 1 {
-		t.Fatalf("sleep stop calls = %d, want 1", stopCalls)
 	}
 }
 
-func TestRunWithArgsContinuesWhenSleepPreventionFails(t *testing.T) {
+func TestRunWithArgsPrintsReconnectingBannerAfterStartupWait(t *testing.T) {
 	setTestEnv(t)
 
 	oldResolve := resolveLauncher
 	oldPrepare := prepareLocalTerminal
 	oldStartSession := startSession
 	oldStartLocalTerminal := startLocalTerminal
-	oldStartSleepPrevention := startSleepPrevention
 	oldWaitForExit := waitForExit
 	oldNewConnector := newConnector
 	t.Cleanup(func() {
@@ -342,7 +304,6 @@ func TestRunWithArgsContinuesWhenSleepPreventionFails(t *testing.T) {
 		prepareLocalTerminal = oldPrepare
 		startSession = oldStartSession
 		startLocalTerminal = oldStartLocalTerminal
-		startSleepPrevention = oldStartSleepPrevention
 		waitForExit = oldWaitForExit
 		newConnector = oldNewConnector
 	})
@@ -363,10 +324,6 @@ func TestRunWithArgsContinuesWhenSleepPreventionFails(t *testing.T) {
 	startLocalTerminal = func(context.Context, *session.LocalTerminal, *session.Hub) <-chan struct{} {
 		close(done)
 		return done
-	}
-
-	startSleepPrevention = func(int) sleepPrevention {
-		return newSleepPrevention(sleepPreventionFailed, nil)
 	}
 
 	var sessionID string
@@ -380,65 +337,7 @@ func TestRunWithArgsContinuesWhenSleepPreventionFails(t *testing.T) {
 		t.Fatalf("runWithArgs error = %v", err)
 	}
 
-	if got := stderr.String(); got != startupBanner("codex", sessionID, "127.0.0.1:8586", connector.StateReconnecting, sleepPreventionFailed) {
-		t.Fatalf("stderr = %q", got)
-	}
-}
-
-func TestRunWithArgsContinuesWhenSleepPreventionIsUnsupported(t *testing.T) {
-	setTestEnv(t)
-
-	oldResolve := resolveLauncher
-	oldPrepare := prepareLocalTerminal
-	oldStartSession := startSession
-	oldStartLocalTerminal := startLocalTerminal
-	oldStartSleepPrevention := startSleepPrevention
-	oldWaitForExit := waitForExit
-	oldNewConnector := newConnector
-	t.Cleanup(func() {
-		resolveLauncher = oldResolve
-		prepareLocalTerminal = oldPrepare
-		startSession = oldStartSession
-		startLocalTerminal = oldStartLocalTerminal
-		startSleepPrevention = oldStartSleepPrevention
-		waitForExit = oldWaitForExit
-		newConnector = oldNewConnector
-	})
-
-	resolveLauncher = func(name string, args []string) (launcher.Command, error) {
-		return launcher.Command{Name: name, Path: "/bin/sh", Args: []string{"-c", "exit 0"}}, nil
-	}
-
-	prepareLocalTerminal = func() (*session.LocalTerminal, error) {
-		return &session.LocalTerminal{}, nil
-	}
-
-	startSession = func(ctx context.Context, path string, args []string, sinks map[string]session.OutputSink) (*session.Running, error) {
-		return session.StartCommandWithInitialSinks(ctx, path, args, sinks)
-	}
-
-	done := make(chan struct{})
-	startLocalTerminal = func(context.Context, *session.LocalTerminal, *session.Hub) <-chan struct{} {
-		close(done)
-		return done
-	}
-
-	startSleepPrevention = func(int) sleepPrevention {
-		return newSleepPrevention(sleepPreventionUnsupported, nil)
-	}
-
-	var sessionID string
-	newConnector = func(url, token string, info protocol.SessionInfo) relayConnector {
-		sessionID = info.SessionID
-		return &fakeRelayConnector{waitConnected: true, state: connector.StateConnected}
-	}
-
-	var stderr bytes.Buffer
-	if err := runWithArgs([]string{"tunnel", "codex"}, &stderr); err != nil {
-		t.Fatalf("runWithArgs error = %v", err)
-	}
-
-	if got := stderr.String(); got != startupBanner("codex", sessionID, "127.0.0.1:8586", connector.StateConnected, sleepPreventionUnsupported) {
+	if got := stderr.String(); got != startupBanner("codex", sessionID, "127.0.0.1:8586", connector.StateReconnecting) {
 		t.Fatalf("stderr = %q", got)
 	}
 }

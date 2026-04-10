@@ -22,7 +22,6 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 - `tunnel` is the PTY owner. It has no localhost HTTP server; all remote client access goes through the relay.
 - `tunnel` requires `--relay-addr` (or `AGENTUNNEL_RELAY_ADDR`) and `AGENTUNNEL_RELAY_TOKEN` to start.
 - On launch, `tunnel` gives relay registration a bounded first chance to succeed. If that startup window expires, the local terminal session still starts and the relay reconnect loop continues in the background.
-- On macOS, after local session startup succeeds, `tunnel` attempts default-on idle sleep prevention for the lifetime of the `tunnel` process. If that helper cannot be started, startup still continues and the startup banner must say so explicitly.
 - After the local terminal session has begun, relay unavailability must not interrupt local terminal work; it only affects remote visibility and interaction until reconnect succeeds.
 - The agent is the authority for current terminal state. It maintains the headless terminal mirror and produces attach snapshots from that mirror.
 - Remote viewing is session-scoped: clients discover sessions with `GET /api/sessions` and attach with `GET /api/sessions/:id/attach/ws`.

@@ -8,8 +8,6 @@ The remote contract is attach-only: clients discover live sessions with `GET /ap
 
 On startup, `tunnel` gives relay registration a short first chance to succeed. If that startup window expires, local terminal work still begins and `tunnel` continues reconnecting to the relay in the background. Runtime relay outages do not interrupt the local terminal session.
 
-On macOS, once startup succeeds, `tunnel` also attempts default-on idle sleep prevention for the lifetime of the `tunnel` process. If that helper cannot be started, the session still starts and the startup line reports the failure.
-
 The local terminal remains the primary view of the PTY session. Remote clients are intentionally narrower:
 
 - they can recover the current screen state on a fresh attach
@@ -64,25 +62,21 @@ Or with a label:
 ./bin/tunnel --label api-fix --relay-addr 127.0.0.1:9000 codex
 ```
 
-Expected stderr output on macOS when relay is available during startup:
+Expected stderr output when relay is available during startup:
 
 ```text
-▶ tunnel claude — session <session-id>; relay connected (127.0.0.1:8586); sleep prevented
+▶ tunnel claude — session <session-id>; relay connected (127.0.0.1:8586)
 ```
 
-If relay startup registration does not succeed within the startup wait window, `tunnel` still enters the local terminal session and shows this on macOS:
+If relay startup registration does not succeed within the startup wait window, `tunnel` still enters the local terminal session and shows:
 
 ```text
-▶ tunnel claude — session <session-id>; relay reconnecting (127.0.0.1:8586); sleep prevented
+▶ tunnel claude — session <session-id>; relay reconnecting (127.0.0.1:8586)
 ```
 
 While reconnecting, `tunnel` keeps retrying in the background and shows a compact terminal status that local work continues.
 
-Healthy startup banners are printed in green. Degraded startup banners, such as relay reconnecting or `sleep prevention failed`, are printed in red.
-
-If macOS sleep prevention cannot be enabled, startup still continues and the startup line reports `sleep prevention failed` instead of `sleep prevented`.
-
-On non-macOS platforms, startup still succeeds but the banner reports `sleep unsupported` because this phase only implements idle sleep prevention on macOS.
+Healthy startup banners are printed in green. Degraded startup banners, such as relay reconnecting, are printed in red.
 
 ### 3. Connect a client
 
