@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help start stop status build build-linux install clean vet test test-relay
+.PHONY: help start stop status build build-linux deploy install clean vet test test-relay
 
 # Runtime configuration. These can be overridden on the command line.
 ## RELAY_BIN: Relay binary path used by `make start`.
@@ -115,6 +115,10 @@ install: build ## Install `tunnel` and `relay` into `$(INSTALL_DIR)`.
 	rm -f "$(INSTALL_TUNNEL_BIN)" "$(INSTALL_RELAY_BIN)"; \
 	cp -f "$(TUNNEL_BIN)" "$(RELAY_BUILD_BIN)" "$(INSTALL_DIR)/"; \
 	echo "installed tunnel and relay to $(INSTALL_DIR)"
+
+deploy: build-linux ## Build, upload, and restart the relay on the remote host.
+	scp $(RELAY_BUILD_BIN) relay:~/relay
+	ssh relay 'sudo systemctl restart agentunnel-relay'
 
 clean: ## Remove built binaries from `$(BIN_DIR)`.
 	rm -rf "$(BIN_DIR)"
