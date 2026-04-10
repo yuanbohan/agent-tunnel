@@ -4,17 +4,14 @@ import (
 	"errors"
 	"sort"
 	"sync"
-	"time"
 
 	"yuanbohan/tunnel/protocol"
 )
 
 var (
-	ErrSessionNotFound     = errors.New("relay session not found")
-	ErrSessionReconnecting = errors.New("relay session reconnecting")
+	ErrSessionNotFound = errors.New("relay session not found")
+	ErrSessionOffline  = errors.New("relay session offline")
 )
-
-const defaultReconnectGrace = 60 * time.Second
 
 type AgentPeer interface {
 	SendJSON(any) error
@@ -32,25 +29,22 @@ type AttachPeer interface {
 }
 
 type Registry struct {
-	mu             sync.RWMutex
-	sessions       map[string]*liveSession
-	logger         *Logger
-	reconnectGrace time.Duration
+	mu       sync.RWMutex
+	sessions map[string]*liveSession
+	logger   *Logger
 }
 
 type liveSession struct {
 	info            protocol.SessionInfo
 	peer            AgentPeer
-	removeTimer     *time.Timer
 	pendingAttached map[string]AttachPeer
 	attached        map[string]AttachPeer
 }
 
 func NewRegistry() *Registry {
 	return &Registry{
-		sessions:       make(map[string]*liveSession),
-		logger:         NewDiscardLogger(),
-		reconnectGrace: defaultReconnectGrace,
+		sessions: make(map[string]*liveSession),
+		logger:   NewDiscardLogger(),
 	}
 }
 
@@ -70,24 +64,15 @@ func (r *Registry) Register(info protocol.SessionInfo, peer AgentPeer) {
 	r.mu.Lock()
 	old := r.sessions[info.SessionID]
 	logger := r.logger
-	lastActiveAt := info.LastActiveAt
 	var attached []AttachPeer
 
 	if old != nil {
-		if old.removeTimer != nil {
-			old.removeTimer.Stop()
-		}
-		if old.info.LastActiveAt != nil && (lastActiveAt == nil || *old.info.LastActiveAt > *lastActiveAt) {
-			lastActiveAt = old.info.LastActiveAt
-		}
 		if old.peer != peer {
 			deactivateAgentPeer(old.peer)
 		}
 		attached = takeAllAttachedLocked(old)
 	}
 
-	info.LastActiveAt = lastActiveAt
-	info.State = protocol.SessionStateConnected
 	r.sessions[info.SessionID] = &liveSession{
 		info:            info,
 		peer:            peer,
@@ -96,7 +81,7 @@ func (r *Registry) Register(info protocol.SessionInfo, peer AgentPeer) {
 	}
 	r.mu.Unlock()
 
-	closeAttachedPeers(attached, "session_reconnecting")
+	closeAttachedPeers(attached, "session_offline")
 
 	if old != nil {
 		logger.Warn("session_replaced", String("session_id", info.SessionID))
@@ -114,9 +99,6 @@ func (r *Registry) Remove(sessionID string) {
 	}
 	var attached []AttachPeer
 	if ok {
-		if live.removeTimer != nil {
-			live.removeTimer.Stop()
-		}
 		attached = takeAllAttachedLocked(live)
 	}
 	r.mu.Unlock()
@@ -124,7 +106,7 @@ func (r *Registry) Remove(sessionID string) {
 	if !ok {
 		return
 	}
-	closeAttachedPeers(attached, "session_removed")
+	closeAttachedPeers(attached, "session_offline")
 }
 
 func (r *Registry) DisconnectIfOwner(sessionID string, owner AgentPeer) bool {
@@ -135,20 +117,12 @@ func (r *Registry) DisconnectIfOwner(sessionID string, owner AgentPeer) bool {
 		return false
 	}
 
-	live.peer = nil
-	live.info.State = protocol.SessionStateReconnecting
-	if live.removeTimer != nil {
-		live.removeTimer.Stop()
-	}
+	delete(r.sessions, sessionID)
 	deactivateAgentPeer(owner)
-	sessionIDCopy := sessionID
-	live.removeTimer = time.AfterFunc(r.reconnectGrace, func() {
-		r.expireReconnectingSession(sessionIDCopy)
-	})
 	attached := takeAllAttachedLocked(live)
 	r.mu.Unlock()
 
-	closeAttachedPeers(attached, "session_reconnecting")
+	closeAttachedPeers(attached, "session_offline")
 	_ = owner.Close()
 	return true
 }
@@ -170,8 +144,8 @@ func (r *Registry) List() []protocol.SessionInfo {
 		out = append(out, live.snapshot())
 	}
 	sort.Slice(out, func(i, j int) bool {
-		ti := lastActiveTime(out[i])
-		tj := lastActiveTime(out[j])
+		ti := out[i].StartedAt
+		tj := out[j].StartedAt
 		if ti == tj {
 			return out[i].SessionID < out[j].SessionID
 		}
@@ -203,15 +177,14 @@ func (r *Registry) sendToOwner(sessionID string, payload any) error {
 		return ErrSessionNotFound
 	}
 	peer := live.peer
-	state := live.info.State
 	r.mu.RUnlock()
 
-	if peer == nil || state != protocol.SessionStateConnected {
-		return ErrSessionReconnecting
+	if peer == nil {
+		return ErrSessionOffline
 	}
 	if err := peer.SendJSON(payload); err != nil {
 		if errors.Is(err, errAgentPeerInactive) {
-			return ErrSessionReconnecting
+			return ErrSessionOffline
 		}
 		return err
 	}
@@ -226,8 +199,8 @@ func (r *Registry) StartAttach(sessionID, clientID string, client AttachPeer) (A
 	if !ok {
 		return nil, ErrSessionNotFound
 	}
-	if live.peer == nil || live.info.State != protocol.SessionStateConnected {
-		return nil, ErrSessionReconnecting
+	if live.peer == nil {
+		return nil, ErrSessionOffline
 	}
 	live.pendingAttached[clientID] = client
 	return live.peer, nil
@@ -365,36 +338,6 @@ func (r *Registry) RouteTerminalBytesIfOwner(sessionID string, owner AgentPeer, 
 	return true
 }
 
-func (r *Registry) TouchActivityIfOwner(sessionID string, owner AgentPeer, lastActiveAt int) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	live, ok := r.sessions[sessionID]
-	if !ok || live.peer != owner {
-		return false
-	}
-	if lastActiveAt > 0 {
-		tsCopy := lastActiveAt
-		live.info.LastActiveAt = &tsCopy
-	}
-	live.info.State = protocol.SessionStateConnected
-	return true
-}
-
-func (r *Registry) expireReconnectingSession(sessionID string) {
-	r.mu.Lock()
-	live, ok := r.sessions[sessionID]
-	if !ok || live.info.State != protocol.SessionStateReconnecting || live.peer != nil {
-		r.mu.Unlock()
-		return
-	}
-	delete(r.sessions, sessionID)
-	attached := takeAllAttachedLocked(live)
-	r.mu.Unlock()
-
-	closeAttachedPeers(attached, "session_removed")
-}
-
 func takeAllAttachedLocked(live *liveSession) []AttachPeer {
 	total := len(live.pendingAttached) + len(live.attached)
 	if total == 0 {
@@ -440,13 +383,6 @@ func closeAttachedPeers(peers []AttachPeer, reason string) {
 
 func (s *liveSession) snapshot() protocol.SessionInfo {
 	return s.info
-}
-
-func lastActiveTime(info protocol.SessionInfo) int {
-	if info.LastActiveAt == nil {
-		return 0
-	}
-	return *info.LastActiveAt
 }
 
 func deactivateAgentPeer(peer AgentPeer) {

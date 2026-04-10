@@ -179,7 +179,7 @@ It does not contain:
 The practical consequence is:
 
 - a new client can attach mid-session and render the current screen correctly
-- a reconnecting client can recover the latest current screen
+- a client can recover the latest current screen by rediscovering the session after the agent comes back online
 - a client cannot ask the relay for the exact bytes it missed while disconnected
 
 ## 5. What Live Bytes Are
@@ -227,7 +227,7 @@ The relay is responsible for:
 - attach lifecycle on `GET /api/sessions/:id/attach/ws`
 - routing JSON control messages
 - routing client-scoped binary terminal bytes
-- tracking `connected` versus `reconnecting`
+- tracking which sessions are currently online
 
 The relay does not:
 
@@ -276,7 +276,7 @@ What the client should do:
 
 1. discard the old terminal emulator state
 2. query `GET /api/sessions`
-3. if the same `session_id` is still `connected`, open a fresh attach immediately
+3. if the same `session_id` is still present, open a fresh attach immediately
 4. build a new emulator from the fresh snapshot and continue with later live bytes
 
 Why:
@@ -284,20 +284,20 @@ Why:
 - the old local emulator state is stale
 - there is no durable missed-byte replay path
 
-### Case B: relay says `closing { reason: "session_reconnecting" }`
+### Case B: relay says `closing { reason: "session_offline" }`
 
 What happened:
 
 - the relay lost the owning agent websocket
 - the relay closed active attach sockets
-- the session remains discoverable briefly as `reconnecting`
+- the session was removed from discovery immediately
 
 What the client should do:
 
 1. discard the old terminal emulator state
 2. stop sending input for that attach
 3. poll or retry `GET /api/sessions`
-4. wait until the same `session_id` returns to `connected`
+4. wait until the same `session_id` appears again
 5. open a fresh attach and rebuild from the new snapshot
 
 If the session disappears instead of returning to `connected`, the original agent process is gone and that session has ended.
@@ -356,7 +356,7 @@ For each attached session, the app should hold:
 - one terminal emulator instance
 - a boolean or enum for whether `snapshot_done` has been received
 - the most recent `cols` and `rows`
-- the latest known session lifecycle state from `GET /api/sessions`
+- whether the target `session_id` is currently present in `GET /api/sessions`
 
 The mobile app should not hold:
 
@@ -369,7 +369,7 @@ The mobile app should not hold:
 When the user opens a session:
 
 1. call `GET /api/sessions`
-2. confirm the target `session_id` is present and `state == connected`
+2. confirm the target `session_id` is present
 3. create a fresh terminal emulator instance with no prior state
 4. open `GET /api/sessions/:id/attach/ws` with Basic Auth
 5. wait for `attached`
@@ -442,9 +442,8 @@ On any attach loss, default to this sequence:
 1. discard the old emulator
 2. mark the old attach dead
 3. re-check `GET /api/sessions`
-4. if the same `session_id` is `connected`, open a fresh attach
-5. if it is `reconnecting`, wait and retry discovery
-6. if it is gone, treat the session as ended
+4. if the same `session_id` is present, open a fresh attach
+5. if it is absent, wait and retry discovery or treat the session as ended based on product UX
 
 Safe default:
 
@@ -457,20 +456,18 @@ flowchart TD
   LOST["Attach Lost"]
   DROP["Discard Old Emulator<br/>mark attach dead"]
   LIST["GET /api/sessions"]
-  CONNECTED{"same session_id<br/>is connected?"}
-  RECONNECTING{"same session_id<br/>is reconnecting?"}
+  PRESENT{"same session_id<br/>is present?"}
   ATTACH["Open Fresh Attach"]
   WAIT["Wait and retry discovery"]
   ENDED["Treat Session as Ended"]
 
   LOST --> DROP
   DROP --> LIST
-  LIST --> CONNECTED
-  CONNECTED -->|yes| ATTACH
-  CONNECTED -->|no| RECONNECTING
-  RECONNECTING -->|yes| WAIT
-  RECONNECTING -->|no| ENDED
+  LIST --> PRESENT
+  PRESENT -->|yes| ATTACH
+  PRESENT -->|no| WAIT
   WAIT --> LIST
+  WAIT --> ENDED
 ```
 
 ### Mobile Transport Notes
@@ -484,9 +481,8 @@ flowchart TD
 
 Handle these cases explicitly:
 
-- `closing: session_reconnecting`: show reconnecting UI, poll discovery, then fresh attach
-- `closing: session_removed`: show that the session ended and stop retrying that `session_id`
-- `closing: slow_client`: treat local rendering or network as overloaded, tear down state, then attempt a fresh attach if the session is still connected
+- `closing: session_offline`: stop input, discard local terminal state, and poll discovery until the same `session_id` appears again or the product decides the session is gone
+- `closing: slow_client`: treat local rendering or network as overloaded, tear down state, then attempt a fresh attach if the session is still present
 - plain websocket close without `closing`: assume bytes may have been missed and do a fresh attach flow
 
 ### Mobile Checklist
@@ -496,15 +492,15 @@ Handle these cases explicitly:
 - feed all binary bytes in arrival order
 - treat `snapshot_done` as attach lifecycle state only
 - discard emulator state on disconnect
-- rediscover session state before reconnecting
-- reattach to the same `session_id` only if it is still `connected`
+- rediscover session state before reattaching
+- reattach to the same `session_id` only if it is still present
 - never model reconnect as transcript replay
 
 ## 10. Resize And Input Around Reconnect
 
 Resize remains session-wide and follows the PTY owner. The client must resize its terminal emulator when it receives `resize`. The client does not become the PTY size authority in this revision.
 
-Structured input still goes over the attach websocket as `input_text` and `input_key`. If the attach is gone or the session is `reconnecting`, the client should stop sending input and wait for a fresh attach.
+Structured input still goes over the attach websocket as `input_text` and `input_key`. If the attach is gone or the session is offline, the client should stop sending input and wait for a fresh attach.
 
 ## 11. What This Model Guarantees
 

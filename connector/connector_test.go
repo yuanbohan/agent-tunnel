@@ -172,150 +172,6 @@ func TestConnectorIgnoresMalformedAndUnknownControlFrames(t *testing.T) {
 	}
 }
 
-func TestConnectorReportsActivityToRelayAfterOutput(t *testing.T) {
-	received := make(chan protocol.AgentFrame, 1)
-	upgrader := websocket.Upgrader{}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			t.Fatalf("Upgrade returned error: %v", err)
-		}
-		defer conn.Close()
-
-		var register protocol.AgentFrame
-		if err := conn.ReadJSON(&register); err != nil {
-			t.Fatalf("ReadJSON register returned error: %v", err)
-		}
-
-		var frame protocol.AgentFrame
-		if err := conn.ReadJSON(&frame); err != nil {
-			t.Fatalf("ReadJSON activity returned error: %v", err)
-		}
-		received <- frame
-	}))
-	defer server.Close()
-
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
-	hub := session.NewHub(func([]byte) error { return nil }, func(int, int) error { return nil })
-	c := New(wsURL, "token", protocol.SessionInfo{
-		SessionID: "sess-1",
-		Launcher:  "codex",
-	})
-	c.BindHub(hub)
-	if err := hub.Resize(120, 40); err != nil {
-		t.Fatalf("Resize returned error: %v", err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go c.Run(ctx)
-
-	if !c.WaitUntilConnected(ctx, time.Second) {
-		t.Fatal("WaitUntilConnected returned false, want true")
-	}
-
-	if err := c.WriteOutput([]byte("world")); err != nil {
-		t.Fatalf("WriteOutput returned error: %v", err)
-	}
-
-	select {
-	case frame := <-received:
-		if frame.Type != "activity" {
-			t.Fatalf("Type = %q, want activity", frame.Type)
-		}
-		if frame.LastActiveAt == nil || *frame.LastActiveAt <= 0 {
-			t.Fatalf("LastActiveAt = %v, want non-zero timestamp", frame.LastActiveAt)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for activity")
-	}
-}
-
-func TestConnectorThrottlesActivityFramesWithinSameSecond(t *testing.T) {
-	received := make(chan protocol.AgentFrame, 3)
-	upgrader := websocket.Upgrader{}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			t.Fatalf("Upgrade returned error: %v", err)
-		}
-		defer conn.Close()
-
-		var register protocol.AgentFrame
-		if err := conn.ReadJSON(&register); err != nil {
-			t.Fatalf("ReadJSON register returned error: %v", err)
-		}
-
-		for i := 0; i < 2; i++ {
-			var frame protocol.AgentFrame
-			if err := conn.ReadJSON(&frame); err != nil {
-				t.Fatalf("ReadJSON activity %d returned error: %v", i, err)
-			}
-			received <- frame
-		}
-
-		_ = conn.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
-		var extra protocol.AgentFrame
-		if err := conn.ReadJSON(&extra); err != nil {
-			if strings.Contains(err.Error(), "i/o timeout") {
-				received <- protocol.AgentFrame{Type: "timeout"}
-				return
-			}
-			t.Fatalf("ReadJSON extra activity returned error: %v", err)
-		}
-		received <- extra
-	}))
-	defer server.Close()
-
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
-	hub := session.NewHub(func([]byte) error { return nil }, func(int, int) error { return nil })
-	c := New(wsURL, "token", protocol.SessionInfo{
-		SessionID: "sess-1",
-		Launcher:  "codex",
-	})
-	c.BindHub(hub)
-	now := time.Unix(100, 0).UTC()
-	c.now = func() time.Time { return now }
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go c.Run(ctx)
-
-	if !c.WaitUntilConnected(ctx, time.Second) {
-		t.Fatal("WaitUntilConnected returned false, want true")
-	}
-
-	if err := c.WriteOutput([]byte("one")); err != nil {
-		t.Fatalf("WriteOutput first returned error: %v", err)
-	}
-	if err := c.WriteOutput([]byte("two")); err != nil {
-		t.Fatalf("WriteOutput second returned error: %v", err)
-	}
-	now = time.Unix(101, 0).UTC()
-	if err := c.WriteOutput([]byte("three")); err != nil {
-		t.Fatalf("WriteOutput third returned error: %v", err)
-	}
-
-	first := <-received
-	second := <-received
-	extra := <-received
-
-	if first.Type != "activity" || first.LastActiveAt == nil || *first.LastActiveAt != 100 {
-		t.Fatalf("first activity = %#v, want last_active_at=100", first)
-	}
-	if second.Type != "activity" || second.LastActiveAt == nil || *second.LastActiveAt != 101 {
-		t.Fatalf("second activity = %#v, want last_active_at=101", second)
-	}
-	if extra.Type != "timeout" {
-		t.Fatalf("extra frame = %#v, want timeout sentinel", extra)
-	}
-
-	info := c.infoSnapshot()
-	if info.LastActiveAt == nil || *info.LastActiveAt != 101 {
-		t.Fatalf("last_active_at = %v, want 101", info.LastActiveAt)
-	}
-}
-
 func TestConnectorUsesInitialSizeBeforeHubBind(t *testing.T) {
 	const clientID = "4d2c6ec8-787a-49c9-b9a0-5dbd8d31b7b1"
 
@@ -489,8 +345,6 @@ func TestConnectorAttachOpenSendsSnapshotThenLiveBytes(t *testing.T) {
 				case "snapshot_done":
 					sawSnapshotDone = true
 					snapshotDoneCh <- frame
-				case "activity":
-					continue
 				default:
 					continue
 				}
@@ -675,7 +529,7 @@ func TestConnectorAttachOpenBypassesFullEphemeralQueue(t *testing.T) {
 	c.applyResize(120, 40, false)
 	c.mirror.WriteOutput([]byte("snapshot line"))
 	for i := 0; i < cap(c.ephemeral); i++ {
-		c.ephemeral <- outboundFrame{json: protocol.ActivityFrame(i + 1)}
+		c.ephemeral <- outboundFrame{json: protocol.ResizeFrame(120+i, 40)}
 	}
 
 	done := make(chan error, 1)
@@ -890,15 +744,15 @@ func TestConnectorReconnectDoesNotReplayOldOutput(t *testing.T) {
 		if err := conn.ReadJSON(&register); err != nil {
 			t.Fatalf("ReadJSON second register returned error: %v", err)
 		}
-		if register.Session == nil || register.Session.LastActiveAt == nil || *register.Session.LastActiveAt <= 0 {
-			t.Fatalf("register session = %#v, want non-zero last_active_at", register.Session)
+		if register.Session == nil || register.Session.SessionID != "sess-1" {
+			t.Fatalf("register session = %#v, want sess-1", register.Session)
 		}
 
 		_ = conn.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
 		var frame protocol.AgentFrame
 		if err := conn.ReadJSON(&frame); err != nil {
 			if !strings.Contains(err.Error(), "i/o timeout") {
-				t.Fatalf("ReadJSON second activity returned error: %v", err)
+				t.Fatalf("ReadJSON second frame returned error: %v", err)
 			}
 			received <- protocol.AgentFrame{Type: "none"}
 			return
@@ -1027,7 +881,7 @@ func TestConnectorQueueOverflowClosesActiveConnection(t *testing.T) {
 		Launcher:  "codex",
 	})
 	c.ephemeral = make(chan outboundFrame, 1)
-	c.ephemeral <- outboundFrame{json: protocol.ActivityFrame(1)}
+	c.ephemeral <- outboundFrame{json: protocol.ResizeFrame(120, 40)}
 
 	overflow := make(chan error, 1)
 	closer := &recordingCloser{}
@@ -1133,6 +987,19 @@ func TestConnectorAttachCloseStopsLiveDelivery(t *testing.T) {
 	case <-attachClosed:
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for attach_close")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		c.attachMu.Lock()
+		_, stillAttached := c.attached[clientID]
+		c.attachMu.Unlock()
+		if !stillAttached {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for attach_close to update connector state")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 
 	if err := c.WriteOutput([]byte("hello")); err != nil {

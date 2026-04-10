@@ -10,7 +10,8 @@ The current protocol is built around these boundaries:
 
 - `session_id` identifies one running `tunnel` process. Relay reconnects for that process keep the same `session_id`. A fresh agent launch gets a fresh `session_id`.
 - The owning agent is the authority for the current terminal state of that session.
-- The relay is a discovery, auth, routing, and reconnect-lifecycle layer. It does not retain transcript history and does not emulate the terminal.
+- The relay is a discovery, auth, and routing layer. It does not retain transcript history and does not emulate the terminal.
+- Sessions are discoverable only while the owning agent websocket is connected. If the agent disconnects, the session disappears from discovery immediately and reappears when the agent re-registers with the same `session_id`.
 - Remote viewing is session-scoped: a client attaches to one session, receives a current-state snapshot, and then receives subsequent live PTY bytes on that same attach.
 - Remote recovery in this revision is current-state recovery only. There is no transcript replay API.
 - The local terminal remains the most complete and authoritative foreground view of the PTY session.
@@ -24,7 +25,7 @@ All protocol timestamps are Unix timestamps represented as JSON integers in seco
 | `GET /healthz` | Any | None | HTTP | Health check |
 | `GET /api/sessions` | Client | Basic Auth | HTTP | Current live session snapshot |
 | `GET /api/sessions/:id/attach/ws` | Client | Basic Auth | WebSocket | Attach to one live session for snapshot, live bytes, resize events, and session-scoped structured input |
-| `GET /agent/ws` | Agent | Bearer | WebSocket | Agent registration, attach control, activity and resize metadata, structured input forwarding, and client-routed terminal byte delivery |
+| `GET /agent/ws` | Agent | Bearer | WebSocket | Agent registration, attach control, resize metadata, structured input forwarding, and client-routed terminal byte delivery |
 
 Removed from the product contract:
 
@@ -63,21 +64,15 @@ WebSocket attach notes:
   "label": "api-fix",
   "cwd": "/repo",
   "command_preview": "codex --profile prod",
-  "started_at": 1775376000,
-  "last_active_at": 1775376180,
-  "state": "connected"
+  "started_at": 1775376000
 }
 ```
 
 Notes:
 
 - `label` may be omitted when empty
-- `last_active_at` may be omitted when unknown
-- `started_at` and `last_active_at` are Unix timestamps in seconds
-- `state` is `connected` when the relay currently has an owning agent websocket
-- `state` is `reconnecting` during the short post-disconnect grace window
-- `reconnecting` sessions remain discoverable briefly, but they do not accept new attaches or remote input until the owning agent reconnects
-- `last_active_at` is agent-authored best-effort activity metadata. It is useful for discovery and sorting, not a delivery guarantee
+- `started_at` is a Unix timestamp in seconds
+- every returned session currently has an owning agent websocket and is attachable
 
 ## Attach Lifecycle
 
@@ -86,7 +81,7 @@ Notes:
 The attach contract is:
 
 1. the client authenticates and opens `GET /api/sessions/:id/attach/ws`
-2. the relay verifies that the session exists and is currently `connected`
+2. the relay verifies that the session currently exists in discovery
 3. the relay allocates a relay-scoped `client_id` and sends `attach_open` to the owning agent
 4. the agent atomically:
    - captures the current terminal size
@@ -169,15 +164,14 @@ Notes:
 ```json
 {
   "type": "closing",
-  "reason": "session_reconnecting"
+  "reason": "session_offline"
 }
 ```
 
 Known reasons:
 
 - `client_closed`
-- `session_reconnecting`
-- `session_removed`
+- `session_offline`
 - `slow_client`
 
 Notes:
@@ -268,8 +262,7 @@ Notes:
 
 Status behavior for `GET /api/sessions/:id/attach/ws` before websocket upgrade:
 
-- `404 Not Found` with `{"reason":"session_not_found"}` when the session is unknown or the reconnect grace window has expired
-- `409 Conflict` with `{"reason":"session_reconnecting"}` when the session is listed but currently has no connected owning agent
+- `404 Not Found` with `{"reason":"session_not_found"}` when the session is unknown or currently offline
 - `401 Unauthorized` when Basic Auth is missing or invalid
 
 ## Agent WebSocket
@@ -293,8 +286,7 @@ It is a mixed websocket:
     "launcher": "codex",
     "cwd": "/repo",
     "command_preview": "codex --profile prod",
-    "started_at": 1775376000,
-    "last_active_at": 1775376180
+    "started_at": 1775376000
   }
 }
 ```
@@ -303,22 +295,6 @@ Notes:
 
 - `register` must be the first agent control frame on the websocket
 - the relay treats that websocket as the owner of the live session
-- on first connect, `last_active_at` may be omitted
-- on reconnect, the registering agent may advertise its current `last_active_at`
-
-### `activity`
-
-```json
-{
-  "type": "activity",
-  "last_active_at": 1775376180
-}
-```
-
-Notes:
-
-- this updates relay-visible session metadata
-- it is session-wide, not client-specific
 
 ### `resize`
 
@@ -410,7 +386,7 @@ Notes:
 Notes:
 
 - the relay sends this when the attached client socket closes or is no longer usable
-- known reasons include `client_closed` and `session_removed`
+- known reasons include `client_closed`
 
 ### `input_text`
 
@@ -487,7 +463,7 @@ This keeps terminal behavior close to the PTY owner and avoids embedding termina
 
 ## Client Notes
 
-- clients should use `GET /api/sessions` to discover `connected` versus `reconnecting`
+- clients should use `GET /api/sessions` to discover currently online sessions
 - clients should use `GET /api/sessions/:id/attach/ws` as the foreground receive and input channel for one session
 - clients should create a fresh terminal emulator state when opening a fresh attach
 - clients should size the terminal emulator on `attached` before feeding binary bytes

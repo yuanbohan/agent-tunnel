@@ -143,7 +143,7 @@ func TestWSAgentPeerSendJSONSetsWriteDeadline(t *testing.T) {
 		active:       true,
 	}
 
-	if err := peer.SendJSON(protocol.ActivityFrame(40)); err != nil {
+	if err := peer.SendJSON(protocol.ResizeFrame(120, 40)); err != nil {
 		t.Fatalf("SendJSON returned error: %v", err)
 	}
 
@@ -165,7 +165,7 @@ func TestWSAgentPeerSendJSONReturnsDeadlineError(t *testing.T) {
 		active:       true,
 	}
 
-	if err := peer.SendJSON(protocol.ActivityFrame(40)); err == nil || err.Error() != "deadline failed" {
+	if err := peer.SendJSON(protocol.ResizeFrame(120, 40)); err == nil || err.Error() != "deadline failed" {
 		t.Fatalf("SendJSON error = %v, want deadline failed", err)
 	}
 }
@@ -180,7 +180,7 @@ func TestWSAgentPeerRejectsSendsAfterDeactivate(t *testing.T) {
 
 	peer.Deactivate()
 
-	if err := peer.SendJSON(protocol.ActivityFrame(40)); !errors.Is(err, errAgentPeerInactive) {
+	if err := peer.SendJSON(protocol.ResizeFrame(120, 40)); !errors.Is(err, errAgentPeerInactive) {
 		t.Fatalf("SendJSON error = %v, want errAgentPeerInactive", err)
 	}
 
@@ -243,15 +243,15 @@ func TestHandlerReturnsLiveSessionsWithBasicAuth(t *testing.T) {
 	if len(sessions) != 1 || sessions[0].SessionID != "sess-1" {
 		t.Fatalf("sessions = %#v, want sess-1", sessions)
 	}
-	if sessions[0].State != protocol.SessionStateConnected {
-		t.Fatalf("State = %q, want connected", sessions[0].State)
-	}
 	if strings.Contains(rec.Body.String(), "latest_seq") {
 		t.Fatalf("body = %s, did not expect field %q", rec.Body.String(), "latest_seq")
 	}
+	if strings.Contains(rec.Body.String(), `"state":`) {
+		t.Fatalf("body = %s, did not expect field %q", rec.Body.String(), "state")
+	}
 }
 
-func TestHandlerReturnsReconnectingSessionsWithBasicAuth(t *testing.T) {
+func TestHandlerOmitsDisconnectedSessionsFromList(t *testing.T) {
 	reg := NewRegistry()
 	peer := &recordingPeer{}
 	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, peer)
@@ -277,8 +277,8 @@ func TestHandlerReturnsReconnectingSessionsWithBasicAuth(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &sessions); err != nil {
 		t.Fatalf("Unmarshal returned error: %v", err)
 	}
-	if len(sessions) != 1 || sessions[0].State != protocol.SessionStateReconnecting {
-		t.Fatalf("sessions = %#v, want one reconnecting session", sessions)
+	if len(sessions) != 0 {
+		t.Fatalf("sessions = %#v, want no disconnected sessions", sessions)
 	}
 }
 
@@ -311,7 +311,7 @@ func TestHandlerReturns404ForUnknownAttachSession(t *testing.T) {
 	}
 }
 
-func TestHandlerReturns409ForReconnectingAttachSession(t *testing.T) {
+func TestHandlerReturns404ForOfflineAttachSession(t *testing.T) {
 	reg := NewRegistry()
 	peer := &recordingPeer{}
 	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, peer)
@@ -329,8 +329,8 @@ func TestHandlerReturns409ForReconnectingAttachSession(t *testing.T) {
 	req.Header.Set("Authorization", basicAuth("demo", "secret"))
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("status = %d, want 409", rec.Code)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
 	}
 	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
 		t.Fatalf("content-type = %q, want application/json", got)
@@ -339,8 +339,8 @@ func TestHandlerReturns409ForReconnectingAttachSession(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("Unmarshal returned error: %v", err)
 	}
-	if body["reason"] != "session_reconnecting" {
-		t.Fatalf("reason = %q, want session_reconnecting", body["reason"])
+	if body["reason"] != "session_not_found" {
+		t.Fatalf("reason = %q, want session_not_found", body["reason"])
 	}
 }
 
@@ -657,7 +657,6 @@ func TestAttachWebSocketRejectsBinaryClientInputFrame(t *testing.T) {
 
 func TestAttachWebSocketClosesWhenAgentDisconnects(t *testing.T) {
 	reg := NewRegistry()
-	reg.reconnectGrace = 200 * time.Millisecond
 	server := httptest.NewServer(NewHandler(HandlerConfig{
 		Registry:   reg,
 		User:       "demo",
@@ -687,8 +686,8 @@ func TestAttachWebSocketClosesWhenAgentDisconnects(t *testing.T) {
 
 	_ = agentConn.Close()
 
-	if closing := readAttachControl(t, attachConn); closing.Type != "closing" || closing.Reason != "session_reconnecting" {
-		t.Fatalf("closing = %#v, want session_reconnecting", closing)
+	if closing := readAttachControl(t, attachConn); closing.Type != "closing" || closing.Reason != "session_offline" {
+		t.Fatalf("closing = %#v, want session_offline", closing)
 	}
 }
 

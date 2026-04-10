@@ -9,37 +9,27 @@ func UnixTimestamp(t time.Time) int {
 	return int(t.Unix())
 }
 
-type SessionState string
-
-const (
-	SessionStateConnected    SessionState = "connected"
-	SessionStateReconnecting SessionState = "reconnecting"
-)
-
 // SessionInfo describes a live agent session registered with the relay.
 type SessionInfo struct {
-	SessionID      string       `json:"session_id"`
-	Launcher       string       `json:"launcher"`
-	Label          string       `json:"label,omitempty"`
-	CWD            string       `json:"cwd"`
-	CommandPreview string       `json:"command_preview"`
-	StartedAt      int          `json:"started_at"`
-	LastActiveAt   *int         `json:"last_active_at,omitempty"`
-	State          SessionState `json:"state,omitempty"`
+	SessionID      string `json:"session_id"`
+	Launcher       string `json:"launcher"`
+	Label          string `json:"label,omitempty"`
+	CWD            string `json:"cwd"`
+	CommandPreview string `json:"command_preview"`
+	StartedAt      int    `json:"started_at"`
 }
 
 // AgentFrame is the JSON envelope sent over the agent WebSocket to the relay.
 type AgentFrame struct {
-	Type         string       `json:"type"`
-	Session      *SessionInfo `json:"session,omitempty"`
-	ClientID     string       `json:"client_id,omitempty"`
-	Reason       string       `json:"reason,omitempty"`
-	Text         string       `json:"text,omitempty"`
-	Submit       bool         `json:"submit,omitempty"`
-	Key          string       `json:"key,omitempty"`
-	Cols         int          `json:"cols,omitempty"`
-	Rows         int          `json:"rows,omitempty"`
-	LastActiveAt *int         `json:"last_active_at,omitempty"`
+	Type     string       `json:"type"`
+	Session  *SessionInfo `json:"session,omitempty"`
+	ClientID string       `json:"client_id,omitempty"`
+	Reason   string       `json:"reason,omitempty"`
+	Text     string       `json:"text,omitempty"`
+	Submit   bool         `json:"submit,omitempty"`
+	Key      string       `json:"key,omitempty"`
+	Cols     int          `json:"cols,omitempty"`
+	Rows     int          `json:"rows,omitempty"`
 }
 
 // RegisterFrame builds an AgentFrame of type "register".
@@ -47,14 +37,6 @@ func RegisterFrame(info SessionInfo) AgentFrame {
 	return AgentFrame{
 		Type:    "register",
 		Session: &info,
-	}
-}
-
-func ActivityFrame(lastActiveAt int) AgentFrame {
-	tsCopy := lastActiveAt
-	return AgentFrame{
-		Type:         "activity",
-		LastActiveAt: &tsCopy,
 	}
 }
 

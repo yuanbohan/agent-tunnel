@@ -8,11 +8,11 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 
 - The main product is the `tunnel` CLI with relay-first startup semantics and background reconnect after local session start.
 - `cmd/agentunnel` builds the `tunnel` CLI. It launches `claude`, `codex`, or `gemini`, keeps the local terminal interactive, and maintains the authoritative headless terminal mirror for the current PTY session.
-- `cmd/relay` is the standalone relay server. It exposes authenticated HTTP and WebSocket APIs for external clients, authenticates clients with Basic Auth, authenticates agents with a bearer token, and maintains a live in-memory session registry with reconnect grace state and session-scoped attach routing. It does not retain transcript history. Supports `--port` flag to override listen address.
+- `cmd/relay` is the standalone relay server. It exposes authenticated HTTP and WebSocket APIs for external clients, authenticates clients with Basic Auth, authenticates agents with a bearer token, and maintains a live in-memory session registry with session-scoped attach routing. It does not retain transcript history. Supports `--port` flag to override listen address.
 - `session/` owns PTY lifecycle, Hub fanout, local terminal attach, resize/input forwarding, and the terminal mirror used for attach snapshots.
 - `protocol/` defines attach-oriented wire types: agent registration, attach control, session info, structured input, and client-routed terminal-byte packets.
-- `connector/` is the mandatory outbound connector from a local `tunnel` process to `/agent/ws` on the relay. It registers sessions, publishes activity and resize metadata, answers attach-open/attach-close control, and routes client-scoped terminal bytes.
-- `relay/` owns relay auth, registry, reconnect grace lifecycle, session-scoped attach websockets, and agent/client routing handlers.
+- `connector/` is the mandatory outbound connector from a local `tunnel` process to `/agent/ws` on the relay. It registers sessions, publishes resize metadata, answers attach-open/attach-close control, and routes client-scoped terminal bytes.
+- `relay/` owns relay auth, registry, session-scoped attach websockets, and agent/client routing handlers.
 - `launcher/` is the supported-launcher registry and PATH resolution layer.
 - `docs/architecture.md` describes how all Go packages and relay-facing protocols interact.
 
@@ -30,10 +30,9 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 - The relay stores live session metadata, owner connection state, and active attach routing state. It must not be described as retaining transcript history or terminal state.
 - The local terminal remains the most complete source of truth for session output in the current product revision.
 - A successful attach yields `attached`, snapshot bytes, `snapshot_done`, then live PTY bytes on the same websocket.
-- `reconnecting` sessions remain discoverable briefly, but attaches and remote input are unavailable until the owning agent reconnects.
-- Relay state is live-only and in-memory. If the owning agent socket disappears and does not reconnect before the grace window expires, the relay removes the session.
-- Protocol-facing timestamps such as `started_at` and `last_active_at` are Unix timestamps encoded as JSON integer seconds.
-- `last_active_at` is agent-authored best-effort metadata for discovery, not a delivery guarantee.
+- If the owning agent disconnects, the relay removes that session from discovery immediately. If the same running agent reconnects later with the same `session_id`, the session becomes discoverable again.
+- Relay state is live-only and in-memory. If the owning agent socket disappears, the relay removes the session immediately.
+- Protocol-facing timestamps such as `started_at` are Unix timestamps encoded as JSON integer seconds.
 - The relay is content-opaque. It may forward output bytes and attach control, but it must not emulate the terminal or derive previews or other message semantics from terminal content.
 - PTY size remains local-terminal-owned in this phase. Remote clients follow forwarded resize events and do not become size authority.
 - Structured remote input remains `input_text` and `input_key`, with PTY-byte translation owned by `tunnel`.
