@@ -7,9 +7,7 @@ import (
 	"os/signal"
 	"sync/atomic"
 	"syscall"
-	"time"
 
-	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 )
 
@@ -144,31 +142,6 @@ func copyInput(ctx context.Context, input *os.File, hub *Hub) error {
 		if readErr != nil {
 			return readErr
 		}
-	}
-}
-
-func waitForInput(ctx context.Context, fd int) (bool, error) {
-	fds := []unix.PollFd{{
-		Fd:     int32(fd),
-		Events: unix.POLLIN,
-	}}
-
-	for {
-		if ctx.Err() != nil {
-			return false, nil
-		}
-
-		n, err := unix.Poll(fds, int((100 * time.Millisecond).Milliseconds()))
-		if err == unix.EINTR {
-			continue
-		}
-		if err != nil {
-			return false, err
-		}
-		if n == 0 {
-			return false, nil
-		}
-		return fds[0].Revents&(unix.POLLIN|unix.POLLHUP|unix.POLLERR) != 0, nil
 	}
 }
 
