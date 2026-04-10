@@ -36,6 +36,15 @@ scp bin/relay relay:~/relay
 
 On the VPS, create `/etc/systemd/system/agentunnel-relay.service`:
 
+First, create a dedicated system user and install the binary:
+
+```bash
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin agentunnel || true
+sudo install -m 0755 ~/relay /usr/local/bin/relay
+```
+
+Then create `/etc/systemd/system/agentunnel-relay.service`:
+
 ```ini
 [Unit]
 Description=Agent Tunnel Relay
@@ -43,8 +52,9 @@ After=network.target
 
 [Service]
 Type=simple
-User=root
-ExecStart=/root/relay --port 8586
+User=agentunnel
+Group=agentunnel
+ExecStart=/usr/local/bin/relay --port 8586
 Environment=AGENTUNNEL_BASIC_USER=<user>
 Environment=AGENTUNNEL_BASIC_PASSWORD=<password>
 Environment=AGENTUNNEL_AGENT_TOKEN=<token>
@@ -58,7 +68,6 @@ WantedBy=multi-user.target
 Then enable and start:
 
 ```bash
-chmod +x ~/relay
 sudo systemctl daemon-reload
 sudo systemctl enable agentunnel-relay
 sudo systemctl start agentunnel-relay
@@ -133,7 +142,7 @@ sudo certbot --nginx \
 Certbot will:
 - Obtain the cert from Let's Encrypt
 - Modify the nginx config to add SSL directives and HTTP-to-HTTPS redirect
-- Install a systemd timer (`snap.certbot.renew.timer`) that checks for renewal twice daily
+- Install a systemd renewal timer (commonly `certbot.timer` or `snap.certbot.renew.timer`, depending on install method) that checks for renewal twice daily
 
 Certs expire after 90 days. Certbot renews them when they have fewer than 30 days remaining, so renewal effectively happens every ~60 days with no manual intervention.
 
@@ -158,21 +167,23 @@ sudo systemctl list-timers | grep certbot
 # On dev machine
 make build-linux
 scp bin/relay relay:~/relay
+ssh relay 'sudo install -m 0755 ~/relay /usr/local/bin/relay'
 ssh relay 'sudo systemctl restart agentunnel-relay'
 ```
 
 ### One-command deploy
 
-Add this to your Makefile or shell aliases:
+The Makefile includes a `deploy` target with configurable variables:
 
 ```bash
-# In Makefile
-deploy: build-linux
-	scp bin/relay relay:~/relay
-	ssh relay 'sudo systemctl restart agentunnel-relay'
+make deploy
 ```
 
-Then `make deploy` builds, uploads, and restarts in one step.
+Override defaults for different environments:
+
+```bash
+make deploy DEPLOY_HOST=staging DEPLOY_RELAY_PATH=~/relay DEPLOY_SERVICE=agentunnel-relay
+```
 
 ### What happens during restart
 
