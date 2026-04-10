@@ -147,7 +147,7 @@ func (c *Connector) BindHub(hub *session.Hub) {
 	c.hubMu.Unlock()
 
 	for _, frame := range pending {
-		c.deliverInput(frame)
+		c.deliverInputToHub(hub, frame)
 	}
 }
 
@@ -542,16 +542,6 @@ func (c *Connector) routeInput(frame protocol.AgentFrame) {
 	}
 	c.pendingIn = append(c.pendingIn, frame)
 	c.hubMu.Unlock()
-}
-
-func (c *Connector) deliverInput(frame protocol.AgentFrame) {
-	c.hubMu.RLock()
-	hub := c.hub
-	c.hubMu.RUnlock()
-	if hub == nil {
-		return
-	}
-	c.deliverInputToHub(hub, frame)
 }
 
 func (c *Connector) deliverInputToHub(hub *session.Hub, frame protocol.AgentFrame) {

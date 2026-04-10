@@ -153,3 +153,4 @@ make relay             # run relay server
 ## Protocol
 
 See [docs/protocol.md](docs/protocol.md) for the full wire format specification.
+See [docs/tui-attach-flow.md](docs/tui-attach-flow.md) for the end-to-end snapshot, live-byte, relay, and client reconnect flow.

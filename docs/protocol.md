@@ -502,3 +502,8 @@ This keeps terminal behavior close to the PTY owner and avoids embedding termina
 - the relay remains content-opaque with respect to PTY output
 - the local terminal remains the most complete live session view
 - attached clients for the same session observe the same PTY and therefore the same session-wide terminal size
+
+## Related Documents
+
+- [docs/architecture.md](./architecture.md)
+- [docs/tui-attach-flow.md](./tui-attach-flow.md)

@@ -208,9 +208,9 @@ func TestClientInputMessageTextDefaultsSubmitFalseWhenOmitted(t *testing.T) {
 		t.Fatalf("Submit = true, want false for omitted field")
 	}
 
-	got := decoded.AgentMessage()
-	if got.Type != "input_text" || got.Text != "hello" || got.Submit {
-		t.Fatalf("AgentMessage() = %#v, want input_text hello submit=false", got)
+	got := decoded.AgentFrame("client-1")
+	if got.Type != "input_text" || got.ClientID != "client-1" || got.Text != "hello" || got.Submit {
+		t.Fatalf("AgentFrame() = %#v, want input_text client-1 hello submit=false", got)
 	}
 }
 
@@ -241,47 +241,47 @@ func TestClientInputMessageAgentFrameIncludesClientID(t *testing.T) {
 	}
 }
 
-func TestAgentMessageInputTextRoundTrip(t *testing.T) {
-	frame := EncodeInputText("hello", true)
+func TestForwardInputTextFrameRoundTrip(t *testing.T) {
+	frame := ForwardInputTextFrame("client-1", "hello", true)
 
 	raw, err := json.Marshal(frame)
 	if err != nil {
 		t.Fatalf("Marshal returned error: %v", err)
 	}
 
-	var decoded Message
+	var decoded AgentFrame
 	if err := json.Unmarshal(raw, &decoded); err != nil {
 		t.Fatalf("Unmarshal returned error: %v", err)
 	}
 
-	if decoded.Type != "input_text" || decoded.Text != "hello" || !decoded.Submit {
-		t.Fatalf("decoded = %#v, want input_text hello submit=true", decoded)
+	if decoded.Type != "input_text" || decoded.ClientID != "client-1" || decoded.Text != "hello" || !decoded.Submit {
+		t.Fatalf("decoded = %#v, want input_text client-1 hello submit=true", decoded)
 	}
 }
 
-func TestAgentMessageInputKeyRoundTrip(t *testing.T) {
-	frame := EncodeInputKey("TAB")
+func TestForwardInputKeyFrameRoundTrip(t *testing.T) {
+	frame := ForwardInputKeyFrame("client-1", "TAB")
 
 	raw, err := json.Marshal(frame)
 	if err != nil {
 		t.Fatalf("Marshal returned error: %v", err)
 	}
 
-	var decoded Message
+	var decoded AgentFrame
 	if err := json.Unmarshal(raw, &decoded); err != nil {
 		t.Fatalf("Unmarshal returned error: %v", err)
 	}
 
-	if decoded.Type != "input_key" || decoded.Key != "TAB" {
-		t.Fatalf("decoded = %#v, want input_key TAB", decoded)
+	if decoded.Type != "input_key" || decoded.ClientID != "client-1" || decoded.Key != "TAB" {
+		t.Fatalf("decoded = %#v, want input_key client-1 TAB", decoded)
 	}
 }
 
-func TestClientInputMessageAgentMessageSubmit(t *testing.T) {
+func TestClientInputMessageAgentFrameSubmit(t *testing.T) {
 	msg := EncodeClientInputText("", true)
 
-	got := msg.AgentMessage()
-	if got.Type != "input_text" || got.Text != "" || !got.Submit {
-		t.Fatalf("AgentMessage() = %#v, want input_text empty submit=true", got)
+	got := msg.AgentFrame("client-1")
+	if got.Type != "input_text" || got.ClientID != "client-1" || got.Text != "" || !got.Submit {
+		t.Fatalf("AgentFrame() = %#v, want input_text client-1 empty submit=true", got)
 	}
 }

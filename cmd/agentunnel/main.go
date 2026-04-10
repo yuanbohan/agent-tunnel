@@ -125,7 +125,7 @@ func runWithArgs(args []string, stderr io.Writer) error {
 	statusLine := session.NewStatusLine(stderr)
 	if cols, rows, sizeErr := local.CurrentSize(); sizeErr == nil {
 		statusLine.SetSize(cols, rows)
-		running.Hub.OnResize(func(cols, rows int) {
+		running.Hub.AddResizeListener("status-line", func(cols, rows int) {
 			statusLine.SetSize(cols, rows)
 		})
 	}
