@@ -553,6 +553,108 @@ func TestAttachWebSocketForwardsSnapshotLiveBytesAndInput(t *testing.T) {
 	}
 }
 
+func TestAgentWebSocketRejectsBinaryRegisterFrame(t *testing.T) {
+	reg := NewRegistry()
+	server := httptest.NewServer(NewHandler(HandlerConfig{
+		Registry:   reg,
+		User:       "demo",
+		Password:   "secret",
+		AgentToken: "agent-token",
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/agent/ws"
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer agent-token")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, headers)
+	if err != nil {
+		t.Fatalf("Dial returned error: %v", err)
+	}
+	defer conn.Close()
+
+	register, err := json.Marshal(protocol.RegisterFrame(protocol.SessionInfo{
+		SessionID:      "sess-1",
+		Launcher:       "codex",
+		CWD:            "/tmp/project",
+		CommandPreview: "codex",
+		StartedAt:      10,
+	}))
+	if err != nil {
+		t.Fatalf("Marshal returned error: %v", err)
+	}
+	if err := conn.WriteMessage(websocket.BinaryMessage, register); err != nil {
+		t.Fatalf("WriteMessage returned error: %v", err)
+	}
+
+	_ = conn.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
+	if _, _, err := conn.ReadMessage(); err == nil {
+		t.Fatal("ReadMessage returned nil error, want connection close after binary register frame")
+	}
+
+	if _, ok := reg.Session("sess-1"); ok {
+		t.Fatal("binary register frame created a live session, want none")
+	}
+
+	resp := doAuthenticatedGET(t, server.URL+"/api/sessions")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	var sessions []protocol.SessionInfo
+	if err := json.NewDecoder(resp.Body).Decode(&sessions); err != nil {
+		t.Fatalf("Decode returned error: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("sessions = %#v, want no registered session from binary register frame", sessions)
+	}
+}
+
+func TestAttachWebSocketRejectsBinaryClientInputFrame(t *testing.T) {
+	reg := NewRegistry()
+	server := httptest.NewServer(NewHandler(HandlerConfig{
+		Registry:   reg,
+		User:       "demo",
+		Password:   "secret",
+		AgentToken: "agent-token",
+	}))
+	defer server.Close()
+
+	agentConn := dialAndRegisterAgent(t, server.URL, "sess-1")
+	defer agentConn.Close()
+
+	attachConn := dialAttachClient(t, server.URL, "sess-1")
+	defer attachConn.Close()
+
+	open := readAgentFrame(t, agentConn)
+	if open.Type != "attach_open" || open.ClientID == "" {
+		t.Fatalf("attach_open = %#v, want client id", open)
+	}
+
+	payload, err := json.Marshal(protocol.EncodeClientInputText("hello", false))
+	if err != nil {
+		t.Fatalf("Marshal returned error: %v", err)
+	}
+	if err := attachConn.WriteMessage(websocket.BinaryMessage, payload); err != nil {
+		t.Fatalf("WriteMessage returned error: %v", err)
+	}
+
+	_ = agentConn.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
+	for {
+		var frame protocol.AgentFrame
+		err := agentConn.ReadJSON(&frame)
+		if err != nil {
+			if strings.Contains(err.Error(), "i/o timeout") {
+				return
+			}
+			t.Fatalf("ReadJSON returned error: %v", err)
+		}
+		if frame.Type == "input_text" || frame.Type == "input_key" {
+			t.Fatalf("frame = %#v, want binary client input to be rejected before forwarding", frame)
+		}
+	}
+}
+
 func TestAttachWebSocketClosesWhenAgentDisconnects(t *testing.T) {
 	reg := NewRegistry()
 	reg.reconnectGrace = 200 * time.Millisecond

@@ -91,7 +91,7 @@ func TestConnectorRoutesInputFrameIntoHub(t *testing.T) {
 			t.Fatalf("ReadJSON returned error: %v", err)
 		}
 
-		msg := protocol.EncodeInputText("hello", false)
+		msg := protocol.ForwardInputTextFrame("", "hello", false)
 		if err := conn.WriteJSON(msg); err != nil {
 			t.Fatalf("WriteJSON returned error: %v", err)
 		}
@@ -116,6 +116,59 @@ func TestConnectorRoutesInputFrameIntoHub(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for input")
+	}
+}
+
+func TestConnectorIgnoresMalformedAndUnknownControlFrames(t *testing.T) {
+	inputCh := make(chan string, 1)
+	hub := session.NewHub(func(data []byte) error {
+		inputCh <- string(data)
+		return nil
+	}, func(int, int) error { return nil })
+
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("Upgrade returned error: %v", err)
+		}
+		defer conn.Close()
+
+		var register protocol.AgentFrame
+		if err := conn.ReadJSON(&register); err != nil {
+			t.Fatalf("ReadJSON returned error: %v", err)
+		}
+
+		if err := conn.WriteMessage(websocket.TextMessage, []byte("{not-json")); err != nil {
+			t.Fatalf("WriteMessage malformed returned error: %v", err)
+		}
+		if err := conn.WriteJSON(protocol.AgentFrame{Type: "unknown"}); err != nil {
+			t.Fatalf("WriteJSON unknown returned error: %v", err)
+		}
+		if err := conn.WriteJSON(protocol.ForwardInputTextFrame("", "hello", false)); err != nil {
+			t.Fatalf("WriteJSON valid input returned error: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	c := New(wsURL, "token", protocol.SessionInfo{
+		SessionID: "sess-1",
+		Launcher:  "codex",
+	})
+	c.BindHub(hub)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Run(ctx)
+
+	select {
+	case got := <-inputCh:
+		if got != "hello" {
+			t.Fatalf("input = %q, want hello", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for valid input after malformed/unknown frames")
 	}
 }
 
@@ -322,13 +375,13 @@ func TestConnectorUsesInitialSizeBeforeHubBind(t *testing.T) {
 func TestConnectorRoutesStructuredInputFramesIntoHub(t *testing.T) {
 	tests := []struct {
 		name    string
-		message protocol.Message
+		message protocol.AgentFrame
 		want    []string
 	}{
-		{name: "input text", message: protocol.EncodeInputText("hello", false), want: []string{"hello"}},
-		{name: "input text submit", message: protocol.EncodeInputText("hello", true), want: []string{"hello", "\r"}},
-		{name: "empty input text submit", message: protocol.EncodeInputText("", true), want: []string{"\r"}},
-		{name: "input key", message: protocol.EncodeInputKey("TAB"), want: []string{"\t"}},
+		{name: "input text", message: protocol.ForwardInputTextFrame("", "hello", false), want: []string{"hello"}},
+		{name: "input text submit", message: protocol.ForwardInputTextFrame("", "hello", true), want: []string{"hello", "\r"}},
+		{name: "empty input text submit", message: protocol.ForwardInputTextFrame("", "", true), want: []string{"\r"}},
+		{name: "input key", message: protocol.ForwardInputKeyFrame("", "TAB"), want: []string{"\t"}},
 	}
 
 	for _, tc := range tests {
@@ -667,6 +720,92 @@ func TestConnectorAttachOpenBypassesFullEphemeralQueue(t *testing.T) {
 	}
 }
 
+func TestConnectorAttachOpenWithEmptySnapshotSkipsBinarySnapshot(t *testing.T) {
+	const clientID = "4d2c6ec8-787a-49c9-b9a0-5dbd8d31b7b1"
+
+	attachReadyCh := make(chan protocol.AgentFrame, 1)
+	snapshotDoneCh := make(chan protocol.AgentFrame, 1)
+	unexpectedBinaryCh := make(chan protocol.AttachPacket, 1)
+
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("Upgrade returned error: %v", err)
+		}
+		defer conn.Close()
+
+		var register protocol.AgentFrame
+		if err := conn.ReadJSON(&register); err != nil {
+			t.Fatalf("ReadJSON register returned error: %v", err)
+		}
+
+		if err := conn.WriteJSON(protocol.AttachOpenFrame(clientID)); err != nil {
+			t.Fatalf("WriteJSON attach_open returned error: %v", err)
+		}
+
+		for {
+			messageType, payload, err := conn.ReadMessage()
+			if err != nil {
+				t.Fatalf("ReadMessage returned error: %v", err)
+			}
+
+			switch messageType {
+			case websocket.TextMessage:
+				var frame protocol.AgentFrame
+				if err := json.Unmarshal(payload, &frame); err != nil {
+					t.Fatalf("Unmarshal returned error: %v", err)
+				}
+				switch frame.Type {
+				case "attach_ready":
+					attachReadyCh <- frame
+				case "snapshot_done":
+					snapshotDoneCh <- frame
+					return
+				}
+			case websocket.BinaryMessage:
+				packet, err := protocol.DecodeAttachPacket(payload)
+				if err != nil {
+					t.Fatalf("DecodeAttachPacket returned error: %v", err)
+				}
+				unexpectedBinaryCh <- packet
+			}
+		}
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	c := New(wsURL, "token", protocol.SessionInfo{
+		SessionID: "sess-1",
+		Launcher:  "codex",
+	})
+	c.applyResize(120, 40, false)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Run(ctx)
+
+	select {
+	case frame := <-attachReadyCh:
+		if frame.Type != "attach_ready" || frame.ClientID != clientID || frame.Cols != 120 || frame.Rows != 40 {
+			t.Fatalf("attach_ready = %#v, want attach_ready %s 120x40", frame, clientID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for attach_ready")
+	}
+
+	select {
+	case packet := <-unexpectedBinaryCh:
+		t.Fatalf("packet = %#v, want no binary snapshot for empty screen", packet)
+	case frame := <-snapshotDoneCh:
+		if frame.Type != "snapshot_done" || frame.ClientID != clientID {
+			t.Fatalf("snapshot_done = %#v, want snapshot_done for %s", frame, clientID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for snapshot_done")
+	}
+}
+
 func TestConnectorSubmitInputWritesSeparateDelayedChunks(t *testing.T) {
 	type inputEvent struct {
 		data string
@@ -809,7 +948,7 @@ func TestConnectorQueuesInputUntilHubIsBound(t *testing.T) {
 			t.Fatalf("ReadJSON register returned error: %v", err)
 		}
 
-		if err := conn.WriteJSON(protocol.EncodeInputText("queued", false)); err != nil {
+		if err := conn.WriteJSON(protocol.ForwardInputTextFrame("", "queued", false)); err != nil {
 			t.Fatalf("WriteJSON returned error: %v", err)
 		}
 

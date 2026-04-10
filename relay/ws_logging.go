@@ -2,11 +2,14 @@ package relay
 
 import (
 	"encoding/json"
+	"errors"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
+
+var errWSTextFrameRequired = errors.New("websocket text frame required")
 
 type wsWriteConn interface {
 	WriteMessage(messageType int, data []byte) error
@@ -131,9 +134,12 @@ func (t *wsTrafficTracker) SummaryFields(now time.Time) []Field {
 }
 
 func readWSJSON(conn *websocket.Conn, v any) ([]byte, error) {
-	_, payload, err := conn.ReadMessage()
+	messageType, payload, err := conn.ReadMessage()
 	if err != nil {
 		return nil, err
+	}
+	if messageType != websocket.TextMessage {
+		return nil, errWSTextFrameRequired
 	}
 	if err := json.Unmarshal(payload, v); err != nil {
 		return nil, err

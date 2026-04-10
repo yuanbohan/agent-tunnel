@@ -221,3 +221,4 @@ Closing the agent process ends the session. A later agent launch starts a differ
 ## Related Documents
 
 - [docs/protocol.md](./protocol.md)
+- [docs/tui-attach-flow.md](./tui-attach-flow.md)

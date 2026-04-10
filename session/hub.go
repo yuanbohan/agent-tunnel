@@ -124,10 +124,6 @@ func (h *Hub) CurrentSize() (int, int) {
 	return h.cols, h.rows
 }
 
-func (h *Hub) OnResize(cb func(cols, rows int)) {
-	h.AddResizeListener("default", cb)
-}
-
 func (h *Hub) AddResizeListener(id string, cb func(cols, rows int)) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

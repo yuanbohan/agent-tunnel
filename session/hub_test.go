@@ -413,24 +413,6 @@ func TestHubResizeStoresCurrentSize(t *testing.T) {
 	}
 }
 
-func TestHubResizeCallsOnResizeCallback(t *testing.T) {
-	hub := NewHub(func([]byte) error { return nil }, func(int, int) error { return nil })
-
-	var gotCols, gotRows int
-	hub.OnResize(func(cols, rows int) {
-		gotCols = cols
-		gotRows = rows
-	})
-
-	if err := hub.Resize(100, 50); err != nil {
-		t.Fatalf("Resize returned error: %v", err)
-	}
-
-	if gotCols != 100 || gotRows != 50 {
-		t.Fatalf("OnResize callback got %dx%d, want 100x50", gotCols, gotRows)
-	}
-}
-
 func TestHubResizeCallsAllResizeListeners(t *testing.T) {
 	hub := NewHub(func([]byte) error { return nil }, func(int, int) error { return nil })
 

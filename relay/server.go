@@ -99,33 +99,6 @@ func (p *wsAgentPeer) SendJSON(msg any) error {
 	return nil
 }
 
-func (p *wsAgentPeer) SendBinary(payload []byte) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if !p.active {
-		return errAgentPeerInactive
-	}
-
-	if p.writeTimeout > 0 {
-		if err := p.conn.SetWriteDeadline(time.Now().Add(p.writeTimeout)); err != nil {
-			if p.tracker != nil {
-				p.tracker.NoteDisconnectError(err)
-			}
-			return err
-		}
-	}
-	if err := p.conn.WriteMessage(websocket.BinaryMessage, payload); err != nil {
-		if p.tracker != nil {
-			p.tracker.NoteDisconnectError(err)
-		}
-		return err
-	}
-	if p.tracker != nil {
-		p.tracker.RecordOutbound(len(payload))
-	}
-	return nil
-}
-
 func (p *wsAgentPeer) Close() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()

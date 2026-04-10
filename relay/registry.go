@@ -18,7 +18,6 @@ const defaultReconnectGrace = 60 * time.Second
 
 type AgentPeer interface {
 	SendJSON(any) error
-	SendBinary([]byte) error
 	Close() error
 }
 
@@ -192,20 +191,11 @@ func (r *Registry) Session(sessionID string) (protocol.SessionInfo, bool) {
 	return live.snapshot(), true
 }
 
-func (r *Registry) WriteInput(sessionID string, msg protocol.Message) error {
-	return r.SendToOwner(sessionID, protocol.AgentFrame{
-		Type:   msg.Type,
-		Text:   msg.Text,
-		Submit: msg.Submit,
-		Key:    msg.Key,
-	})
-}
-
 func (r *Registry) WriteAttachInput(sessionID string, frame protocol.AgentFrame) error {
-	return r.SendToOwner(sessionID, frame)
+	return r.sendToOwner(sessionID, frame)
 }
 
-func (r *Registry) SendToOwner(sessionID string, payload any) error {
+func (r *Registry) sendToOwner(sessionID string, payload any) error {
 	r.mu.RLock()
 	live, ok := r.sessions[sessionID]
 	if !ok {

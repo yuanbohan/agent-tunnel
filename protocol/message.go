@@ -9,30 +9,6 @@ func UnixTimestamp(t time.Time) int {
 	return int(t.Unix())
 }
 
-// Message is the structured input envelope used internally when forwarding
-// session-scoped client input into the local PTY owner.
-type Message struct {
-	Type   string `json:"type"`
-	Text   string `json:"text,omitempty"`
-	Submit bool   `json:"submit,omitempty"`
-	Key    string `json:"key,omitempty"`
-}
-
-func EncodeInputText(text string, submit bool) Message {
-	return Message{
-		Type:   "input_text",
-		Text:   text,
-		Submit: submit,
-	}
-}
-
-func EncodeInputKey(key string) Message {
-	return Message{
-		Type: "input_key",
-		Key:  key,
-	}
-}
-
 type SessionState string
 
 const (
@@ -208,16 +184,5 @@ func (m ClientInputMessage) AgentFrame(clientID string) AgentFrame {
 		return ForwardInputKeyFrame(clientID, m.Key)
 	default:
 		return AgentFrame{Type: m.Type, ClientID: clientID}
-	}
-}
-
-func (m ClientInputMessage) AgentMessage() Message {
-	switch m.Type {
-	case "input_text":
-		return EncodeInputText(m.Text, m.Submit)
-	case "input_key":
-		return EncodeInputKey(m.Key)
-	default:
-		return Message{Type: m.Type}
 	}
 }

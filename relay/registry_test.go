@@ -13,15 +13,13 @@ import (
 
 type fakeAgentPeer struct{}
 
-func (fakeAgentPeer) SendJSON(any) error      { return nil }
-func (fakeAgentPeer) SendBinary([]byte) error { return nil }
-func (fakeAgentPeer) Close() error            { return nil }
+func (fakeAgentPeer) SendJSON(any) error { return nil }
+func (fakeAgentPeer) Close() error       { return nil }
 
 type recordingPeer struct {
-	mu       sync.Mutex
-	frames   []protocol.AgentFrame
-	binaries [][]byte
-	closed   int
+	mu     sync.Mutex
+	frames []protocol.AgentFrame
+	closed int
 }
 
 type blockingPeer struct {
@@ -44,13 +42,6 @@ func (p *recordingPeer) SendJSON(msg any) error {
 	return nil
 }
 
-func (p *recordingPeer) SendBinary(payload []byte) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.binaries = append(p.binaries, append([]byte(nil), payload...))
-	return nil
-}
-
 func (p *recordingPeer) Close() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -65,8 +56,6 @@ func (p *blockingPeer) SendJSON(any) error {
 	<-p.release
 	return nil
 }
-
-func (p *blockingPeer) SendBinary([]byte) error { return nil }
 
 func (p *blockingPeer) Close() error { return nil }
 
@@ -199,8 +188,8 @@ func TestRegistryRegisterAndListSortedByLastActive(t *testing.T) {
 func TestRegistryMissingSessionErrors(t *testing.T) {
 	reg := NewRegistry()
 
-	if err := reg.WriteInput("missing", protocol.EncodeInputText("x", false)); err != ErrSessionNotFound {
-		t.Fatalf("WriteInput error = %v, want ErrSessionNotFound", err)
+	if err := reg.WriteAttachInput("missing", protocol.ForwardInputTextFrame("", "x", false)); err != ErrSessionNotFound {
+		t.Fatalf("WriteAttachInput error = %v, want ErrSessionNotFound", err)
 	}
 }
 
@@ -344,8 +333,8 @@ func TestRegistryDisconnectSkipsStaleOwnerAfterReplacement(t *testing.T) {
 	if info.State != protocol.SessionStateConnected {
 		t.Fatalf("State = %q, want connected", info.State)
 	}
-	if err := reg.WriteInput("sess-1", protocol.EncodeInputText("ping", false)); err != nil {
-		t.Fatalf("WriteInput returned error after stale-owner disconnect: %v", err)
+	if err := reg.WriteAttachInput("sess-1", protocol.ForwardInputTextFrame("", "ping", false)); err != nil {
+		t.Fatalf("WriteAttachInput returned error after stale-owner disconnect: %v", err)
 	}
 	frames := newPeer.Frames()
 	if len(frames) != 1 {
@@ -378,15 +367,15 @@ func TestRegistryReplacementDeactivatesStaleOwnerPeer(t *testing.T) {
 	}
 }
 
-func TestRegistryWriteInputReturnsReconnectingForDisconnectedSession(t *testing.T) {
+func TestRegistryWriteAttachInputReturnsReconnectingForDisconnectedSession(t *testing.T) {
 	reg := NewRegistry()
 	peer := &recordingPeer{}
 	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, peer)
 	reg.DisconnectIfOwner("sess-1", peer)
 
-	err := reg.WriteInput("sess-1", protocol.EncodeInputText("ping", false))
+	err := reg.WriteAttachInput("sess-1", protocol.ForwardInputTextFrame("", "ping", false))
 	if !errors.Is(err, ErrSessionReconnecting) {
-		t.Fatalf("WriteInput error = %v, want ErrSessionReconnecting", err)
+		t.Fatalf("WriteAttachInput error = %v, want ErrSessionReconnecting", err)
 	}
 	if frames := peer.Frames(); len(frames) != 0 {
 		t.Fatalf("frames = %#v, want none", frames)
@@ -403,7 +392,7 @@ func TestRegistryDisconnectDoesNotWaitForBlockedSend(t *testing.T) {
 
 	sendDone := make(chan error, 1)
 	go func() {
-		sendDone <- reg.WriteInput("sess-1", protocol.EncodeInputText("ping", false))
+		sendDone <- reg.WriteAttachInput("sess-1", protocol.ForwardInputTextFrame("", "ping", false))
 	}()
 
 	select {
@@ -431,7 +420,7 @@ func TestRegistryDisconnectDoesNotWaitForBlockedSend(t *testing.T) {
 	select {
 	case err := <-sendDone:
 		if err != nil {
-			t.Fatalf("WriteInput returned error: %v", err)
+			t.Fatalf("WriteAttachInput returned error: %v", err)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for blocked send to finish")
@@ -498,6 +487,43 @@ func TestRegistryRoutesAttachLifecycle(t *testing.T) {
 	frames := owner.Frames()
 	if len(frames) != 1 || frames[0].Type != "attach_close" || frames[0].ClientID != "client-1" {
 		t.Fatalf("owner frames = %#v, want attach_close for client-1", frames)
+	}
+}
+
+func TestRegistryPendingAttachDisconnectBeforeReadyPreventsLaterDelivery(t *testing.T) {
+	reg := NewRegistry()
+	owner := &recordingPeer{}
+	client := &recordingAttachPeer{}
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, owner)
+
+	if _, err := reg.StartAttach("sess-1", "client-1", client); err != nil {
+		t.Fatalf("StartAttach returned error: %v", err)
+	}
+
+	if detached := reg.DetachClient("sess-1", "client-1", "client_closed"); !detached {
+		t.Fatal("DetachClient returned false, want true")
+	}
+	if reasons := client.CloseReasons(); len(reasons) != 1 || reasons[0] != "client_closed" {
+		t.Fatalf("close reasons = %#v, want [client_closed]", reasons)
+	}
+
+	frames := owner.Frames()
+	if len(frames) != 1 || frames[0].Type != "attach_close" || frames[0].ClientID != "client-1" {
+		t.Fatalf("owner frames = %#v, want attach_close for pending client-1", frames)
+	}
+
+	if ok := reg.RouteAttachReadyIfOwner("sess-1", owner, "client-1", 120, 40); ok {
+		t.Fatal("RouteAttachReadyIfOwner returned true after pending detach, want false")
+	}
+	if ok := reg.RouteSnapshotDoneIfOwner("sess-1", owner, "client-1"); ok {
+		t.Fatal("RouteSnapshotDoneIfOwner returned true after pending detach, want false")
+	}
+	if ok := reg.RouteTerminalBytesIfOwner("sess-1", owner, protocol.AttachPacket{
+		Type:     protocol.AttachPacketTypeTerminalBytes,
+		ClientID: "client-1",
+		Payload:  []byte("snapshot"),
+	}); ok {
+		t.Fatal("RouteTerminalBytesIfOwner returned true after pending detach, want false")
 	}
 }
 
