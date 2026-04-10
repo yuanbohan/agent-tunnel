@@ -29,7 +29,7 @@ func loadMainConfig(getenv func(string) string, portFlag string) (mainConfig, er
 	if portFlag != "" {
 		port = portFlag
 	}
-	cfg.ListenAddr = net.JoinHostPort("0.0.0.0", port)
+	cfg.ListenAddr = net.JoinHostPort("127.0.0.1", port)
 	if cfg.User == "" || cfg.Password == "" || cfg.AgentToken == "" {
 		return mainConfig{}, fmt.Errorf("AGENTUNNEL_BASIC_USER, AGENTUNNEL_BASIC_PASSWORD, and AGENTUNNEL_AGENT_TOKEN are required")
 	}

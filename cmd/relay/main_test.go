@@ -35,8 +35,8 @@ func TestLoadMainConfigDefaultsListenAddr(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadMainConfig returned error: %v", err)
 	}
-	if cfg.ListenAddr != "0.0.0.0:8586" {
-		t.Fatalf("ListenAddr = %q, want 0.0.0.0:8586", cfg.ListenAddr)
+	if cfg.ListenAddr != "127.0.0.1:8586" {
+		t.Fatalf("ListenAddr = %q, want 127.0.0.1:8586", cfg.ListenAddr)
 	}
 }
 
@@ -45,8 +45,8 @@ func TestLoadMainConfig_portFlag(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ListenAddr != "0.0.0.0:9999" {
-		t.Errorf("ListenAddr = %q, want 0.0.0.0:9999", cfg.ListenAddr)
+	if cfg.ListenAddr != "127.0.0.1:9999" {
+		t.Errorf("ListenAddr = %q, want 127.0.0.1:9999", cfg.ListenAddr)
 	}
 }
 
@@ -60,22 +60,22 @@ func TestLoadMainConfigIgnoresLegacyRelayAddrEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ListenAddr != "0.0.0.0:8586" {
-		t.Errorf("ListenAddr = %q, want 0.0.0.0:8586 (legacy env should be ignored)", cfg.ListenAddr)
+	if cfg.ListenAddr != "127.0.0.1:8586" {
+		t.Errorf("ListenAddr = %q, want 127.0.0.1:8586 (legacy env should be ignored)", cfg.ListenAddr)
 	}
 }
 
 func TestLogRelayStartedWritesListenAddr(t *testing.T) {
 	var buf bytes.Buffer
 
-	logRelayStarted(relay.NewLogger(&buf), "0.0.0.0:8586")
+	logRelayStarted(relay.NewLogger(&buf), "127.0.0.1:8586")
 
 	got := buf.String()
 	if !strings.Contains(got, `"event":"relay_started"`) {
 		t.Fatalf("log = %q, want event relay_started", got)
 	}
-	if !strings.Contains(got, `"listen_addr":"0.0.0.0:8586"`) {
-		t.Fatalf("log = %q, want listen_addr 0.0.0.0:8586", got)
+	if !strings.Contains(got, `"listen_addr":"127.0.0.1:8586"`) {
+		t.Fatalf("log = %q, want listen_addr 127.0.0.1:8586", got)
 	}
 }
 
@@ -83,7 +83,7 @@ func TestStartRelayDoesNotLogBeforeBind(t *testing.T) {
 	var buf bytes.Buffer
 
 	err := startRelay(
-		mainConfig{ListenAddr: "0.0.0.0:8586"},
+		mainConfig{ListenAddr: "127.0.0.1:8586"},
 		http.NewServeMux(),
 		relay.NewLogger(&buf),
 		func(string, string) (net.Listener, error) {
@@ -133,10 +133,10 @@ func TestStartRelayLogsBoundListenerAddr(t *testing.T) {
 }
 
 func TestNewHTTPServerConfiguresTimeouts(t *testing.T) {
-	srv := newHTTPServer(mainConfig{ListenAddr: "0.0.0.0:8586"}, http.NewServeMux())
+	srv := newHTTPServer(mainConfig{ListenAddr: "127.0.0.1:8586"}, http.NewServeMux())
 
-	if srv.Addr != "0.0.0.0:8586" {
-		t.Fatalf("Addr = %q, want 0.0.0.0:8586", srv.Addr)
+	if srv.Addr != "127.0.0.1:8586" {
+		t.Fatalf("Addr = %q, want 127.0.0.1:8586", srv.Addr)
 	}
 	if srv.ReadHeaderTimeout <= 0 {
 		t.Fatalf("ReadHeaderTimeout = %v, want > 0", srv.ReadHeaderTimeout)
