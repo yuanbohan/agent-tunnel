@@ -754,6 +754,131 @@ func TestAttachWebSocketForwardsSnapshotLiveBytesAndInputForOwner(t *testing.T) 
 	}
 }
 
+func TestLogoutClosesOnlyCurrentAppSessionAttachAndKeepsAgentSessionAlive(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	firstIssued := env.login(t, "alice", "password123")
+	secondIssued := env.login(t, "alice", "password123")
+	agentToken := env.createAgentToken(t, user.ID, "Laptop")
+
+	server := httptest.NewServer(env.handler(nil))
+	defer server.Close()
+
+	agentConn := dialAndRegisterAgent(t, server.URL, agentToken.Plaintext, "sess-1")
+	defer agentConn.Close()
+
+	attachConn := dialAttachClient(t, server.URL, firstIssued.AccessToken, "sess-1")
+	defer attachConn.Close()
+
+	open := readAgentFrame(t, agentConn)
+	if err := agentConn.WriteJSON(protocol.AttachReadyFrame(open.ClientID, 120, 40)); err != nil {
+		t.Fatalf("WriteJSON attach_ready returned error: %v", err)
+	}
+	if err := agentConn.WriteJSON(protocol.SnapshotDoneFrame(open.ClientID)); err != nil {
+		t.Fatalf("WriteJSON snapshot_done returned error: %v", err)
+	}
+	if attached := readAttachControl(t, attachConn); attached.Type != "attached" {
+		t.Fatalf("attached = %#v, want attached", attached)
+	}
+	if done := readAttachControl(t, attachConn); done.Type != "snapshot_done" {
+		t.Fatalf("snapshot_done = %#v, want snapshot_done", done)
+	}
+
+	logoutResp := doBearerPOST(t, server.URL+"/api/auth/logout", firstIssued.AccessToken, "")
+	defer logoutResp.Body.Close()
+	if logoutResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("logout status = %d, want 204", logoutResp.StatusCode)
+	}
+
+	if closing := readAttachControl(t, attachConn); closing.Type != "closing" || closing.Reason != "logged_out" {
+		t.Fatalf("closing = %#v, want closing logged_out", closing)
+	}
+	if closeFrame := readAgentFrame(t, agentConn); closeFrame.Type != "attach_close" || closeFrame.ClientID != open.ClientID || closeFrame.Reason != "logged_out" {
+		t.Fatalf("attach_close = %#v, want attach_close logged_out", closeFrame)
+	}
+
+	sessionsResp := doBearerGET(t, server.URL+"/api/sessions", secondIssued.AccessToken)
+	defer sessionsResp.Body.Close()
+	if sessionsResp.StatusCode != http.StatusOK {
+		t.Fatalf("sessions status = %d, want 200", sessionsResp.StatusCode)
+	}
+	var sessions []protocol.SessionInfo
+	if err := json.NewDecoder(sessionsResp.Body).Decode(&sessions); err != nil {
+		t.Fatalf("Decode sessions returned error: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].SessionID != "sess-1" {
+		t.Fatalf("sessions = %#v, want sess-1 still online", sessions)
+	}
+}
+
+func TestPasswordChangeClosesUserAttachesAndKeepsAgentSessionAlive(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	issued := env.login(t, "alice", "password123")
+	agentToken := env.createAgentToken(t, user.ID, "Laptop")
+
+	server := httptest.NewServer(env.handler(nil))
+	defer server.Close()
+
+	agentConn := dialAndRegisterAgent(t, server.URL, agentToken.Plaintext, "sess-1")
+	defer agentConn.Close()
+
+	attachConn := dialAttachClient(t, server.URL, issued.AccessToken, "sess-1")
+	defer attachConn.Close()
+
+	open := readAgentFrame(t, agentConn)
+	if err := agentConn.WriteJSON(protocol.AttachReadyFrame(open.ClientID, 120, 40)); err != nil {
+		t.Fatalf("WriteJSON attach_ready returned error: %v", err)
+	}
+	if err := agentConn.WriteJSON(protocol.SnapshotDoneFrame(open.ClientID)); err != nil {
+		t.Fatalf("WriteJSON snapshot_done returned error: %v", err)
+	}
+	if attached := readAttachControl(t, attachConn); attached.Type != "attached" {
+		t.Fatalf("attached = %#v, want attached", attached)
+	}
+	if done := readAttachControl(t, attachConn); done.Type != "snapshot_done" {
+		t.Fatalf("snapshot_done = %#v, want snapshot_done", done)
+	}
+
+	changeResp := doBearerPOST(t, server.URL+"/api/auth/password/change", issued.AccessToken, `{"current_password":"password123","new_password":"betterpass456"}`)
+	defer changeResp.Body.Close()
+	if changeResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("password change status = %d, want 204", changeResp.StatusCode)
+	}
+
+	if closing := readAttachControl(t, attachConn); closing.Type != "closing" || closing.Reason != "password_changed" {
+		t.Fatalf("closing = %#v, want closing password_changed", closing)
+	}
+	if closeFrame := readAgentFrame(t, agentConn); closeFrame.Type != "attach_close" || closeFrame.ClientID != open.ClientID || closeFrame.Reason != "password_changed" {
+		t.Fatalf("attach_close = %#v, want attach_close password_changed", closeFrame)
+	}
+
+	reloginResp := doJSONPOST(t, server.URL+"/api/auth/login", `{"username":"alice","password":"betterpass456"}`)
+	defer reloginResp.Body.Close()
+	if reloginResp.StatusCode != http.StatusOK {
+		t.Fatalf("relogin status = %d, want 200", reloginResp.StatusCode)
+	}
+	var relogin appSessionResponse
+	if err := json.NewDecoder(reloginResp.Body).Decode(&relogin); err != nil {
+		t.Fatalf("Decode relogin returned error: %v", err)
+	}
+
+	sessionsResp := doBearerGET(t, server.URL+"/api/sessions", relogin.AccessToken)
+	defer sessionsResp.Body.Close()
+	if sessionsResp.StatusCode != http.StatusOK {
+		t.Fatalf("sessions status = %d, want 200", sessionsResp.StatusCode)
+	}
+	var sessions []protocol.SessionInfo
+	if err := json.NewDecoder(sessionsResp.Body).Decode(&sessions); err != nil {
+		t.Fatalf("Decode sessions returned error: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].SessionID != "sess-1" {
+		t.Fatalf("sessions = %#v, want sess-1 still online", sessions)
+	}
+}
+
 func TestAttachWebSocketReturnsNotFoundForCrossUserAttach(t *testing.T) {
 	env := newHandlerTestEnv(t)
 	env.addInvite(t, "AB2C3D")
@@ -957,6 +1082,37 @@ func doBearerGET(t *testing.T, target, accessToken string) *http.Response {
 		t.Fatalf("NewRequest returned error: %v", err)
 	}
 	req.Header.Set("Authorization", bearerAuth(accessToken))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do returned error: %v", err)
+	}
+	return resp
+}
+
+func doBearerPOST(t *testing.T, target, accessToken, body string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, target, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest returned error: %v", err)
+	}
+	req.Header.Set("Authorization", bearerAuth(accessToken))
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do returned error: %v", err)
+	}
+	return resp
+}
+
+func doJSONPOST(t *testing.T, target, body string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, target, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest returned error: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("Do returned error: %v", err)

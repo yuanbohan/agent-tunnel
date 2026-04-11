@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: all help start stop status build build-linux deploy install clean vet test test-relay
+.PHONY: all help start stop status build build-linux deploy deploy-install deploy-migrate deploy-restart install clean vet test test-relay
 
 # Runtime configuration. These can be overridden on the command line.
 ## RELAY_BIN: Relay binary path used by `make start`.
@@ -17,15 +17,15 @@ LOG_DIR ?= logs
 RELAY_PID_FILE ?= $(LOG_DIR)/relay.pid
 ## RELAY_LOG_FILE: Relay log file written by `make start`.
 RELAY_LOG_FILE ?= $(LOG_DIR)/relay.log
-## DEPLOY_HOST: SSH host for `make deploy`.
+## DEPLOY_HOST: SSH host for deploy targets.
 DEPLOY_HOST ?= diarome
-## DEPLOY_RELAY_PATH: Remote path for the relay binary.
+## DEPLOY_RELAY_PATH: Remote staging path for the relay binary.
 DEPLOY_RELAY_PATH ?= ~/relay
-## DEPLOY_SERVICE: Systemd service name restarted by `make deploy`.
+## DEPLOY_SERVICE: Systemd service name restarted by deploy targets.
 DEPLOY_SERVICE ?= agentunnel-relay
 ## DEPLOY_INSTALL_PATH: Installed relay path used by systemd ExecStart.
 DEPLOY_INSTALL_PATH ?= /usr/local/bin/relay
-## DEPLOY_ENV_FILE: Remote env file sourced before `relay migrate`.
+## DEPLOY_ENV_FILE: Remote env file sourced by `make deploy-migrate`.
 DEPLOY_ENV_FILE ?= /etc/agentunnel/relay.env
 
 # Internal paths shared by related targets.
@@ -129,9 +129,17 @@ install: build ## Install `tunnel` and `relay` into `$(INSTALL_DIR)`.
 	cp -f "$(TUNNEL_BIN)" "$(RELAY_BUILD_BIN)" "$(INSTALL_DIR)/"; \
 	echo "installed tunnel and relay to $(INSTALL_DIR)"
 
-deploy: build-linux ## Build, upload, migrate, and restart the relay on the remote host.
+deploy-install: build-linux ## Build, upload, and install the relay binary on the remote host.
 	scp $(RELAY_BUILD_BIN) $(DEPLOY_HOST):$(DEPLOY_RELAY_PATH)
-	ssh $(DEPLOY_HOST) 'sudo install -m 0755 $(DEPLOY_RELAY_PATH) $(DEPLOY_INSTALL_PATH) && sudo /bin/sh -lc '"'"'set -a && . $(DEPLOY_ENV_FILE) && set +a && $(DEPLOY_INSTALL_PATH) migrate'"'"' && sudo systemctl restart $(DEPLOY_SERVICE)'
+	ssh $(DEPLOY_HOST) 'sudo install -m 0755 $(DEPLOY_RELAY_PATH) $(DEPLOY_INSTALL_PATH)'
+
+deploy-migrate: ## Run relay schema migrations on the remote host using the installed binary.
+	ssh $(DEPLOY_HOST) 'sudo /bin/sh -lc '"'"'set -a && . $(DEPLOY_ENV_FILE) && set +a && $(DEPLOY_INSTALL_PATH) migrate'"'"''
+
+deploy-restart: ## Restart the relay systemd service on the remote host.
+	ssh $(DEPLOY_HOST) 'sudo systemctl restart $(DEPLOY_SERVICE)'
+
+deploy: deploy-install deploy-restart ## Build, upload, install, and restart the relay on the remote host.
 
 clean: ## Remove built binaries from `$(BIN_DIR)`.
 	rm -rf "$(BIN_DIR)"

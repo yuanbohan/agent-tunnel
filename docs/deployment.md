@@ -337,7 +337,10 @@ ssh diarome 'sudo systemctl restart agentunnel-relay'
 
 ### One-command deploy
 
-The Makefile includes a `deploy` target with configurable variables. It uploads the binary, sources `/etc/agentunnel/relay.env` on the VPS, runs `relay migrate`, and then restarts systemd:
+The Makefile keeps the common path simple:
+
+- `make deploy` builds, uploads, installs, and restarts the relay
+- `make deploy-migrate` runs `relay migrate` separately when a release actually changes the PostgreSQL schema
 
 ```bash
 make deploy
@@ -347,7 +350,15 @@ Override defaults for different environments:
 
 ```bash
 make deploy DEPLOY_HOST=staging DEPLOY_RELAY_PATH=~/relay DEPLOY_SERVICE=agentunnel-relay
-make deploy DEPLOY_HOST=staging DEPLOY_ENV_FILE=/etc/agentunnel/relay.env
+make deploy-migrate DEPLOY_HOST=staging DEPLOY_ENV_FILE=/etc/agentunnel/relay.env
+```
+
+When a release includes a migration, run the explicit sequence:
+
+```bash
+make deploy-install
+make deploy-migrate
+make deploy-restart
 ```
 
 ### What happens during restart

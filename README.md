@@ -110,6 +110,7 @@ The current remote model is:
 - a remote attach asks the agent for the current visible screen, not for old output history
 - after the initial snapshot, the same attach continues as an ordered live byte stream for that client
 - if the owning agent disconnects, the relay closes active attaches and removes the session from discovery immediately
+- if an app session logs out or all app sessions are revoked by password change, the relay closes the affected app-side attaches but leaves the owning agent session online
 
 Stronger delivery guarantees, transcript history, and remote-driven PTY sizing are out of scope for this protocol revision.
 
@@ -142,10 +143,18 @@ export AGENTUNNEL_RELAY_TOKEN=<user-owned-agent-token>
 ./bin/tunnel --label "feature-branch" claude
 ```
 
-Deploy updates with a single command after the host has `/etc/agentunnel/relay.env` in place:
+Deploy ordinary relay updates with a single command after the host has `/etc/agentunnel/relay.env` in place:
 
 ```bash
 make deploy
+```
+
+If the release includes a schema change, run the migration explicitly between install and restart:
+
+```bash
+make deploy-install
+make deploy-migrate
+make deploy-restart
 ```
 
 ## Supported Launchers

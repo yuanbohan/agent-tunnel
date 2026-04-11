@@ -173,11 +173,15 @@ Known reasons:
 - `client_closed`
 - `session_offline`
 - `slow_client`
+- `logged_out`
+- `password_changed`
 
 Notes:
 
 - the relay should send `closing` before it closes the websocket when a reason is known
 - clients should key off the `reason` value, not off a particular websocket close code
+- `logged_out` means the current app session was explicitly logged out; the agent session may still be online
+- `password_changed` means the user's app sessions were revoked after a password change; the agent session may still be online
 
 ### Relay -> Client Binary Frames
 

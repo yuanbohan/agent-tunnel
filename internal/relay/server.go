@@ -110,6 +110,19 @@ type createdAgentTokenResponse struct {
 	Token string `json:"token"`
 }
 
+type attachSessionRef struct {
+	UserID       int64
+	AppSessionID string
+	SessionID    string
+	ClientID     string
+}
+
+type attachSessionIndex struct {
+	mu           sync.Mutex
+	byAppSession map[string]map[string]attachSessionRef
+	byUser       map[int64]map[string]attachSessionRef
+}
+
 func newWSAgentPeer(conn *websocket.Conn, tracker *wsTrafficTracker) *wsAgentPeer {
 	return &wsAgentPeer{
 		conn:         conn,
@@ -117,6 +130,116 @@ func newWSAgentPeer(conn *websocket.Conn, tracker *wsTrafficTracker) *wsAgentPee
 		writeTimeout: defaultWSWriteTimeout,
 		active:       true,
 	}
+}
+
+func newAttachSessionIndex() *attachSessionIndex {
+	return &attachSessionIndex{
+		byAppSession: make(map[string]map[string]attachSessionRef),
+		byUser:       make(map[int64]map[string]attachSessionRef),
+	}
+}
+
+func (i *attachSessionIndex) Add(ref attachSessionRef) {
+	if i == nil || ref.UserID == 0 || ref.AppSessionID == "" || ref.SessionID == "" || ref.ClientID == "" {
+		return
+	}
+
+	key := ref.indexKey()
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	appRefs := i.byAppSession[ref.AppSessionID]
+	if appRefs == nil {
+		appRefs = make(map[string]attachSessionRef)
+		i.byAppSession[ref.AppSessionID] = appRefs
+	}
+	appRefs[key] = ref
+
+	userRefs := i.byUser[ref.UserID]
+	if userRefs == nil {
+		userRefs = make(map[string]attachSessionRef)
+		i.byUser[ref.UserID] = userRefs
+	}
+	userRefs[key] = ref
+}
+
+func (i *attachSessionIndex) Remove(ref attachSessionRef) {
+	if i == nil || ref.UserID == 0 || ref.AppSessionID == "" || ref.SessionID == "" || ref.ClientID == "" {
+		return
+	}
+
+	key := ref.indexKey()
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	if appRefs := i.byAppSession[ref.AppSessionID]; appRefs != nil {
+		delete(appRefs, key)
+		if len(appRefs) == 0 {
+			delete(i.byAppSession, ref.AppSessionID)
+		}
+	}
+	if userRefs := i.byUser[ref.UserID]; userRefs != nil {
+		delete(userRefs, key)
+		if len(userRefs) == 0 {
+			delete(i.byUser, ref.UserID)
+		}
+	}
+}
+
+func (i *attachSessionIndex) DisconnectAppSession(registry *Registry, appSessionID, reason string) int {
+	if i == nil || strings.TrimSpace(appSessionID) == "" {
+		return 0
+	}
+	return i.disconnectRefs(registry, i.snapshotByAppSession(appSessionID), reason)
+}
+
+func (i *attachSessionIndex) DisconnectUser(registry *Registry, userID int64, reason string) int {
+	if i == nil || userID == 0 {
+		return 0
+	}
+	return i.disconnectRefs(registry, i.snapshotByUser(userID), reason)
+}
+
+func (i *attachSessionIndex) snapshotByAppSession(appSessionID string) []attachSessionRef {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	refs := i.byAppSession[appSessionID]
+	out := make([]attachSessionRef, 0, len(refs))
+	for _, ref := range refs {
+		out = append(out, ref)
+	}
+	return out
+}
+
+func (i *attachSessionIndex) snapshotByUser(userID int64) []attachSessionRef {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	refs := i.byUser[userID]
+	out := make([]attachSessionRef, 0, len(refs))
+	for _, ref := range refs {
+		out = append(out, ref)
+	}
+	return out
+}
+
+func (i *attachSessionIndex) disconnectRefs(registry *Registry, refs []attachSessionRef, reason string) int {
+	if registry == nil {
+		return 0
+	}
+
+	disconnected := 0
+	for _, ref := range refs {
+		if registry.DetachClient(ref.SessionID, ref.ClientID, reason) {
+			disconnected++
+		}
+	}
+	return disconnected
+}
+
+func (r attachSessionRef) indexKey() string {
+	return r.SessionID + "\x00" + r.ClientID
 }
 
 func (p *wsAgentPeer) SendJSON(msg any) error {
@@ -204,6 +327,7 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 	}
 
 	mux := http.NewServeMux()
+	attachSessions := newAttachSessionIndex()
 	agentUpgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	clientUpgrader := websocket.Upgrader{CheckOrigin: checkAttachOrigin}
 
@@ -409,6 +533,7 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
+		attachSessions.DisconnectAppSession(registry, auth.Session.ID, "logged_out")
 		w.WriteHeader(http.StatusNoContent)
 	})
 
@@ -439,6 +564,7 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 			}
 			return
 		}
+		attachSessions.DisconnectUser(registry, auth.User.ID, "password_changed")
 		w.WriteHeader(http.StatusNoContent)
 	})
 
@@ -724,6 +850,14 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 			_ = attachPeer.Close(reasonForAttachStartError(err))
 			return
 		}
+		attachRef := attachSessionRef{
+			UserID:       auth.User.ID,
+			AppSessionID: auth.Session.ID,
+			SessionID:    sessionID,
+			ClientID:     clientID,
+		}
+		attachSessions.Add(attachRef)
+		defer attachSessions.Remove(attachRef)
 		defer registry.DetachClient(sessionID, clientID, "client_closed")
 
 		if err := owner.SendJSON(protocol.AttachOpenFrame(clientID)); err != nil {

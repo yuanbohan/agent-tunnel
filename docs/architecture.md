@@ -89,6 +89,7 @@ It owns:
 - routing JSON control messages and client-scoped binary terminal bytes between clients and the owning agent
 - closing active attaches promptly when the owning agent disappears
 - synchronously evicting live sessions when a user is deleted or an agent token is revoked
+- closing affected app-side attaches when an app session logs out or a password change revokes app sessions, without disconnecting the owning agent
 
 The relay does not own:
 

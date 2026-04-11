@@ -31,6 +31,7 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 - The local terminal remains the most complete source of truth for session output in the current product revision.
 - A successful attach yields `attached`, snapshot bytes, `snapshot_done`, then live PTY bytes on the same websocket.
 - If the owning agent disconnects, the relay removes that session from discovery immediately. If the same running agent reconnects later with the same `session_id`, the session becomes discoverable again.
+- If an app session logs out or a password change revokes app sessions, the relay closes the affected app-side attaches but does not disconnect the owning agent session.
 - Relay state is live-only and in-memory. If the owning agent socket disappears, the relay removes the session immediately.
 - Protocol-facing timestamps such as `started_at` are Unix timestamps encoded as JSON integer seconds.
 - The relay is content-opaque. It may forward output bytes and attach control, but it must not emulate the terminal or derive previews or other message semantics from terminal content.
