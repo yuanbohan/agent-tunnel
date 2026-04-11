@@ -108,6 +108,11 @@ func Refresh(appAuth *auth.AppAuthService) gin.HandlerFunc {
 
 func Logout(appAuth *auth.AppAuthService, registry *session.Registry, attachSessions *session.AttachSessionIndex) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if appAuth == nil {
+			http.Error(c.Writer, "service unavailable", http.StatusServiceUnavailable)
+			return
+		}
+
 		app := middleware.AuthenticatedApp(c)
 		if err := appAuth.Logout(c.Request.Context(), app); err != nil {
 			if isRefreshFailure(err) {
