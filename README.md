@@ -90,6 +90,8 @@ App clients authenticate with bearer tokens returned by `POST /api/auth/login` a
 - `GET /api/sessions` to list sessions whose owning agent is currently online
 - `GET /api/sessions/:id/attach/ws` to attach to one online session
 
+See [docs/api.md](docs/api.md) for the current public app-facing endpoint inventory, auth requirements, request and response examples, and error contracts.
+
 Browser attach clients must be same-origin with the relay. Native clients that do not send an `Origin` header remain supported.
 
 The attach websocket is session-scoped:
@@ -183,6 +185,7 @@ make migrate           # run relay schema migrations using .env or the shell env
 
 ## Protocol
 
+See [docs/api.md](docs/api.md) for the current public app-facing relay API reference.
 See [docs/protocol.md](docs/protocol.md) for the full wire format specification.
 See [docs/tui-attach-flow.md](docs/tui-attach-flow.md) for the end-to-end snapshot, live-byte, relay, and client reconnect flow.
 See [docs/deployment.md](docs/deployment.md) for VPS deployment, nginx/TLS setup, and operations guide.

@@ -4,6 +4,8 @@ This document describes the current relay-facing contract for clients and agents
 
 It supersedes the older replay/frame model. Clients should build against this attach-based protocol, not against `/api/updates/ws`, `/api/sessions/:id/frames`, `ReplayFrame`, or `latest_seq`.
 
+For endpoint-level request and response examples, auth requirements, and error contracts, see [docs/api.md](./api.md).
+
 ## Core Model
 
 The current protocol is built around these boundaries:
@@ -175,6 +177,8 @@ Known reasons:
 - `slow_client`
 - `logged_out`
 - `password_changed`
+- `agent_token_revoked`
+- `account_deleted`
 
 Notes:
 
@@ -182,6 +186,8 @@ Notes:
 - clients should key off the `reason` value, not off a particular websocket close code
 - `logged_out` means the current app session was explicitly logged out; the agent session may still be online
 - `password_changed` means the user's app sessions were revoked after a password change; the agent session may still be online
+- `agent_token_revoked` means the owning agent token was revoked and the session was disconnected
+- `account_deleted` means the user account was deleted by an operator
 
 ### Relay -> Client Binary Frames
 
@@ -390,7 +396,7 @@ Notes:
 Notes:
 
 - the relay sends this when the attached client socket closes or is no longer usable
-- known reasons include `client_closed`
+- known reasons include `client_closed`, `slow_client`, `logged_out`, `password_changed`, `agent_token_revoked`, and `account_deleted`
 
 ### `input_text`
 
@@ -485,5 +491,6 @@ This keeps terminal behavior close to the PTY owner and avoids embedding termina
 
 ## Related Documents
 
+- [docs/api.md](./api.md)
 - [docs/architecture.md](./architecture.md)
 - [docs/tui-attach-flow.md](./tui-attach-flow.md)

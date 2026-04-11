@@ -8,6 +8,8 @@ This document describes the current system shape for the attach-based protocol.
 
 The relay exposes authenticated APIs so external clients can register accounts, log in, manage agent tokens, discover live sessions, attach to one online session, and send structured input. Operator maintenance routes stay outside the public `/api/` namespace and are intended for host-local use only. PostgreSQL is the durable source of truth for users, invite codes, app sessions, agent tokens, and operator audit records. The relay is not the terminal-state authority and it does not retain transcript history.
 
+See [docs/api.md](./api.md) for the current endpoint inventory, auth requirements, request and response examples, and error contracts.
+
 Protocol-facing timestamps such as `started_at` are Unix timestamps encoded as JSON integers in seconds.
 
 The local terminal is still the primary and most complete view of the PTY session. Remote access is session-scoped: a client attaches to one session, receives a current-screen snapshot, and then receives subsequent live PTY bytes on that same attach.
@@ -228,5 +230,6 @@ Closing the agent process ends the session. A later agent launch starts a differ
 
 ## Related Documents
 
+- [docs/api.md](./api.md)
 - [docs/protocol.md](./protocol.md)
 - [docs/tui-attach-flow.md](./tui-attach-flow.md)
