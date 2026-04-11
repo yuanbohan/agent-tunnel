@@ -1,5 +1,5 @@
 server {
-    server_name diaro.dev www.diaro.dev;
+    server_name diaro.me www.diaro.me;
 
     location / {
         proxy_pass http://127.0.0.1:8586;
@@ -16,23 +16,23 @@ server {
 
     listen [::]:443 ssl ipv6only=on; # managed by Certbot
     listen 443 ssl; # managed by Certbot
-    ssl_certificate /etc/letsencrypt/live/diaro.dev/fullchain.pem; # managed by Certbot
-    ssl_certificate_key /etc/letsencrypt/live/diaro.dev/privkey.pem; # managed by Certbot
+    ssl_certificate /etc/letsencrypt/live/diaro.me/fullchain.pem; # managed by Certbot
+    ssl_certificate_key /etc/letsencrypt/live/diaro.me/privkey.pem; # managed by Certbot
     include /etc/letsencrypt/options-ssl-nginx.conf; # managed by Certbot
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem; # managed by Certbot
 }
 
 server {
-    if ($host = www.diaro.dev) {
+    if ($host = www.diaro.me) {
         return 301 https://$host$request_uri;
     } # managed by Certbot
 
-    if ($host = diaro.dev) {
+    if ($host = diaro.me) {
         return 301 https://$host$request_uri;
     } # managed by Certbot
 
     listen 80;
     listen [::]:80;
-    server_name diaro.dev www.diaro.dev;
+    server_name diaro.me www.diaro.me;
     return 404; # managed by Certbot
 }

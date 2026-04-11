@@ -7,7 +7,6 @@ This guide covers deploying the relay server behind nginx with TLS on an Ubuntu 
 - Ubuntu VPS with a public IP and ports 80/443 open
 - A domain with DNS A-record pointing to the VPS IP
 - SSH access from dev machine (passwordless recommended)
-- nginx and certbot installed on VPS
 - Go toolchain on dev machine (for cross-compilation)
 
 ## Server Layout
@@ -17,34 +16,65 @@ This guide covers deploying the relay server behind nginx with TLS on an Ubuntu 
 ~/relay                                      # uploaded staging binary from dev machine
 /etc/systemd/system/agentunnel-relay.service # systemd unit
 /etc/nginx/sites-available/<domain>          # nginx site config
+/etc/nginx/conf.d/websocket_map.conf         # shared WebSocket header map
 /etc/letsencrypt/live/<domain>/              # TLS cert (managed by certbot)
 ```
 
 ## Initial Setup
 
-### 1. Build and upload the binary
+### 1. Install nginx
+
+```bash
+sudo apt update
+sudo apt install -y nginx
+```
+
+Verify nginx is running:
+
+```bash
+sudo systemctl status nginx
+curl -s -o /dev/null -w "%{http_code}" http://localhost
+# Should return 200 (default welcome page)
+```
+
+### 2. Install certbot via snap
+
+Snap is the recommended install method for certbot. It keeps certbot up to date automatically and includes a built-in renewal timer.
+
+```bash
+sudo snap install --classic certbot
+sudo ln -s /snap/bin/certbot /usr/bin/certbot
+certbot --version
+```
+
+The symlink ensures `certbot` is available system-wide. If `/usr/bin/certbot` already exists from a previous apt install, remove the old package first:
+
+```bash
+sudo apt remove -y certbot   # only if previously installed via apt
+sudo snap install --classic certbot
+sudo ln -sf /snap/bin/certbot /usr/bin/certbot
+```
+
+### 3. Build and upload the relay binary
 
 From the project root on your dev machine:
 
 ```bash
 make build-linux          # cross-compile for linux/amd64
-scp bin/relay relay:~/relay
+scp bin/relay diarome:~/relay
 ```
 
-`relay` here is an SSH config host alias. Replace with `user@your-vps-ip` if you don't have one.
+`diarome` here is an SSH config host alias. Replace with `user@your-vps-ip` if you don't have one.
 
-### 2. Create the systemd service
-
-On the VPS, create `/etc/systemd/system/agentunnel-relay.service`:
-
-First, create a dedicated system user and install the binary:
+### 4. Install the binary on the VPS
 
 ```bash
-sudo useradd --system --no-create-home --shell /usr/sbin/nologin agentunnel || true
 sudo install -m 0755 ~/relay /usr/local/bin/relay
 ```
 
-Then create `/etc/systemd/system/agentunnel-relay.service`:
+### 5. Create the systemd service
+
+Create `/etc/systemd/system/agentunnel-relay.service`:
 
 ```ini
 [Unit]
@@ -53,8 +83,8 @@ After=network.target
 
 [Service]
 Type=simple
-User=agentunnel
-Group=agentunnel
+User=root
+Group=root
 ExecStart=/usr/local/bin/relay --port 8586
 Environment=AGENTUNNEL_BASIC_USER=<user>
 Environment=AGENTUNNEL_BASIC_PASSWORD=<password>
@@ -66,7 +96,7 @@ RestartSec=5
 WantedBy=multi-user.target
 ```
 
-Then enable and start:
+Enable and start:
 
 ```bash
 sudo systemctl daemon-reload
@@ -74,14 +104,45 @@ sudo systemctl enable agentunnel-relay
 sudo systemctl start agentunnel-relay
 ```
 
-### 3. Configure nginx
+Verify:
+
+```bash
+sudo systemctl status agentunnel-relay
+# Should show active (running)
+
+ss -lntp | grep 8586
+# Should show relay listening on 127.0.0.1:8586
+```
+
+#### Systemd key settings explained
+
+- **`Restart=always`** and **`RestartSec=5`**: If the relay crashes, systemd restarts it after 5 seconds. This keeps the relay self-healing without manual intervention.
+- **`After=network.target`**: Ensures the relay starts only after the network is up.
+- **`WantedBy=multi-user.target`**: The service starts automatically on boot.
+
+#### Viewing relay logs
+
+Relay logs go to journald (systemd's log system):
+
+```bash
+# Live tail
+sudo journalctl -u agentunnel-relay -f
+
+# Recent logs
+sudo journalctl -u agentunnel-relay --since "1 hour ago"
+
+# Filter by event with jq
+sudo journalctl -u agentunnel-relay -o cat | jq 'select(.event == "relay_started")'
+```
+
+### 6. Configure nginx
 
 Reference configs are checked into `deploy/nginx/`. Copy them to the VPS:
 
 ```bash
-scp deploy/nginx/websocket_map.conf relay:/tmp/
-scp deploy/nginx/diaro.dev relay:/tmp/
-ssh relay 'sudo mv /tmp/websocket_map.conf /etc/nginx/conf.d/ && sudo mv /tmp/diaro.dev /etc/nginx/sites-available/'
+scp deploy/nginx/websocket_map.conf diarome:/tmp/
+scp deploy/nginx/diaro.me diarome:/tmp/
+ssh diarome 'sudo mv /tmp/websocket_map.conf /etc/nginx/conf.d/ && sudo mv /tmp/diaro.me /etc/nginx/sites-available/'
 ```
 
 Or create them manually. First, add the WebSocket map in `/etc/nginx/conf.d/websocket_map.conf`:
@@ -95,7 +156,7 @@ map $http_upgrade $connection_upgrade {
 
 This conditionally sets the `Connection` header: `upgrade` when the client sends an `Upgrade` header (WebSocket), `close` otherwise (plain HTTP). Without the map, you would have to hardcode `Connection "upgrade"` on every request, which works but is technically incorrect for non-WebSocket routes.
 
-Then create `/etc/nginx/sites-available/<domain>` with an HTTP-only config (certbot will add TLS):
+Then create `/etc/nginx/sites-available/<domain>` with an HTTP-only config (certbot will add TLS in the next step):
 
 ```nginx
 server {
@@ -122,6 +183,7 @@ Enable the site and reload:
 
 ```bash
 sudo ln -sf /etc/nginx/sites-available/<domain> /etc/nginx/sites-enabled/<domain>
+sudo rm -f /etc/nginx/sites-enabled/default   # remove default site if present
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
@@ -131,7 +193,7 @@ Key nginx settings to pay attention to:
 - **`Upgrade` and `Connection` headers with `map`**: The `$connection_upgrade` variable (from `websocket_map.conf`) ensures `Connection: upgrade` is only sent for actual WebSocket requests. Without the map and these headers, WebSocket connections fail silently.
 - **`proxy_http_version 1.1`**: WebSocket requires HTTP/1.1. nginx defaults to 1.0 for upstream connections.
 
-### 4. Obtain TLS certificate
+### 7. Obtain TLS certificate
 
 ```bash
 sudo certbot --nginx \
@@ -143,11 +205,60 @@ sudo certbot --nginx \
 Certbot will:
 - Obtain the cert from Let's Encrypt
 - Modify the nginx config to add SSL directives and HTTP-to-HTTPS redirect
-- Install a systemd renewal timer (commonly `certbot.timer` or `snap.certbot.renew.timer`, depending on install method) that checks for renewal twice daily
+- The snap-installed certbot includes a built-in renewal timer (`snap.certbot.renew.timer`)
 
-Certs expire after 90 days. Certbot renews them when they have fewer than 30 days remaining, so renewal effectively happens every ~60 days with no manual intervention.
+Verify the cert was issued and HTTPS works:
 
-### 5. Verify
+```bash
+# Should return 401 (auth required) over HTTPS
+curl -s -o /dev/null -w "%{http_code}" https://example.com/api/sessions
+
+# Check cert details
+sudo certbot certificates
+```
+
+### 8. Verify automatic certificate renewal
+
+Snap-installed certbot ships with `snap.certbot.renew.timer`, a systemd timer that checks for renewal twice daily. No cron job is needed.
+
+Verify the timer is active:
+
+```bash
+sudo systemctl list-timers | grep certbot
+```
+
+You should see `snap.certbot.renew.timer` listed with a next-run time.
+
+How automatic renewal works:
+
+- Let's Encrypt certificates expire after **90 days**
+- Certbot renews when a cert has **fewer than 30 days remaining**, so renewal effectively happens every ~60 days
+- The timer runs **twice daily** but only triggers actual renewal when needed
+- On successful renewal, certbot reloads nginx automatically to pick up the new cert
+
+Test that renewal would succeed (dry run, does not actually renew):
+
+```bash
+sudo certbot renew --dry-run
+```
+
+If the dry run fails, common causes are:
+
+- Port 80 is blocked by a firewall (Let's Encrypt needs to reach it for HTTP-01 challenges)
+- nginx is misconfigured or not running
+- DNS no longer points to this server
+
+#### Monitoring cert expiry
+
+```bash
+# Check all managed certs and their expiry dates
+sudo certbot certificates
+
+# One-liner to check days until expiry
+sudo openssl x509 -in /etc/letsencrypt/live/<domain>/fullchain.pem -noout -dates
+```
+
+### 9. End-to-end verification
 
 ```bash
 # Should return 401 (auth required)
@@ -158,6 +269,12 @@ sudo certbot certificates
 
 # Check renewal timer is active
 sudo systemctl list-timers | grep certbot
+
+# Check relay is listening
+ss -lntp | grep 8586
+
+# Check relay service health
+sudo systemctl is-active agentunnel-relay
 ```
 
 ## Deploying Updates
@@ -167,9 +284,9 @@ sudo systemctl list-timers | grep certbot
 ```bash
 # On dev machine
 make build-linux
-scp bin/relay relay:~/relay
-ssh relay 'sudo install -m 0755 ~/relay /usr/local/bin/relay'
-ssh relay 'sudo systemctl restart agentunnel-relay'
+scp bin/relay diarome:~/relay
+ssh diarome 'sudo install -m 0755 ~/relay /usr/local/bin/relay'
+ssh diarome 'sudo systemctl restart agentunnel-relay'
 ```
 
 ### One-command deploy
@@ -229,20 +346,6 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-### Log format
-
-The relay emits structured JSON logs to stderr (captured by journald):
-
-```json
-{"ts":"...","level":"INFO","event":"relay_started","listen_addr":"127.0.0.1:8586"}
-```
-
-Filter by event with `jq`:
-
-```bash
-sudo journalctl -u agentunnel-relay -o cat | jq 'select(.event == "relay_started")'
-```
-
 ## Things to Pay Attention To
 
 ### Security
@@ -288,7 +391,7 @@ Minimal monitoring checklist:
 From your dev machine:
 
 ```bash
-export AGENTUNNEL_RELAY_ADDR=diaro.dev:443
+export AGENTUNNEL_RELAY_ADDR=diaro.me:443
 export AGENTUNNEL_RELAY_TOKEN=<your-agent-token>
 ./bin/tunnel claude
 ```
