@@ -4,7 +4,7 @@ Launch a terminal agent locally and expose the running PTY through a relay-backe
 
 The remote contract is attach-only: clients discover live sessions with `GET /api/sessions`, then attach to one session with `GET /api/sessions/:id/attach/ws`. On attach, the owning `tunnel` process sends a current-screen snapshot and then continues streaming live PTY bytes on that same websocket.
 
-`tunnel` starts a real CLI such as `claude`, `codex`, or `gemini`, keeps the launching terminal interactive, and registers the session with a relay server. The relay is API-only: it authenticates app clients with user-scoped bearer tokens, authenticates agents with user-owned long-lived agent tokens, lists live sessions, brokers session-scoped attaches, and forwards structured input. Operator maintenance routes stay host-local outside the public `/api/` namespace. It does not retain transcript history and it does not emulate the terminal.
+`tunnel` starts a real CLI agent such as `claude`, `codex`, `gemini`, `qwen`, or `aider`, keeps the launching terminal interactive, and registers the session with a relay server. The relay is API-only: it authenticates app clients with user-scoped bearer tokens, authenticates agents with user-owned long-lived agent tokens, lists live sessions, brokers session-scoped attaches, and forwards structured input. Operator maintenance routes stay host-local outside the public `/api/` namespace. It does not retain transcript history and it does not emulate the terminal.
 
 On startup, `tunnel` gives relay registration a short first chance to succeed. If that startup window expires, local terminal work still begins and `tunnel` continues reconnecting to the relay in the background. Runtime relay outages do not interrupt the local terminal session.
 
@@ -24,7 +24,7 @@ The relay forwards those events to the owning `tunnel` session. `tunnel` transla
 ## Requirements
 
 - Go 1.25+
-- A supported launcher installed on `PATH`: `claude`, `codex`, or `gemini`
+- A launcher executable installed on `PATH`
 
 ## Quick Start
 
@@ -163,13 +163,24 @@ make deploy-migrate
 make deploy-restart
 ```
 
-## Supported Launchers
+## Official Launcher Profiles
 
-- `claude`
-- `codex`
-- `gemini`
+`tunnel` keeps a curated set of officially verified launcher profiles:
 
-`tunnel` resolves these executables from `PATH` and runs the real CLI locally.
+- `claude` (`Claude Code`)
+- `codex` (`OpenAI Codex`)
+- `gemini` (`Gemini CLI`)
+- `qwen` (`Qwen Code`)
+- `copilot` (`GitHub Copilot CLI`)
+- `kiro-cli` (`Kiro CLI`)
+- `amp` (`Amp`)
+- `aider` (`Aider`)
+- `opencode` (`OpenCode`)
+- `trae-cli` (`Trae Agent CLI`)
+
+These profiles are validated in `internal/tunnel/launcher` and get stable display metadata.
+
+Other launcher commands are also allowed. If a command resolves from `PATH`, `tunnel` will start it and treat it as an unverified launcher.
 
 ## Development
 

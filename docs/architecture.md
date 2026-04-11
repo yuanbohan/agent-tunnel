@@ -4,7 +4,7 @@ This document describes the current system shape for the attach-based protocol.
 
 ## System Shape
 
-`tunnel` owns the real local agent process, its PTY, and the authoritative current terminal state for that session. Every supported launcher follows the same path: one local PTY child, one session hub, one headless terminal mirror, one outbound relay connector, and no launcher-specific sidecar.
+`tunnel` owns the real local agent process, its PTY, and the authoritative current terminal state for that session. Every official launcher profile and every other PATH-resolved launcher command follows the same path: one local PTY child, one session hub, one headless terminal mirror, one outbound relay connector, and no launcher-specific sidecar.
 
 The relay exposes authenticated APIs so external clients can register accounts, log in, manage agent tokens, discover live sessions, attach to one online session, and send structured input. Operator maintenance routes stay outside the public `/api/` namespace and are intended for host-local use only. PostgreSQL is the durable source of truth for users, invite codes, app sessions, agent tokens, and operator audit records. The relay is not the terminal-state authority and it does not retain transcript history.
 
@@ -28,7 +28,7 @@ local machine
 │        │                                                         │
 │        ▼                                                         │
 │  local runtime                                                   │
-│  - claude / codex / gemini PTY child                             │
+│  - PATH-resolved CLI agent PTY child                             │
 │        │                                                         │
 │        ▼                                                         │
 │     session hub                                                  │

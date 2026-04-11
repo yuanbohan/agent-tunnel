@@ -7,7 +7,7 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 ## Start Here
 
 - The main product is the `tunnel` CLI with relay-first startup semantics and background reconnect after local session start.
-- `cmd/tunnel` builds the `tunnel` CLI. It launches `claude`, `codex`, or `gemini`, keeps the local terminal interactive, and maintains the authoritative headless terminal mirror for the current PTY session.
+- `cmd/tunnel` builds the `tunnel` CLI. It launches a PATH-resolved CLI agent, keeps the local terminal interactive, and maintains the authoritative headless terminal mirror for the current PTY session. `internal/tunnel/launcher/` curates the officially verified launcher profiles such as `claude`, `codex`, `gemini`, `qwen`, `copilot`, `kiro-cli`, `amp`, `aider`, `opencode`, and `trae-cli`.
 - `cmd/relay` is the standalone relay server. It exposes authenticated HTTP and WebSocket APIs for external clients, authenticates app clients with bearer app sessions, authenticates agents with user-owned bearer agent tokens, keeps operator maintenance routes local-only outside the public `/api/` namespace, persists accounts and auth state in PostgreSQL, and maintains a live in-memory session registry with session-scoped attach routing. It does not retain transcript history. It starts via explicit subcommands such as `serve`, `invite create`, `invite disable`, and `user delete`.
 - `cmd/migrate` builds the standalone relay schema migrator used for explicit PostgreSQL schema changes.
 - `internal/tunnel/session/` owns PTY lifecycle, Hub fanout, local terminal attach, resize/input forwarding, and the terminal mirror used for attach snapshots.
@@ -21,7 +21,7 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 - `internal/relay/handler/` owns the Gin router, HTTP middleware, REST handlers, and WebSocket transport split by API, agent, and attach concerns.
 - `internal/migration/` owns the relay schema migration runner and migration tracking logic.
 - `internal/relay/store/postgres/` owns PostgreSQL persistence for relay auth and operator state.
-- `internal/tunnel/launcher/` is the supported-launcher registry and PATH resolution layer.
+- `internal/tunnel/launcher/` is the official-launcher profile registry and PATH resolution layer. Unknown launcher commands are still allowed if they resolve from `PATH`.
 - `docs/api.md` is the current public app-facing relay API reference, including auth, request and response shapes, and error contracts.
 - `docs/architecture.md` describes how all Go packages and relay-facing protocols interact.
 
