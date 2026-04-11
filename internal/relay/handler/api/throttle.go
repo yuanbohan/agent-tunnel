@@ -51,7 +51,14 @@ func (t *RegisterThrottle) Allow(ip string) (bool, time.Duration) {
 	defer t.mu.Unlock()
 
 	now := t.now()
-	window := t.currentWindowLocked(ip, now)
+	window, ok := t.clientsByIP[ip]
+	if !ok {
+		return true, 0
+	}
+	if now.Sub(window.start) >= t.window {
+		delete(t.clientsByIP, ip)
+		return true, 0
+	}
 	if window.failures < t.limit {
 		return true, 0
 	}

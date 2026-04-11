@@ -51,3 +51,41 @@ func TestBaselineVersionsUntilRejectsUnknownVersion(t *testing.T) {
 		t.Fatal("expected missing baseline version to fail")
 	}
 }
+
+func TestEnsureAppliedMigrationPrefixAllowsPrefix(t *testing.T) {
+	err := ensureAppliedMigrationPrefix(
+		[]string{"0001_first.sql", "0002_second.sql", "0003_third.sql"},
+		map[string]struct{}{
+			"0001_first.sql":  {},
+			"0002_second.sql": {},
+		},
+	)
+	if err != nil {
+		t.Fatalf("ensureAppliedMigrationPrefix returned error: %v", err)
+	}
+}
+
+func TestEnsureAppliedMigrationPrefixRejectsOutOfOrderState(t *testing.T) {
+	err := ensureAppliedMigrationPrefix(
+		[]string{"0001_first.sql", "0002_second.sql", "0003_third.sql"},
+		map[string]struct{}{
+			"0001_first.sql": {},
+			"0003_third.sql": {},
+		},
+	)
+	if err == nil {
+		t.Fatal("expected out-of-order applied state to fail")
+	}
+}
+
+func TestEnsureAppliedMigrationPrefixRejectsUnknownAppliedVersion(t *testing.T) {
+	err := ensureAppliedMigrationPrefix(
+		[]string{"0001_first.sql", "0002_second.sql"},
+		map[string]struct{}{
+			"9999_unknown.sql": {},
+		},
+	)
+	if err == nil {
+		t.Fatal("expected unknown applied migration to fail")
+	}
+}

@@ -31,6 +31,9 @@ func TestRegisterThrottleLimitsFailuresPerIP(t *testing.T) {
 	if allowedOther, _ := throttle.Allow("203.0.113.11"); !allowedOther {
 		t.Fatal("separate IP was throttled, want allowed")
 	}
+	if got := len(throttle.clientsByIP); got != 1 {
+		t.Fatalf("len(clientsByIP) = %d, want 1", got)
+	}
 }
 
 func TestRegisterThrottleResetsAfterWindowOrSuccess(t *testing.T) {

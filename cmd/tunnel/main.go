@@ -67,7 +67,7 @@ func runWithArgs(args []string, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	relayURL := relayWebSocketURL(parsed.RelayAddr)
+	relayURL := relayWebSocketBaseURL(parsed.BaseURL)
 
 	command, err := resolveLauncher(parsed.Launcher, parsed.LauncherArgs)
 	if err != nil {
@@ -93,7 +93,7 @@ func runWithArgs(args []string, stderr io.Writer) error {
 		StartedAt:      protocol.UnixTimestamp(time.Now().UTC()),
 	}
 
-	relay := newConnector(relayURL, parsed.RelayToken, info)
+	relay := newConnector(relayURL, parsed.AuthToken, info)
 	relay.SetInitialConnectTimeout(startupRelayWait)
 	go relay.Run(ctx)
 	_ = relay.WaitUntilConnected(ctx, startupRelayWait)
@@ -132,7 +132,7 @@ func runWithArgs(args []string, stderr io.Writer) error {
 		})
 	}
 
-	fmt.Fprint(stderr, startupBanner(command.Name, sessionID, parsed.RelayAddr, relay.CurrentState()))
+	fmt.Fprint(stderr, startupBanner(command.Name, sessionID, parsed.BaseURL, relay.CurrentState()))
 
 	stateCh, cancelStates := relay.SubscribeStateChanges()
 	defer cancelStates()

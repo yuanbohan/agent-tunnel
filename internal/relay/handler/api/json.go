@@ -9,8 +9,11 @@ import (
 	"time"
 )
 
-func DecodeJSONBody(r *http.Request, dest any) error {
+const maxJSONBodyBytes = 1 << 20
+
+func DecodeJSONBody(w http.ResponseWriter, r *http.Request, dest any) error {
 	defer r.Body.Close()
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
 
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()

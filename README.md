@@ -33,7 +33,7 @@ The relay forwards those events to the owning `tunnel` session. `tunnel` transla
 The relay now requires PostgreSQL, an application secret used for credential digests, and a fixed operator token for local maintenance commands:
 
 ```bash
-export RELAY_DATABASE_URL=postgres://localhost/agent_tunnel?sslmode=disable
+export RELAY_DATABASE_URL=postgres://relay_user:change-me-db-password@localhost/agent_tunnel?sslmode=disable
 export RELAY_APP_SECRET=change-me
 export RELAY_OPERATOR_TOKEN=change-me-operator-token
 go run ./cmd/migrate --schema-dir ./schema
@@ -52,27 +52,29 @@ After a user has registered, logged in, and created an agent token, point `tunne
 
 ```bash
 make build
-export AGENTUNNEL_RELAY_ADDR=127.0.0.1:8586
-export AGENTUNNEL_RELAY_TOKEN=<user-owned-agent-token>
+export AGENTUNNEL_BASE_URL=http://127.0.0.1:8586
+export AGENTUNNEL_AUTH_TOKEN=<user-owned-agent-token>
 ./bin/tunnel claude
 ```
+
+If you use the hosted relay at `https://diaro.me`, `AGENTUNNEL_BASE_URL` is optional because that is the default.
 
 Or with a label:
 
 ```bash
-./bin/tunnel --label api-fix --relay-addr 127.0.0.1:9000 codex
+./bin/tunnel --label api-fix --base-url https://diaro.me codex
 ```
 
 Expected stderr output when relay is available during startup:
 
 ```text
-▶ tunnel claude — session <session-id>; relay connected (127.0.0.1:8586)
+▶ tunnel claude — session <session-id>; relay connected (http://127.0.0.1:8586)
 ```
 
 If relay startup registration does not succeed within the startup wait window, `tunnel` still enters the local terminal session and shows:
 
 ```text
-▶ tunnel claude — session <session-id>; relay reconnecting (127.0.0.1:8586)
+▶ tunnel claude — session <session-id>; relay reconnecting (http://127.0.0.1:8586)
 ```
 
 While reconnecting, `tunnel` keeps retrying in the background and shows a compact terminal status that local work continues.
@@ -123,7 +125,7 @@ Quick start on the remote host:
 ```bash
 sudo install -d -m 0755 /etc/agentunnel
 sudo tee /etc/agentunnel/relay.env >/dev/null <<'EOF'
-RELAY_DATABASE_URL=postgres://localhost/agent_tunnel?sslmode=disable
+RELAY_DATABASE_URL=postgres://relay_user:change-me-db-password@localhost/agent_tunnel?sslmode=disable
 RELAY_APP_SECRET=<long-random-secret>
 RELAY_OPERATOR_TOKEN=<long-random-operator-token>
 EOF
@@ -138,12 +140,12 @@ sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && ./bin/relay
 After the user registers in the app and creates an agent token, on each developer machine:
 
 ```bash
-export AGENTUNNEL_RELAY_ADDR=relay.example.com:443
-export AGENTUNNEL_RELAY_TOKEN=<user-owned-agent-token>
+export AGENTUNNEL_BASE_URL=https://diaro.me
+export AGENTUNNEL_AUTH_TOKEN=<user-owned-agent-token>
 ./bin/tunnel --label "feature-branch" claude
 ```
 
-Deploy ordinary relay updates with a single command after the host has `/etc/agentunnel/relay.env` in place:
+Keep a populated repo-root `.env` file for deploys and local migrations. Deploy ordinary relay updates with:
 
 ```bash
 make deploy
@@ -152,6 +154,7 @@ make deploy
 If the release includes a schema change, run the migration explicitly between install and restart:
 
 ```bash
+make deploy-env
 make deploy-install
 make deploy-schema
 make deploy-migrate
@@ -175,7 +178,7 @@ make test              # go test ./...
 make test-relay        # focused relay/protocol contract tests
 make tunnel LAUNCHER=claude       # run tunnel directly
 go run ./cmd/relay serve          # run relay server
-go run ./cmd/migrate --schema-dir ./schema
+make migrate           # run relay schema migrations using .env or the shell environment
 ```
 
 ## Protocol

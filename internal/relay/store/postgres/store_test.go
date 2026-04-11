@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -40,6 +41,11 @@ func TestPostgresStoreIntegration(t *testing.T) {
 		t.Fatalf("GenerateInviteCode returned error: %v", err)
 	}
 	now := time.Now().UTC()
+	suffix := strconv.FormatInt(now.UnixNano(), 10)
+	username := "integration-user-" + suffix
+	sessionID := "appsess-integration-" + suffix
+	accessToken := "access-token-" + suffix
+	refreshToken := "refresh-token-" + suffix
 	if _, err := store.CreateInviteCode(ctx, auth.CreateInviteCodeParams{
 		CodeDigest: digester.Digest(code),
 		CodeHint:   code[len(code)-2:],
@@ -63,7 +69,7 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	}
 
 	user, err := store.RegisterUser(ctx, auth.RegisterUserParams{
-		UsernameNorm:     "integration-user",
+		UsernameNorm:     username,
 		InviteCodeDigest: digester.Digest(code),
 		PasswordHash:     passwordHash,
 		Now:              now,
@@ -71,24 +77,24 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RegisterUser returned error: %v", err)
 	}
-	if user.UsernameNorm != "integration-user" {
-		t.Fatalf("UsernameNorm = %q, want integration-user", user.UsernameNorm)
+	if user.UsernameNorm != username {
+		t.Fatalf("UsernameNorm = %q, want %q", user.UsernameNorm, username)
 	}
 
 	session, err := store.CreateAppSession(ctx, auth.CreateAppSessionParams{
-		ID:                 "appsess-integration",
+		ID:                 sessionID,
 		UserID:             user.ID,
-		AccessTokenDigest:  digester.Digest("access-token"),
+		AccessTokenDigest:  digester.Digest(accessToken),
 		AccessExpiresAt:    now.Add(time.Hour),
-		RefreshTokenDigest: digester.Digest("refresh-token"),
+		RefreshTokenDigest: digester.Digest(refreshToken),
 		RefreshExpiresAt:   now.Add(24 * time.Hour),
 		Now:                now,
 	})
 	if err != nil {
 		t.Fatalf("CreateAppSession returned error: %v", err)
 	}
-	if session.ID != "appsess-integration" {
-		t.Fatalf("session.ID = %q, want appsess-integration", session.ID)
+	if session.ID != sessionID {
+		t.Fatalf("session.ID = %q, want %q", session.ID, sessionID)
 	}
 
 	newPasswordHash, err := hasher.HashPassword(ctx, "better-password123")
@@ -108,7 +114,7 @@ func TestPostgresStoreIntegration(t *testing.T) {
 		t.Fatal("password hash was not updated")
 	}
 
-	_, err = store.FindAppSessionByAccessToken(ctx, digester.Digest("access-token"), changeTime)
+	_, err = store.FindAppSessionByAccessToken(ctx, digester.Digest(accessToken), changeTime)
 	if err != auth.ErrAppSessionRevoked {
 		t.Fatalf("FindAppSessionByAccessToken error = %v, want ErrAppSessionRevoked", err)
 	}

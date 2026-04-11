@@ -277,6 +277,15 @@ func (s *fakeStore) CreateInviteCode(_ context.Context, params auth.CreateInvite
 	return record, nil
 }
 
+func (s *fakeStore) CreateInviteCodes(ctx context.Context, params []auth.CreateInviteCodeParams) error {
+	for _, param := range params {
+		if _, err := s.CreateInviteCode(ctx, param); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *fakeStore) DisableInviteCode(_ context.Context, codeDigest string, actor string, now time.Time) error {
 	record, ok := s.invites[codeDigest]
 	if !ok {

@@ -33,22 +33,24 @@ func (s *OperatorService) CreateInviteCodes(ctx context.Context, count int, expi
 
 	now := s.now()
 	expiresAt := now.Add(time.Duration(expiresInDays) * 24 * time.Hour)
+	params := make([]auth.CreateInviteCodeParams, 0, count)
 	codes := make([]string, 0, count)
 	for i := 0; i < count; i++ {
 		code, err := auth.GenerateInviteCode()
 		if err != nil {
 			return nil, err
 		}
-		if _, err := s.store.CreateInviteCode(ctx, auth.CreateInviteCodeParams{
+		params = append(params, auth.CreateInviteCodeParams{
 			CodeDigest: s.digester.Digest(code),
 			CodeHint:   code[len(code)-2:],
 			CreatedBy:  OperatorActor,
 			ExpiresAt:  expiresAt,
 			Now:        now,
-		}); err != nil {
-			return nil, err
-		}
+		})
 		codes = append(codes, code)
+	}
+	if err := s.store.CreateInviteCodes(ctx, params); err != nil {
+		return nil, err
 	}
 	return codes, nil
 }

@@ -11,8 +11,32 @@ import (
 )
 
 func (s *PostgresStore) CreateInviteCode(ctx context.Context, params auth.CreateInviteCodeParams) (auth.InviteCodeRecord, error) {
+	return insertInviteCode(ctx, s.db, params)
+}
+
+func (s *PostgresStore) CreateInviteCodes(ctx context.Context, params []auth.CreateInviteCodeParams) error {
+	if len(params) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	for _, param := range params {
+		if _, err := insertInviteCode(ctx, tx, param); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+func insertInviteCode(ctx context.Context, db queryer, params auth.CreateInviteCodeParams) (auth.InviteCodeRecord, error) {
 	var record auth.InviteCodeRecord
-	err := s.db.QueryRowContext(ctx, `
+	err := db.QueryRowContext(ctx, `
 		insert into invite_codes(code_digest, code_hint, created_by, created_at, expires_at)
 		values ($1, $2, $3, $4, $5)
 		returning id, code_digest, code_hint, created_by, created_at, expires_at,

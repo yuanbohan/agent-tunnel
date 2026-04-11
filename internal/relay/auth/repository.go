@@ -9,6 +9,7 @@ type Repository interface {
 	RegisterUser(ctx context.Context, params RegisterUserParams) (User, error)
 	FindUserByUsername(ctx context.Context, usernameNorm string) (User, error)
 	FindUserByID(ctx context.Context, userID int64) (User, error)
+	// ChangeUserPassword atomically updates the password hash and revokes active app sessions.
 	ChangeUserPassword(ctx context.Context, userID int64, passwordHash string, now time.Time) error
 
 	CreateAppSession(ctx context.Context, params CreateAppSessionParams) (AppSession, error)

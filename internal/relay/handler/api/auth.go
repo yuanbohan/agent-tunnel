@@ -27,7 +27,7 @@ func Register(appAuth *auth.AppAuthService, throttle *RegisterThrottle) gin.Hand
 		}
 
 		var req types.RegisterRequest
-		if err := DecodeJSONBody(c.Request, &req); err != nil {
+		if err := DecodeJSONBody(c.Writer, c.Request, &req); err != nil {
 			throttle.RecordFailure(remoteIP)
 			WriteJSONError(c.Writer, http.StatusBadRequest, "invalid_request")
 			return
@@ -60,7 +60,7 @@ func Login(appAuth *auth.AppAuthService) gin.HandlerFunc {
 		}
 
 		var req types.LoginRequest
-		if err := DecodeJSONBody(c.Request, &req); err != nil {
+		if err := DecodeJSONBody(c.Writer, c.Request, &req); err != nil {
 			WriteJSONError(c.Writer, http.StatusBadRequest, "invalid_request")
 			return
 		}
@@ -87,7 +87,7 @@ func Refresh(appAuth *auth.AppAuthService) gin.HandlerFunc {
 		}
 
 		var req types.RefreshRequest
-		if err := DecodeJSONBody(c.Request, &req); err != nil {
+		if err := DecodeJSONBody(c.Writer, c.Request, &req); err != nil {
 			WriteJSONError(c.Writer, http.StatusBadRequest, "invalid_request")
 			return
 		}
@@ -127,7 +127,7 @@ func ChangePassword(appAuth *auth.AppAuthService, registry *session.Registry, at
 		app := middleware.AuthenticatedApp(c)
 
 		var req types.ChangePasswordRequest
-		if err := DecodeJSONBody(c.Request, &req); err != nil {
+		if err := DecodeJSONBody(c.Writer, c.Request, &req); err != nil {
 			WriteJSONError(c.Writer, http.StatusBadRequest, "invalid_request")
 			return
 		}

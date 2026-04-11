@@ -51,8 +51,13 @@ sudo apt install -y postgresql
 sudo systemctl enable postgresql
 sudo systemctl start postgresql
 
-sudo -u postgres createdb agent_tunnel
+sudo -u postgres psql <<'SQL'
+create role relay_user login password 'change-me-db-password';
+create database agent_tunnel owner relay_user;
+SQL
 ```
+
+Replace `change-me-db-password` with a strong password before using the DSN examples below.
 
 ### 2. Install certbot via snap
 
@@ -102,7 +107,7 @@ First, create a root-only env file at `/etc/agentunnel/relay.env`:
 ```bash
 sudo install -d -m 0755 /etc/agentunnel
 sudo tee /etc/agentunnel/relay.env >/dev/null <<'EOF'
-RELAY_DATABASE_URL=postgres://localhost/agent_tunnel?sslmode=disable
+RELAY_DATABASE_URL=postgres://relay_user:change-me-db-password@localhost/agent_tunnel?sslmode=disable
 RELAY_APP_SECRET=<long-random-secret>
 RELAY_OPERATOR_TOKEN=<long-random-operator-token>
 EOF
@@ -353,7 +358,8 @@ ssh diarome 'sudo systemctl restart agentunnel-relay'
 
 The Makefile keeps the common path simple:
 
-- `make deploy` builds, uploads, installs, and restarts the relay
+- `make deploy` builds, uploads, syncs `.env`, installs, and restarts the relay
+- `make deploy-env` uploads the local repo `.env` file to `/etc/agentunnel/relay.env`
 - `make deploy-schema` uploads `schema/*.sql` to the remote host
 - `make deploy-migrate` runs `agentunnel-relay-migrate` separately when a release actually changes the PostgreSQL schema
 
@@ -365,12 +371,14 @@ Override defaults for different environments:
 
 ```bash
 make deploy DEPLOY_HOST=staging DEPLOY_RELAY_PATH=~/relay DEPLOY_SERVICE=agentunnel-relay
+make deploy-env DEPLOY_HOST=staging DEPLOY_ENV_FILE=/etc/agentunnel/relay.env
 make deploy-migrate DEPLOY_HOST=staging DEPLOY_ENV_FILE=/etc/agentunnel/relay.env
 ```
 
 When a release includes a migration, run the explicit sequence:
 
 ```bash
+make deploy-env
 make deploy-install
 make deploy-schema
 make deploy-migrate
@@ -473,9 +481,9 @@ Minimal monitoring checklist:
 From your dev machine:
 
 ```bash
-export AGENTUNNEL_RELAY_ADDR=diaro.me:443
-export AGENTUNNEL_RELAY_TOKEN=<your-agent-token>
+export AGENTUNNEL_BASE_URL=https://diaro.me
+export AGENTUNNEL_AUTH_TOKEN=<your-agent-token>
 ./bin/tunnel claude
 ```
 
-Note: when connecting through nginx with TLS, use port `443` (the HTTPS port), not `8586` (the internal port). The relay address should be the domain name, not the VPS IP.
+`AGENTUNNEL_BASE_URL` is optional when you use `https://diaro.me`, because that is the built-in default. For local or staging relays, point it at the full `http://` or `https://` base URL.

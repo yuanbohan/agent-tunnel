@@ -81,7 +81,10 @@ func (s *AppAuthService) Login(ctx context.Context, username, password string) (
 		return IssuedAppSession{}, err
 	}
 	if err := s.hasher.VerifyPassword(password, user.PasswordHash); err != nil {
-		return IssuedAppSession{}, ErrInvalidCredentials
+		if errors.Is(err, ErrInvalidPassword) {
+			return IssuedAppSession{}, ErrInvalidCredentials
+		}
+		return IssuedAppSession{}, err
 	}
 
 	return s.issueSession(ctx, user)
@@ -139,7 +142,10 @@ func (s *AppAuthService) Logout(ctx context.Context, auth AuthenticatedApp) erro
 
 func (s *AppAuthService) ChangePassword(ctx context.Context, auth AuthenticatedApp, currentPassword, newPassword string) error {
 	if err := s.hasher.VerifyPassword(currentPassword, auth.User.PasswordHash); err != nil {
-		return ErrInvalidCredentials
+		if errors.Is(err, ErrInvalidPassword) {
+			return ErrInvalidCredentials
+		}
+		return err
 	}
 	passwordHash, err := s.hasher.HashPassword(ctx, newPassword)
 	if err != nil {

@@ -17,7 +17,7 @@ func CreateInvites(operatorSvc *operator.OperatorService) gin.HandlerFunc {
 		}
 
 		var req types.OperatorCreateInvitesRequest
-		if err := DecodeJSONBody(c.Request, &req); err != nil {
+		if err := DecodeJSONBody(c.Writer, c.Request, &req); err != nil {
 			WriteJSONError(c.Writer, http.StatusBadRequest, "invalid_request")
 			return
 		}
@@ -39,7 +39,7 @@ func DisableInvite(operatorSvc *operator.OperatorService) gin.HandlerFunc {
 		}
 
 		var req types.OperatorDisableInviteRequest
-		if err := DecodeJSONBody(c.Request, &req); err != nil {
+		if err := DecodeJSONBody(c.Writer, c.Request, &req); err != nil {
 			WriteJSONError(c.Writer, http.StatusBadRequest, "invalid_request")
 			return
 		}
@@ -53,13 +53,13 @@ func DisableInvite(operatorSvc *operator.OperatorService) gin.HandlerFunc {
 
 func DeleteUser(operatorSvc *operator.OperatorService, registry *session.Registry) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if operatorSvc == nil {
+		if operatorSvc == nil || registry == nil {
 			http.Error(c.Writer, "service unavailable", http.StatusServiceUnavailable)
 			return
 		}
 
 		var req types.OperatorDeleteUserRequest
-		if err := DecodeJSONBody(c.Request, &req); err != nil {
+		if err := DecodeJSONBody(c.Writer, c.Request, &req); err != nil {
 			WriteJSONError(c.Writer, http.StatusBadRequest, "invalid_request")
 			return
 		}

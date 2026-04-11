@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/base64"
 	"strings"
 	"testing"
 )
@@ -89,5 +90,16 @@ func TestPasswordHasherRoundTrip(t *testing.T) {
 	}
 	if err := hasher.VerifyPassword("wrong-password", hash); err == nil {
 		t.Fatal("expected wrong password to fail")
+	}
+}
+
+func TestPasswordHasherRejectsInvalidHashParams(t *testing.T) {
+	hasher := DefaultPasswordHasher()
+	encoded := "$argon2id$v=19$m=0,t=1,p=1$" +
+		base64.RawStdEncoding.EncodeToString([]byte("salt")) +
+		"$" +
+		base64.RawStdEncoding.EncodeToString([]byte("hash"))
+	if err := hasher.VerifyPassword("password123", encoded); err != ErrInvalidPasswordHash {
+		t.Fatalf("VerifyPassword error = %v, want ErrInvalidPasswordHash", err)
 	}
 }

@@ -61,8 +61,16 @@ func newAgentTokenResponse(record auth.AgentTokenRecord) types.AgentTokenRespons
 	return types.AgentTokenResponse{
 		ID:         record.ID,
 		Name:       record.Name,
-		CreatedAt:  record.CreatedAt,
-		LastUsedAt: record.LastUsedAt,
-		RevokedAt:  record.RevokedAt,
+		CreatedAt:  record.CreatedAt.Unix(),
+		LastUsedAt: unixTime(record.LastUsedAt),
+		RevokedAt:  unixTime(record.RevokedAt),
 	}
+}
+
+func unixTime(t *time.Time) *int64 {
+	if t == nil {
+		return nil
+	}
+	value := t.Unix()
+	return &value
 }

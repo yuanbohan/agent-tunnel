@@ -87,13 +87,23 @@ func NormalizeInviteCode(raw string) (string, error) {
 }
 
 func GenerateInviteCode() (string, error) {
-	buf := make([]byte, inviteCodeLength)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
 	code := make([]byte, inviteCodeLength)
-	for i, b := range buf {
-		code[i] = inviteCodeAlphabet[int(b)%len(inviteCodeAlphabet)]
+	limit := 256 - (256 % len(inviteCodeAlphabet))
+	buf := make([]byte, inviteCodeLength)
+	for i := 0; i < len(code); {
+		if _, err := rand.Read(buf); err != nil {
+			return "", err
+		}
+		for _, b := range buf {
+			if int(b) >= limit {
+				continue
+			}
+			code[i] = inviteCodeAlphabet[int(b)%len(inviteCodeAlphabet)]
+			i++
+			if i == len(code) {
+				break
+			}
+		}
 	}
 	return string(code), nil
 }
@@ -196,6 +206,9 @@ func (h PasswordHasher) VerifyPassword(raw, encoded string) error {
 	if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &memory, &iterations, &parallelism); err != nil {
 		return ErrInvalidPasswordHash
 	}
+	if memory == 0 || iterations == 0 || parallelism == 0 {
+		return ErrInvalidPasswordHash
+	}
 
 	salt, err := base64.RawStdEncoding.DecodeString(parts[4])
 	if err != nil {
@@ -203,6 +216,9 @@ func (h PasswordHasher) VerifyPassword(raw, encoded string) error {
 	}
 	want, err := base64.RawStdEncoding.DecodeString(parts[5])
 	if err != nil {
+		return ErrInvalidPasswordHash
+	}
+	if len(salt) == 0 || len(want) == 0 {
 		return ErrInvalidPasswordHash
 	}
 

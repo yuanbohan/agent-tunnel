@@ -398,6 +398,35 @@ func TestAppAuthServiceRefreshLogoutAndPasswordChange(t *testing.T) {
 	}
 }
 
+func TestAppAuthServicePropagatesInvalidPasswordHashErrors(t *testing.T) {
+	now := time.Date(2026, time.April, 11, 12, 0, 0, 0, time.UTC)
+	store := newFakeStore(func() time.Time { return now })
+	user := User{
+		ID:           1,
+		Username:     "alice",
+		UsernameNorm: "alice",
+		PasswordHash: "not-a-valid-password-hash",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	store.usersByName[user.UsernameNorm] = user
+	store.usersByID[user.ID] = user
+
+	digester, err := NewSecretDigester("test-secret")
+	if err != nil {
+		t.Fatalf("NewSecretDigester returned error: %v", err)
+	}
+	service := NewAppAuthService(store, digester, DefaultPasswordHasher())
+	service.now = func() time.Time { return now }
+
+	if _, err := service.Login(context.Background(), "alice", "password123"); err != ErrInvalidPasswordHash {
+		t.Fatalf("Login error = %v, want ErrInvalidPasswordHash", err)
+	}
+	if err := service.ChangePassword(context.Background(), AuthenticatedApp{User: user}, "password123", "newpassword123"); err != ErrInvalidPasswordHash {
+		t.Fatalf("ChangePassword error = %v, want ErrInvalidPasswordHash", err)
+	}
+}
+
 func timePtr(t time.Time) *time.Time { return &t }
 
 func int64Ptr(v int64) *int64 { return &v }

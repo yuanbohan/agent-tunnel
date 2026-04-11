@@ -1,6 +1,10 @@
 .DEFAULT_GOAL := help
 
-.PHONY: all help start stop status build build-linux deploy deploy-install deploy-schema deploy-migrate deploy-restart install clean vet test test-relay
+.PHONY: all help start stop status build build-linux migrate deploy deploy-install deploy-schema deploy-env deploy-migrate deploy-restart install clean vet test test-relay
+
+-include .env
+
+export RELAY_DATABASE_URL RELAY_APP_SECRET RELAY_OPERATOR_TOKEN RELAY_LISTEN_ADDR
 
 # Runtime configuration. These can be overridden on the command line.
 ## RELAY_BIN: Relay binary path used by `make start`.
@@ -29,7 +33,7 @@ DEPLOY_SERVICE ?= agentunnel-relay
 DEPLOY_INSTALL_PATH ?= /usr/local/bin/relay
 ## DEPLOY_MIGRATOR_INSTALL_PATH: Installed relay migrator path.
 DEPLOY_MIGRATOR_INSTALL_PATH ?= /usr/local/bin/agentunnel-relay-migrate
-## DEPLOY_ENV_FILE: Remote env file sourced by `make deploy-migrate`.
+## DEPLOY_ENV_FILE: Remote env file installed by `make deploy-env` and sourced by `make deploy-migrate`.
 DEPLOY_ENV_FILE ?= /etc/agentunnel/relay.env
 ## DEPLOY_SCHEMA_DIR: Remote directory containing relay schema SQL files.
 DEPLOY_SCHEMA_DIR ?= /etc/agentunnel/schema
@@ -59,6 +63,7 @@ help: ## Show available targets and configurable variables.
 	@awk '/^## [A-Z0-9_]+: / {line=$$0; sub(/^## /, "", line); name=line; desc=line; sub(/: .*/, "", name); sub(/^[^:]+: /, "", desc); printf "  %-14s %s\n", name, desc}' $(MAKEFILE_LIST)
 	@printf "\nExamples:\n"
 	@printf "  make build\n"
+	@printf "  make migrate\n"
 	@printf "  make start RELAY_BIN=./bin/relay\n"
 
 # Local runtime commands.
@@ -142,6 +147,9 @@ install: build ## Install `tunnel`, `relay`, and `agentunnel-relay-migrate` into
 	cp -f "$(TUNNEL_BIN)" "$(RELAY_BUILD_BIN)" "$(MIGRATOR_BUILD_BIN)" "$(INSTALL_DIR)/"; \
 	echo "installed tunnel, relay, and agentunnel-relay-migrate to $(INSTALL_DIR)"
 
+migrate: ## Run relay schema migrations locally using `.env` or the shell environment.
+	go run $(MIGRATOR_PKG) --schema-dir ./schema $(MIGRATOR_ARGS)
+
 deploy-install: build-linux ## Build, upload, and install the relay and migrator binaries on the remote host.
 	scp $(RELAY_BUILD_BIN) $(DEPLOY_HOST):$(DEPLOY_RELAY_PATH)
 	scp $(MIGRATOR_BUILD_BIN) $(DEPLOY_HOST):$(DEPLOY_MIGRATOR_PATH)
@@ -153,13 +161,19 @@ deploy-schema: ## Upload relay schema SQL files to the remote host.
 	scp schema/*.sql $(DEPLOY_HOST):/tmp/agentunnel-relay-schema/
 	ssh $(DEPLOY_HOST) 'sudo /bin/sh -lc '"'"'install -m 0644 /tmp/agentunnel-relay-schema/*.sql $(DEPLOY_SCHEMA_DIR)/ && rm -rf /tmp/agentunnel-relay-schema'"'"''
 
+deploy-env: ## Install local `.env` on the remote host as `$(DEPLOY_ENV_FILE)`.
+	test -f .env
+	scp .env $(DEPLOY_HOST):/tmp/agentunnel-relay.env
+	ssh $(DEPLOY_HOST) 'sudo install -d -m 0755 $(dir $(DEPLOY_ENV_FILE))'
+	ssh $(DEPLOY_HOST) 'sudo install -m 0600 /tmp/agentunnel-relay.env $(DEPLOY_ENV_FILE) && rm -f /tmp/agentunnel-relay.env'
+
 deploy-migrate: ## Run relay schema migrations on the remote host using the installed migrator.
 	ssh $(DEPLOY_HOST) 'sudo /bin/sh -lc '"'"'set -a && . $(DEPLOY_ENV_FILE) && set +a && $(DEPLOY_MIGRATOR_INSTALL_PATH) --schema-dir $(DEPLOY_SCHEMA_DIR) $(MIGRATOR_ARGS)'"'"''
 
 deploy-restart: ## Restart the relay systemd service on the remote host.
 	ssh $(DEPLOY_HOST) 'sudo systemctl restart $(DEPLOY_SERVICE)'
 
-deploy: deploy-install deploy-schema deploy-restart ## Build, upload, install, upload schema files, and restart the relay on the remote host.
+deploy: deploy-install deploy-schema deploy-env deploy-restart ## Build, upload, install, sync `.env`, upload schema files, and restart the relay on the remote host.
 
 clean: ## Remove built binaries from `$(BIN_DIR)`.
 	rm -rf "$(BIN_DIR)"

@@ -14,6 +14,7 @@ type wsAgentPeer struct {
 	conn    wsConn
 	tracker *handlerws.Tracker
 	mu      sync.Mutex
+	writeMu sync.Mutex
 	active  bool
 }
 
@@ -33,38 +34,45 @@ func newWSAgentPeer(conn *websocket.Conn, tracker *handlerws.Tracker) *wsAgentPe
 
 func (p *wsAgentPeer) SendJSON(msg any) error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if !p.active {
+		p.mu.Unlock()
 		return session.ErrAgentPeerInactive
 	}
+	conn := p.conn
+	tracker := p.tracker
+	p.mu.Unlock()
+
+	p.writeMu.Lock()
+	defer p.writeMu.Unlock()
 
 	writeTimeout := config.RelayWSWriteTimeout()
 	if writeTimeout > 0 {
-		if err := p.conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
-			if p.tracker != nil {
-				p.tracker.NoteDisconnectError(err)
+		if err := conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
+			if tracker != nil {
+				tracker.NoteDisconnectError(err)
 			}
 			return err
 		}
 	}
-	payload, err := handlerws.WriteJSON(p.conn, msg)
+	payload, err := handlerws.WriteJSON(conn, msg)
 	if err != nil {
-		if p.tracker != nil {
-			p.tracker.NoteDisconnectError(err)
+		if tracker != nil {
+			tracker.NoteDisconnectError(err)
 		}
 		return err
 	}
-	if p.tracker != nil {
-		p.tracker.RecordOutbound(len(payload))
+	if tracker != nil {
+		tracker.RecordOutbound(len(payload))
 	}
 	return nil
 }
 
 func (p *wsAgentPeer) Close() error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.active = false
-	return p.conn.Close()
+	conn := p.conn
+	p.mu.Unlock()
+	return conn.Close()
 }
 
 func (p *wsAgentPeer) Deactivate() {

@@ -1,12 +1,14 @@
 ---
 title: refactor: reorganize relay packages by domain and transport
 type: refactor
-status: active
+status: superseded
 date: 2026-04-11
 origin: user request in chat on 2026-04-11
 ---
 
 # refactor: reorganize relay packages by domain and transport
+
+> Historical note: this plan is superseded by the landed refactor. The transport layer now lives under `internal/relay/handler/` on Gin, while migrations moved to `internal/migration/` and top-level `schema/`.
 
 ## Overview
 

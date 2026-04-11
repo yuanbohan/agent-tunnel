@@ -64,8 +64,8 @@ func (f *fakeRelayConnector) WriteOutput([]byte) error {
 func setTestEnv(t *testing.T) {
 	t.Helper()
 	for _, kv := range [][2]string{
-		{"AGENTUNNEL_RELAY_ADDR", "127.0.0.1:8586"},
-		{"AGENTUNNEL_RELAY_TOKEN", "test-token"},
+		{"AGENTUNNEL_BASE_URL", "http://127.0.0.1:8586"},
+		{"AGENTUNNEL_AUTH_TOKEN", "test-token"},
 	} {
 		old, existed := os.LookupEnv(kv[0])
 		os.Setenv(kv[0], kv[1])
@@ -186,7 +186,7 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
 		t.Fatalf("connector URL = %q, want ws://127.0.0.1:8586", gotURL)
 	}
 	if gotToken != "test-token" {
-		t.Fatalf("connector Token = %q, want test-token", gotToken)
+		t.Fatalf("connector token = %q, want test-token", gotToken)
 	}
 	if gotSinks == nil {
 		t.Fatal("startSession did not receive initial sinks")
@@ -285,7 +285,7 @@ func TestRunWithArgsPrintsStartupBannerOnExit(t *testing.T) {
 		t.Fatalf("runWithArgs error = %v", err)
 	}
 
-	if got := stderr.String(); got != startupBanner("codex", sessionID, "127.0.0.1:8586", connector.StateConnected) {
+	if got := stderr.String(); got != startupBanner("codex", sessionID, "http://127.0.0.1:8586", connector.StateConnected) {
 		t.Fatalf("stderr = %q", got)
 	}
 }
@@ -337,7 +337,7 @@ func TestRunWithArgsPrintsReconnectingBannerAfterStartupWait(t *testing.T) {
 		t.Fatalf("runWithArgs error = %v", err)
 	}
 
-	if got := stderr.String(); got != startupBanner("codex", sessionID, "127.0.0.1:8586", connector.StateReconnecting) {
+	if got := stderr.String(); got != startupBanner("codex", sessionID, "http://127.0.0.1:8586", connector.StateReconnecting) {
 		t.Fatalf("stderr = %q", got)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	handlertypes "yuanbohan/tunnel/internal/relay/handler/types"
 )
@@ -28,6 +29,8 @@ type operatorAPIError struct {
 	Reason     string
 }
 
+const defaultOperatorHTTPTimeout = 10 * time.Second
+
 func (e operatorAPIError) Error() string {
 	if e.Reason != "" {
 		return e.Reason
@@ -37,7 +40,7 @@ func (e operatorAPIError) Error() string {
 
 func newHTTPOperatorClient(relayAddr, token string, client *http.Client) *httpOperatorClient {
 	if client == nil {
-		client = &http.Client{}
+		client = &http.Client{Timeout: defaultOperatorHTTPTimeout}
 	}
 	return &httpOperatorClient{
 		baseURL: operatorBaseURL(relayAddr),

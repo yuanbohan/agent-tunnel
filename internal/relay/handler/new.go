@@ -44,6 +44,7 @@ func newRouter(
 
 	router := gin.New()
 	router.HandleMethodNotAllowed = true
+	router.Use(gin.Recovery())
 	router.Use(middleware.AccessLog())
 
 	router.GET("/healthz", api.Healthz())

@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"yuanbohan/tunnel/internal/migration"
@@ -54,7 +55,9 @@ func run(args []string, env runtimeEnv) error {
 	}
 	defer db.Close()
 
-	if err := db.PingContext(context.Background()); err != nil {
+	pingCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := db.PingContext(pingCtx); err != nil {
 		return err
 	}
 

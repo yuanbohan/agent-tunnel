@@ -4,6 +4,7 @@ This guide covers the day-to-day relay CLI commands introduced for PostgreSQL-ba
 
 The commands here use the `relay` and `agentunnel-relay-migrate` binaries from this repository.
 `agentunnel-relay-migrate` requires an explicit `--schema-dir` so it never guesses where SQL files live.
+The repo-root `.env` file is ignored by git and can be used as the local source of truth for `make migrate`, `make start`, and deploy-related Make targets.
 
 ## Environment Variables
 
@@ -34,13 +35,15 @@ Notes:
 | `relay invite create` | Create one or more invite codes |
 | `relay invite disable` | Disable an existing invite code |
 | `relay user delete` | Delete a user account and free the username |
+| `make migrate` | Apply local schema migrations using values loaded from `.env` |
+| `make deploy-env` | Upload the local `.env` file to the remote relay host |
 
 ## Start the Relay
 
 Example:
 
 ```bash
-export RELAY_DATABASE_URL=postgres://localhost/agent_tunnel?sslmode=disable
+export RELAY_DATABASE_URL=postgres://relay_user:change-me-db-password@localhost/agent_tunnel?sslmode=disable
 export RELAY_APP_SECRET=change-me
 export RELAY_OPERATOR_TOKEN=change-me-operator-token
 
@@ -59,7 +62,7 @@ relay serve --listen-addr 127.0.0.1:8586
 Apply all unapplied SQL files from `schema/`:
 
 ```bash
-export RELAY_DATABASE_URL=postgres://localhost/agent_tunnel?sslmode=disable
+export RELAY_DATABASE_URL=postgres://relay_user:change-me-db-password@localhost/agent_tunnel?sslmode=disable
 
 agentunnel-relay-migrate --schema-dir ./schema
 ```
@@ -67,7 +70,7 @@ agentunnel-relay-migrate --schema-dir ./schema
 Baseline an existing database that already matches migrations through `0002_operator_audit.sql`:
 
 ```bash
-export RELAY_DATABASE_URL=postgres://localhost/agent_tunnel?sslmode=disable
+export RELAY_DATABASE_URL=postgres://relay_user:change-me-db-password@localhost/agent_tunnel?sslmode=disable
 
 agentunnel-relay-migrate --schema-dir ./schema --baseline 0002_operator_audit.sql
 ```
@@ -152,7 +155,7 @@ Notes:
 Bring up a new relay, create invites, and later clean up an abandoned account:
 
 ```bash
-export RELAY_DATABASE_URL=postgres://localhost/agent_tunnel?sslmode=disable
+export RELAY_DATABASE_URL=postgres://relay_user:change-me-db-password@localhost/agent_tunnel?sslmode=disable
 export RELAY_APP_SECRET=change-me
 export RELAY_OPERATOR_TOKEN=change-me-operator-token
 export RELAY_LISTEN_ADDR=127.0.0.1:8586

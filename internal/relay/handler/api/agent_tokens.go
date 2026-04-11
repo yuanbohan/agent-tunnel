@@ -42,7 +42,7 @@ func CreateAgentToken(agentTokens *auth.AgentTokenService) gin.HandlerFunc {
 
 		app := middleware.AuthenticatedApp(c)
 		var req types.CreateAgentTokenRequest
-		if err := DecodeJSONBody(c.Request, &req); err != nil {
+		if err := DecodeJSONBody(c.Writer, c.Request, &req); err != nil {
 			WriteJSONError(c.Writer, http.StatusBadRequest, "invalid_request")
 			return
 		}
@@ -64,7 +64,7 @@ func CreateAgentToken(agentTokens *auth.AgentTokenService) gin.HandlerFunc {
 
 func RevokeAgentToken(agentTokens *auth.AgentTokenService, registry *session.Registry) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if agentTokens == nil {
+		if agentTokens == nil || registry == nil {
 			http.Error(c.Writer, "service unavailable", http.StatusServiceUnavailable)
 			return
 		}
