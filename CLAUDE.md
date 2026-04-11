@@ -50,7 +50,7 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 ## Verification
 
 - `go test ./...`
-- `go test ./protocol ./relay`
+- `go test ./internal/protocol ./internal/relay`
 - `make test`
 - `make test-relay`
 - `make build`
