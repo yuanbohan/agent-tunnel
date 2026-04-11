@@ -1,4 +1,4 @@
-package relay
+package session
 
 import (
 	"bytes"
@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"yuanbohan/tunnel/internal/logx"
 	"yuanbohan/tunnel/internal/protocol"
 )
 
@@ -26,6 +27,11 @@ type blockingPeer struct {
 	started sync.Once
 	ready   chan struct{}
 	release chan struct{}
+}
+
+type deactivatablePeer struct {
+	mu     sync.Mutex
+	active bool
 }
 
 func (p *recordingPeer) SendJSON(msg any) error {
@@ -58,6 +64,23 @@ func (p *blockingPeer) SendJSON(any) error {
 }
 
 func (p *blockingPeer) Close() error { return nil }
+
+func (p *deactivatablePeer) SendJSON(any) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.active {
+		return ErrAgentPeerInactive
+	}
+	return nil
+}
+
+func (p *deactivatablePeer) Close() error { return nil }
+
+func (p *deactivatablePeer) Deactivate() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.active = false
+}
 
 func (p *recordingPeer) Frames() []protocol.AgentFrame {
 	p.mu.Lock()
@@ -178,6 +201,33 @@ func TestRegistryRegisterAndListSortedByStartedAt(t *testing.T) {
 	}
 }
 
+func TestRegistryListForUserReturnsOnlyOwnedSessions(t *testing.T) {
+	reg := NewRegistry()
+	reg.RegisterOwned(protocol.SessionInfo{
+		SessionID: "alice-newer",
+		Launcher:  "codex",
+		StartedAt: 20,
+	}, SessionOwner{UserID: 1, AgentTokenID: "agt-1"}, fakeAgentPeer{})
+	reg.RegisterOwned(protocol.SessionInfo{
+		SessionID: "bob",
+		Launcher:  "codex",
+		StartedAt: 30,
+	}, SessionOwner{UserID: 2, AgentTokenID: "agt-2"}, fakeAgentPeer{})
+	reg.RegisterOwned(protocol.SessionInfo{
+		SessionID: "alice-older",
+		Launcher:  "codex",
+		StartedAt: 10,
+	}, SessionOwner{UserID: 1, AgentTokenID: "agt-3"}, fakeAgentPeer{})
+
+	got := reg.ListForUser(1)
+	if len(got) != 2 {
+		t.Fatalf("len(ListForUser) = %d, want 2", len(got))
+	}
+	if got[0].SessionID != "alice-newer" || got[1].SessionID != "alice-older" {
+		t.Fatalf("sessions = %#v, want alice-newer then alice-older", got)
+	}
+}
+
 func TestRegistryMissingSessionErrors(t *testing.T) {
 	reg := NewRegistry()
 
@@ -189,7 +239,8 @@ func TestRegistryMissingSessionErrors(t *testing.T) {
 func TestRegistryReplaceSessionIDLogsSessionReplaced(t *testing.T) {
 	reg := NewRegistry()
 	logs := &bytes.Buffer{}
-	reg.SetLogger(NewLogger(logs))
+	restore := logx.UseWriterForTest(logs)
+	defer restore()
 
 	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, &recordingPeer{})
 	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, &recordingPeer{})
@@ -304,7 +355,7 @@ func TestRegistryDisconnectSkipsStaleOwnerAfterReplacement(t *testing.T) {
 
 func TestRegistryReplacementDeactivatesStaleOwnerPeer(t *testing.T) {
 	reg := NewRegistry()
-	oldPeer := &wsAgentPeer{conn: &mockWSConn{}, active: true}
+	oldPeer := &deactivatablePeer{active: true}
 	client := &recordingAttachPeer{}
 
 	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, oldPeer)
@@ -316,8 +367,8 @@ func TestRegistryReplacementDeactivatesStaleOwnerPeer(t *testing.T) {
 
 	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, &recordingPeer{})
 
-	if err := startedOwner.SendJSON(protocol.AttachOpenFrame("client-1")); !errors.Is(err, errAgentPeerInactive) {
-		t.Fatalf("stale owner SendJSON error = %v, want errAgentPeerInactive", err)
+	if err := startedOwner.SendJSON(protocol.AttachOpenFrame("client-1")); !errors.Is(err, ErrAgentPeerInactive) {
+		t.Fatalf("stale owner SendJSON error = %v, want ErrAgentPeerInactive", err)
 	}
 	if reasons := client.CloseReasons(); len(reasons) != 1 || reasons[0] != "session_offline" {
 		t.Fatalf("close reasons = %#v, want [session_offline]", reasons)
@@ -447,6 +498,23 @@ func TestRegistryRoutesAttachLifecycle(t *testing.T) {
 	}
 }
 
+func TestRegistryStartAttachForUserRejectsCrossUserAccess(t *testing.T) {
+	reg := NewRegistry()
+	owner := &recordingPeer{}
+	client := &recordingAttachPeer{}
+	reg.RegisterOwned(protocol.SessionInfo{
+		SessionID: "sess-1",
+		Launcher:  "codex",
+	}, SessionOwner{UserID: 42, AgentTokenID: "agt-1"}, owner)
+
+	if _, err := reg.StartAttachForUser("sess-1", "client-1", 7, client); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("StartAttachForUser error = %v, want ErrSessionNotFound", err)
+	}
+	if frames := owner.Frames(); len(frames) != 0 {
+		t.Fatalf("owner frames = %#v, want none", frames)
+	}
+}
+
 func TestRegistryPendingAttachDisconnectBeforeReadyPreventsLaterDelivery(t *testing.T) {
 	reg := NewRegistry()
 	owner := &recordingPeer{}
@@ -563,6 +631,73 @@ func TestRegistryDetachesSlowAttachClientsOnSendFailure(t *testing.T) {
 				t.Fatal("DetachClient returned true after slow_client cleanup, want false")
 			}
 		})
+	}
+}
+
+func TestRegistryDisconnectUserSessionsRemovesOwnedSessionsAndClosesAttaches(t *testing.T) {
+	reg := NewRegistry()
+	ownerA := &recordingPeer{}
+	ownerB := &recordingPeer{}
+	clientA := &recordingAttachPeer{}
+	clientB := &recordingAttachPeer{}
+
+	reg.RegisterOwned(protocol.SessionInfo{SessionID: "sess-a", Launcher: "codex"}, SessionOwner{UserID: 1, AgentTokenID: "agt-a"}, ownerA)
+	reg.RegisterOwned(protocol.SessionInfo{SessionID: "sess-b", Launcher: "codex"}, SessionOwner{UserID: 2, AgentTokenID: "agt-b"}, ownerB)
+
+	if _, err := reg.StartAttach("sess-a", "client-a", clientA); err != nil {
+		t.Fatalf("StartAttach sess-a returned error: %v", err)
+	}
+	if _, err := reg.StartAttach("sess-b", "client-b", clientB); err != nil {
+		t.Fatalf("StartAttach sess-b returned error: %v", err)
+	}
+
+	disconnected := reg.DisconnectUserSessions(1, "account_deleted")
+	if disconnected != 1 {
+		t.Fatalf("DisconnectUserSessions = %d, want 1", disconnected)
+	}
+	if _, ok := reg.Session("sess-a"); ok {
+		t.Fatal("Session sess-a still exists after user disconnect")
+	}
+	if _, ok := reg.Session("sess-b"); !ok {
+		t.Fatal("Session sess-b missing after unrelated user disconnect")
+	}
+	if reasons := clientA.CloseReasons(); len(reasons) != 1 || reasons[0] != "account_deleted" {
+		t.Fatalf("clientA close reasons = %#v, want [account_deleted]", reasons)
+	}
+	if reasons := clientB.CloseReasons(); len(reasons) != 0 {
+		t.Fatalf("clientB close reasons = %#v, want none", reasons)
+	}
+	if ownerA.closed != 1 {
+		t.Fatalf("ownerA closed = %d, want 1", ownerA.closed)
+	}
+	if ownerB.closed != 0 {
+		t.Fatalf("ownerB closed = %d, want 0", ownerB.closed)
+	}
+}
+
+func TestRegistryDisconnectAgentTokenSessionsMatchesTokenOwnership(t *testing.T) {
+	reg := NewRegistry()
+	ownerA := &recordingPeer{}
+	ownerB := &recordingPeer{}
+
+	reg.RegisterOwned(protocol.SessionInfo{SessionID: "sess-a", Launcher: "codex"}, SessionOwner{UserID: 1, AgentTokenID: "agt-a"}, ownerA)
+	reg.RegisterOwned(protocol.SessionInfo{SessionID: "sess-b", Launcher: "codex"}, SessionOwner{UserID: 1, AgentTokenID: "agt-b"}, ownerB)
+
+	disconnected := reg.DisconnectAgentTokenSessions("agt-b", "agent_token_revoked")
+	if disconnected != 1 {
+		t.Fatalf("DisconnectAgentTokenSessions = %d, want 1", disconnected)
+	}
+	if _, ok := reg.Session("sess-a"); !ok {
+		t.Fatal("sess-a missing after unrelated token disconnect")
+	}
+	if _, ok := reg.Session("sess-b"); ok {
+		t.Fatal("sess-b still exists after token disconnect")
+	}
+	if ownerA.closed != 0 {
+		t.Fatalf("ownerA closed = %d, want 0", ownerA.closed)
+	}
+	if ownerB.closed != 1 {
+		t.Fatalf("ownerB closed = %d, want 1", ownerB.closed)
 	}
 }
 

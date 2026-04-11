@@ -1,16 +1,18 @@
-package relay
+package session
 
 import (
 	"errors"
 	"sort"
 	"sync"
 
+	"yuanbohan/tunnel/internal/logx"
 	"yuanbohan/tunnel/internal/protocol"
 )
 
 var (
-	ErrSessionNotFound = errors.New("relay session not found")
-	ErrSessionOffline  = errors.New("relay session offline")
+	ErrSessionNotFound   = errors.New("relay session not found")
+	ErrSessionOffline    = errors.New("relay session offline")
+	ErrAgentPeerInactive = errors.New("agent peer inactive")
 )
 
 type AgentPeer interface {
@@ -31,11 +33,16 @@ type AttachPeer interface {
 type Registry struct {
 	mu       sync.RWMutex
 	sessions map[string]*liveSession
-	logger   *Logger
+}
+
+type SessionOwner struct {
+	UserID       int64
+	AgentTokenID string
 }
 
 type liveSession struct {
 	info            protocol.SessionInfo
+	owner           SessionOwner
 	peer            AgentPeer
 	pendingAttached map[string]AttachPeer
 	attached        map[string]AttachPeer
@@ -44,26 +51,16 @@ type liveSession struct {
 func NewRegistry() *Registry {
 	return &Registry{
 		sessions: make(map[string]*liveSession),
-		logger:   NewDiscardLogger(),
 	}
-}
-
-func (r *Registry) SetLogger(logger *Logger) {
-	if r == nil {
-		return
-	}
-	if logger == nil {
-		logger = NewDiscardLogger()
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.logger = logger
 }
 
 func (r *Registry) Register(info protocol.SessionInfo, peer AgentPeer) {
+	r.RegisterOwned(info, SessionOwner{}, peer)
+}
+
+func (r *Registry) RegisterOwned(info protocol.SessionInfo, owner SessionOwner, peer AgentPeer) {
 	r.mu.Lock()
 	old := r.sessions[info.SessionID]
-	logger := r.logger
 	var attached []AttachPeer
 
 	if old != nil {
@@ -75,6 +72,7 @@ func (r *Registry) Register(info protocol.SessionInfo, peer AgentPeer) {
 
 	r.sessions[info.SessionID] = &liveSession{
 		info:            info,
+		owner:           owner,
 		peer:            peer,
 		pendingAttached: make(map[string]AttachPeer),
 		attached:        make(map[string]AttachPeer),
@@ -84,7 +82,7 @@ func (r *Registry) Register(info protocol.SessionInfo, peer AgentPeer) {
 	closeAttachedPeers(attached, "session_offline")
 
 	if old != nil {
-		logger.Warn("session_replaced", String("session_id", info.SessionID))
+		logx.Warn("session_replaced", logx.String("session_id", info.SessionID))
 	}
 	if old != nil && old.peer != nil {
 		_ = old.peer.Close()
@@ -154,12 +152,45 @@ func (r *Registry) List() []protocol.SessionInfo {
 	return out
 }
 
+func (r *Registry) ListForUser(userID int64) []protocol.SessionInfo {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	out := make([]protocol.SessionInfo, 0, len(r.sessions))
+	for _, live := range r.sessions {
+		if live.owner.UserID != userID {
+			continue
+		}
+		out = append(out, live.snapshot())
+	}
+	sort.Slice(out, func(i, j int) bool {
+		ti := out[i].StartedAt
+		tj := out[j].StartedAt
+		if ti == tj {
+			return out[i].SessionID < out[j].SessionID
+		}
+		return ti > tj
+	})
+	return out
+}
+
 func (r *Registry) Session(sessionID string) (protocol.SessionInfo, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	live, ok := r.sessions[sessionID]
 	if !ok {
+		return protocol.SessionInfo{}, false
+	}
+	return live.snapshot(), true
+}
+
+func (r *Registry) SessionForUser(sessionID string, userID int64) (protocol.SessionInfo, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	live, ok := r.sessions[sessionID]
+	if !ok || live.owner.UserID != userID {
 		return protocol.SessionInfo{}, false
 	}
 	return live.snapshot(), true
@@ -183,7 +214,7 @@ func (r *Registry) sendToOwner(sessionID string, payload any) error {
 		return ErrSessionOffline
 	}
 	if err := peer.SendJSON(payload); err != nil {
-		if errors.Is(err, errAgentPeerInactive) {
+		if errors.Is(err, ErrAgentPeerInactive) {
 			return ErrSessionOffline
 		}
 		return err
@@ -197,6 +228,21 @@ func (r *Registry) StartAttach(sessionID, clientID string, client AttachPeer) (A
 
 	live, ok := r.sessions[sessionID]
 	if !ok {
+		return nil, ErrSessionNotFound
+	}
+	if live.peer == nil {
+		return nil, ErrSessionOffline
+	}
+	live.pendingAttached[clientID] = client
+	return live.peer, nil
+}
+
+func (r *Registry) StartAttachForUser(sessionID, clientID string, userID int64, client AttachPeer) (AgentPeer, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	live, ok := r.sessions[sessionID]
+	if !ok || live.owner.UserID != userID {
 		return nil, ErrSessionNotFound
 	}
 	if live.peer == nil {
@@ -392,4 +438,45 @@ func deactivateAgentPeer(peer AgentPeer) {
 	if deactivatable, ok := peer.(deactivatableAgentPeer); ok {
 		deactivatable.Deactivate()
 	}
+}
+
+func (r *Registry) DisconnectUserSessions(userID int64, reason string) int {
+	return r.disconnectMatching(func(live *liveSession) bool {
+		return live.owner.UserID == userID
+	}, reason)
+}
+
+func (r *Registry) DisconnectAgentTokenSessions(agentTokenID string, reason string) int {
+	return r.disconnectMatching(func(live *liveSession) bool {
+		return live.owner.AgentTokenID == agentTokenID
+	}, reason)
+}
+
+func (r *Registry) disconnectMatching(match func(*liveSession) bool, reason string) int {
+	r.mu.Lock()
+	type disconnectedSession struct {
+		peer     AgentPeer
+		attached []AttachPeer
+	}
+	var toClose []disconnectedSession
+	for sessionID, live := range r.sessions {
+		if !match(live) {
+			continue
+		}
+		delete(r.sessions, sessionID)
+		deactivateAgentPeer(live.peer)
+		toClose = append(toClose, disconnectedSession{
+			peer:     live.peer,
+			attached: takeAllAttachedLocked(live),
+		})
+	}
+	r.mu.Unlock()
+
+	for _, disconnected := range toClose {
+		closeAttachedPeers(disconnected.attached, reason)
+		if disconnected.peer != nil {
+			_ = disconnected.peer.Close()
+		}
+	}
+	return len(toClose)
 }

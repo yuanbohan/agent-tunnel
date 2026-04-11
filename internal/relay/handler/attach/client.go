@@ -1,51 +1,58 @@
-package relay
+package attach
 
 import (
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"yuanbohan/tunnel/internal/config"
 	"yuanbohan/tunnel/internal/protocol"
+	handlerws "yuanbohan/tunnel/internal/relay/handler/ws"
 )
 
-type attachOutbound struct {
+type outbound struct {
 	control *protocol.AttachControlMessage
 	binary  []byte
 }
 
 type wsAttachPeer struct {
-	conn         wsConn
-	tracker      *wsTrafficTracker
-	writeTimeout time.Duration
+	conn    wsConn
+	tracker *handlerws.Tracker
 
 	mu          sync.RWMutex
 	closed      bool
 	closeReason string
-	outbound    chan attachOutbound
+	outbound    chan outbound
 	closeOnce   sync.Once
 }
 
-func newWSAttachPeer(conn wsConn, tracker *wsTrafficTracker, bufferSize int, writeTimeout time.Duration) *wsAttachPeer {
+type wsConn interface {
+	WriteMessage(messageType int, data []byte) error
+	SetWriteDeadline(t time.Time) error
+	Close() error
+}
+
+func newWSAttachPeer(conn wsConn, tracker *handlerws.Tracker) *wsAttachPeer {
+	bufferSize := config.RelayWSSinkBufferSize()
 	if bufferSize <= 0 {
 		bufferSize = 1
 	}
 
 	peer := &wsAttachPeer{
-		conn:         conn,
-		tracker:      tracker,
-		writeTimeout: writeTimeout,
-		outbound:     make(chan attachOutbound, bufferSize),
+		conn:     conn,
+		tracker:  tracker,
+		outbound: make(chan outbound, bufferSize),
 	}
 	go peer.run()
 	return peer
 }
 
 func (p *wsAttachPeer) SendControl(msg protocol.AttachControlMessage) error {
-	return p.enqueue(attachOutbound{control: &msg})
+	return p.enqueue(outbound{control: &msg})
 }
 
 func (p *wsAttachPeer) SendBinary(payload []byte) error {
-	return p.enqueue(attachOutbound{binary: append([]byte(nil), payload...)})
+	return p.enqueue(outbound{binary: append([]byte(nil), payload...)})
 }
 
 func (p *wsAttachPeer) Close(reason string) error {
@@ -59,11 +66,11 @@ func (p *wsAttachPeer) Close(reason string) error {
 	return nil
 }
 
-func (p *wsAttachPeer) enqueue(msg attachOutbound) error {
+func (p *wsAttachPeer) enqueue(msg outbound) error {
 	p.mu.RLock()
 	if p.closed {
 		p.mu.RUnlock()
-		return errWSSinkClosed
+		return handlerws.ErrSinkClosed
 	}
 	select {
 	case p.outbound <- msg:
@@ -72,10 +79,10 @@ func (p *wsAttachPeer) enqueue(msg attachOutbound) error {
 	default:
 		p.mu.RUnlock()
 		if p.tracker != nil {
-			p.tracker.NoteDisconnectError(errWSSinkBackpressure)
+			p.tracker.NoteDisconnectError(handlerws.ErrSinkBackpressure)
 		}
 		_ = p.Close("slow_client")
-		return errWSSinkBackpressure
+		return handlerws.ErrSinkBackpressure
 	}
 }
 
@@ -97,7 +104,7 @@ func (p *wsAttachPeer) run() {
 	if reason == "" {
 		return
 	}
-	if err := p.write(attachOutbound{control: &protocol.AttachControlMessage{
+	if err := p.write(outbound{control: &protocol.AttachControlMessage{
 		Type:   "closing",
 		Reason: reason,
 	}}); err != nil && p.tracker != nil {
@@ -105,15 +112,16 @@ func (p *wsAttachPeer) run() {
 	}
 }
 
-func (p *wsAttachPeer) write(msg attachOutbound) error {
-	if p.writeTimeout > 0 {
-		if err := p.conn.SetWriteDeadline(time.Now().Add(p.writeTimeout)); err != nil {
+func (p *wsAttachPeer) write(msg outbound) error {
+	writeTimeout := config.RelayWSWriteTimeout()
+	if writeTimeout > 0 {
+		if err := p.conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
 			return err
 		}
 	}
 
 	if msg.control != nil {
-		payload, err := writeWSJSON(p.conn, *msg.control)
+		payload, err := handlerws.WriteJSON(p.conn, *msg.control)
 		if err != nil {
 			return err
 		}

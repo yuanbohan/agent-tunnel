@@ -9,7 +9,7 @@ import (
 
 // This locks down the shared contract for both platform implementations:
 // cancellation must break the wait loop quickly even though readiness polling
-// uses repeated timed syscalls underneath.
+// uses multiple timed syscalls underneath.
 func TestWaitForInputReturnsFalseWhenContextCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

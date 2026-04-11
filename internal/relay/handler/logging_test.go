@@ -1,0 +1,188 @@
+package handler
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+
+	"yuanbohan/tunnel/internal/protocol"
+)
+
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func readLogEntries(t *testing.T, buf *syncBuffer) []map[string]any {
+	t.Helper()
+
+	raw := strings.TrimSpace(buf.String())
+	if raw == "" {
+		return nil
+	}
+
+	lines := strings.Split(raw, "\n")
+	entries := make([]map[string]any, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("Unmarshal log line returned error: %v\nline: %s", err, line)
+		}
+		entries = append(entries, entry)
+	}
+	return entries
+}
+
+func countLogEvents(entries []map[string]any, event string) int {
+	count := 0
+	for _, entry := range entries {
+		if logString(entry, "event") == event {
+			count++
+		}
+	}
+	return count
+}
+
+func findLogEntryByEventAndPath(t *testing.T, entries []map[string]any, event, path string) map[string]any {
+	t.Helper()
+	for _, entry := range entries {
+		if logString(entry, "event") == event && logString(entry, "path") == path {
+			return entry
+		}
+	}
+	t.Fatalf("missing log entry event=%q path=%q in %#v", event, path, entries)
+	return nil
+}
+
+func findLogEntryByEvent(t *testing.T, entries []map[string]any, event string) map[string]any {
+	t.Helper()
+	for _, entry := range entries {
+		if logString(entry, "event") == event {
+			return entry
+		}
+	}
+	t.Fatalf("missing log entry event=%q in %#v", event, entries)
+	return nil
+}
+
+func logString(entry map[string]any, key string) string {
+	value, _ := entry[key].(string)
+	return value
+}
+
+func logNumber(t *testing.T, entry map[string]any, key string) float64 {
+	t.Helper()
+	value, ok := entry[key].(float64)
+	if !ok {
+		t.Fatalf("entry[%q] = %#v, want number in %#v", key, entry[key], entry)
+	}
+	return value
+}
+
+func TestHandlerAccessLogsRequestsAndSkipsHealthz(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	env.registerUser(t, "alice", "password123", "AB2C3D")
+	issued := env.login(t, "alice", "password123")
+	env.registry.RegisterOwned(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, SessionOwner{UserID: 1, AgentTokenID: "agt-1"}, fakeAgentPeer{})
+	logs := &syncBuffer{}
+
+	handler := env.handler(logs)
+
+	healthRec := httptest.NewRecorder()
+	healthReq := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	handler.ServeHTTP(healthRec, healthReq)
+
+	unauthRec := httptest.NewRecorder()
+	unauthReq := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+	unauthReq.Header.Set("User-Agent", "scanbot/1.0")
+	unauthReq.Header.Set("X-Request-Id", "req-unauth-1")
+	handler.ServeHTTP(unauthRec, unauthReq)
+
+	badMethodRec := httptest.NewRecorder()
+	badMethodReq := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-1/attach/ws", nil)
+	badMethodReq.Header.Set("Authorization", bearerAuth(issued.AccessToken))
+	handler.ServeHTTP(badMethodRec, badMethodReq)
+
+	entries := readLogEntries(t, logs)
+	if countLogEvents(entries, "http_request_completed") != 2 {
+		t.Fatalf("http_request_completed count = %d, want 2", countLogEvents(entries, "http_request_completed"))
+	}
+
+	for _, entry := range entries {
+		if logString(entry, "event") == "http_request_completed" && logString(entry, "path") == "/healthz" {
+			t.Fatalf("unexpected healthz access log: %#v", entry)
+		}
+	}
+
+	unauthEntry := findLogEntryByEventAndPath(t, entries, "http_request_completed", "/api/sessions")
+	if got := int(logNumber(t, unauthEntry, "status")); got != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", got)
+	}
+	if got := logString(unauthEntry, "target"); got != "/api/sessions" {
+		t.Fatalf("target = %q, want /api/sessions", got)
+	}
+	if got := logString(unauthEntry, "user_agent"); got != "scanbot/1.0" {
+		t.Fatalf("user_agent = %q, want scanbot/1.0", got)
+	}
+	if got := logString(unauthEntry, "request_id"); got != "req-unauth-1" {
+		t.Fatalf("request_id = %q, want req-unauth-1", got)
+	}
+	if got := int64(logNumber(t, unauthEntry, "response_bytes")); got != int64(unauthRec.Body.Len()) {
+		t.Fatalf("response_bytes = %d, want %d", got, unauthRec.Body.Len())
+	}
+
+	badMethodEntry := findLogEntryByEventAndPath(t, entries, "http_request_completed", "/api/sessions/sess-1/attach/ws")
+	if got := int(logNumber(t, badMethodEntry, "status")); got != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", got)
+	}
+
+	authFailed := findLogEntryByEvent(t, entries, "auth_failed")
+	if got := logString(authFailed, "path"); got != "/api/sessions" {
+		t.Fatalf("auth_failed path = %q, want /api/sessions", got)
+	}
+}
+
+func TestHandlerLogsWebSocketUpgradeFailureWithoutLifecycle(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	issued := env.login(t, "alice", "password123")
+	env.registry.RegisterOwned(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, SessionOwner{UserID: user.ID, AgentTokenID: "agt-1"}, fakeAgentPeer{})
+	logs := &syncBuffer{}
+	handler := env.handler(logs)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/sess-1/attach/ws", nil)
+	req.Header.Set("Authorization", bearerAuth(issued.AccessToken))
+	handler.ServeHTTP(rec, req)
+
+	entries := readLogEntries(t, logs)
+	upgradeFailed := findLogEntryByEvent(t, entries, "ws_upgrade_failed")
+	if got := logString(upgradeFailed, "path"); got != "/api/sessions/sess-1/attach/ws" {
+		t.Fatalf("path = %q, want attach path", got)
+	}
+	access := findLogEntryByEventAndPath(t, entries, "http_request_completed", "/api/sessions/sess-1/attach/ws")
+	if got := int(logNumber(t, access, "status")); got != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", got)
+	}
+}

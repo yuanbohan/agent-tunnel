@@ -9,66 +9,16 @@ import (
 	"testing"
 	"time"
 
-	"yuanbohan/tunnel/internal/relay"
+	relayconfig "yuanbohan/tunnel/internal/config"
+	"yuanbohan/tunnel/internal/logx"
 )
-
-func validEnv(key string) string {
-	switch key {
-	case "AGENTUNNEL_BASIC_USER":
-		return "demo"
-	case "AGENTUNNEL_BASIC_PASSWORD":
-		return "secret"
-	case "AGENTUNNEL_AGENT_TOKEN":
-		return "agent-token"
-	default:
-		return ""
-	}
-}
-
-func TestLoadMainConfigDefaultsListenAddr(t *testing.T) {
-	_, err := loadMainConfig(func(string) string { return "" }, "")
-	if err == nil {
-		t.Fatal("expected missing auth env to fail")
-	}
-
-	cfg, err := loadMainConfig(validEnv, "")
-	if err != nil {
-		t.Fatalf("loadMainConfig returned error: %v", err)
-	}
-	if cfg.ListenAddr != "127.0.0.1:8586" {
-		t.Fatalf("ListenAddr = %q, want 127.0.0.1:8586", cfg.ListenAddr)
-	}
-}
-
-func TestLoadMainConfig_portFlag(t *testing.T) {
-	cfg, err := loadMainConfig(validEnv, "9999")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.ListenAddr != "127.0.0.1:9999" {
-		t.Errorf("ListenAddr = %q, want 127.0.0.1:9999", cfg.ListenAddr)
-	}
-}
-
-func TestLoadMainConfigIgnoresLegacyRelayAddrEnv(t *testing.T) {
-	cfg, err := loadMainConfig(func(key string) string {
-		if key == "AGENTUNNEL_RELAY_ADDR" {
-			return "127.0.0.1:7777"
-		}
-		return validEnv(key)
-	}, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.ListenAddr != "127.0.0.1:8586" {
-		t.Errorf("ListenAddr = %q, want 127.0.0.1:8586 (legacy env should be ignored)", cfg.ListenAddr)
-	}
-}
 
 func TestLogRelayStartedWritesListenAddr(t *testing.T) {
 	var buf bytes.Buffer
+	restore := logx.UseWriterForTest(&buf)
+	defer restore()
 
-	logRelayStarted(relay.NewLogger(&buf), "127.0.0.1:8586")
+	logRelayStarted("127.0.0.1:8586")
 
 	got := buf.String()
 	if !strings.Contains(got, `"event":"relay_started"`) {
@@ -81,11 +31,13 @@ func TestLogRelayStartedWritesListenAddr(t *testing.T) {
 
 func TestStartRelayDoesNotLogBeforeBind(t *testing.T) {
 	var buf bytes.Buffer
+	restoreLogs := logx.UseWriterForTest(&buf)
+	defer restoreLogs()
+	restoreCfg := relayconfig.UseRelayForTest(relayconfig.Relay{ListenAddr: "127.0.0.1:8586"})
+	defer restoreCfg()
 
 	err := startRelay(
-		mainConfig{ListenAddr: "127.0.0.1:8586"},
 		http.NewServeMux(),
-		relay.NewLogger(&buf),
 		func(string, string) (net.Listener, error) {
 			return nil, errors.New("bind failed")
 		},
@@ -104,12 +56,14 @@ func TestStartRelayDoesNotLogBeforeBind(t *testing.T) {
 
 func TestStartRelayLogsBoundListenerAddr(t *testing.T) {
 	var buf bytes.Buffer
+	restoreLogs := logx.UseWriterForTest(&buf)
+	defer restoreLogs()
+	restoreCfg := relayconfig.UseRelayForTest(relayconfig.Relay{ListenAddr: "127.0.0.1:0"})
+	defer restoreCfg()
 
 	var servedAddr string
 	err := startRelay(
-		mainConfig{ListenAddr: "127.0.0.1:0"},
 		http.NewServeMux(),
-		relay.NewLogger(&buf),
 		net.Listen,
 		func(_ *http.Server, ln net.Listener) error {
 			servedAddr = ln.Addr().String()
@@ -133,7 +87,10 @@ func TestStartRelayLogsBoundListenerAddr(t *testing.T) {
 }
 
 func TestNewHTTPServerConfiguresTimeouts(t *testing.T) {
-	srv := newHTTPServer(mainConfig{ListenAddr: "127.0.0.1:8586"}, http.NewServeMux())
+	restoreCfg := relayconfig.UseRelayForTest(relayconfig.Relay{ListenAddr: "127.0.0.1:8586"})
+	defer restoreCfg()
+
+	srv := newHTTPServer(http.NewServeMux())
 
 	if srv.Addr != "127.0.0.1:8586" {
 		t.Fatalf("Addr = %q, want 127.0.0.1:8586", srv.Addr)

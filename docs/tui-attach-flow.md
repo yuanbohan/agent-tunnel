@@ -371,7 +371,7 @@ When the user opens a session:
 1. call `GET /api/sessions`
 2. confirm the target `session_id` is present
 3. create a fresh terminal emulator instance with no prior state
-4. open `GET /api/sessions/:id/attach/ws` with Basic Auth
+4. open `GET /api/sessions/:id/attach/ws` with the app bearer access token
 5. wait for `attached`
 6. size the emulator to `cols` and `rows`
 7. feed every binary frame into the emulator in arrival order
@@ -483,6 +483,8 @@ Handle these cases explicitly:
 
 - `closing: session_offline`: stop input, discard local terminal state, and poll discovery until the same `session_id` appears again or the product decides the session is gone
 - `closing: slow_client`: treat local rendering or network as overloaded, tear down state, then attempt a fresh attach if the session is still present
+- `closing: logged_out`: stop input, discard local terminal state, and require the user to re-authenticate before opening a new attach
+- `closing: password_changed`: stop input, discard local terminal state, and require fresh login before opening a new attach
 - plain websocket close without `closing`: assume bytes may have been missed and do a fresh attach flow
 
 ### Mobile Checklist
@@ -523,6 +525,6 @@ This model does not guarantee:
 - [internal/tunnel/session/process.go](../internal/tunnel/session/process.go): reads PTY output and broadcasts it through the session hub
 - [internal/tunnel/session/terminal_mirror.go](../internal/tunnel/session/terminal_mirror.go): maintains the `xterm-go` mirror and serializes snapshots
 - [internal/tunnel/connector/connector.go](../internal/tunnel/connector/connector.go): performs attach snapshot handoff and live-byte forwarding
-- [internal/relay/registry.go](../internal/relay/registry.go): routes attach lifecycle and client-scoped bytes
+- [internal/relay/session/registry.go](../internal/relay/session/registry.go): routes attach lifecycle and client-scoped bytes
 - [docs/protocol.md](./protocol.md): wire-format contract
 - [docs/architecture.md](./architecture.md): package-level architecture

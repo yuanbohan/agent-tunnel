@@ -1,4 +1,4 @@
-package relay
+package logx
 
 import (
 	"bytes"
@@ -6,11 +6,12 @@ import (
 	"testing"
 )
 
-func TestLoggerInfoWritesJSONEvent(t *testing.T) {
+func TestInfoWritesJSONEvent(t *testing.T) {
 	var buf bytes.Buffer
-	logger := NewLogger(&buf)
+	restore := UseWriterForTest(&buf)
+	defer restore()
 
-	logger.Info("agent_registered",
+	Info("agent_registered",
 		String("session_id", "sess-1"),
 		String("launcher", "codex"),
 	)
@@ -37,11 +38,12 @@ func TestLoggerInfoWritesJSONEvent(t *testing.T) {
 	}
 }
 
-func TestLoggerInfoIgnoresCallerEventField(t *testing.T) {
+func TestInfoIgnoresCallerEventField(t *testing.T) {
 	var buf bytes.Buffer
-	logger := NewLogger(&buf)
+	restore := UseWriterForTest(&buf)
+	defer restore()
 
-	logger.Info("agent_registered",
+	Info("agent_registered",
 		String("event", "caller_override"),
 		String("session_id", "sess-1"),
 	)
@@ -62,11 +64,12 @@ func TestLoggerInfoIgnoresCallerEventField(t *testing.T) {
 	}
 }
 
-func TestLoggerJSONUsesTsKey(t *testing.T) {
+func TestJSONUsesTsKey(t *testing.T) {
 	var buf bytes.Buffer
-	logger := NewLogger(&buf)
+	restore := UseWriterForTest(&buf)
+	defer restore()
 
-	logger.Warn("agent_timeout", String("session_id", "sess-1"))
+	Warn("agent_timeout", String("session_id", "sess-1"))
 
 	var got map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
@@ -81,11 +84,12 @@ func TestLoggerJSONUsesTsKey(t *testing.T) {
 	}
 }
 
-func TestLoggerWarnOmitsFieldsNotPassed(t *testing.T) {
+func TestWarnOmitsFieldsNotPassed(t *testing.T) {
 	var buf bytes.Buffer
-	logger := NewLogger(&buf)
+	restore := UseWriterForTest(&buf)
+	defer restore()
 
-	logger.Warn("agent_timeout", String("launcher", "codex"))
+	Warn("agent_timeout", String("launcher", "codex"))
 
 	var got map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {

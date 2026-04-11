@@ -4,16 +4,17 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net"
+	"net/url"
 	"os"
-	"strconv"
 	"strings"
 )
 
+const defaultTunnelBaseURL = "https://diaro.me"
+
 type runArgs struct {
 	Label        string
-	RelayAddr    string
-	RelayToken   string
+	BaseURL      string
+	AuthToken    string
 	Launcher     string
 	LauncherArgs []string
 }
@@ -24,32 +25,32 @@ func parseRunArgs(argv []string) (runArgs, error) {
 
 	var cfg runArgs
 	fs.StringVar(&cfg.Label, "label", "", "optional session label for relay clients")
-	fs.StringVar(&cfg.RelayAddr, "relay-addr", "", "relay address in host:port form (fallback: AGENTUNNEL_RELAY_ADDR)")
+	fs.StringVar(&cfg.BaseURL, "base-url", "", "relay base URL (fallback: AGENTUNNEL_BASE_URL, default: https://diaro.me)")
 
 	if err := fs.Parse(argv[1:]); err != nil {
 		return runArgs{}, err
 	}
 
-	if cfg.RelayAddr == "" {
-		cfg.RelayAddr = os.Getenv("AGENTUNNEL_RELAY_ADDR")
+	if cfg.BaseURL == "" {
+		cfg.BaseURL = strings.TrimSpace(os.Getenv("AGENTUNNEL_BASE_URL"))
 	}
-	if cfg.RelayAddr == "" {
-		return runArgs{}, fmt.Errorf("relay address is required: set --relay-addr or AGENTUNNEL_RELAY_ADDR")
+	if cfg.BaseURL == "" {
+		cfg.BaseURL = defaultTunnelBaseURL
 	}
-	relayAddr, err := validateRelayAddr(cfg.RelayAddr)
+	baseURL, err := validateBaseURL(cfg.BaseURL)
 	if err != nil {
 		return runArgs{}, err
 	}
-	cfg.RelayAddr = relayAddr
+	cfg.BaseURL = baseURL
 
-	cfg.RelayToken = os.Getenv("AGENTUNNEL_RELAY_TOKEN")
-	if cfg.RelayToken == "" {
-		return runArgs{}, fmt.Errorf("AGENTUNNEL_RELAY_TOKEN environment variable is required")
+	cfg.AuthToken = strings.TrimSpace(os.Getenv("AGENTUNNEL_AUTH_TOKEN"))
+	if cfg.AuthToken == "" {
+		return runArgs{}, fmt.Errorf("AGENTUNNEL_AUTH_TOKEN environment variable is required")
 	}
 
 	rest := fs.Args()
 	if len(rest) == 0 {
-		return runArgs{}, fmt.Errorf("usage: tunnel [--label label] [--relay-addr host:port] <claude|codex|gemini> [args...]")
+		return runArgs{}, fmt.Errorf("usage: tunnel [--label label] [--base-url url] <claude|codex|gemini> [args...]")
 	}
 
 	cfg.Launcher = rest[0]
@@ -57,31 +58,38 @@ func parseRunArgs(argv []string) (runArgs, error) {
 	return cfg, nil
 }
 
-func validateRelayAddr(raw string) (string, error) {
-	addr := strings.TrimSpace(raw)
-	if addr == "" {
-		return "", fmt.Errorf("relay address must be host:port, e.g. 127.0.0.1:8586")
-	}
-	if strings.Contains(addr, "://") {
-		return "", fmt.Errorf("relay address must be host:port without ws:// or wss://, e.g. 127.0.0.1:8586")
-	}
-	if strings.ContainsAny(addr, "/?#") {
-		return "", fmt.Errorf("relay address must be host:port, e.g. 127.0.0.1:8586")
+func validateBaseURL(raw string) (string, error) {
+	baseURL := strings.TrimSpace(raw)
+	if baseURL == "" {
+		return "", fmt.Errorf("base URL must be http://127.0.0.1:8586 or https://diaro.me")
 	}
 
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil || host == "" || port == "" {
-		return "", fmt.Errorf("relay address must be host:port, e.g. 127.0.0.1:8586")
+	parsed, err := url.Parse(baseURL)
+	if err != nil || !parsed.IsAbs() || parsed.Host == "" {
+		return "", fmt.Errorf("base URL must be http://127.0.0.1:8586 or https://diaro.me")
 	}
-
-	portNumber, err := strconv.Atoi(port)
-	if err != nil || portNumber < 1 || portNumber > 65535 {
-		return "", fmt.Errorf("relay address must be host:port, e.g. 127.0.0.1:8586")
+	switch parsed.Scheme {
+	case "http", "https":
+	default:
+		return "", fmt.Errorf("base URL must use http:// or https://")
 	}
-
-	return addr, nil
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("base URL must not include query or fragment")
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/")
+	parsed.RawPath = strings.TrimRight(parsed.RawPath, "/")
+	return parsed.String(), nil
 }
 
-func relayWebSocketURL(addr string) string {
-	return "ws://" + addr
+func relayWebSocketBaseURL(baseURL string) string {
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return ""
+	}
+	if parsed.Scheme == "https" {
+		parsed.Scheme = "wss"
+	} else {
+		parsed.Scheme = "ws"
+	}
+	return parsed.String()
 }
