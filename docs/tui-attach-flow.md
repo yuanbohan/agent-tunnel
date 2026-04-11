@@ -485,6 +485,8 @@ Handle these cases explicitly:
 - `closing: slow_client`: treat local rendering or network as overloaded, tear down state, then attempt a fresh attach if the session is still present
 - `closing: logged_out`: stop input, discard local terminal state, and require the user to re-authenticate before opening a new attach
 - `closing: password_changed`: stop input, discard local terminal state, and require fresh login before opening a new attach
+- `closing: agent_token_revoked`: stop input, discard local terminal state, and refresh discovery because the owning session was disconnected
+- `closing: account_deleted`: stop input, discard local terminal state, and require account recovery or operator follow-up instead of retrying attach
 - plain websocket close without `closing`: assume bytes may have been missed and do a fresh attach flow
 
 ### Mobile Checklist
