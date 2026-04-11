@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"yuanbohan/tunnel/relay"
+	"yuanbohan/tunnel/internal/relay"
 )
 
 func validEnv(key string) string {

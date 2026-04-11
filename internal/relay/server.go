@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"yuanbohan/tunnel/protocol"
+	"yuanbohan/tunnel/internal/protocol"
 )
 
 const (
@@ -167,7 +167,7 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 	mux.HandleFunc("/api/sessions", func(w http.ResponseWriter, r *http.Request) {
 		if !checkBasicAuth(r, cfg.User, cfg.Password) {
 			logAuthFailed(logger, r, "basic")
-			w.Header().Set("WWW-Authenticate", `Basic realm="agentunnel relay"`)
+			w.Header().Set("WWW-Authenticate", `Basic realm="tunnel relay"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -288,7 +288,7 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 	mux.HandleFunc("/api/sessions/", func(w http.ResponseWriter, r *http.Request) {
 		if !checkBasicAuth(r, cfg.User, cfg.Password) {
 			logAuthFailed(logger, r, "basic")
-			w.Header().Set("WWW-Authenticate", `Basic realm="agentunnel relay"`)
+			w.Header().Set("WWW-Authenticate", `Basic realm="tunnel relay"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}

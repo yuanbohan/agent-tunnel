@@ -25,11 +25,11 @@ The attach migration is largely complete, but the codebase still carries some tr
 Current state from repo research:
 
 - Production replay/history surfaces appear removed, but some internal wrappers still look transitional rather than essential.
-- `protocol/message.go` now contains overlapping input/control shapes (`Message`, `AgentFrame`, `ClientInputMessage`) even though the active production path is narrower than that type surface suggests.
-- `relay/registry.go` still exposes both `WriteInput` and `WriteAttachInput`, although attach-scoped input is now the only live client path in production.
-- `relay/server.go` uses `readWSJSON()` for the initial agent register frame and client attach input, and that helper does not enforce websocket text-message type. That is looser than the documented "JSON text frames only" contract in `docs/protocol.md`.
-- `relay/server.go` defines `wsAgentPeer.SendBinary` and `relay.AgentPeer` requires `SendBinary`, but the current relay-to-agent production path appears to use JSON only.
-- `session/terminal_mirror_test.go` covers plain text, alternate buffer, scrollback exclusion, and resize, but does not yet pin several fidelity claims already documented or implied by the origin requirements: styled output, wide glyphs, cursor-hidden state, and empty-screen attach behavior.
+- `internal/protocol/message.go` now contains overlapping input/control shapes (`Message`, `AgentFrame`, `ClientInputMessage`) even though the active production path is narrower than that type surface suggests.
+- `internal/relay/registry.go` still exposes both `WriteInput` and `WriteAttachInput`, although attach-scoped input is now the only live client path in production.
+- `internal/relay/server.go` uses `readWSJSON()` for the initial agent register frame and client attach input, and that helper does not enforce websocket text-message type. That is looser than the documented "JSON text frames only" contract in `docs/protocol.md`.
+- `internal/relay/server.go` defines `wsAgentPeer.SendBinary` and `relay.AgentPeer` requires `SendBinary`, but the current relay-to-agent production path appears to use JSON only.
+- `internal/tunnel/session/terminal_mirror_test.go` covers plain text, alternate buffer, scrollback exclusion, and resize, but does not yet pin several fidelity claims already documented or implied by the origin requirements: styled output, wide glyphs, cursor-hidden state, and empty-screen attach behavior.
 - End-to-end attach tests are strong on the happy path, but they do not yet characterize several lifecycle edges that the new doc makes explicit: pending attach loss before `snapshot_done`, malformed control traffic, and message-type validation at websocket boundaries.
 
 `go test ./...` passes as of this planning pass on 2026-04-10, which makes characterization-first cleanup feasible.
@@ -54,18 +54,18 @@ Current state from repo research:
 
 ### Relevant Code and Patterns
 
-- `connector/connector.go` owns the agent-side snapshot handoff, live-byte forwarding, and relay connection lifecycle. It is the right place to pin no-gap attach behavior and malformed inbound-control handling.
-- `relay/server.go` owns both websocket entrypoints and the HTTP pre-upgrade contract. It is the right place to tighten message-type validation and attach-start failure behavior.
-- `relay/registry.go` owns live session state, attach membership, reconnect lifecycle, and owner/client routing. It is the right place to collapse dead input wrappers and harden pending-attach cleanup behavior.
-- `protocol/message.go` is the current type-surface hotspot for redundant input/control envelopes.
-- `session/hub.go` already supports keyed resize listeners via `AddResizeListener`; `OnResize` is now a compatibility wrapper over that newer path.
-- `session/terminal_mirror.go` is the fidelity boundary. Its current tests are the right foundation, but they do not yet cover all documented TUI-state expectations.
+- `internal/tunnel/connector/connector.go` owns the agent-side snapshot handoff, live-byte forwarding, and relay connection lifecycle. It is the right place to pin no-gap attach behavior and malformed inbound-control handling.
+- `internal/relay/server.go` owns both websocket entrypoints and the HTTP pre-upgrade contract. It is the right place to tighten message-type validation and attach-start failure behavior.
+- `internal/relay/registry.go` owns live session state, attach membership, reconnect lifecycle, and owner/client routing. It is the right place to collapse dead input wrappers and harden pending-attach cleanup behavior.
+- `internal/protocol/message.go` is the current type-surface hotspot for redundant input/control envelopes.
+- `internal/tunnel/session/hub.go` already supports keyed resize listeners via `AddResizeListener`; `OnResize` is now a compatibility wrapper over that newer path.
+- `internal/tunnel/session/terminal_mirror.go` is the fidelity boundary. Its current tests are the right foundation, but they do not yet cover all documented TUI-state expectations.
 - Existing package tests already pin the happy path well:
-  - `connector/connector_test.go`
-  - `relay/server_test.go`
-  - `relay/registry_test.go`
-  - `protocol/relay_types_test.go`
-  - `session/terminal_mirror_test.go`
+  - `internal/tunnel/connector/connector_test.go`
+  - `internal/relay/server_test.go`
+  - `internal/relay/registry_test.go`
+  - `internal/protocol/message_test.go`
+  - `internal/tunnel/session/terminal_mirror_test.go`
 
 ### Institutional Learnings
 
@@ -81,10 +81,10 @@ Current state from repo research:
 
 ### Audit Findings To Carry Forward
 
-- `relay/ws_logging.go` reads and unmarshals websocket payloads without checking message type, so binary JSON would currently be accepted where the docs say JSON text frames only.
+- `internal/relay/ws_logging.go` reads and unmarshals websocket payloads without checking message type, so binary JSON would currently be accepted where the docs say JSON text frames only.
 - `relay.AgentPeer.SendBinary` and `wsAgentPeer.SendBinary` look production-dead in the current attach model.
 - `protocol.Message`, `EncodeInputText`, `EncodeInputKey`, `ClientInputMessage.AgentMessage`, and `relay.Registry.WriteInput` are now used primarily by tests and transitional wrappers rather than the active attach pipeline.
-- `session/terminal_mirror_test.go` is still missing coverage for some of the exact fidelity properties the requirements document called out during planning.
+- `internal/tunnel/session/terminal_mirror_test.go` is still missing coverage for some of the exact fidelity properties the requirements document called out during planning.
 - There is no end-to-end test today that proves cleanup of a pending attach when the client disappears before `attach_ready` / `snapshot_done`.
 
 ## Key Technical Decisions
@@ -126,12 +126,12 @@ Current state from repo research:
 **Dependencies:** None
 
 **Files:**
-- Modify: `protocol/message.go`
-- Modify: `relay/registry.go`
-- Modify: `relay/server.go`
-- Modify: `session/hub.go`
-- Test: `protocol/relay_types_test.go`
-- Test: `relay/registry_test.go`
+- Modify: `internal/protocol/message.go`
+- Modify: `internal/relay/registry.go`
+- Modify: `internal/relay/server.go`
+- Modify: `internal/tunnel/session/hub.go`
+- Test: `internal/protocol/message_test.go`
+- Test: `internal/relay/registry_test.go`
 
 **Approach:**
 - Confirm which current protocol/input helpers are truly production-dead versus merely under-tested.
@@ -141,8 +141,8 @@ Current state from repo research:
 **Execution note:** Characterization-first. Update or add tests that prove the active production call graph before deleting wrappers that are currently exercised mainly through test scaffolding.
 
 **Patterns to follow:**
-- Minimal helper-constructor style already used in `protocol/message.go`
-- Keyed listener pattern already used by `connector/connector.go`
+- Minimal helper-constructor style already used in `internal/protocol/message.go`
+- Keyed listener pattern already used by `internal/tunnel/connector/connector.go`
 
 **Test scenarios:**
 - Happy path: the active attach input path still routes through the surviving owner-send entrypoint after dead-wrapper cleanup.
@@ -161,14 +161,14 @@ Current state from repo research:
 **Dependencies:** Unit 1
 
 **Files:**
-- Modify: `relay/server.go`
-- Modify: `relay/ws_logging.go`
-- Modify: `relay/attach_client_ws.go`
-- Modify: `connector/connector.go`
-- Modify: `session/hub.go`
-- Test: `relay/server_test.go`
-- Test: `connector/connector_test.go`
-- Test: `session/hub_test.go`
+- Modify: `internal/relay/server.go`
+- Modify: `internal/relay/ws_logging.go`
+- Modify: `internal/relay/attach_client_ws.go`
+- Modify: `internal/tunnel/connector/connector.go`
+- Modify: `internal/tunnel/session/hub.go`
+- Test: `internal/relay/server_test.go`
+- Test: `internal/tunnel/connector/connector_test.go`
+- Test: `internal/tunnel/session/hub_test.go`
 
 **Approach:**
 - Tighten websocket boundary handling so control messages follow the documented text-frame contract rather than being accepted solely because their bytes decode as JSON.
@@ -179,8 +179,8 @@ Current state from repo research:
 **Execution note:** Start with failing protocol-boundary tests for the message-type and attach-lifecycle cases, then simplify internals under that protection.
 
 **Patterns to follow:**
-- Current attach lifecycle in `relay/server.go` and `relay/registry.go`
-- Submit-gap handling in `connector/connector.go`
+- Current attach lifecycle in `internal/relay/server.go` and `internal/relay/registry.go`
+- Submit-gap handling in `internal/tunnel/connector/connector.go`
 
 **Test scenarios:**
 - Happy path: text websocket frames carrying `input_text` and `input_key` still route correctly after simplification.
@@ -201,26 +201,26 @@ Current state from repo research:
 **Dependencies:** Unit 1
 
 **Files:**
-- Test: `session/terminal_mirror_test.go`
-- Test: `connector/connector_test.go`
-- Test: `relay/server_test.go`
-- Test: `relay/registry_test.go`
-- Modify: `session/terminal_mirror.go`
-- Modify: `connector/connector.go`
-- Modify: `relay/server.go`
-- Modify: `relay/registry.go`
+- Test: `internal/tunnel/session/terminal_mirror_test.go`
+- Test: `internal/tunnel/connector/connector_test.go`
+- Test: `internal/relay/server_test.go`
+- Test: `internal/relay/registry_test.go`
+- Modify: `internal/tunnel/session/terminal_mirror.go`
+- Modify: `internal/tunnel/connector/connector.go`
+- Modify: `internal/relay/server.go`
+- Modify: `internal/relay/registry.go`
 
 **Approach:**
 - Add the missing mirror fidelity cases already called out by the origin requirements: styled text, wide glyphs, cursor-hidden state, and empty-screen snapshot behavior.
 - Add lifecycle cases around pending attach loss, malformed inbound control traffic, and attach-start races that are currently only implied by implementation.
-- Use those tests to decide whether small contract-tightening fixes are needed in relay/connector/registry code.
+- Use those tests to decide whether small contract-tightening fixes are needed in `internal/relay`, `internal/tunnel/connector`, and `internal/relay/registry`.
 
 **Execution note:** Test-first. Add the missing lifecycle and fidelity cases before behavior cleanup so the implementation is pinned to the current documented contract.
 
 **Patterns to follow:**
-- Existing round-trip tests in `session/terminal_mirror_test.go`
-- End-to-end attach tests in `relay/server_test.go`
-- Transport race coverage style in `connector/connector_test.go`
+- Existing round-trip tests in `internal/tunnel/session/terminal_mirror_test.go`
+- End-to-end attach tests in `internal/relay/server_test.go`
+- Transport race coverage style in `internal/tunnel/connector/connector_test.go`
 
 **Test scenarios:**
 - Happy path: an empty current screen still produces a valid attach sequence of `attached` then `snapshot_done`, and later live bytes still render correctly.
@@ -237,7 +237,7 @@ Current state from repo research:
 
 ## System-Wide Impact
 
-- **Interaction graph:** `session.Hub` feeds both local terminal and connector; `connector` and `relay/server.go` share responsibility for attach boundaries; `relay/registry.go` is the single source of live session and attach membership.
+- **Interaction graph:** `session.Hub` feeds both local terminal and connector; `connector` and `internal/relay/server.go` share responsibility for attach boundaries; `internal/relay/registry.go` is the single source of live session and attach membership.
 - **Error propagation:** websocket boundary validation errors must not silently turn into accepted control input; attach-start failures must surface deterministic close reasons.
 - **State lifecycle risks:** pending attach cleanup, slow-client detaches, and reconnect transitions can leak or duplicate state if cleanup remains split across too many wrappers.
 - **API surface parity:** `docs/protocol.md` and `docs/tui-attach-flow.md` already define the contract; internal cleanup should converge on those docs rather than create a second interpretation.
@@ -264,8 +264,8 @@ Current state from repo research:
 - Related docs: `docs/protocol.md`
 - Related docs: `docs/architecture.md`
 - Related docs: `docs/tui-attach-flow.md`
-- Related code: `connector/connector.go`
-- Related code: `relay/server.go`
-- Related code: `relay/registry.go`
-- Related code: `protocol/message.go`
-- Related code: `session/terminal_mirror.go`
+- Related code: `internal/tunnel/connector/connector.go`
+- Related code: `internal/relay/server.go`
+- Related code: `internal/relay/registry.go`
+- Related code: `internal/protocol/message.go`
+- Related code: `internal/tunnel/session/terminal_mirror.go`

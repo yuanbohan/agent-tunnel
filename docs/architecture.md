@@ -209,12 +209,12 @@ Closing the agent process ends the session. A later agent launch starts a differ
 
 ## Package Map
 
-- `cmd/agentunnel`: local `tunnel` entrypoint
-- `session/`: PTY ownership, local terminal handling, hub fanout, resize state, and terminal mirror
-- `connector/`: outbound relay connection, session registration, attach routing, and resize signaling
+- `cmd/tunnel`: local `tunnel` entrypoint
+- `internal/tunnel/session/`: PTY ownership, local terminal handling, hub fanout, resize state, and terminal mirror
+- `internal/tunnel/connector/`: outbound relay connection, session registration, attach routing, and resize signaling
 - `cmd/relay`: relay entrypoint
-- `relay/`: live session registry, attach lifecycle, and HTTP / WebSocket handlers
-- `protocol/`: shared attach-oriented wire types
+- `internal/relay/`: live session registry, attach lifecycle, and HTTP / WebSocket handlers
+- `internal/protocol/`: shared attach-oriented wire types
 
 ## Related Documents
 

@@ -58,7 +58,7 @@ func (s *StatusLine) renderLocked(message string) {
 		return
 	}
 	if s.rows <= 0 || s.cols <= 0 {
-		fmt.Fprintf(s.writer, "[agentunnel] %s\n", message)
+		fmt.Fprintf(s.writer, "[tunnel] %s\n", message)
 		return
 	}
 

@@ -9,7 +9,7 @@ import (
 	"os"
 	"time"
 
-	"yuanbohan/tunnel/relay"
+	"yuanbohan/tunnel/internal/relay"
 )
 
 type mainConfig struct {

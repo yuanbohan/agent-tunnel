@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"yuanbohan/tunnel/protocol"
+	"yuanbohan/tunnel/internal/protocol"
 )
 
 type fakeAgentPeer struct{}
