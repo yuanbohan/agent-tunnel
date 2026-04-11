@@ -12,7 +12,13 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 - `internal/tunnel/session/` owns PTY lifecycle, Hub fanout, local terminal attach, resize/input forwarding, and the terminal mirror used for attach snapshots.
 - `internal/protocol/` defines attach-oriented wire types: agent registration, attach control, session info, structured input, and client-routed terminal-byte packets.
 - `internal/tunnel/connector/` is the mandatory outbound connector from a local `tunnel` process to `/agent/ws` on the relay. It registers sessions, publishes resize metadata, answers attach-open/attach-close control, and routes client-scoped terminal bytes.
-- `internal/relay/` owns relay auth, registry, session-scoped attach websockets, and agent/client routing handlers.
+- `internal/relay/auth/` owns invite codes, usernames/passwords, app sessions, and agent token services.
+- `internal/relay/operator/` owns operator-only invite and user maintenance services.
+- `internal/relay/session/` owns live in-memory session ownership, attach routing, and attach-session indexing.
+- `internal/config/` owns relay process configuration loaded during relay startup.
+- `internal/logx/` owns the global structured logger setup used across the relay.
+- `internal/relay/handler/` owns the Gin router, HTTP middleware, REST handlers, and WebSocket transport split by API, agent, and attach concerns.
+- `internal/relay/store/postgres/` owns PostgreSQL persistence and embedded relay migrations.
 - `internal/tunnel/launcher/` is the supported-launcher registry and PATH resolution layer.
 - `docs/architecture.md` describes how all Go packages and relay-facing protocols interact.
 
@@ -51,7 +57,7 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 ## Verification
 
 - `go test ./...`
-- `go test ./internal/protocol ./internal/relay`
+- `go test ./internal/protocol ./internal/relay/...`
 - `make test`
 - `make test-relay`
 - `make build`

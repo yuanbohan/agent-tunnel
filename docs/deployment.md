@@ -16,7 +16,10 @@ For the relay CLI command reference itself, see [operation.md](./operation.md).
 
 ```text
 /usr/local/bin/relay                         # installed relay binary (used by systemd)
+/usr/local/bin/agentunnel-relay-migrate     # installed migrator binary
 ~/relay                                      # uploaded staging binary from dev machine
+~/agentunnel-relay-migrate                   # uploaded staging migrator binary
+/etc/agentunnel/schema/relay/                # installed relay schema SQL files
 /etc/systemd/system/agentunnel-relay.service # systemd unit
 /etc/nginx/sites-available/<domain>          # nginx site config
 /etc/nginx/conf.d/websocket_map.conf         # shared WebSocket header map
@@ -69,21 +72,27 @@ sudo snap install --classic certbot
 sudo ln -sf /snap/bin/certbot /usr/bin/certbot
 ```
 
-### 3. Build and upload the relay binary
+### 3. Build and upload the relay artifacts
 
 From the project root on your dev machine:
 
 ```bash
 make build-linux          # cross-compile for linux/amd64
 scp bin/relay diarome:~/relay
+scp bin/agentunnel-relay-migrate diarome:~/agentunnel-relay-migrate
+ssh diarome 'rm -rf /tmp/agentunnel-relay-schema && mkdir -p /tmp/agentunnel-relay-schema'
+scp schema/relay/*.sql diarome:/tmp/agentunnel-relay-schema/
 ```
 
 `diarome` here is an SSH config host alias. Replace with `user@your-vps-ip` if you don't have one.
 
-### 4. Install the binary on the VPS
+### 4. Install the binaries and schema files on the VPS
 
 ```bash
 sudo install -m 0755 ~/relay /usr/local/bin/relay
+sudo install -m 0755 ~/agentunnel-relay-migrate /usr/local/bin/agentunnel-relay-migrate
+sudo install -d -m 0755 /etc/agentunnel/schema/relay
+sudo install -m 0644 /tmp/agentunnel-relay-schema/*.sql /etc/agentunnel/schema/relay/
 ```
 
 ### 5. Create the systemd service
@@ -125,7 +134,7 @@ Enable and start:
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable agentunnel-relay
-sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && /usr/local/bin/relay migrate'
+sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && /usr/local/bin/agentunnel-relay-migrate --schema-dir /etc/agentunnel/schema/relay'
 sudo systemctl start agentunnel-relay
 ```
 
@@ -143,7 +152,7 @@ ss -lntp | grep 8586
 
 - **`Restart=always`** and **`RestartSec=5`**: If the relay crashes, systemd restarts it after 5 seconds. This keeps the relay self-healing without manual intervention.
 - **`EnvironmentFile=/etc/agentunnel/relay.env`**: systemd and `make deploy` both read the same source of truth for relay environment variables.
-- **Run `relay migrate` before restart**: schema changes are explicit and are not applied automatically by `relay serve`.
+- **Run `agentunnel-relay-migrate` before restart**: schema changes are explicit and are not applied automatically by `relay serve`.
 - **`After=network.target`**: Ensures the relay starts only after the network is up.
 - **`WantedBy=multi-user.target`**: The service starts automatically on boot.
 
@@ -330,8 +339,13 @@ sudo systemctl is-active agentunnel-relay
 # On dev machine
 make build-linux
 scp bin/relay diarome:~/relay
+scp bin/agentunnel-relay-migrate diarome:~/agentunnel-relay-migrate
+ssh diarome 'rm -rf /tmp/agentunnel-relay-schema && mkdir -p /tmp/agentunnel-relay-schema'
+scp schema/relay/*.sql diarome:/tmp/agentunnel-relay-schema/
 ssh diarome 'sudo install -m 0755 ~/relay /usr/local/bin/relay'
-ssh diarome 'sudo /bin/sh -lc '"'"'set -a && . /etc/agentunnel/relay.env && set +a && /usr/local/bin/relay migrate'"'"''
+ssh diarome 'sudo install -m 0755 ~/agentunnel-relay-migrate /usr/local/bin/agentunnel-relay-migrate'
+ssh diarome 'sudo mkdir -p /etc/agentunnel/schema/relay && sudo install -m 0644 /tmp/agentunnel-relay-schema/*.sql /etc/agentunnel/schema/relay/'
+ssh diarome 'sudo /bin/sh -lc '"'"'set -a && . /etc/agentunnel/relay.env && set +a && /usr/local/bin/agentunnel-relay-migrate --schema-dir /etc/agentunnel/schema/relay'"'"''
 ssh diarome 'sudo systemctl restart agentunnel-relay'
 ```
 
@@ -340,7 +354,8 @@ ssh diarome 'sudo systemctl restart agentunnel-relay'
 The Makefile keeps the common path simple:
 
 - `make deploy` builds, uploads, installs, and restarts the relay
-- `make deploy-migrate` runs `relay migrate` separately when a release actually changes the PostgreSQL schema
+- `make deploy-schema` uploads `schema/relay/*.sql` to the remote host
+- `make deploy-migrate` runs `agentunnel-relay-migrate` separately when a release actually changes the PostgreSQL schema
 
 ```bash
 make deploy
@@ -357,6 +372,7 @@ When a release includes a migration, run the explicit sequence:
 
 ```bash
 make deploy-install
+make deploy-schema
 make deploy-migrate
 make deploy-restart
 ```
@@ -383,7 +399,8 @@ sudo systemctl restart agentunnel-relay
 sudo systemctl stop agentunnel-relay
 
 # Relay migrations and operator workflows (run on the relay host)
-sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && /usr/local/bin/relay migrate'
+sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && /usr/local/bin/agentunnel-relay-migrate --schema-dir /etc/agentunnel/schema/relay'
+sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && /usr/local/bin/agentunnel-relay-migrate --schema-dir /etc/agentunnel/schema/relay --baseline 0002_operator_audit.sql'
 sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && /usr/local/bin/relay invite create --count 5 --expires-in 7d'
 sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && /usr/local/bin/relay invite disable --code AB2C3D'
 sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && /usr/local/bin/relay user delete --username alice'

@@ -6,19 +6,14 @@ import (
 	"io"
 	"strconv"
 	"strings"
+
+	relayconfig "yuanbohan/tunnel/internal/config"
 )
 
-const defaultRelayListenAddr = "127.0.0.1:8586"
+const defaultRelayListenAddr = relayconfig.DefaultRelayListenAddr
 
 type serveConfig struct {
-	ListenAddr    string
-	DatabaseURL   string
-	AppSecret     string
-	OperatorToken string
-}
-
-type migrateConfig struct {
-	DatabaseURL string
+	ListenAddr string
 }
 
 type inviteCreateConfig struct {
@@ -54,10 +49,7 @@ func usagef(format string, args ...any) error {
 
 func loadServeConfig(getenv func(string) string, args []string) (serveConfig, error) {
 	cfg := serveConfig{
-		ListenAddr:    envOrDefault(getenv, "RELAY_LISTEN_ADDR", defaultRelayListenAddr),
-		DatabaseURL:   envValue(getenv, "RELAY_DATABASE_URL"),
-		AppSecret:     envValue(getenv, "RELAY_APP_SECRET"),
-		OperatorToken: envValue(getenv, "RELAY_OPERATOR_TOKEN"),
+		ListenAddr: envOrDefault(getenv, "RELAY_LISTEN_ADDR", defaultRelayListenAddr),
 	}
 
 	fs := newFlagSet("serve")
@@ -68,36 +60,10 @@ func loadServeConfig(getenv func(string) string, args []string) (serveConfig, er
 	if len(fs.Args()) != 0 {
 		return serveConfig{}, usagef("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
-	switch {
-	case strings.TrimSpace(cfg.ListenAddr) == "":
-		return serveConfig{}, usagef("missing relay listen address")
-	case cfg.DatabaseURL == "":
-		return serveConfig{}, usagef("missing RELAY_DATABASE_URL")
-	case cfg.AppSecret == "":
-		return serveConfig{}, usagef("missing RELAY_APP_SECRET")
-	case cfg.OperatorToken == "":
-		return serveConfig{}, usagef("missing RELAY_OPERATOR_TOKEN")
-	default:
-		return cfg, nil
+	if err := relayconfig.SetupRelay(getenv, cfg.ListenAddr); err != nil {
+		return serveConfig{}, usagef("%v", err)
 	}
-}
-
-func loadMigrateConfig(getenv func(string) string, args []string) (migrateConfig, error) {
-	cfg := migrateConfig{
-		DatabaseURL: envValue(getenv, "RELAY_DATABASE_URL"),
-	}
-
-	fs := newFlagSet("migrate")
-	if err := fs.Parse(args); err != nil {
-		return migrateConfig{}, usagef("%v", err)
-	}
-	if len(fs.Args()) != 0 {
-		return migrateConfig{}, usagef("unexpected arguments: %s", strings.Join(fs.Args(), " "))
-	}
-	if cfg.DatabaseURL == "" {
-		return migrateConfig{}, usagef("missing RELAY_DATABASE_URL")
-	}
-	return cfg, nil
+	return serveConfig{ListenAddr: relayconfig.RelayListenAddr()}, nil
 }
 
 func loadInviteCreateConfig(getenv func(string) string, args []string) (inviteCreateConfig, error) {

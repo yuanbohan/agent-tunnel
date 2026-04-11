@@ -7,7 +7,8 @@ import (
 	"os"
 	"time"
 
-	"yuanbohan/tunnel/internal/relay"
+	relayconfig "yuanbohan/tunnel/internal/config"
+	"yuanbohan/tunnel/internal/logx"
 )
 
 func main() {
@@ -16,29 +17,27 @@ func main() {
 	}
 }
 
-func logRelayStarted(logger *relay.Logger, listenAddr string) {
-	logger.Info("relay_started", relay.String("listen_addr", listenAddr))
+func logRelayStarted(listenAddr string) {
+	logx.Info("relay_started", logx.String("listen_addr", listenAddr))
 }
 
 func startRelay(
-	cfg serveConfig,
 	handler http.Handler,
-	logger *relay.Logger,
 	listen func(network, address string) (net.Listener, error),
 	serve func(*http.Server, net.Listener) error,
 ) error {
-	ln, err := listen("tcp", cfg.ListenAddr)
+	ln, err := listen("tcp", relayconfig.RelayListenAddr())
 	if err != nil {
 		return err
 	}
 
-	logRelayStarted(logger, ln.Addr().String())
-	return serve(newHTTPServer(cfg, handler), ln)
+	logRelayStarted(ln.Addr().String())
+	return serve(newHTTPServer(handler), ln)
 }
 
-func newHTTPServer(cfg serveConfig, handler http.Handler) *http.Server {
+func newHTTPServer(handler http.Handler) *http.Server {
 	return &http.Server{
-		Addr:              cfg.ListenAddr,
+		Addr:              relayconfig.RelayListenAddr(),
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,

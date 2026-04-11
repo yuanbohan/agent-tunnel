@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"strings"
 
-	"yuanbohan/tunnel/internal/relay"
+	handlertypes "yuanbohan/tunnel/internal/relay/handler/types"
 )
 
 type httpOperatorClient struct {
@@ -47,8 +47,8 @@ func newHTTPOperatorClient(relayAddr, token string, client *http.Client) *httpOp
 }
 
 func (c *httpOperatorClient) CreateInvites(ctx context.Context, count int, expiresInDays int) ([]string, error) {
-	var resp relay.OperatorCreateInvitesResponse
-	if err := c.doJSON(ctx, http.MethodPost, relay.OperatorInviteCodesPath, relay.OperatorCreateInvitesRequest{
+	var resp handlertypes.OperatorCreateInvitesResponse
+	if err := c.doJSON(ctx, http.MethodPost, handlertypes.OperatorInviteCodesPath, handlertypes.OperatorCreateInvitesRequest{
 		Count:         count,
 		ExpiresInDays: expiresInDays,
 	}, http.StatusCreated, &resp); err != nil {
@@ -58,13 +58,13 @@ func (c *httpOperatorClient) CreateInvites(ctx context.Context, count int, expir
 }
 
 func (c *httpOperatorClient) DisableInvite(ctx context.Context, code string) error {
-	return c.doJSON(ctx, http.MethodPost, relay.OperatorInviteDisablePath, relay.OperatorDisableInviteRequest{
+	return c.doJSON(ctx, http.MethodPost, handlertypes.OperatorInviteDisablePath, handlertypes.OperatorDisableInviteRequest{
 		Code: code,
 	}, http.StatusNoContent, nil)
 }
 
 func (c *httpOperatorClient) DeleteUser(ctx context.Context, username string) error {
-	return c.doJSON(ctx, http.MethodPost, relay.OperatorDeleteUserPath, relay.OperatorDeleteUserRequest{
+	return c.doJSON(ctx, http.MethodPost, handlertypes.OperatorDeleteUserPath, handlertypes.OperatorDeleteUserRequest{
 		Username: username,
 	}, http.StatusNoContent, nil)
 }

@@ -216,7 +216,13 @@ Closing the agent process ends the session. A later agent launch starts a differ
 - `internal/tunnel/session/`: PTY ownership, local terminal handling, hub fanout, resize state, and terminal mirror
 - `internal/tunnel/connector/`: outbound relay connection, session registration, attach routing, and resize signaling
 - `cmd/relay`: relay entrypoint
-- `internal/relay/`: live session registry, PostgreSQL-backed auth store, invite/session/token services, operator control services, and HTTP / WebSocket handlers
+- `internal/config/`: relay process configuration loaded during startup
+- `internal/logx/`: global structured logging setup and helpers
+- `internal/relay/auth/`: invite code rules, username/password normalization, app-session flows, and agent-token flows
+- `internal/relay/operator/`: operator invite and user-maintenance services
+- `internal/relay/session/`: live session registry, owner metadata, and attach-session indexing
+- `internal/relay/handler/`: Gin router assembly plus subpackages for middleware, REST API, agent WebSocket flows, attach WebSocket flows, shared request helpers, and HTTP DTOs
+- `internal/relay/store/postgres/`: PostgreSQL-backed auth and operator persistence plus embedded migrations
 - `internal/protocol/`: shared attach-oriented wire types
 
 ## Related Documents

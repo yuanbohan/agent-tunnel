@@ -8,13 +8,13 @@ import (
 	"strings"
 	"testing"
 
-	"yuanbohan/tunnel/internal/relay"
+	handlertypes "yuanbohan/tunnel/internal/relay/handler/types"
 )
 
 func TestHTTPOperatorClientCreateInvites(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != relay.OperatorInviteCodesPath {
-			t.Fatalf("path = %q, want %s", r.URL.Path, relay.OperatorInviteCodesPath)
+		if r.URL.Path != handlertypes.OperatorInviteCodesPath {
+			t.Fatalf("path = %q, want %s", r.URL.Path, handlertypes.OperatorInviteCodesPath)
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer operator-secret" {
 			t.Fatalf("Authorization = %q, want bearer token", got)
@@ -62,9 +62,9 @@ func TestHTTPOperatorClientReturnsReasonOnError(t *testing.T) {
 
 func TestOperatorAPIPathsStayOutsidePublicAPINamespace(t *testing.T) {
 	paths := []string{
-		relay.OperatorInviteCodesPath,
-		relay.OperatorInviteDisablePath,
-		relay.OperatorDeleteUserPath,
+		handlertypes.OperatorInviteCodesPath,
+		handlertypes.OperatorInviteDisablePath,
+		handlertypes.OperatorDeleteUserPath,
 	}
 	for _, path := range paths {
 		if strings.HasPrefix(path, "/api/") {

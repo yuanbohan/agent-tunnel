@@ -9,13 +9,16 @@ import (
 	"testing"
 	"time"
 
-	"yuanbohan/tunnel/internal/relay"
+	relayconfig "yuanbohan/tunnel/internal/config"
+	"yuanbohan/tunnel/internal/logx"
 )
 
 func TestLogRelayStartedWritesListenAddr(t *testing.T) {
 	var buf bytes.Buffer
+	restore := logx.UseWriterForTest(&buf)
+	defer restore()
 
-	logRelayStarted(relay.NewLogger(&buf), "127.0.0.1:8586")
+	logRelayStarted("127.0.0.1:8586")
 
 	got := buf.String()
 	if !strings.Contains(got, `"event":"relay_started"`) {
@@ -28,11 +31,13 @@ func TestLogRelayStartedWritesListenAddr(t *testing.T) {
 
 func TestStartRelayDoesNotLogBeforeBind(t *testing.T) {
 	var buf bytes.Buffer
+	restoreLogs := logx.UseWriterForTest(&buf)
+	defer restoreLogs()
+	restoreCfg := relayconfig.UseRelayForTest(relayconfig.Relay{ListenAddr: "127.0.0.1:8586"})
+	defer restoreCfg()
 
 	err := startRelay(
-		serveConfig{ListenAddr: "127.0.0.1:8586"},
 		http.NewServeMux(),
-		relay.NewLogger(&buf),
 		func(string, string) (net.Listener, error) {
 			return nil, errors.New("bind failed")
 		},
@@ -51,12 +56,14 @@ func TestStartRelayDoesNotLogBeforeBind(t *testing.T) {
 
 func TestStartRelayLogsBoundListenerAddr(t *testing.T) {
 	var buf bytes.Buffer
+	restoreLogs := logx.UseWriterForTest(&buf)
+	defer restoreLogs()
+	restoreCfg := relayconfig.UseRelayForTest(relayconfig.Relay{ListenAddr: "127.0.0.1:0"})
+	defer restoreCfg()
 
 	var servedAddr string
 	err := startRelay(
-		serveConfig{ListenAddr: "127.0.0.1:0"},
 		http.NewServeMux(),
-		relay.NewLogger(&buf),
 		net.Listen,
 		func(_ *http.Server, ln net.Listener) error {
 			servedAddr = ln.Addr().String()
@@ -80,7 +87,10 @@ func TestStartRelayLogsBoundListenerAddr(t *testing.T) {
 }
 
 func TestNewHTTPServerConfiguresTimeouts(t *testing.T) {
-	srv := newHTTPServer(serveConfig{ListenAddr: "127.0.0.1:8586"}, http.NewServeMux())
+	restoreCfg := relayconfig.UseRelayForTest(relayconfig.Relay{ListenAddr: "127.0.0.1:8586"})
+	defer restoreCfg()
+
+	srv := newHTTPServer(http.NewServeMux())
 
 	if srv.Addr != "127.0.0.1:8586" {
 		t.Fatalf("Addr = %q, want 127.0.0.1:8586", srv.Addr)

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"yuanbohan/tunnel/internal/relay"
+	"yuanbohan/tunnel/internal/relay/auth"
 )
 
 func runInviteCreate(ctx context.Context, client operatorClient, cfg inviteCreateConfig, stdout io.Writer) error {
@@ -22,7 +22,7 @@ func runInviteCreate(ctx context.Context, client operatorClient, cfg inviteCreat
 }
 
 func runInviteDisable(ctx context.Context, client operatorClient, cfg inviteDisableConfig, stdout io.Writer) error {
-	code, err := relay.NormalizeInviteCode(cfg.Code)
+	code, err := auth.NormalizeInviteCode(cfg.Code)
 	if err != nil {
 		return err
 	}

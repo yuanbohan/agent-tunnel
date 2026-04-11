@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"io"
 
-	"yuanbohan/tunnel/internal/relay"
+	"yuanbohan/tunnel/internal/relay/auth"
 )
 
 func runUserDelete(ctx context.Context, client operatorClient, cfg userDeleteConfig, stdout io.Writer) error {
-	usernameNorm, err := relay.NormalizeUsername(cfg.Username)
+	usernameNorm, err := auth.NormalizeUsername(cfg.Username)
 	if err != nil {
 		return err
 	}

@@ -11,7 +11,9 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
-	"yuanbohan/tunnel/internal/relay"
+	relayconfig "yuanbohan/tunnel/internal/config"
+	"yuanbohan/tunnel/internal/logx"
+	"yuanbohan/tunnel/internal/relay/bootstrap"
 )
 
 type runtimeEnv struct {
@@ -26,7 +28,6 @@ type runtimeEnv struct {
 
 type commandHandlers struct {
 	serve         func(context.Context, serveConfig) error
-	migrate       func(context.Context, migrateConfig) error
 	inviteCreate  func(context.Context, inviteCreateConfig) error
 	inviteDisable func(context.Context, inviteDisableConfig) error
 	userDelete    func(context.Context, userDeleteConfig) error
@@ -67,12 +68,6 @@ func runWithHandlers(args []string, env runtimeEnv, handlers commandHandlers) er
 			return err
 		}
 		return handlers.serve(context.Background(), cfg)
-	case "migrate":
-		cfg, err := loadMigrateConfig(env.getenv, args[1:])
-		if err != nil {
-			return err
-		}
-		return handlers.migrate(context.Background(), cfg)
 	case "invite":
 		if len(args) < 2 {
 			return usagef("%s", inviteUsage())
@@ -120,7 +115,9 @@ func newCommandHandlers(env runtimeEnv) commandHandlers {
 
 	return commandHandlers{
 		serve: func(ctx context.Context, cfg serveConfig) error {
-			db, err := env.openDB(cfg.DatabaseURL)
+			logx.Setup(env.stderr)
+
+			db, err := env.openDB(relayconfig.RelayDatabaseURL())
 			if err != nil {
 				return err
 			}
@@ -129,39 +126,12 @@ func newCommandHandlers(env runtimeEnv) commandHandlers {
 				return err
 			}
 
-			digester, err := relay.NewSecretDigester(cfg.AppSecret)
+			handler, err := bootstrap.NewServeHandler(db)
 			if err != nil {
 				return err
 			}
-			store := relay.NewPostgresStore(db)
-			registry := relay.NewRegistry()
-			logger := relay.NewLogger(env.stderr)
 
-			appAuth := relay.NewAppAuthService(store, digester, relay.DefaultPasswordHasher())
-			agentTokens := relay.NewAgentTokenService(store, digester)
-			operator := relay.NewOperatorService(store, digester)
-			handler := relay.NewHandler(relay.HandlerConfig{
-				Registry:         registry,
-				AppAuth:          appAuth,
-				AgentTokens:      agentTokens,
-				Operator:         operator,
-				OperatorToken:    cfg.OperatorToken,
-				RegisterThrottle: relay.NewRegisterThrottle(5, 10*time.Minute),
-				Logger:           logger,
-			})
-
-			return startRelay(cfg, handler, logger, env.listen, env.serveHTTP)
-		},
-		migrate: func(ctx context.Context, cfg migrateConfig) error {
-			db, err := env.openDB(cfg.DatabaseURL)
-			if err != nil {
-				return err
-			}
-			defer db.Close()
-			if err := db.PingContext(ctx); err != nil {
-				return err
-			}
-			return relay.RunMigrations(ctx, db)
+			return startRelay(handler, env.listen, env.serveHTTP)
 		},
 		inviteCreate: func(ctx context.Context, cfg inviteCreateConfig) error {
 			return runInviteCreate(ctx, newHTTPOperatorClient(cfg.RelayAddr, cfg.OperatorToken, env.httpClient), cfg, env.stdout)
@@ -179,7 +149,6 @@ func rootUsage() string {
 	return strings.TrimSpace(`
 Usage:
   relay serve            Start the relay HTTP and WebSocket service
-  relay migrate          Apply PostgreSQL schema migrations
   relay invite create    Create one or more invite codes through the running relay
   relay invite disable   Disable an unconsumed invite code through the running relay
   relay user delete      Delete a user account through the running relay

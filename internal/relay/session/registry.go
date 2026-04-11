@@ -1,0 +1,482 @@
+package session
+
+import (
+	"errors"
+	"sort"
+	"sync"
+
+	"yuanbohan/tunnel/internal/logx"
+	"yuanbohan/tunnel/internal/protocol"
+)
+
+var (
+	ErrSessionNotFound   = errors.New("relay session not found")
+	ErrSessionOffline    = errors.New("relay session offline")
+	ErrAgentPeerInactive = errors.New("agent peer inactive")
+)
+
+type AgentPeer interface {
+	SendJSON(any) error
+	Close() error
+}
+
+type deactivatableAgentPeer interface {
+	Deactivate()
+}
+
+type AttachPeer interface {
+	SendControl(protocol.AttachControlMessage) error
+	SendBinary([]byte) error
+	Close(reason string) error
+}
+
+type Registry struct {
+	mu       sync.RWMutex
+	sessions map[string]*liveSession
+}
+
+type SessionOwner struct {
+	UserID       int64
+	AgentTokenID string
+}
+
+type liveSession struct {
+	info            protocol.SessionInfo
+	owner           SessionOwner
+	peer            AgentPeer
+	pendingAttached map[string]AttachPeer
+	attached        map[string]AttachPeer
+}
+
+func NewRegistry() *Registry {
+	return &Registry{
+		sessions: make(map[string]*liveSession),
+	}
+}
+
+func (r *Registry) Register(info protocol.SessionInfo, peer AgentPeer) {
+	r.RegisterOwned(info, SessionOwner{}, peer)
+}
+
+func (r *Registry) RegisterOwned(info protocol.SessionInfo, owner SessionOwner, peer AgentPeer) {
+	r.mu.Lock()
+	old := r.sessions[info.SessionID]
+	var attached []AttachPeer
+
+	if old != nil {
+		if old.peer != peer {
+			deactivateAgentPeer(old.peer)
+		}
+		attached = takeAllAttachedLocked(old)
+	}
+
+	r.sessions[info.SessionID] = &liveSession{
+		info:            info,
+		owner:           owner,
+		peer:            peer,
+		pendingAttached: make(map[string]AttachPeer),
+		attached:        make(map[string]AttachPeer),
+	}
+	r.mu.Unlock()
+
+	closeAttachedPeers(attached, "session_offline")
+
+	if old != nil {
+		logx.Warn("session_replaced", logx.String("session_id", info.SessionID))
+	}
+	if old != nil && old.peer != nil {
+		_ = old.peer.Close()
+	}
+}
+
+func (r *Registry) Remove(sessionID string) {
+	r.mu.Lock()
+	live, ok := r.sessions[sessionID]
+	if ok {
+		delete(r.sessions, sessionID)
+	}
+	var attached []AttachPeer
+	if ok {
+		attached = takeAllAttachedLocked(live)
+	}
+	r.mu.Unlock()
+
+	if !ok {
+		return
+	}
+	closeAttachedPeers(attached, "session_offline")
+}
+
+func (r *Registry) DisconnectIfOwner(sessionID string, owner AgentPeer) bool {
+	r.mu.Lock()
+	live, ok := r.sessions[sessionID]
+	if !ok || owner == nil || live.peer != owner {
+		r.mu.Unlock()
+		return false
+	}
+
+	delete(r.sessions, sessionID)
+	deactivateAgentPeer(owner)
+	attached := takeAllAttachedLocked(live)
+	r.mu.Unlock()
+
+	closeAttachedPeers(attached, "session_offline")
+	_ = owner.Close()
+	return true
+}
+
+func (r *Registry) HasSession(sessionID string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	_, ok := r.sessions[sessionID]
+	return ok
+}
+
+func (r *Registry) List() []protocol.SessionInfo {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	out := make([]protocol.SessionInfo, 0, len(r.sessions))
+	for _, live := range r.sessions {
+		out = append(out, live.snapshot())
+	}
+	sort.Slice(out, func(i, j int) bool {
+		ti := out[i].StartedAt
+		tj := out[j].StartedAt
+		if ti == tj {
+			return out[i].SessionID < out[j].SessionID
+		}
+		return ti > tj
+	})
+	return out
+}
+
+func (r *Registry) ListForUser(userID int64) []protocol.SessionInfo {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	out := make([]protocol.SessionInfo, 0, len(r.sessions))
+	for _, live := range r.sessions {
+		if live.owner.UserID != userID {
+			continue
+		}
+		out = append(out, live.snapshot())
+	}
+	sort.Slice(out, func(i, j int) bool {
+		ti := out[i].StartedAt
+		tj := out[j].StartedAt
+		if ti == tj {
+			return out[i].SessionID < out[j].SessionID
+		}
+		return ti > tj
+	})
+	return out
+}
+
+func (r *Registry) Session(sessionID string) (protocol.SessionInfo, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	live, ok := r.sessions[sessionID]
+	if !ok {
+		return protocol.SessionInfo{}, false
+	}
+	return live.snapshot(), true
+}
+
+func (r *Registry) SessionForUser(sessionID string, userID int64) (protocol.SessionInfo, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	live, ok := r.sessions[sessionID]
+	if !ok || live.owner.UserID != userID {
+		return protocol.SessionInfo{}, false
+	}
+	return live.snapshot(), true
+}
+
+func (r *Registry) WriteAttachInput(sessionID string, frame protocol.AgentFrame) error {
+	return r.sendToOwner(sessionID, frame)
+}
+
+func (r *Registry) sendToOwner(sessionID string, payload any) error {
+	r.mu.RLock()
+	live, ok := r.sessions[sessionID]
+	if !ok {
+		r.mu.RUnlock()
+		return ErrSessionNotFound
+	}
+	peer := live.peer
+	r.mu.RUnlock()
+
+	if peer == nil {
+		return ErrSessionOffline
+	}
+	if err := peer.SendJSON(payload); err != nil {
+		if errors.Is(err, ErrAgentPeerInactive) {
+			return ErrSessionOffline
+		}
+		return err
+	}
+	return nil
+}
+
+func (r *Registry) StartAttach(sessionID, clientID string, client AttachPeer) (AgentPeer, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	live, ok := r.sessions[sessionID]
+	if !ok {
+		return nil, ErrSessionNotFound
+	}
+	if live.peer == nil {
+		return nil, ErrSessionOffline
+	}
+	live.pendingAttached[clientID] = client
+	return live.peer, nil
+}
+
+func (r *Registry) StartAttachForUser(sessionID, clientID string, userID int64, client AttachPeer) (AgentPeer, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	live, ok := r.sessions[sessionID]
+	if !ok || live.owner.UserID != userID {
+		return nil, ErrSessionNotFound
+	}
+	if live.peer == nil {
+		return nil, ErrSessionOffline
+	}
+	live.pendingAttached[clientID] = client
+	return live.peer, nil
+}
+
+func (r *Registry) DetachClient(sessionID, clientID, reason string) bool {
+	r.mu.Lock()
+	live, ok := r.sessions[sessionID]
+	if !ok {
+		r.mu.Unlock()
+		return false
+	}
+	client, ok := removeAttachClientLocked(live, clientID)
+	owner := live.peer
+	r.mu.Unlock()
+
+	if !ok {
+		return false
+	}
+	_ = client.Close(reason)
+	if owner != nil && reason != "" {
+		_ = owner.SendJSON(protocol.AttachCloseFrame(clientID, reason))
+	}
+	return true
+}
+
+func (r *Registry) RouteAttachReadyIfOwner(sessionID string, owner AgentPeer, clientID string, cols, rows int) bool {
+	r.mu.RLock()
+	live, ok := r.sessions[sessionID]
+	if !ok || live.peer != owner {
+		r.mu.RUnlock()
+		return false
+	}
+	client, ok := live.pendingAttached[clientID]
+	info := live.info
+	r.mu.RUnlock()
+
+	if !ok {
+		return false
+	}
+	if err := client.SendControl(protocol.AttachedMessage(info.SessionID, cols, rows)); err != nil {
+		return r.DetachClient(sessionID, clientID, "slow_client")
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	live, ok = r.sessions[sessionID]
+	if !ok || live.peer != owner {
+		return false
+	}
+	pending, ok := live.pendingAttached[clientID]
+	if !ok || pending != client {
+		return false
+	}
+	delete(live.pendingAttached, clientID)
+	live.attached[clientID] = client
+	return true
+}
+
+func (r *Registry) RouteSnapshotDoneIfOwner(sessionID string, owner AgentPeer, clientID string) bool {
+	r.mu.RLock()
+	live, ok := r.sessions[sessionID]
+	if !ok || live.peer != owner {
+		r.mu.RUnlock()
+		return false
+	}
+	client, ok := live.attached[clientID]
+	r.mu.RUnlock()
+
+	if !ok {
+		return false
+	}
+	if err := client.SendControl(protocol.SnapshotDoneMessage()); err != nil {
+		return r.DetachClient(sessionID, clientID, "slow_client")
+	}
+	return true
+}
+
+func (r *Registry) RouteResizeIfOwner(sessionID string, owner AgentPeer, cols, rows int) bool {
+	r.mu.RLock()
+	live, ok := r.sessions[sessionID]
+	if !ok || live.peer != owner {
+		r.mu.RUnlock()
+		return false
+	}
+	clients := snapshotAttachedClients(live.attached)
+	r.mu.RUnlock()
+
+	for clientID, client := range clients {
+		if err := client.SendControl(protocol.ResizeMessage(cols, rows)); err != nil {
+			r.DetachClient(sessionID, clientID, "slow_client")
+		}
+	}
+	return true
+}
+
+func (r *Registry) RouteAttachCloseIfOwner(sessionID string, owner AgentPeer, clientID, reason string) bool {
+	r.mu.Lock()
+	live, ok := r.sessions[sessionID]
+	if !ok || live.peer != owner {
+		r.mu.Unlock()
+		return false
+	}
+	client, ok := removeAttachClientLocked(live, clientID)
+	r.mu.Unlock()
+
+	if !ok {
+		return false
+	}
+	_ = client.Close(reason)
+	return true
+}
+
+func (r *Registry) RouteTerminalBytesIfOwner(sessionID string, owner AgentPeer, packet protocol.AttachPacket) bool {
+	if len(packet.Payload) == 0 {
+		return false
+	}
+
+	r.mu.RLock()
+	live, ok := r.sessions[sessionID]
+	if !ok || live.peer != owner {
+		r.mu.RUnlock()
+		return false
+	}
+	client, ok := live.attached[packet.ClientID]
+	r.mu.RUnlock()
+
+	if !ok {
+		return false
+	}
+	if err := client.SendBinary(packet.Payload); err != nil {
+		return r.DetachClient(sessionID, packet.ClientID, "slow_client")
+	}
+	return true
+}
+
+func takeAllAttachedLocked(live *liveSession) []AttachPeer {
+	total := len(live.pendingAttached) + len(live.attached)
+	if total == 0 {
+		return nil
+	}
+	attached := make([]AttachPeer, 0, total)
+	for clientID, client := range live.pendingAttached {
+		delete(live.pendingAttached, clientID)
+		attached = append(attached, client)
+	}
+	for clientID, client := range live.attached {
+		delete(live.attached, clientID)
+		attached = append(attached, client)
+	}
+	return attached
+}
+
+func removeAttachClientLocked(live *liveSession, clientID string) (AttachPeer, bool) {
+	if client, ok := live.pendingAttached[clientID]; ok {
+		delete(live.pendingAttached, clientID)
+		return client, true
+	}
+	client, ok := live.attached[clientID]
+	if ok {
+		delete(live.attached, clientID)
+	}
+	return client, ok
+}
+
+func snapshotAttachedClients(attached map[string]AttachPeer) map[string]AttachPeer {
+	out := make(map[string]AttachPeer, len(attached))
+	for clientID, client := range attached {
+		out[clientID] = client
+	}
+	return out
+}
+
+func closeAttachedPeers(peers []AttachPeer, reason string) {
+	for _, peer := range peers {
+		_ = peer.Close(reason)
+	}
+}
+
+func (s *liveSession) snapshot() protocol.SessionInfo {
+	return s.info
+}
+
+func deactivateAgentPeer(peer AgentPeer) {
+	if peer == nil {
+		return
+	}
+	if deactivatable, ok := peer.(deactivatableAgentPeer); ok {
+		deactivatable.Deactivate()
+	}
+}
+
+func (r *Registry) DisconnectUserSessions(userID int64, reason string) int {
+	return r.disconnectMatching(func(live *liveSession) bool {
+		return live.owner.UserID == userID
+	}, reason)
+}
+
+func (r *Registry) DisconnectAgentTokenSessions(agentTokenID string, reason string) int {
+	return r.disconnectMatching(func(live *liveSession) bool {
+		return live.owner.AgentTokenID == agentTokenID
+	}, reason)
+}
+
+func (r *Registry) disconnectMatching(match func(*liveSession) bool, reason string) int {
+	r.mu.Lock()
+	type disconnectedSession struct {
+		peer     AgentPeer
+		attached []AttachPeer
+	}
+	var toClose []disconnectedSession
+	for sessionID, live := range r.sessions {
+		if !match(live) {
+			continue
+		}
+		delete(r.sessions, sessionID)
+		deactivateAgentPeer(live.peer)
+		toClose = append(toClose, disconnectedSession{
+			peer:     live.peer,
+			attached: takeAllAttachedLocked(live),
+		})
+	}
+	r.mu.Unlock()
+
+	for _, disconnected := range toClose {
+		closeAttachedPeers(disconnected.attached, reason)
+		if disconnected.peer != nil {
+			_ = disconnected.peer.Close()
+		}
+	}
+	return len(toClose)
+}
