@@ -5,9 +5,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -36,9 +38,11 @@ var (
 
 type HandlerConfig struct {
 	Registry               *Registry
-	User                   string
-	Password               string
-	AgentToken             string
+	AppAuth                *AppAuthService
+	AgentTokens            *AgentTokenService
+	Operator               *OperatorService
+	OperatorToken          string
+	RegisterThrottle       *RegisterThrottle
 	Logger                 *Logger
 	AgentReadTimeout       time.Duration
 	AgentPingInterval      time.Duration
@@ -60,6 +64,50 @@ type wsConn interface {
 	WriteMessage(messageType int, data []byte) error
 	SetWriteDeadline(t time.Time) error
 	Close() error
+}
+
+type registerRequest struct {
+	InviteCode string `json:"invite_code"`
+	Username   string `json:"username"`
+	Password   string `json:"password"`
+}
+
+type loginRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+type refreshRequest struct {
+	RefreshToken string `json:"refresh_token"`
+}
+
+type changePasswordRequest struct {
+	CurrentPassword string `json:"current_password"`
+	NewPassword     string `json:"new_password"`
+}
+
+type createAgentTokenRequest struct {
+	Name string `json:"name"`
+}
+
+type appSessionResponse struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	ExpiresIn    int64  `json:"expires_in"`
+	TokenType    string `json:"token_type"`
+}
+
+type agentTokenResponse struct {
+	ID         string     `json:"id"`
+	Name       string     `json:"name"`
+	CreatedAt  time.Time  `json:"created_at"`
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
+}
+
+type createdAgentTokenResponse struct {
+	agentTokenResponse
+	Token string `json:"token"`
 }
 
 func newWSAgentPeer(conn *websocket.Conn, tracker *wsTrafficTracker) *wsAgentPeer {
@@ -164,11 +212,316 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 		_, _ = w.Write([]byte("ok"))
 	})
 
+	mux.HandleFunc(OperatorInviteCodesPath, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if !authenticateOperatorRequest(w, r, cfg.OperatorToken, logger) {
+			return
+		}
+		if cfg.Operator == nil {
+			http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+			return
+		}
+
+		var req OperatorCreateInvitesRequest
+		if err := decodeJSONBody(r, &req); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+
+		codes, err := cfg.Operator.CreateInviteCodes(r.Context(), req.Count, req.ExpiresInDays)
+		if err != nil {
+			writeOperatorError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, OperatorCreateInvitesResponse{Codes: codes})
+	})
+
+	mux.HandleFunc(OperatorInviteDisablePath, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if !authenticateOperatorRequest(w, r, cfg.OperatorToken, logger) {
+			return
+		}
+		if cfg.Operator == nil {
+			http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+			return
+		}
+
+		var req OperatorDisableInviteRequest
+		if err := decodeJSONBody(r, &req); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		if err := cfg.Operator.DisableInviteCode(r.Context(), req.Code); err != nil {
+			writeOperatorError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	mux.HandleFunc(OperatorDeleteUserPath, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if !authenticateOperatorRequest(w, r, cfg.OperatorToken, logger) {
+			return
+		}
+		if cfg.Operator == nil {
+			http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+			return
+		}
+
+		var req OperatorDeleteUserRequest
+		if err := decodeJSONBody(r, &req); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+
+		result, err := cfg.Operator.DeleteUser(r.Context(), req.Username)
+		if err != nil {
+			writeOperatorError(w, err)
+			return
+		}
+		registry.DisconnectUserSessions(result.UserID, "account_deleted")
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	mux.HandleFunc("/api/auth/register", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if cfg.AppAuth == nil {
+			http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+			return
+		}
+
+		remoteIP := requestRemoteIP(r)
+		if allowed, retryAfter := cfg.RegisterThrottle.Allow(remoteIP); !allowed {
+			w.Header().Set("Retry-After", formatRetryAfter(retryAfter))
+			writeJSONError(w, http.StatusTooManyRequests, "rate_limited")
+			return
+		}
+
+		var req registerRequest
+		if err := decodeJSONBody(r, &req); err != nil {
+			cfg.RegisterThrottle.RecordFailure(remoteIP)
+			writeJSONError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+
+		user, err := cfg.AppAuth.Register(r.Context(), req.Username, req.Password, req.InviteCode)
+		if err != nil {
+			if isRegisterFailure(err) {
+				cfg.RegisterThrottle.RecordFailure(remoteIP)
+				writeJSONError(w, http.StatusBadRequest, "registration_failed")
+				return
+			}
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		cfg.RegisterThrottle.Reset(remoteIP)
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"user_id":  user.ID,
+			"username": user.UsernameNorm,
+		})
+	})
+
+	mux.HandleFunc("/api/auth/login", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if cfg.AppAuth == nil {
+			http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+			return
+		}
+
+		var req loginRequest
+		if err := decodeJSONBody(r, &req); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+
+		issued, err := cfg.AppAuth.Login(r.Context(), req.Username, req.Password)
+		if err != nil {
+			if errors.Is(err, ErrInvalidCredentials) {
+				writeJSONError(w, http.StatusUnauthorized, "invalid_credentials")
+				return
+			}
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		writeJSON(w, http.StatusOK, newAppSessionResponse(issued))
+	})
+
+	mux.HandleFunc("/api/auth/refresh", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if cfg.AppAuth == nil {
+			http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+			return
+		}
+
+		var req refreshRequest
+		if err := decodeJSONBody(r, &req); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+
+		issued, err := cfg.AppAuth.Refresh(r.Context(), req.RefreshToken)
+		if err != nil {
+			if isRefreshFailure(err) {
+				writeJSONError(w, http.StatusUnauthorized, "invalid_session")
+				return
+			}
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		writeJSON(w, http.StatusOK, newAppSessionResponse(issued))
+	})
+
+	mux.HandleFunc("/api/auth/logout", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		auth, ok := authenticateAppRequest(w, r, cfg.AppAuth, logger)
+		if !ok {
+			return
+		}
+		if err := cfg.AppAuth.Logout(r.Context(), auth); err != nil {
+			if isRefreshFailure(err) {
+				writeJSONError(w, http.StatusUnauthorized, "invalid_session")
+				return
+			}
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	mux.HandleFunc("/api/auth/password/change", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		auth, ok := authenticateAppRequest(w, r, cfg.AppAuth, logger)
+		if !ok {
+			return
+		}
+
+		var req changePasswordRequest
+		if err := decodeJSONBody(r, &req); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+
+		if err := cfg.AppAuth.ChangePassword(r.Context(), auth, req.CurrentPassword, req.NewPassword); err != nil {
+			switch {
+			case errors.Is(err, ErrInvalidCredentials):
+				writeJSONError(w, http.StatusUnauthorized, "invalid_credentials")
+			case errors.Is(err, ErrInvalidPassword):
+				writeJSONError(w, http.StatusBadRequest, "invalid_request")
+			default:
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+			}
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	mux.HandleFunc("/api/agent-tokens", func(w http.ResponseWriter, r *http.Request) {
+		auth, ok := authenticateAppRequest(w, r, cfg.AppAuth, logger)
+		if !ok {
+			return
+		}
+		if cfg.AgentTokens == nil {
+			http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+			return
+		}
+
+		switch r.Method {
+		case http.MethodGet:
+			tokens, err := cfg.AgentTokens.List(r.Context(), auth.User.ID)
+			if err != nil {
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+				return
+			}
+			out := make([]agentTokenResponse, 0, len(tokens))
+			for _, token := range tokens {
+				out = append(out, newAgentTokenResponse(token))
+			}
+			writeJSON(w, http.StatusOK, out)
+		case http.MethodPost:
+			var req createAgentTokenRequest
+			if err := decodeJSONBody(r, &req); err != nil {
+				writeJSONError(w, http.StatusBadRequest, "invalid_request")
+				return
+			}
+			created, err := cfg.AgentTokens.Create(r.Context(), auth.User.ID, req.Name)
+			if err != nil {
+				if errors.Is(err, ErrInvalidAgentTokenName) {
+					writeJSONError(w, http.StatusBadRequest, "invalid_request")
+					return
+				}
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+				return
+			}
+			writeJSON(w, http.StatusCreated, createdAgentTokenResponse{
+				agentTokenResponse: newAgentTokenResponse(created.Record),
+				Token:              created.Plaintext,
+			})
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/api/agent-tokens/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		auth, ok := authenticateAppRequest(w, r, cfg.AppAuth, logger)
+		if !ok {
+			return
+		}
+		if cfg.AgentTokens == nil {
+			http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+			return
+		}
+
+		tokenID := strings.TrimPrefix(r.URL.Path, "/api/agent-tokens/")
+		if tokenID == "" || strings.Contains(tokenID, "/") {
+			http.NotFound(w, r)
+			return
+		}
+		if err := cfg.AgentTokens.Revoke(r.Context(), auth.User.ID, tokenID, auth.User.UsernameNorm); err != nil {
+			if errors.Is(err, ErrAgentTokenNotFound) {
+				writeJSONError(w, http.StatusNotFound, "agent_token_not_found")
+				return
+			}
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		registry.DisconnectAgentTokenSessions(tokenID, "agent_token_revoked")
+		w.WriteHeader(http.StatusNoContent)
+	})
+
 	mux.HandleFunc("/api/sessions", func(w http.ResponseWriter, r *http.Request) {
-		if !checkBasicAuth(r, cfg.User, cfg.Password) {
-			logAuthFailed(logger, r, "basic")
-			w.Header().Set("WWW-Authenticate", `Basic realm="tunnel relay"`)
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+		auth, ok := authenticateAppRequest(w, r, cfg.AppAuth, logger)
+		if !ok {
 			return
 		}
 		if r.Method != http.MethodGet {
@@ -176,16 +529,30 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 			return
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(registry.List())
+		writeJSON(w, http.StatusOK, registry.ListForUser(auth.User.ID))
 	})
 
 	mux.HandleFunc("/agent/ws", func(w http.ResponseWriter, r *http.Request) {
-		if !checkBearer(r, cfg.AgentToken) {
-			logAuthFailed(logger, r, "bearer")
+		if cfg.AgentTokens == nil {
+			http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+			return
+		}
+
+		token, ok := bearerTokenFromRequest(r)
+		if !ok {
+			logAuthFailed(logger, r, "agent_bearer")
+			w.Header().Set("WWW-Authenticate", `Bearer realm="tunnel relay"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		authenticated, err := cfg.AgentTokens.Authenticate(r.Context(), token)
+		if err != nil {
+			logAuthFailed(logger, r, "agent_bearer")
+			w.Header().Set("WWW-Authenticate", `Bearer realm="tunnel relay"`)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
 		conn, err := agentUpgrader.Upgrade(w, r, nil)
 		if err != nil {
 			logWSUpgradeFailed(logger, r, "agent")
@@ -196,6 +563,8 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 		fields := []Field{
 			String("path", r.URL.Path),
 			String("remote_addr", r.RemoteAddr),
+			Int64("user_id", authenticated.User.ID),
+			String("agent_token_id", authenticated.Token.ID),
 		}
 		if requestID := requestIDFromRequest(r); requestID != "" {
 			fields = append(fields, String("request_id", requestID))
@@ -226,7 +595,10 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 		}
 
 		peer := newWSAgentPeer(conn, tracker)
-		registry.Register(*register.Session, peer)
+		registry.RegisterOwned(*register.Session, SessionOwner{
+			UserID:       authenticated.User.ID,
+			AgentTokenID: authenticated.Token.ID,
+		}, peer)
 		defer registry.DisconnectIfOwner(register.Session.SessionID, peer)
 		tracker.SetSessionID(register.Session.SessionID)
 		fields = []Field{
@@ -234,6 +606,8 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 			String("launcher", register.Session.Launcher),
 			String("label", register.Session.Label),
 			String("cwd", register.Session.CWD),
+			Int64("user_id", authenticated.User.ID),
+			String("agent_token_id", authenticated.Token.ID),
 		}
 		if requestID := requestIDFromRequest(r); requestID != "" {
 			fields = append(fields, String("request_id", requestID))
@@ -286,10 +660,8 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 	})
 
 	mux.HandleFunc("/api/sessions/", func(w http.ResponseWriter, r *http.Request) {
-		if !checkBasicAuth(r, cfg.User, cfg.Password) {
-			logAuthFailed(logger, r, "basic")
-			w.Header().Set("WWW-Authenticate", `Basic realm="tunnel relay"`)
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+		auth, ok := authenticateAppRequest(w, r, cfg.AppAuth, logger)
+		if !ok {
 			return
 		}
 
@@ -304,7 +676,7 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 		}
 
 		sessionID := parts[2]
-		if _, ok := registry.Session(sessionID); !ok {
+		if _, ok := registry.SessionForUser(sessionID, auth.User.ID); !ok {
 			writeJSONError(w, http.StatusNotFound, "session_not_found")
 			return
 		}
@@ -327,6 +699,7 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 			String("path", r.URL.Path),
 			String("remote_addr", r.RemoteAddr),
 			String("session_id", sessionID),
+			Int64("user_id", auth.User.ID),
 		}
 		if requestID := requestIDFromRequest(r); requestID != "" {
 			fields = append(fields, String("request_id", requestID))
@@ -345,7 +718,7 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 		})
 
 		attachPeer := newWSAttachPeer(conn, tracker, defaultWSSinkBufferSize, defaultWSWriteTimeout)
-		owner, err := registry.StartAttach(sessionID, clientID, attachPeer)
+		owner, err := registry.StartAttachForUser(sessionID, clientID, auth.User.ID, attachPeer)
 		if err != nil {
 			loopErr = err
 			_ = attachPeer.Close(reasonForAttachStartError(err))
@@ -389,10 +762,168 @@ func NewHandler(cfg HandlerConfig) http.Handler {
 	return logRequests(logger, mux)
 }
 
-func writeJSONError(w http.ResponseWriter, status int, reason string) {
+func authenticateAppRequest(w http.ResponseWriter, r *http.Request, appAuth *AppAuthService, logger *Logger) (AuthenticatedApp, bool) {
+	if appAuth == nil {
+		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+		return AuthenticatedApp{}, false
+	}
+
+	token, ok := bearerTokenFromRequest(r)
+	if !ok {
+		logAuthFailed(logger, r, "app_bearer")
+		w.Header().Set("WWW-Authenticate", `Bearer realm="tunnel relay"`)
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return AuthenticatedApp{}, false
+	}
+
+	auth, err := appAuth.AuthenticateAccessToken(r.Context(), token)
+	if err != nil {
+		logAuthFailed(logger, r, "app_bearer")
+		w.Header().Set("WWW-Authenticate", `Bearer realm="tunnel relay"`)
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return AuthenticatedApp{}, false
+	}
+	return auth, true
+}
+
+func authenticateOperatorRequest(w http.ResponseWriter, r *http.Request, operatorToken string, logger *Logger) bool {
+	if strings.TrimSpace(operatorToken) == "" {
+		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+		return false
+	}
+	if !isLoopbackRequest(r) || hasForwardedProxyHeaders(r) {
+		logAuthFailed(logger, r, "operator_local")
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return false
+	}
+	if !staticBearerAuth(r, operatorToken) {
+		logAuthFailed(logger, r, "operator_bearer")
+		w.Header().Set("WWW-Authenticate", `Bearer realm="tunnel relay"`)
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return false
+	}
+	return true
+}
+
+func decodeJSONBody(r *http.Request, dest any) error {
+	defer r.Body.Close()
+
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dest); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return errors.New("unexpected trailing data")
+	}
+	return nil
+}
+
+func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{"reason": reason})
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func writeJSONError(w http.ResponseWriter, status int, reason string) {
+	writeJSON(w, status, map[string]string{"reason": reason})
+}
+
+func writeOperatorError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrInvalidOperatorRequest),
+		errors.Is(err, ErrInvalidInviteCode),
+		errors.Is(err, ErrInvalidUsername):
+		writeJSONError(w, http.StatusBadRequest, "invalid_request")
+	case errors.Is(err, ErrInviteCodeNotFound):
+		writeJSONError(w, http.StatusNotFound, "invite_code_not_found")
+	case errors.Is(err, ErrInviteCodeDisabled):
+		writeJSONError(w, http.StatusConflict, "invite_code_disabled")
+	case errors.Is(err, ErrInviteCodeConsumed):
+		writeJSONError(w, http.StatusConflict, "invite_code_consumed")
+	case errors.Is(err, ErrInviteCodeExpired):
+		writeJSONError(w, http.StatusConflict, "invite_code_expired")
+	case errors.Is(err, ErrUserNotFound):
+		writeJSONError(w, http.StatusNotFound, "user_not_found")
+	default:
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+	}
+}
+
+func isRegisterFailure(err error) bool {
+	return errors.Is(err, ErrInvalidUsername) ||
+		errors.Is(err, ErrInvalidPassword) ||
+		errors.Is(err, ErrInvalidInviteCode) ||
+		errors.Is(err, ErrInviteCodeNotFound) ||
+		errors.Is(err, ErrInviteCodeExpired) ||
+		errors.Is(err, ErrInviteCodeDisabled) ||
+		errors.Is(err, ErrInviteCodeConsumed) ||
+		errors.Is(err, ErrUsernameTaken)
+}
+
+func isRefreshFailure(err error) bool {
+	return errors.Is(err, ErrAppSessionNotFound) ||
+		errors.Is(err, ErrAppSessionExpired) ||
+		errors.Is(err, ErrAppSessionRevoked)
+}
+
+func formatRetryAfter(delay time.Duration) string {
+	if delay <= 0 {
+		return "0"
+	}
+	seconds := int(delay.Round(time.Second) / time.Second)
+	if seconds <= 0 {
+		return "1"
+	}
+	return strconv.Itoa(seconds)
+}
+
+func newAppSessionResponse(issued IssuedAppSession) appSessionResponse {
+	return appSessionResponse{
+		AccessToken:  issued.AccessToken,
+		RefreshToken: issued.RefreshToken,
+		ExpiresIn:    int64(DefaultAccessTokenTTL / time.Second),
+		TokenType:    "Bearer",
+	}
+}
+
+func newAgentTokenResponse(record AgentTokenRecord) agentTokenResponse {
+	return agentTokenResponse{
+		ID:         record.ID,
+		Name:       record.Name,
+		CreatedAt:  record.CreatedAt,
+		LastUsedAt: record.LastUsedAt,
+		RevokedAt:  record.RevokedAt,
+	}
+}
+
+func startWSPingLoop(conn *websocket.Conn, interval, writeTimeout time.Duration) chan struct{} {
+	stop := make(chan struct{})
+	if conn == nil || interval <= 0 {
+		return stop
+	}
+
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				deadline := time.Now().Add(writeTimeout)
+				if writeTimeout <= 0 {
+					deadline = time.Time{}
+				}
+				if err := conn.WriteControl(websocket.PingMessage, nil, deadline); err != nil {
+					return
+				}
+			}
+		}
+	}()
+
+	return stop
 }
 
 func checkAttachOrigin(r *http.Request) bool {
@@ -522,32 +1053,6 @@ func disconnectLogFields(err error) []Field {
 			fields = append(fields, String("close_text", closeErr.Text))
 		}
 	}
-	fields = append(fields, String("error", err.Error()))
+
 	return fields
-}
-
-func startWSPingLoop(conn *websocket.Conn, interval, writeTimeout time.Duration) chan struct{} {
-	stop := make(chan struct{})
-	if interval <= 0 {
-		return stop
-	}
-
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-stop:
-				return
-			case <-ticker.C:
-				deadline := time.Now().Add(writeTimeout)
-				if writeTimeout <= 0 {
-					deadline = time.Time{}
-				}
-				_ = conn.WriteControl(websocket.PingMessage, nil, deadline)
-			}
-		}
-	}()
-
-	return stop
 }

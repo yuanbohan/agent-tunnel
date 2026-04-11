@@ -22,9 +22,9 @@ All protocol timestamps are Unix timestamps represented as JSON integers in seco
 
 | Endpoint | Role | Auth | Kind | Purpose |
 |----------|------|------|------|---------|
-| `GET /healthz` | Any | None | HTTP | Health check |
-| `GET /api/sessions` | Client | Basic Auth | HTTP | Current live session snapshot |
-| `GET /api/sessions/:id/attach/ws` | Client | Basic Auth | WebSocket | Attach to one live session for snapshot, live bytes, resize events, and session-scoped structured input |
+| `GET /healthz` | Host-local | None | HTTP | Health check for direct relay access; production nginx can keep this off the public surface |
+| `GET /api/sessions` | Client | Bearer | HTTP | Current live session snapshot for the authenticated user |
+| `GET /api/sessions/:id/attach/ws` | Client | Bearer | WebSocket | Attach to one live session owned by the authenticated user for snapshot, live bytes, resize events, and session-scoped structured input |
 | `GET /agent/ws` | Agent | Bearer | WebSocket | Agent registration, attach control, resize metadata, structured input forwarding, and client-routed terminal byte delivery |
 
 Removed from the product contract:
@@ -34,21 +34,21 @@ Removed from the product contract:
 
 ## Auth Headers
 
-Client endpoints use Basic Auth:
+App-facing client endpoints use a bearer access token:
 
 ```text
-Authorization: Basic base64(username:password)
+Authorization: Bearer <access-token>
 ```
 
-Agent registration uses a bearer token:
+Agent registration also uses a bearer token, but it is a user-owned long-lived agent token:
 
 ```text
-Authorization: Bearer <token>
+Authorization: Bearer <agent-token>
 ```
 
 WebSocket attach notes:
 
-- clients attach to `GET /api/sessions/:id/attach/ws` with the same Basic Auth credentials as the HTTP endpoints
+- clients attach to `GET /api/sessions/:id/attach/ws` with the same bearer access token as the HTTP endpoints
 - browser clients must present a same-origin `Origin` header for the relay host; cross-origin browser attaches are rejected
 - native clients that omit `Origin` are allowed
 - agents attach to `GET /agent/ws` with the bearer token
@@ -81,7 +81,7 @@ Notes:
 The attach contract is:
 
 1. the client authenticates and opens `GET /api/sessions/:id/attach/ws`
-2. the relay verifies that the session currently exists in discovery
+2. the relay verifies that the session currently exists in discovery for the authenticated user
 3. the relay allocates a relay-scoped `client_id` and sends `attach_open` to the owning agent
 4. the agent atomically:
    - captures the current terminal size
@@ -262,8 +262,8 @@ Notes:
 
 Status behavior for `GET /api/sessions/:id/attach/ws` before websocket upgrade:
 
-- `404 Not Found` with `{"reason":"session_not_found"}` when the session is unknown or currently offline
-- `401 Unauthorized` when Basic Auth is missing or invalid
+- `404 Not Found` with `{"reason":"session_not_found"}` when the session is unknown, belongs to another user, or is currently offline
+- `401 Unauthorized` when bearer auth is missing or invalid
 
 ## Agent WebSocket
 

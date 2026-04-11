@@ -4,7 +4,7 @@ Launch a terminal agent locally and expose the running PTY through a relay-backe
 
 The remote contract is attach-only: clients discover live sessions with `GET /api/sessions`, then attach to one session with `GET /api/sessions/:id/attach/ws`. On attach, the owning `tunnel` process sends a current-screen snapshot and then continues streaming live PTY bytes on that same websocket.
 
-`tunnel` starts a real CLI such as `claude`, `codex`, or `gemini`, keeps the launching terminal interactive, and registers the session with a relay server. The relay is API-only: it authenticates clients and agents, lists live sessions, brokers session-scoped attaches, and forwards structured input. It does not retain transcript history and it does not emulate the terminal.
+`tunnel` starts a real CLI such as `claude`, `codex`, or `gemini`, keeps the launching terminal interactive, and registers the session with a relay server. The relay is API-only: it authenticates app clients with user-scoped bearer tokens, authenticates agents with user-owned long-lived agent tokens, lists live sessions, brokers session-scoped attaches, and forwards structured input. Operator maintenance routes stay host-local outside the public `/api/` namespace. It does not retain transcript history and it does not emulate the terminal.
 
 On startup, `tunnel` gives relay registration a short first chance to succeed. If that startup window expires, local terminal work still begins and `tunnel` continues reconnecting to the relay in the background. Runtime relay outages do not interrupt the local terminal session.
 
@@ -30,29 +30,30 @@ The relay forwards those events to the owning `tunnel` session. `tunnel` transla
 
 ### 1. Start the relay
 
-The relay requires three environment variables for auth:
+The relay now requires PostgreSQL, an application secret used for credential digests, and a fixed operator token for local maintenance commands:
 
 ```bash
-export AGENTUNNEL_BASIC_USER=demo
-export AGENTUNNEL_BASIC_PASSWORD=secret
-export AGENTUNNEL_AGENT_TOKEN=agent-token
-make relay
+export RELAY_DATABASE_URL=postgres://localhost/agent_tunnel?sslmode=disable
+export RELAY_APP_SECRET=change-me
+export RELAY_OPERATOR_TOKEN=change-me-operator-token
+go run ./cmd/relay migrate
+go run ./cmd/relay serve --listen-addr 127.0.0.1:8586
 ```
 
-The relay listens on `127.0.0.1:8586` by default. Override the port with `--port`:
+Create one or more invite codes on the relay host:
 
 ```bash
-go run ./cmd/relay --port 9000
+go run ./cmd/relay invite create --count 3 --expires-in 7d
 ```
 
 ### 2. Start tunnel
 
-Build the local binaries, then point the agent at the relay and launch a session:
+After a user has registered, logged in, and created an agent token, point `tunnel` at the relay and launch a session:
 
 ```bash
 make build
 export AGENTUNNEL_RELAY_ADDR=127.0.0.1:8586
-export AGENTUNNEL_RELAY_TOKEN=agent-token
+export AGENTUNNEL_RELAY_TOKEN=<user-owned-agent-token>
 ./bin/tunnel claude
 ```
 
@@ -82,7 +83,7 @@ Healthy startup banners are printed in bright green. Degraded startup banners, s
 
 ### 3. Connect a client
 
-Point your client at the relay with HTTP Basic Auth and use the relay APIs:
+App clients authenticate with bearer tokens returned by `POST /api/auth/login` and use the relay APIs:
 
 - `GET /api/sessions` to list sessions whose owning agent is currently online
 - `GET /api/sessions/:id/attach/ws` to attach to one online session
@@ -119,21 +120,29 @@ See [docs/deployment.md](docs/deployment.md) for the full deployment guide cover
 Quick start on the remote host:
 
 ```bash
-export AGENTUNNEL_BASIC_USER=ops
-export AGENTUNNEL_BASIC_PASSWORD=strong-password
-export AGENTUNNEL_AGENT_TOKEN=shared-agent-token
-./bin/relay --port 8586
+sudo install -d -m 0755 /etc/agentunnel
+sudo tee /etc/agentunnel/relay.env >/dev/null <<'EOF'
+RELAY_DATABASE_URL=postgres://localhost/agent_tunnel?sslmode=disable
+RELAY_APP_SECRET=<long-random-secret>
+RELAY_OPERATOR_TOKEN=<long-random-operator-token>
+EOF
+sudo chmod 600 /etc/agentunnel/relay.env
+sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && ./bin/relay migrate'
+sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && ./bin/relay serve --listen-addr 127.0.0.1:8586'
+
+# in another shell on the same host
+sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && ./bin/relay invite create --count 3 --expires-in 7d'
 ```
 
-On each developer machine:
+After the user registers in the app and creates an agent token, on each developer machine:
 
 ```bash
 export AGENTUNNEL_RELAY_ADDR=relay.example.com:443
-export AGENTUNNEL_RELAY_TOKEN=shared-agent-token
+export AGENTUNNEL_RELAY_TOKEN=<user-owned-agent-token>
 ./bin/tunnel --label "feature-branch" claude
 ```
 
-Deploy updates with a single command:
+Deploy updates with a single command after the host has `/etc/agentunnel/relay.env` in place:
 
 ```bash
 make deploy
@@ -155,7 +164,7 @@ make install           # installs tunnel and relay to ~/.local/bin
 make test              # go test ./...
 make test-relay        # focused relay/protocol contract tests
 make tunnel LAUNCHER=claude       # run tunnel directly
-make relay             # run relay server
+go run ./cmd/relay serve          # run relay server
 ```
 
 ## Protocol
@@ -163,3 +172,4 @@ make relay             # run relay server
 See [docs/protocol.md](docs/protocol.md) for the full wire format specification.
 See [docs/tui-attach-flow.md](docs/tui-attach-flow.md) for the end-to-end snapshot, live-byte, relay, and client reconnect flow.
 See [docs/deployment.md](docs/deployment.md) for VPS deployment, nginx/TLS setup, and operations guide.
+See [docs/operation.md](docs/operation.md) for day-to-day relay CLI usage and operator command examples.

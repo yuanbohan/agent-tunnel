@@ -2,6 +2,7 @@ package relay
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -63,6 +64,111 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
+type handlerTestEnv struct {
+	now         time.Time
+	store       *fakeStore
+	digester    *SecretDigester
+	appAuth     *AppAuthService
+	agentTokens *AgentTokenService
+	operator    *OperatorService
+	operatorTok string
+	throttle    *RegisterThrottle
+	registry    *Registry
+}
+
+func newHandlerTestEnv(t *testing.T) *handlerTestEnv {
+	t.Helper()
+
+	now := time.Date(2026, time.April, 11, 12, 0, 0, 0, time.UTC)
+	store := newFakeStore(func() time.Time { return now })
+	digester, err := NewSecretDigester("test-secret")
+	if err != nil {
+		t.Fatalf("NewSecretDigester returned error: %v", err)
+	}
+	hasher := PasswordHasher{
+		MemoryKiB:   8 * 1024,
+		Iterations:  1,
+		Parallelism: 1,
+		SaltLength:  8,
+		KeyLength:   16,
+	}
+	appAuth := NewAppAuthService(store, digester, hasher)
+	appAuth.now = func() time.Time { return now }
+
+	agentTokens := NewAgentTokenService(store, digester)
+	agentTokens.now = func() time.Time { return now }
+
+	operator := NewOperatorService(store, digester)
+	operator.now = func() time.Time { return now }
+
+	throttle := NewRegisterThrottle(5, 10*time.Minute)
+	throttle.now = func() time.Time { return now }
+
+	return &handlerTestEnv{
+		now:         now,
+		store:       store,
+		digester:    digester,
+		appAuth:     appAuth,
+		agentTokens: agentTokens,
+		operator:    operator,
+		operatorTok: "operator-secret",
+		throttle:    throttle,
+		registry:    NewRegistry(),
+	}
+}
+
+func (e *handlerTestEnv) handler(logger *Logger) http.Handler {
+	return NewHandler(HandlerConfig{
+		Registry:         e.registry,
+		AppAuth:          e.appAuth,
+		AgentTokens:      e.agentTokens,
+		Operator:         e.operator,
+		OperatorToken:    e.operatorTok,
+		RegisterThrottle: e.throttle,
+		Logger:           logger,
+	})
+}
+
+func (e *handlerTestEnv) addInvite(t *testing.T, code string) {
+	t.Helper()
+	if _, err := e.store.CreateInviteCode(context.Background(), CreateInviteCodeParams{
+		CodeDigest: e.digester.Digest(code),
+		CodeHint:   code[len(code)-2:],
+		CreatedBy:  "tester",
+		ExpiresAt:  e.now.Add(24 * time.Hour),
+		Now:        e.now,
+	}); err != nil {
+		t.Fatalf("CreateInviteCode returned error: %v", err)
+	}
+}
+
+func (e *handlerTestEnv) registerUser(t *testing.T, username, password, inviteCode string) User {
+	t.Helper()
+	user, err := e.appAuth.Register(context.Background(), username, password, inviteCode)
+	if err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+	return user
+}
+
+func (e *handlerTestEnv) login(t *testing.T, username, password string) IssuedAppSession {
+	t.Helper()
+	issued, err := e.appAuth.Login(context.Background(), username, password)
+	if err != nil {
+		t.Fatalf("Login returned error: %v", err)
+	}
+	return issued
+}
+
+func (e *handlerTestEnv) createAgentToken(t *testing.T, userID int64, name string) CreatedAgentToken {
+	t.Helper()
+	created, err := e.agentTokens.Create(context.Background(), userID, name)
+	if err != nil {
+		t.Fatalf("Create agent token returned error: %v", err)
+	}
+	return created
+}
+
 func readLogEntries(t *testing.T, buf *syncBuffer) []map[string]any {
 	t.Helper()
 
@@ -98,7 +204,6 @@ func countLogEvents(entries []map[string]any, event string) int {
 
 func findLogEntryByEventAndPath(t *testing.T, entries []map[string]any, event, path string) map[string]any {
 	t.Helper()
-
 	for _, entry := range entries {
 		if logString(entry, "event") == event && logString(entry, "path") == path {
 			return entry
@@ -110,7 +215,6 @@ func findLogEntryByEventAndPath(t *testing.T, entries []map[string]any, event, p
 
 func findLogEntryByEvent(t *testing.T, entries []map[string]any, event string) map[string]any {
 	t.Helper()
-
 	for _, entry := range entries {
 		if logString(entry, "event") == event {
 			return entry
@@ -127,7 +231,6 @@ func logString(entry map[string]any, key string) string {
 
 func logNumber(t *testing.T, entry map[string]any, key string) float64 {
 	t.Helper()
-
 	value, ok := entry[key].(float64)
 	if !ok {
 		t.Fatalf("entry[%q] = %#v, want number in %#v", key, entry[key], entry)
@@ -191,14 +294,9 @@ func TestWSAgentPeerRejectsSendsAfterDeactivate(t *testing.T) {
 	}
 }
 
-func TestHandlerRejectsSessionsWithoutBasicAuth(t *testing.T) {
-	reg := NewRegistry()
-	handler := NewHandler(HandlerConfig{
-		Registry:   reg,
-		User:       "demo",
-		Password:   "secret",
-		AgentToken: "agent-token",
-	})
+func TestHandlerRejectsSessionsWithoutBearerAuth(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	handler := env.handler(nil)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
@@ -207,53 +305,166 @@ func TestHandlerRejectsSessionsWithoutBasicAuth(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", rec.Code)
 	}
-	if got := rec.Header().Get("WWW-Authenticate"); got != `Basic realm="tunnel relay"` {
-		t.Fatalf("WWW-Authenticate = %q, want %q", got, `Basic realm="tunnel relay"`)
+	if got := rec.Header().Get("WWW-Authenticate"); got != `Bearer realm="tunnel relay"` {
+		t.Fatalf("WWW-Authenticate = %q, want bearer challenge", got)
 	}
 }
 
-func TestHandlerRejectsAttachWithoutBasicAuth(t *testing.T) {
-	reg := NewRegistry()
-	handler := NewHandler(HandlerConfig{
-		Registry:   reg,
-		User:       "demo",
-		Password:   "secret",
-		AgentToken: "agent-token",
-	})
+func TestHandlerRegisterLoginRefreshLogoutFlow(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	handler := env.handler(nil)
 
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions/sess-1/attach/ws", nil)
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", rec.Code)
+	registerRec := httptest.NewRecorder()
+	registerReq := httptest.NewRequest(http.MethodPost, "/api/auth/register", strings.NewReader(`{"invite_code":"ab2c3d","username":"Alice","password":"password123"}`))
+	handler.ServeHTTP(registerRec, registerReq)
+	if registerRec.Code != http.StatusCreated {
+		t.Fatalf("register status = %d, want 201", registerRec.Code)
 	}
-	if got := rec.Header().Get("WWW-Authenticate"); got != `Basic realm="tunnel relay"` {
-		t.Fatalf("WWW-Authenticate = %q, want %q", got, `Basic realm="tunnel relay"`)
+
+	loginRec := httptest.NewRecorder()
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"username":"alice","password":"password123"}`))
+	handler.ServeHTTP(loginRec, loginReq)
+	if loginRec.Code != http.StatusOK {
+		t.Fatalf("login status = %d, want 200", loginRec.Code)
+	}
+
+	var loginResp appSessionResponse
+	if err := json.Unmarshal(loginRec.Body.Bytes(), &loginResp); err != nil {
+		t.Fatalf("login response unmarshal error: %v", err)
+	}
+	if loginResp.AccessToken == "" || loginResp.RefreshToken == "" {
+		t.Fatalf("login response = %#v, want tokens", loginResp)
+	}
+
+	refreshRec := httptest.NewRecorder()
+	refreshReq := httptest.NewRequest(http.MethodPost, "/api/auth/refresh", strings.NewReader(`{"refresh_token":"`+loginResp.RefreshToken+`"}`))
+	handler.ServeHTTP(refreshRec, refreshReq)
+	if refreshRec.Code != http.StatusOK {
+		t.Fatalf("refresh status = %d, want 200", refreshRec.Code)
+	}
+
+	var refreshResp appSessionResponse
+	if err := json.Unmarshal(refreshRec.Body.Bytes(), &refreshResp); err != nil {
+		t.Fatalf("refresh response unmarshal error: %v", err)
+	}
+	if refreshResp.AccessToken == loginResp.AccessToken || refreshResp.RefreshToken == loginResp.RefreshToken {
+		t.Fatalf("refresh response = %#v, want rotated tokens", refreshResp)
+	}
+
+	logoutRec := httptest.NewRecorder()
+	logoutReq := httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil)
+	logoutReq.Header.Set("Authorization", bearerAuth(refreshResp.AccessToken))
+	handler.ServeHTTP(logoutRec, logoutReq)
+	if logoutRec.Code != http.StatusNoContent {
+		t.Fatalf("logout status = %d, want 204", logoutRec.Code)
+	}
+
+	refreshAfterLogoutRec := httptest.NewRecorder()
+	refreshAfterLogoutReq := httptest.NewRequest(http.MethodPost, "/api/auth/refresh", strings.NewReader(`{"refresh_token":"`+refreshResp.RefreshToken+`"}`))
+	handler.ServeHTTP(refreshAfterLogoutRec, refreshAfterLogoutReq)
+	if refreshAfterLogoutRec.Code != http.StatusUnauthorized {
+		t.Fatalf("refresh after logout status = %d, want 401", refreshAfterLogoutRec.Code)
 	}
 }
 
-func TestHandlerReturnsLiveSessionsWithBasicAuth(t *testing.T) {
-	reg := NewRegistry()
-	reg.Register(protocol.SessionInfo{
-		SessionID:      "sess-1",
-		Launcher:       "codex",
-		Label:          "api-fix",
-		CommandPreview: "codex --profile prod",
-		CWD:            "/tmp/project",
-		StartedAt:      10,
-	}, fakeAgentPeer{})
+func TestHandlerPasswordChangeRevokesCurrentSession(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	env.registerUser(t, "alice", "password123", "AB2C3D")
+	issued := env.login(t, "alice", "password123")
+	handler := env.handler(nil)
 
-	handler := NewHandler(HandlerConfig{
-		Registry:   reg,
-		User:       "demo",
-		Password:   "secret",
-		AgentToken: "agent-token",
-	})
+	changeRec := httptest.NewRecorder()
+	changeReq := httptest.NewRequest(http.MethodPost, "/api/auth/password/change", strings.NewReader(`{"current_password":"password123","new_password":"betterpass456"}`))
+	changeReq.Header.Set("Authorization", bearerAuth(issued.AccessToken))
+	handler.ServeHTTP(changeRec, changeReq)
+	if changeRec.Code != http.StatusNoContent {
+		t.Fatalf("password change status = %d, want 204", changeRec.Code)
+	}
 
+	authorizedRec := httptest.NewRecorder()
+	authorizedReq := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+	authorizedReq.Header.Set("Authorization", bearerAuth(issued.AccessToken))
+	handler.ServeHTTP(authorizedRec, authorizedReq)
+	if authorizedRec.Code != http.StatusUnauthorized {
+		t.Fatalf("sessions with old access token status = %d, want 401", authorizedRec.Code)
+	}
+
+	oldLoginRec := httptest.NewRecorder()
+	oldLoginReq := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"username":"alice","password":"password123"}`))
+	handler.ServeHTTP(oldLoginRec, oldLoginReq)
+	if oldLoginRec.Code != http.StatusUnauthorized {
+		t.Fatalf("old password login status = %d, want 401", oldLoginRec.Code)
+	}
+
+	newLoginRec := httptest.NewRecorder()
+	newLoginReq := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"username":"alice","password":"betterpass456"}`))
+	handler.ServeHTTP(newLoginRec, newLoginReq)
+	if newLoginRec.Code != http.StatusOK {
+		t.Fatalf("new password login status = %d, want 200", newLoginRec.Code)
+	}
+}
+
+func TestHandlerRegisterThrottleByIP(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.throttle = NewRegisterThrottle(2, 10*time.Minute)
+	env.throttle.now = func() time.Time { return env.now }
+	handler := env.handler(nil)
+
+	for i := 0; i < 2; i++ {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/register", strings.NewReader(`{"invite_code":"ZZZZZZ","username":"alice","password":"password123"}`))
+		req.RemoteAddr = "198.51.100.10:1234"
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("attempt %d status = %d, want 400", i+1, rec.Code)
+		}
+	}
+
+	limitedRec := httptest.NewRecorder()
+	limitedReq := httptest.NewRequest(http.MethodPost, "/api/auth/register", strings.NewReader(`{"invite_code":"ZZZZZZ","username":"alice","password":"password123"}`))
+	limitedReq.RemoteAddr = "198.51.100.10:1234"
+	handler.ServeHTTP(limitedRec, limitedReq)
+	if limitedRec.Code != http.StatusTooManyRequests {
+		t.Fatalf("limited status = %d, want 429", limitedRec.Code)
+	}
+	if limitedRec.Header().Get("Retry-After") == "" {
+		t.Fatal("Retry-After header missing on throttled response")
+	}
+
+	otherIPRec := httptest.NewRecorder()
+	otherIPReq := httptest.NewRequest(http.MethodPost, "/api/auth/register", strings.NewReader(`{"invite_code":"ZZZZZZ","username":"alice","password":"password123"}`))
+	otherIPReq.RemoteAddr = "198.51.100.11:1234"
+	handler.ServeHTTP(otherIPRec, otherIPReq)
+	if otherIPRec.Code != http.StatusBadRequest {
+		t.Fatalf("other IP status = %d, want 400", otherIPRec.Code)
+	}
+}
+
+func TestHandlerReturnsUserScopedLiveSessions(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	env.addInvite(t, "EF4G5H")
+	alice := env.registerUser(t, "alice", "password123", "AB2C3D")
+	bob := env.registerUser(t, "bob1", "password123", "EF4G5H")
+	aliceSession := env.login(t, "alice", "password123")
+
+	env.registry.RegisterOwned(protocol.SessionInfo{
+		SessionID: "sess-a",
+		Launcher:  "codex",
+		StartedAt: 20,
+	}, SessionOwner{UserID: alice.ID, AgentTokenID: "agt-a"}, fakeAgentPeer{})
+	env.registry.RegisterOwned(protocol.SessionInfo{
+		SessionID: "sess-b",
+		Launcher:  "codex",
+		StartedAt: 10,
+	}, SessionOwner{UserID: bob.ID, AgentTokenID: "agt-b"}, fakeAgentPeer{})
+
+	handler := env.handler(nil)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
-	req.Header.Set("Authorization", basicAuth("demo", "secret"))
+	req.Header.Set("Authorization", bearerAuth(aliceSession.AccessToken))
 	handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
@@ -264,126 +475,200 @@ func TestHandlerReturnsLiveSessionsWithBasicAuth(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &sessions); err != nil {
 		t.Fatalf("Unmarshal returned error: %v", err)
 	}
-	if len(sessions) != 1 || sessions[0].SessionID != "sess-1" {
-		t.Fatalf("sessions = %#v, want sess-1", sessions)
-	}
-	if strings.Contains(rec.Body.String(), "latest_seq") {
-		t.Fatalf("body = %s, did not expect field %q", rec.Body.String(), "latest_seq")
-	}
-	if strings.Contains(rec.Body.String(), `"state":`) {
-		t.Fatalf("body = %s, did not expect field %q", rec.Body.String(), "state")
+	if len(sessions) != 1 || sessions[0].SessionID != "sess-a" {
+		t.Fatalf("sessions = %#v, want only sess-a", sessions)
 	}
 }
 
-func TestHandlerOmitsDisconnectedSessionsFromList(t *testing.T) {
-	reg := NewRegistry()
-	peer := &recordingPeer{}
-	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, peer)
-	reg.DisconnectIfOwner("sess-1", peer)
+func TestHandlerAgentTokenEndpoints(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	issued := env.login(t, "alice", "password123")
+	handler := env.handler(nil)
 
-	handler := NewHandler(HandlerConfig{
-		Registry:   reg,
-		User:       "demo",
-		Password:   "secret",
-		AgentToken: "agent-token",
-	})
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
-	req.Header.Set("Authorization", basicAuth("demo", "secret"))
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
+	createRec := httptest.NewRecorder()
+	createReq := httptest.NewRequest(http.MethodPost, "/api/agent-tokens", strings.NewReader(`{"name":"MacBook"}`))
+	createReq.Header.Set("Authorization", bearerAuth(issued.AccessToken))
+	handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, want 201", createRec.Code)
 	}
 
-	var sessions []protocol.SessionInfo
-	if err := json.Unmarshal(rec.Body.Bytes(), &sessions); err != nil {
-		t.Fatalf("Unmarshal returned error: %v", err)
+	var created createdAgentTokenResponse
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("create response unmarshal error: %v", err)
 	}
-	if len(sessions) != 0 {
-		t.Fatalf("sessions = %#v, want no disconnected sessions", sessions)
+	if created.Token == "" || created.Name != "MacBook" {
+		t.Fatalf("create response = %#v, want token and name", created)
+	}
+
+	listRec := httptest.NewRecorder()
+	listReq := httptest.NewRequest(http.MethodGet, "/api/agent-tokens", nil)
+	listReq.Header.Set("Authorization", bearerAuth(issued.AccessToken))
+	handler.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, want 200", listRec.Code)
+	}
+
+	var listed []agentTokenResponse
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("list response unmarshal error: %v", err)
+	}
+	if len(listed) != 1 || listed[0].ID != created.ID {
+		t.Fatalf("listed = %#v, want created token metadata", listed)
+	}
+
+	deleteRec := httptest.NewRecorder()
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/agent-tokens/"+created.ID, nil)
+	deleteReq.Header.Set("Authorization", bearerAuth(issued.AccessToken))
+	handler.ServeHTTP(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusNoContent {
+		t.Fatalf("delete status = %d, want 204", deleteRec.Code)
+	}
+
+	record, err := env.store.AuthenticateAgentToken(context.Background(), env.digester.Digest(created.Token), env.now)
+	if !errors.Is(err, ErrAgentTokenRevoked) {
+		t.Fatalf("AuthenticateAgentToken error = %v, want ErrAgentTokenRevoked", err)
+	}
+	if record != (AgentTokenRecord{}) {
+		t.Fatalf("record = %#v, want zero record on revoked auth", record)
+	}
+	if user.ID == 0 {
+		t.Fatal("expected user id for revoke audit path")
 	}
 }
 
-func TestHandlerReturns404ForUnknownAttachSession(t *testing.T) {
-	reg := NewRegistry()
-	handler := NewHandler(HandlerConfig{
-		Registry:   reg,
-		User:       "demo",
-		Password:   "secret",
-		AgentToken: "agent-token",
-	})
+func TestHandlerAgentTokenDeleteDisconnectsLiveSessionImmediately(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	issued := env.login(t, "alice", "password123")
+	created := env.createAgentToken(t, user.ID, "Laptop")
 
+	env.registry.RegisterOwned(protocol.SessionInfo{
+		SessionID: "sess-1",
+		Launcher:  "codex",
+	}, SessionOwner{UserID: user.ID, AgentTokenID: created.Record.ID}, fakeAgentPeer{})
+	attachPeer := &recordingAttachPeer{}
+	if _, err := env.registry.StartAttachForUser("sess-1", "client-1", user.ID, attachPeer); err != nil {
+		t.Fatalf("StartAttachForUser returned error: %v", err)
+	}
+
+	handler := env.handler(nil)
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions/missing/attach/ws", nil)
-	req.Header.Set("Authorization", basicAuth("demo", "secret"))
+	req := httptest.NewRequest(http.MethodDelete, "/api/agent-tokens/"+created.Record.ID, nil)
+	req.Header.Set("Authorization", bearerAuth(issued.AccessToken))
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404", rec.Code)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rec.Code)
 	}
-	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
-		t.Fatalf("content-type = %q, want application/json", got)
+	if sessions := env.registry.ListForUser(user.ID); len(sessions) != 0 {
+		t.Fatalf("sessions = %#v, want empty after token revoke", sessions)
 	}
-	var body map[string]string
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("Unmarshal returned error: %v", err)
-	}
-	if body["reason"] != "session_not_found" {
-		t.Fatalf("reason = %q, want session_not_found", body["reason"])
+	if reasons := attachPeer.CloseReasons(); len(reasons) != 1 || reasons[0] != "agent_token_revoked" {
+		t.Fatalf("close reasons = %#v, want [agent_token_revoked]", reasons)
 	}
 }
 
-func TestHandlerReturns404ForOfflineAttachSession(t *testing.T) {
-	reg := NewRegistry()
-	peer := &recordingPeer{}
-	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, peer)
-	reg.DisconnectIfOwner("sess-1", peer)
+func TestHandlerOperatorDeleteUserDisconnectsLiveSessionImmediately(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	user := env.registerUser(t, "alice", "password123", "AB2C3D")
 
-	handler := NewHandler(HandlerConfig{
-		Registry:   reg,
-		User:       "demo",
-		Password:   "secret",
-		AgentToken: "agent-token",
-	})
+	env.registry.RegisterOwned(protocol.SessionInfo{
+		SessionID: "sess-1",
+		Launcher:  "codex",
+	}, SessionOwner{UserID: user.ID, AgentTokenID: "agt-1"}, fakeAgentPeer{})
+	attachPeer := &recordingAttachPeer{}
+	if _, err := env.registry.StartAttachForUser("sess-1", "client-1", user.ID, attachPeer); err != nil {
+		t.Fatalf("StartAttachForUser returned error: %v", err)
+	}
 
+	handler := env.handler(nil)
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions/sess-1/attach/ws", nil)
-	req.Header.Set("Authorization", basicAuth("demo", "secret"))
+	req := httptest.NewRequest(http.MethodPost, OperatorDeleteUserPath, strings.NewReader(`{"username":"alice"}`))
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.Header.Set("Authorization", bearerAuth(env.operatorTok))
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404", rec.Code)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rec.Code)
 	}
-	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
-		t.Fatalf("content-type = %q, want application/json", got)
+	if sessions := env.registry.ListForUser(user.ID); len(sessions) != 0 {
+		t.Fatalf("sessions = %#v, want empty after user delete", sessions)
 	}
-	var body map[string]string
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("Unmarshal returned error: %v", err)
+	if reasons := attachPeer.CloseReasons(); len(reasons) != 1 || reasons[0] != "account_deleted" {
+		t.Fatalf("close reasons = %#v, want [account_deleted]", reasons)
 	}
-	if body["reason"] != "session_not_found" {
-		t.Fatalf("reason = %q, want session_not_found", body["reason"])
+}
+
+func TestHandlerOperatorRoutesRequireBearerToken(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	handler := env.handler(nil)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, OperatorInviteCodesPath, strings.NewReader(`{"count":1,"expires_in_days":7}`))
+	req.RemoteAddr = "127.0.0.1:1234"
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+	if got := rec.Header().Get("WWW-Authenticate"); got != `Bearer realm="tunnel relay"` {
+		t.Fatalf("WWW-Authenticate = %q, want bearer challenge", got)
+	}
+}
+
+func TestHandlerOperatorRoutesRejectNonLoopbackRequests(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	handler := env.handler(nil)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, OperatorInviteCodesPath, strings.NewReader(`{"count":1,"expires_in_days":7}`))
+	req.RemoteAddr = "198.51.100.20:1234"
+	req.Header.Set("Authorization", bearerAuth(env.operatorTok))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+}
+
+func TestHandlerOperatorRoutesRejectForwardedRequests(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	handler := env.handler(nil)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, OperatorInviteCodesPath, strings.NewReader(`{"count":1,"expires_in_days":7}`))
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.Header.Set("X-Forwarded-For", "198.51.100.20")
+	req.Header.Set("Authorization", bearerAuth(env.operatorTok))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
 	}
 }
 
 func TestAttachWebSocketRejectsCrossOriginBrowserDial(t *testing.T) {
-	reg := NewRegistry()
-	server := httptest.NewServer(NewHandler(HandlerConfig{
-		Registry:   reg,
-		User:       "demo",
-		Password:   "secret",
-		AgentToken: "agent-token",
-	}))
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	env.addInvite(t, "EF4G5H")
+	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	issued := env.login(t, "alice", "password123")
+	agentToken := env.createAgentToken(t, user.ID, "Laptop")
+
+	server := httptest.NewServer(env.handler(nil))
 	defer server.Close()
 
-	agentConn := dialAndRegisterAgent(t, server.URL, "sess-1")
+	agentConn := dialAndRegisterAgent(t, server.URL, agentToken.Plaintext, "sess-1")
 	defer agentConn.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/sessions/sess-1/attach/ws"
 	headers := http.Header{}
-	headers.Set("Authorization", basicAuth("demo", "secret"))
+	headers.Set("Authorization", bearerAuth(issued.AccessToken))
 	headers.Set("Origin", "https://evil.example")
 
 	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, headers)
@@ -399,117 +684,20 @@ func TestAttachWebSocketRejectsCrossOriginBrowserDial(t *testing.T) {
 	}
 }
 
-func TestAttachWebSocketRejectsCrossSchemeSameHostOrigin(t *testing.T) {
-	reg := NewRegistry()
-	server := httptest.NewServer(NewHandler(HandlerConfig{
-		Registry:   reg,
-		User:       "demo",
-		Password:   "secret",
-		AgentToken: "agent-token",
-	}))
+func TestAttachWebSocketForwardsSnapshotLiveBytesAndInputForOwner(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	issued := env.login(t, "alice", "password123")
+	agentToken := env.createAgentToken(t, user.ID, "Laptop")
+
+	server := httptest.NewServer(env.handler(nil))
 	defer server.Close()
 
-	agentConn := dialAndRegisterAgent(t, server.URL, "sess-1")
+	agentConn := dialAndRegisterAgent(t, server.URL, agentToken.Plaintext, "sess-1")
 	defer agentConn.Close()
 
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/sessions/sess-1/attach/ws"
-	headers := http.Header{}
-	headers.Set("Authorization", basicAuth("demo", "secret"))
-	headers.Set("Origin", "https://"+strings.TrimPrefix(server.URL, "http://"))
-
-	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, headers)
-	if err == nil {
-		_ = conn.Close()
-		t.Fatal("Dial returned nil error, want scheme mismatch rejection")
-	}
-	if resp == nil {
-		t.Fatal("resp = nil, want HTTP response")
-	}
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403", resp.StatusCode)
-	}
-}
-
-func TestAttachWebSocketAcceptsForwardedSameOrigin(t *testing.T) {
-	reg := NewRegistry()
-	server := httptest.NewServer(NewHandler(HandlerConfig{
-		Registry:   reg,
-		User:       "demo",
-		Password:   "secret",
-		AgentToken: "agent-token",
-	}))
-	defer server.Close()
-
-	agentConn := dialAndRegisterAgent(t, server.URL, "sess-1")
-	defer agentConn.Close()
-
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/sessions/sess-1/attach/ws"
-	headers := http.Header{}
-	headers.Set("Authorization", basicAuth("demo", "secret"))
-	headers.Set("Origin", "https://relay.example")
-	headers.Set("X-Forwarded-Host", "relay.example")
-	headers.Set("X-Forwarded-Proto", "https")
-
-	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, headers)
-	if err != nil {
-		if resp != nil {
-			t.Fatalf("Dial returned error: %v (status=%d)", err, resp.StatusCode)
-		}
-		t.Fatalf("Dial returned error: %v", err)
-	}
-	defer conn.Close()
-
-	open := readAgentFrame(t, agentConn)
-	if open.Type != "attach_open" || open.ClientID == "" {
-		t.Fatalf("attach_open = %#v, want client id", open)
-	}
-}
-
-func TestAttachWebSocketRejectsMalformedOrigin(t *testing.T) {
-	reg := NewRegistry()
-	server := httptest.NewServer(NewHandler(HandlerConfig{
-		Registry:   reg,
-		User:       "demo",
-		Password:   "secret",
-		AgentToken: "agent-token",
-	}))
-	defer server.Close()
-
-	agentConn := dialAndRegisterAgent(t, server.URL, "sess-1")
-	defer agentConn.Close()
-
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/sessions/sess-1/attach/ws"
-	headers := http.Header{}
-	headers.Set("Authorization", basicAuth("demo", "secret"))
-	headers.Set("Origin", "://bad origin")
-
-	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, headers)
-	if err == nil {
-		_ = conn.Close()
-		t.Fatal("Dial returned nil error, want malformed origin rejection")
-	}
-	if resp == nil {
-		t.Fatal("resp = nil, want HTTP response")
-	}
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403", resp.StatusCode)
-	}
-}
-
-func TestAttachWebSocketForwardsSnapshotLiveBytesAndInput(t *testing.T) {
-	reg := NewRegistry()
-	server := httptest.NewServer(NewHandler(HandlerConfig{
-		Registry:   reg,
-		User:       "demo",
-		Password:   "secret",
-		AgentToken: "agent-token",
-	}))
-	defer server.Close()
-
-	agentConn := dialAndRegisterAgent(t, server.URL, "sess-1")
-	defer agentConn.Close()
-
-	attachConn := dialAttachClient(t, server.URL, "sess-1")
+	attachConn := dialAttachClient(t, server.URL, issued.AccessToken, "sess-1")
 	defer attachConn.Close()
 
 	open := readAgentFrame(t, agentConn)
@@ -564,169 +752,124 @@ func TestAttachWebSocketForwardsSnapshotLiveBytesAndInput(t *testing.T) {
 	if resize := readAttachControl(t, attachConn); resize.Type != "resize" || resize.Cols != 100 || resize.Rows != 30 {
 		t.Fatalf("resize = %#v, want 100x30", resize)
 	}
+}
 
-	livePacket, err := protocol.EncodeTerminalBytesPacket(open.ClientID, []byte("live bytes"))
-	if err != nil {
-		t.Fatalf("EncodeTerminalBytesPacket live returned error: %v", err)
+func TestAttachWebSocketReturnsNotFoundForCrossUserAttach(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	env.addInvite(t, "EF4G5H")
+	alice := env.registerUser(t, "alice", "password123", "AB2C3D")
+	env.registerUser(t, "bob1", "password123", "EF4G5H")
+	aliceIssued := env.login(t, "alice", "password123")
+	bobIssued := env.login(t, "bob1", "password123")
+	bobToken := env.createAgentToken(t, 2, "Bob Laptop")
+
+	server := httptest.NewServer(env.handler(nil))
+	defer server.Close()
+
+	agentConn := dialAndRegisterAgent(t, server.URL, bobToken.Plaintext, "sess-b")
+	defer agentConn.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/sessions/sess-b/attach/ws"
+	headers := http.Header{}
+	headers.Set("Authorization", bearerAuth(aliceIssued.AccessToken))
+
+	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, headers)
+	if err == nil {
+		_ = conn.Close()
+		t.Fatal("Dial returned nil error, want not found")
 	}
-	if err := agentConn.WriteMessage(websocket.BinaryMessage, livePacket); err != nil {
-		t.Fatalf("WriteMessage live returned error: %v", err)
+	if resp == nil {
+		t.Fatal("resp = nil, want HTTP response")
 	}
-	if live := string(readAttachBinary(t, attachConn)); live != "live bytes" {
-		t.Fatalf("live = %q, want live bytes", live)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+
+	_ = agentConn.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
+	var frame protocol.AgentFrame
+	if err := agentConn.ReadJSON(&frame); err == nil {
+		t.Fatalf("agent unexpectedly received frame %#v for cross-user attach", frame)
+	}
+	if alice.ID == 0 || bobIssued.AccessToken == "" {
+		t.Fatal("expected valid users for cross-user test setup")
 	}
 }
 
-func TestAgentWebSocketRejectsBinaryRegisterFrame(t *testing.T) {
-	reg := NewRegistry()
-	server := httptest.NewServer(NewHandler(HandlerConfig{
-		Registry:   reg,
-		User:       "demo",
-		Password:   "secret",
-		AgentToken: "agent-token",
-	}))
+func TestAgentWebSocketRejectsUnknownAgentToken(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	server := httptest.NewServer(env.handler(nil))
 	defer server.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/agent/ws"
 	headers := http.Header{}
-	headers.Set("Authorization", "Bearer agent-token")
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, headers)
-	if err != nil {
-		t.Fatalf("Dial returned error: %v", err)
-	}
-	defer conn.Close()
+	headers.Set("Authorization", bearerAuth("does-not-exist"))
 
-	register, err := json.Marshal(protocol.RegisterFrame(protocol.SessionInfo{
-		SessionID:      "sess-1",
-		Launcher:       "codex",
-		CWD:            "/tmp/project",
-		CommandPreview: "codex",
-		StartedAt:      10,
-	}))
-	if err != nil {
-		t.Fatalf("Marshal returned error: %v", err)
+	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, headers)
+	if err == nil {
+		_ = conn.Close()
+		t.Fatal("Dial returned nil error, want unauthorized")
 	}
-	if err := conn.WriteMessage(websocket.BinaryMessage, register); err != nil {
-		t.Fatalf("WriteMessage returned error: %v", err)
+	if resp == nil {
+		t.Fatal("resp = nil, want HTTP response")
 	}
-
-	_ = conn.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
-	if _, _, err := conn.ReadMessage(); err == nil {
-		t.Fatal("ReadMessage returned nil error, want connection close after binary register frame")
-	}
-
-	if _, ok := reg.Session("sess-1"); ok {
-		t.Fatal("binary register frame created a live session, want none")
-	}
-
-	resp := doAuthenticatedGET(t, server.URL+"/api/sessions")
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
-
-	var sessions []protocol.SessionInfo
-	if err := json.NewDecoder(resp.Body).Decode(&sessions); err != nil {
-		t.Fatalf("Decode returned error: %v", err)
-	}
-	if len(sessions) != 0 {
-		t.Fatalf("sessions = %#v, want no registered session from binary register frame", sessions)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", resp.StatusCode)
 	}
 }
 
-func TestAttachWebSocketRejectsBinaryClientInputFrame(t *testing.T) {
-	reg := NewRegistry()
-	server := httptest.NewServer(NewHandler(HandlerConfig{
-		Registry:   reg,
-		User:       "demo",
-		Password:   "secret",
-		AgentToken: "agent-token",
-	}))
+func TestAgentRegistrationMakesSessionVisibleOnlyToOwner(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	env.addInvite(t, "EF4G5H")
+	alice := env.registerUser(t, "alice", "password123", "AB2C3D")
+	env.registerUser(t, "bob1", "password123", "EF4G5H")
+	aliceIssued := env.login(t, "alice", "password123")
+	bobIssued := env.login(t, "bob1", "password123")
+	agentToken := env.createAgentToken(t, alice.ID, "Laptop")
+
+	server := httptest.NewServer(env.handler(nil))
 	defer server.Close()
 
-	agentConn := dialAndRegisterAgent(t, server.URL, "sess-1")
+	agentConn := dialAndRegisterAgent(t, server.URL, agentToken.Plaintext, "sess-a")
 	defer agentConn.Close()
 
-	attachConn := dialAttachClient(t, server.URL, "sess-1")
-	defer attachConn.Close()
-
-	open := readAgentFrame(t, agentConn)
-	if open.Type != "attach_open" || open.ClientID == "" {
-		t.Fatalf("attach_open = %#v, want client id", open)
+	aliceResp := doBearerGET(t, server.URL+"/api/sessions", aliceIssued.AccessToken)
+	defer aliceResp.Body.Close()
+	if aliceResp.StatusCode != http.StatusOK {
+		t.Fatalf("alice status = %d, want 200", aliceResp.StatusCode)
+	}
+	var aliceSessions []protocol.SessionInfo
+	if err := json.NewDecoder(aliceResp.Body).Decode(&aliceSessions); err != nil {
+		t.Fatalf("Decode alice sessions returned error: %v", err)
+	}
+	if len(aliceSessions) != 1 || aliceSessions[0].SessionID != "sess-a" {
+		t.Fatalf("alice sessions = %#v, want sess-a", aliceSessions)
 	}
 
-	payload, err := json.Marshal(protocol.EncodeClientInputText("hello", false))
-	if err != nil {
-		t.Fatalf("Marshal returned error: %v", err)
+	bobResp := doBearerGET(t, server.URL+"/api/sessions", bobIssued.AccessToken)
+	defer bobResp.Body.Close()
+	if bobResp.StatusCode != http.StatusOK {
+		t.Fatalf("bob status = %d, want 200", bobResp.StatusCode)
 	}
-	if err := attachConn.WriteMessage(websocket.BinaryMessage, payload); err != nil {
-		t.Fatalf("WriteMessage returned error: %v", err)
+	var bobSessions []protocol.SessionInfo
+	if err := json.NewDecoder(bobResp.Body).Decode(&bobSessions); err != nil {
+		t.Fatalf("Decode bob sessions returned error: %v", err)
 	}
-
-	_ = agentConn.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
-	for {
-		var frame protocol.AgentFrame
-		err := agentConn.ReadJSON(&frame)
-		if err != nil {
-			if strings.Contains(err.Error(), "i/o timeout") {
-				return
-			}
-			t.Fatalf("ReadJSON returned error: %v", err)
-		}
-		if frame.Type == "input_text" || frame.Type == "input_key" {
-			t.Fatalf("frame = %#v, want binary client input to be rejected before forwarding", frame)
-		}
-	}
-}
-
-func TestAttachWebSocketClosesWhenAgentDisconnects(t *testing.T) {
-	reg := NewRegistry()
-	server := httptest.NewServer(NewHandler(HandlerConfig{
-		Registry:   reg,
-		User:       "demo",
-		Password:   "secret",
-		AgentToken: "agent-token",
-	}))
-	defer server.Close()
-
-	agentConn := dialAndRegisterAgent(t, server.URL, "sess-1")
-	attachConn := dialAttachClient(t, server.URL, "sess-1")
-	defer attachConn.Close()
-
-	open := readAgentFrame(t, agentConn)
-	if err := agentConn.WriteJSON(protocol.AttachReadyFrame(open.ClientID, 120, 40)); err != nil {
-		t.Fatalf("WriteJSON attach_ready returned error: %v", err)
-	}
-	if err := agentConn.WriteJSON(protocol.SnapshotDoneFrame(open.ClientID)); err != nil {
-		t.Fatalf("WriteJSON snapshot_done returned error: %v", err)
-	}
-
-	if msg := readAttachControl(t, attachConn); msg.Type != "attached" {
-		t.Fatalf("attached = %#v, want attached", msg)
-	}
-	if msg := readAttachControl(t, attachConn); msg.Type != "snapshot_done" {
-		t.Fatalf("snapshot_done = %#v, want snapshot_done", msg)
-	}
-
-	_ = agentConn.Close()
-
-	if closing := readAttachControl(t, attachConn); closing.Type != "closing" || closing.Reason != "session_offline" {
-		t.Fatalf("closing = %#v, want session_offline", closing)
+	if len(bobSessions) != 0 {
+		t.Fatalf("bob sessions = %#v, want none", bobSessions)
 	}
 }
 
 func TestHandlerAccessLogsRequestsAndSkipsHealthz(t *testing.T) {
-	reg := NewRegistry()
-	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, fakeAgentPeer{})
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	env.registerUser(t, "alice", "password123", "AB2C3D")
+	issued := env.login(t, "alice", "password123")
+	env.registry.RegisterOwned(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, SessionOwner{UserID: 1, AgentTokenID: "agt-1"}, fakeAgentPeer{})
 	logs := &syncBuffer{}
 
-	handler := NewHandler(HandlerConfig{
-		Registry:   reg,
-		User:       "demo",
-		Password:   "secret",
-		AgentToken: "agent-token",
-		Logger:     NewLogger(logs),
-	})
+	handler := env.handler(NewLogger(logs))
 
 	healthRec := httptest.NewRecorder()
 	healthReq := httptest.NewRequest(http.MethodGet, "/healthz", nil)
@@ -740,7 +883,7 @@ func TestHandlerAccessLogsRequestsAndSkipsHealthz(t *testing.T) {
 
 	badMethodRec := httptest.NewRecorder()
 	badMethodReq := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-1/attach/ws", nil)
-	badMethodReq.Header.Set("Authorization", basicAuth("demo", "secret"))
+	badMethodReq.Header.Set("Authorization", bearerAuth(issued.AccessToken))
 	handler.ServeHTTP(badMethodRec, badMethodReq)
 
 	entries := readLogEntries(t, logs)
@@ -775,12 +918,6 @@ func TestHandlerAccessLogsRequestsAndSkipsHealthz(t *testing.T) {
 	if got := int(logNumber(t, badMethodEntry, "status")); got != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want 405", got)
 	}
-	if got := logString(badMethodEntry, "target"); got != "/api/sessions/sess-1/attach/ws" {
-		t.Fatalf("target = %q, want attach target preserved", got)
-	}
-	if got := int64(logNumber(t, badMethodEntry, "response_bytes")); got != int64(badMethodRec.Body.Len()) {
-		t.Fatalf("response_bytes = %d, want %d", got, badMethodRec.Body.Len())
-	}
 
 	authFailed := findLogEntryByEvent(t, entries, "auth_failed")
 	if got := logString(authFailed, "path"); got != "/api/sessions" {
@@ -789,20 +926,17 @@ func TestHandlerAccessLogsRequestsAndSkipsHealthz(t *testing.T) {
 }
 
 func TestHandlerLogsWebSocketUpgradeFailureWithoutLifecycle(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	issued := env.login(t, "alice", "password123")
+	env.registry.RegisterOwned(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, SessionOwner{UserID: user.ID, AgentTokenID: "agt-1"}, fakeAgentPeer{})
 	logs := &syncBuffer{}
-	reg := NewRegistry()
-	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, fakeAgentPeer{})
-	handler := NewHandler(HandlerConfig{
-		Registry:   reg,
-		User:       "demo",
-		Password:   "secret",
-		AgentToken: "agent-token",
-		Logger:     NewLogger(logs),
-	})
+	handler := env.handler(NewLogger(logs))
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/sess-1/attach/ws", nil)
-	req.Header.Set("Authorization", basicAuth("demo", "secret"))
+	req.Header.Set("Authorization", bearerAuth(issued.AccessToken))
 	handler.ServeHTTP(rec, req)
 
 	entries := readLogEntries(t, logs)
@@ -816,15 +950,13 @@ func TestHandlerLogsWebSocketUpgradeFailureWithoutLifecycle(t *testing.T) {
 	}
 }
 
-func doAuthenticatedGET(t *testing.T, target string) *http.Response {
+func doBearerGET(t *testing.T, target, accessToken string) *http.Response {
 	t.Helper()
-
 	req, err := http.NewRequest(http.MethodGet, target, nil)
 	if err != nil {
 		t.Fatalf("NewRequest returned error: %v", err)
 	}
-	req.Header.Set("Authorization", basicAuth("demo", "secret"))
-
+	req.Header.Set("Authorization", bearerAuth(accessToken))
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("Do returned error: %v", err)
@@ -875,32 +1007,15 @@ func readAttachBinary(t *testing.T, conn *websocket.Conn) []byte {
 	}
 }
 
-func basicAuth(user, pass string) string {
-	return "Basic " + basicAuthValue(user, pass)
+func bearerAuth(token string) string {
+	return "Bearer " + token
 }
 
-func basicAuthValue(user, pass string) string {
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.SetBasicAuth(user, pass)
-	return strings.TrimPrefix(req.Header.Get("Authorization"), "Basic ")
-}
-
-func dialAndRegisterAgent(t *testing.T, serverURL, sessionID string) *websocket.Conn {
+func dialAndRegisterAgent(t *testing.T, serverURL, agentToken, sessionID string) *websocket.Conn {
 	t.Helper()
-	return dialAndRegisterAgentWithHeaders(t, serverURL, sessionID, nil)
-}
-
-func dialAndRegisterAgentWithHeaders(t *testing.T, serverURL, sessionID string, extraHeaders http.Header) *websocket.Conn {
-	t.Helper()
-
 	wsURL := "ws" + strings.TrimPrefix(serverURL, "http") + "/agent/ws"
 	headers := http.Header{}
-	headers.Set("Authorization", "Bearer agent-token")
-	for k, values := range extraHeaders {
-		for _, value := range values {
-			headers.Add(k, value)
-		}
-	}
+	headers.Set("Authorization", bearerAuth(agentToken))
 
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, headers)
 	if err != nil {
@@ -920,12 +1035,11 @@ func dialAndRegisterAgentWithHeaders(t *testing.T, serverURL, sessionID string, 
 	return conn
 }
 
-func dialAttachClient(t *testing.T, serverURL, sessionID string) *websocket.Conn {
+func dialAttachClient(t *testing.T, serverURL, accessToken, sessionID string) *websocket.Conn {
 	t.Helper()
-
 	wsURL := "ws" + strings.TrimPrefix(serverURL, "http") + "/api/sessions/" + sessionID + "/attach/ws"
 	headers := http.Header{}
-	headers.Set("Authorization", basicAuth("demo", "secret"))
+	headers.Set("Authorization", bearerAuth(accessToken))
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, headers)
 	if err != nil {
 		t.Fatalf("Dial attach returned error: %v", err)

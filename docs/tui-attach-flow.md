@@ -371,7 +371,7 @@ When the user opens a session:
 1. call `GET /api/sessions`
 2. confirm the target `session_id` is present
 3. create a fresh terminal emulator instance with no prior state
-4. open `GET /api/sessions/:id/attach/ws` with Basic Auth
+4. open `GET /api/sessions/:id/attach/ws` with the app bearer access token
 5. wait for `attached`
 6. size the emulator to `cols` and `rows`
 7. feed every binary frame into the emulator in arrival order

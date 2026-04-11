@@ -34,8 +34,14 @@ type Registry struct {
 	logger   *Logger
 }
 
+type SessionOwner struct {
+	UserID       int64
+	AgentTokenID string
+}
+
 type liveSession struct {
 	info            protocol.SessionInfo
+	owner           SessionOwner
 	peer            AgentPeer
 	pendingAttached map[string]AttachPeer
 	attached        map[string]AttachPeer
@@ -61,6 +67,10 @@ func (r *Registry) SetLogger(logger *Logger) {
 }
 
 func (r *Registry) Register(info protocol.SessionInfo, peer AgentPeer) {
+	r.RegisterOwned(info, SessionOwner{}, peer)
+}
+
+func (r *Registry) RegisterOwned(info protocol.SessionInfo, owner SessionOwner, peer AgentPeer) {
 	r.mu.Lock()
 	old := r.sessions[info.SessionID]
 	logger := r.logger
@@ -75,6 +85,7 @@ func (r *Registry) Register(info protocol.SessionInfo, peer AgentPeer) {
 
 	r.sessions[info.SessionID] = &liveSession{
 		info:            info,
+		owner:           owner,
 		peer:            peer,
 		pendingAttached: make(map[string]AttachPeer),
 		attached:        make(map[string]AttachPeer),
@@ -154,12 +165,45 @@ func (r *Registry) List() []protocol.SessionInfo {
 	return out
 }
 
+func (r *Registry) ListForUser(userID int64) []protocol.SessionInfo {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	out := make([]protocol.SessionInfo, 0, len(r.sessions))
+	for _, live := range r.sessions {
+		if live.owner.UserID != userID {
+			continue
+		}
+		out = append(out, live.snapshot())
+	}
+	sort.Slice(out, func(i, j int) bool {
+		ti := out[i].StartedAt
+		tj := out[j].StartedAt
+		if ti == tj {
+			return out[i].SessionID < out[j].SessionID
+		}
+		return ti > tj
+	})
+	return out
+}
+
 func (r *Registry) Session(sessionID string) (protocol.SessionInfo, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	live, ok := r.sessions[sessionID]
 	if !ok {
+		return protocol.SessionInfo{}, false
+	}
+	return live.snapshot(), true
+}
+
+func (r *Registry) SessionForUser(sessionID string, userID int64) (protocol.SessionInfo, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	live, ok := r.sessions[sessionID]
+	if !ok || live.owner.UserID != userID {
 		return protocol.SessionInfo{}, false
 	}
 	return live.snapshot(), true
@@ -197,6 +241,21 @@ func (r *Registry) StartAttach(sessionID, clientID string, client AttachPeer) (A
 
 	live, ok := r.sessions[sessionID]
 	if !ok {
+		return nil, ErrSessionNotFound
+	}
+	if live.peer == nil {
+		return nil, ErrSessionOffline
+	}
+	live.pendingAttached[clientID] = client
+	return live.peer, nil
+}
+
+func (r *Registry) StartAttachForUser(sessionID, clientID string, userID int64, client AttachPeer) (AgentPeer, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	live, ok := r.sessions[sessionID]
+	if !ok || live.owner.UserID != userID {
 		return nil, ErrSessionNotFound
 	}
 	if live.peer == nil {
@@ -392,4 +451,45 @@ func deactivateAgentPeer(peer AgentPeer) {
 	if deactivatable, ok := peer.(deactivatableAgentPeer); ok {
 		deactivatable.Deactivate()
 	}
+}
+
+func (r *Registry) DisconnectUserSessions(userID int64, reason string) int {
+	return r.disconnectMatching(func(live *liveSession) bool {
+		return live.owner.UserID == userID
+	}, reason)
+}
+
+func (r *Registry) DisconnectAgentTokenSessions(agentTokenID string, reason string) int {
+	return r.disconnectMatching(func(live *liveSession) bool {
+		return live.owner.AgentTokenID == agentTokenID
+	}, reason)
+}
+
+func (r *Registry) disconnectMatching(match func(*liveSession) bool, reason string) int {
+	r.mu.Lock()
+	type disconnectedSession struct {
+		peer     AgentPeer
+		attached []AttachPeer
+	}
+	var toClose []disconnectedSession
+	for sessionID, live := range r.sessions {
+		if !match(live) {
+			continue
+		}
+		delete(r.sessions, sessionID)
+		deactivateAgentPeer(live.peer)
+		toClose = append(toClose, disconnectedSession{
+			peer:     live.peer,
+			attached: takeAllAttachedLocked(live),
+		})
+	}
+	r.mu.Unlock()
+
+	for _, disconnected := range toClose {
+		closeAttachedPeers(disconnected.attached, reason)
+		if disconnected.peer != nil {
+			_ = disconnected.peer.Close()
+		}
+	}
+	return len(toClose)
 }

@@ -25,6 +25,8 @@ DEPLOY_RELAY_PATH ?= ~/relay
 DEPLOY_SERVICE ?= agentunnel-relay
 ## DEPLOY_INSTALL_PATH: Installed relay path used by systemd ExecStart.
 DEPLOY_INSTALL_PATH ?= /usr/local/bin/relay
+## DEPLOY_ENV_FILE: Remote env file sourced before `relay migrate`.
+DEPLOY_ENV_FILE ?= /etc/agentunnel/relay.env
 
 # Internal paths shared by related targets.
 TUNNEL_PKG := ./cmd/tunnel
@@ -60,7 +62,7 @@ start: ## Start the relay binary in the background and write the configured pid 
 		echo "relay binary not found or not executable: $(RELAY_BIN)"; \
 		exit 1; \
 	fi; \
-	nohup "$(RELAY_BIN)" --port "$(RELAY_PORT)" >> "$(RELAY_LOG_FILE)" 2>&1 & \
+	nohup "$(RELAY_BIN)" serve --listen-addr "127.0.0.1:$(RELAY_PORT)" >> "$(RELAY_LOG_FILE)" 2>&1 & \
 	echo $$! > "$(RELAY_PID_FILE)"; \
 	sleep 1; \
 	pid="$$(cat "$(RELAY_PID_FILE)")"; \
@@ -127,9 +129,9 @@ install: build ## Install `tunnel` and `relay` into `$(INSTALL_DIR)`.
 	cp -f "$(TUNNEL_BIN)" "$(RELAY_BUILD_BIN)" "$(INSTALL_DIR)/"; \
 	echo "installed tunnel and relay to $(INSTALL_DIR)"
 
-deploy: build-linux ## Build, upload, and restart the relay on the remote host.
+deploy: build-linux ## Build, upload, migrate, and restart the relay on the remote host.
 	scp $(RELAY_BUILD_BIN) $(DEPLOY_HOST):$(DEPLOY_RELAY_PATH)
-	ssh $(DEPLOY_HOST) 'sudo install -m 0755 $(DEPLOY_RELAY_PATH) $(DEPLOY_INSTALL_PATH) && sudo systemctl restart $(DEPLOY_SERVICE)'
+	ssh $(DEPLOY_HOST) 'sudo install -m 0755 $(DEPLOY_RELAY_PATH) $(DEPLOY_INSTALL_PATH) && sudo /bin/sh -lc '"'"'set -a && . $(DEPLOY_ENV_FILE) && set +a && $(DEPLOY_INSTALL_PATH) migrate'"'"' && sudo systemctl restart $(DEPLOY_SERVICE)'
 
 clean: ## Remove built binaries from `$(BIN_DIR)`.
 	rm -rf "$(BIN_DIR)"
