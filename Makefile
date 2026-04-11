@@ -18,7 +18,7 @@ RELAY_PID_FILE ?= $(LOG_DIR)/relay.pid
 ## RELAY_LOG_FILE: Relay log file written by `make start`.
 RELAY_LOG_FILE ?= $(LOG_DIR)/relay.log
 ## DEPLOY_HOST: SSH host for `make deploy`.
-DEPLOY_HOST ?= relay
+DEPLOY_HOST ?= diarome
 ## DEPLOY_RELAY_PATH: Remote path for the relay binary.
 DEPLOY_RELAY_PATH ?= ~/relay
 ## DEPLOY_SERVICE: Systemd service name restarted by `make deploy`.
