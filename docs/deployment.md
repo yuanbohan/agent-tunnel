@@ -19,7 +19,7 @@ For the relay CLI command reference itself, see [operation.md](./operation.md).
 /usr/local/bin/agentunnel-relay-migrate     # installed migrator binary
 ~/relay                                      # uploaded staging binary from dev machine
 ~/agentunnel-relay-migrate                   # uploaded staging migrator binary
-/etc/agentunnel/schema/relay/                # installed relay schema SQL files
+/etc/agentunnel/schema/                      # installed relay schema SQL files
 /etc/systemd/system/agentunnel-relay.service # systemd unit
 /etc/nginx/sites-available/<domain>          # nginx site config
 /etc/nginx/conf.d/websocket_map.conf         # shared WebSocket header map
@@ -81,7 +81,7 @@ make build-linux          # cross-compile for linux/amd64
 scp bin/relay diarome:~/relay
 scp bin/agentunnel-relay-migrate diarome:~/agentunnel-relay-migrate
 ssh diarome 'rm -rf /tmp/agentunnel-relay-schema && mkdir -p /tmp/agentunnel-relay-schema'
-scp schema/relay/*.sql diarome:/tmp/agentunnel-relay-schema/
+scp schema/*.sql diarome:/tmp/agentunnel-relay-schema/
 ```
 
 `diarome` here is an SSH config host alias. Replace with `user@your-vps-ip` if you don't have one.
@@ -91,8 +91,8 @@ scp schema/relay/*.sql diarome:/tmp/agentunnel-relay-schema/
 ```bash
 sudo install -m 0755 ~/relay /usr/local/bin/relay
 sudo install -m 0755 ~/agentunnel-relay-migrate /usr/local/bin/agentunnel-relay-migrate
-sudo install -d -m 0755 /etc/agentunnel/schema/relay
-sudo install -m 0644 /tmp/agentunnel-relay-schema/*.sql /etc/agentunnel/schema/relay/
+sudo install -d -m 0755 /etc/agentunnel/schema
+sudo install -m 0644 /tmp/agentunnel-relay-schema/*.sql /etc/agentunnel/schema/
 ```
 
 ### 5. Create the systemd service
@@ -134,7 +134,7 @@ Enable and start:
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable agentunnel-relay
-sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && /usr/local/bin/agentunnel-relay-migrate --schema-dir /etc/agentunnel/schema/relay'
+sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && /usr/local/bin/agentunnel-relay-migrate --schema-dir /etc/agentunnel/schema'
 sudo systemctl start agentunnel-relay
 ```
 
@@ -341,11 +341,11 @@ make build-linux
 scp bin/relay diarome:~/relay
 scp bin/agentunnel-relay-migrate diarome:~/agentunnel-relay-migrate
 ssh diarome 'rm -rf /tmp/agentunnel-relay-schema && mkdir -p /tmp/agentunnel-relay-schema'
-scp schema/relay/*.sql diarome:/tmp/agentunnel-relay-schema/
+scp schema/*.sql diarome:/tmp/agentunnel-relay-schema/
 ssh diarome 'sudo install -m 0755 ~/relay /usr/local/bin/relay'
 ssh diarome 'sudo install -m 0755 ~/agentunnel-relay-migrate /usr/local/bin/agentunnel-relay-migrate'
-ssh diarome 'sudo mkdir -p /etc/agentunnel/schema/relay && sudo install -m 0644 /tmp/agentunnel-relay-schema/*.sql /etc/agentunnel/schema/relay/'
-ssh diarome 'sudo /bin/sh -lc '"'"'set -a && . /etc/agentunnel/relay.env && set +a && /usr/local/bin/agentunnel-relay-migrate --schema-dir /etc/agentunnel/schema/relay'"'"''
+ssh diarome 'sudo mkdir -p /etc/agentunnel/schema && sudo install -m 0644 /tmp/agentunnel-relay-schema/*.sql /etc/agentunnel/schema/'
+ssh diarome 'sudo /bin/sh -lc '"'"'set -a && . /etc/agentunnel/relay.env && set +a && /usr/local/bin/agentunnel-relay-migrate --schema-dir /etc/agentunnel/schema'"'"''
 ssh diarome 'sudo systemctl restart agentunnel-relay'
 ```
 
@@ -354,7 +354,7 @@ ssh diarome 'sudo systemctl restart agentunnel-relay'
 The Makefile keeps the common path simple:
 
 - `make deploy` builds, uploads, installs, and restarts the relay
-- `make deploy-schema` uploads `schema/relay/*.sql` to the remote host
+- `make deploy-schema` uploads `schema/*.sql` to the remote host
 - `make deploy-migrate` runs `agentunnel-relay-migrate` separately when a release actually changes the PostgreSQL schema
 
 ```bash
@@ -399,8 +399,8 @@ sudo systemctl restart agentunnel-relay
 sudo systemctl stop agentunnel-relay
 
 # Relay migrations and operator workflows (run on the relay host)
-sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && /usr/local/bin/agentunnel-relay-migrate --schema-dir /etc/agentunnel/schema/relay'
-sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && /usr/local/bin/agentunnel-relay-migrate --schema-dir /etc/agentunnel/schema/relay --baseline 0002_operator_audit.sql'
+sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && /usr/local/bin/agentunnel-relay-migrate --schema-dir /etc/agentunnel/schema'
+sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && /usr/local/bin/agentunnel-relay-migrate --schema-dir /etc/agentunnel/schema --baseline 0002_operator_audit.sql'
 sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && /usr/local/bin/relay invite create --count 5 --expires-in 7d'
 sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && /usr/local/bin/relay invite disable --code AB2C3D'
 sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && /usr/local/bin/relay user delete --username alice'

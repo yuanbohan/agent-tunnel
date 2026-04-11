@@ -44,7 +44,7 @@ export RELAY_DATABASE_URL=postgres://localhost/agent_tunnel?sslmode=disable
 export RELAY_APP_SECRET=change-me
 export RELAY_OPERATOR_TOKEN=change-me-operator-token
 
-agentunnel-relay-migrate --schema-dir ./schema/relay
+agentunnel-relay-migrate --schema-dir ./schema
 relay serve --listen-addr 127.0.0.1:8586
 ```
 
@@ -56,12 +56,12 @@ relay serve --listen-addr 127.0.0.1:8586
 
 ## Run Schema Migrations
 
-Apply all unapplied SQL files from `schema/relay/`:
+Apply all unapplied SQL files from `schema/`:
 
 ```bash
 export RELAY_DATABASE_URL=postgres://localhost/agent_tunnel?sslmode=disable
 
-agentunnel-relay-migrate --schema-dir ./schema/relay
+agentunnel-relay-migrate --schema-dir ./schema
 ```
 
 Baseline an existing database that already matches migrations through `0002_operator_audit.sql`:
@@ -69,13 +69,13 @@ Baseline an existing database that already matches migrations through `0002_oper
 ```bash
 export RELAY_DATABASE_URL=postgres://localhost/agent_tunnel?sslmode=disable
 
-agentunnel-relay-migrate --schema-dir ./schema/relay --baseline 0002_operator_audit.sql
+agentunnel-relay-migrate --schema-dir ./schema --baseline 0002_operator_audit.sql
 ```
 
 Notes:
 
 - `--baseline` records migrations up to and including the specified file as applied without executing their SQL.
-- `--schema-dir` is required. In a checked-out repo that is usually `./schema/relay`; on a deployed host it is usually `/etc/agentunnel/schema/relay`.
+- `--schema-dir` is required. In a checked-out repo that is usually `./schema`; on a deployed host it is usually `/etc/agentunnel/schema`.
 - Use baseline only once when adopting migration tracking for an already-initialized database.
 - Regular schema updates should use `agentunnel-relay-migrate --schema-dir ...` with no baseline flag.
 
@@ -157,7 +157,7 @@ export RELAY_APP_SECRET=change-me
 export RELAY_OPERATOR_TOKEN=change-me-operator-token
 export RELAY_LISTEN_ADDR=127.0.0.1:8586
 
-agentunnel-relay-migrate --schema-dir ./schema/relay
+agentunnel-relay-migrate --schema-dir ./schema
 relay serve --listen-addr "$RELAY_LISTEN_ADDR"
 
 # In another shell on the same host:

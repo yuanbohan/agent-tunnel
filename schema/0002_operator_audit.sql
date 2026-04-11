@@ -1,4 +1,4 @@
-create table operator_audit_events (
+create table if not exists operator_audit_events (
     id bigint generated always as identity primary key,
     event_type text not null,
     actor text not null,
@@ -9,5 +9,5 @@ create table operator_audit_events (
     created_at timestamptz not null
 );
 
-create index operator_audit_events_event_type_id_idx
+create index if not exists operator_audit_events_event_type_id_idx
     on operator_audit_events(event_type, id);

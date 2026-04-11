@@ -32,14 +32,14 @@ DEPLOY_MIGRATOR_INSTALL_PATH ?= /usr/local/bin/agentunnel-relay-migrate
 ## DEPLOY_ENV_FILE: Remote env file sourced by `make deploy-migrate`.
 DEPLOY_ENV_FILE ?= /etc/agentunnel/relay.env
 ## DEPLOY_SCHEMA_DIR: Remote directory containing relay schema SQL files.
-DEPLOY_SCHEMA_DIR ?= /etc/agentunnel/schema/relay
+DEPLOY_SCHEMA_DIR ?= /etc/agentunnel/schema
 ## MIGRATOR_ARGS: Extra arguments passed to the remote migrator, for example `--baseline 0002_operator_audit.sql`.
 MIGRATOR_ARGS ?=
 
 # Internal paths shared by related targets.
 TUNNEL_PKG := ./cmd/tunnel
 RELAY_PKG := ./cmd/relay
-MIGRATOR_PKG := ./cmd/relay-migrate
+MIGRATOR_PKG := ./cmd/migrate
 TUNNEL_BIN := $(BIN_DIR)/tunnel
 RELAY_BUILD_BIN := $(BIN_DIR)/relay
 MIGRATOR_BUILD_BIN := $(BIN_DIR)/agentunnel-relay-migrate
@@ -150,7 +150,7 @@ deploy-install: build-linux ## Build, upload, and install the relay and migrator
 deploy-schema: ## Upload relay schema SQL files to the remote host.
 	ssh $(DEPLOY_HOST) 'sudo mkdir -p $(DEPLOY_SCHEMA_DIR)'
 	ssh $(DEPLOY_HOST) 'rm -rf /tmp/agentunnel-relay-schema && mkdir -p /tmp/agentunnel-relay-schema'
-	scp schema/relay/*.sql $(DEPLOY_HOST):/tmp/agentunnel-relay-schema/
+	scp schema/*.sql $(DEPLOY_HOST):/tmp/agentunnel-relay-schema/
 	ssh $(DEPLOY_HOST) 'sudo /bin/sh -lc '"'"'install -m 0644 /tmp/agentunnel-relay-schema/*.sql $(DEPLOY_SCHEMA_DIR)/ && rm -rf /tmp/agentunnel-relay-schema'"'"''
 
 deploy-migrate: ## Run relay schema migrations on the remote host using the installed migrator.

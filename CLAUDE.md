@@ -8,7 +8,8 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 
 - The main product is the `tunnel` CLI with relay-first startup semantics and background reconnect after local session start.
 - `cmd/tunnel` builds the `tunnel` CLI. It launches `claude`, `codex`, or `gemini`, keeps the local terminal interactive, and maintains the authoritative headless terminal mirror for the current PTY session.
-- `cmd/relay` is the standalone relay server. It exposes authenticated HTTP and WebSocket APIs for external clients, authenticates app clients with bearer app sessions, authenticates agents with user-owned bearer agent tokens, keeps operator maintenance routes local-only outside the public `/api/` namespace, persists accounts and auth state in PostgreSQL, and maintains a live in-memory session registry with session-scoped attach routing. It does not retain transcript history. It starts via explicit subcommands such as `serve`, `migrate`, `invite create`, `invite disable`, and `user delete`.
+- `cmd/relay` is the standalone relay server. It exposes authenticated HTTP and WebSocket APIs for external clients, authenticates app clients with bearer app sessions, authenticates agents with user-owned bearer agent tokens, keeps operator maintenance routes local-only outside the public `/api/` namespace, persists accounts and auth state in PostgreSQL, and maintains a live in-memory session registry with session-scoped attach routing. It does not retain transcript history. It starts via explicit subcommands such as `serve`, `invite create`, `invite disable`, and `user delete`.
+- `cmd/migrate` builds the standalone relay schema migrator used for explicit PostgreSQL schema changes.
 - `internal/tunnel/session/` owns PTY lifecycle, Hub fanout, local terminal attach, resize/input forwarding, and the terminal mirror used for attach snapshots.
 - `internal/protocol/` defines attach-oriented wire types: agent registration, attach control, session info, structured input, and client-routed terminal-byte packets.
 - `internal/tunnel/connector/` is the mandatory outbound connector from a local `tunnel` process to `/agent/ws` on the relay. It registers sessions, publishes resize metadata, answers attach-open/attach-close control, and routes client-scoped terminal bytes.
@@ -18,7 +19,8 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 - `internal/config/` owns relay process configuration loaded during relay startup.
 - `internal/logx/` owns the global structured logger setup used across the relay.
 - `internal/relay/handler/` owns the Gin router, HTTP middleware, REST handlers, and WebSocket transport split by API, agent, and attach concerns.
-- `internal/relay/store/postgres/` owns PostgreSQL persistence and embedded relay migrations.
+- `internal/migration/` owns the relay schema migration runner and migration tracking logic.
+- `internal/relay/store/postgres/` owns PostgreSQL persistence for relay auth and operator state.
 - `internal/tunnel/launcher/` is the supported-launcher registry and PATH resolution layer.
 - `docs/architecture.md` describes how all Go packages and relay-facing protocols interact.
 

@@ -21,24 +21,24 @@ func TestLoadConfigDefaultsAndRequirements(t *testing.T) {
 
 	cfg, err := loadConfig(testEnv(map[string]string{
 		"RELAY_DATABASE_URL": "postgres://relay",
-	}), []string{"--schema-dir", "/tmp/schema/relay"})
+	}), []string{"--schema-dir", "/tmp/schema"})
 	if err != nil {
 		t.Fatalf("loadConfig returned error: %v", err)
 	}
-	if cfg.SchemaDir != "/tmp/schema/relay" {
-		t.Fatalf("SchemaDir = %q, want /tmp/schema/relay", cfg.SchemaDir)
+	if cfg.SchemaDir != "/tmp/schema" {
+		t.Fatalf("SchemaDir = %q, want /tmp/schema", cfg.SchemaDir)
 	}
 }
 
 func TestLoadConfigAllowsBaselineAndSchemaDir(t *testing.T) {
 	cfg, err := loadConfig(testEnv(map[string]string{
 		"RELAY_DATABASE_URL": "postgres://relay",
-	}), []string{"--schema-dir", "/tmp/schema/relay", "--baseline", "0002_operator_audit.sql"})
+	}), []string{"--schema-dir", "/tmp/schema", "--baseline", "0002_operator_audit.sql"})
 	if err != nil {
 		t.Fatalf("loadConfig returned error: %v", err)
 	}
-	if cfg.SchemaDir != "/tmp/schema/relay" {
-		t.Fatalf("SchemaDir = %q, want /tmp/schema/relay", cfg.SchemaDir)
+	if cfg.SchemaDir != "/tmp/schema" {
+		t.Fatalf("SchemaDir = %q, want /tmp/schema", cfg.SchemaDir)
 	}
 	if cfg.Baseline != "0002_operator_audit.sql" {
 		t.Fatalf("Baseline = %q, want 0002_operator_audit.sql", cfg.Baseline)

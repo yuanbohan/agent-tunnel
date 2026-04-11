@@ -9,6 +9,7 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"yuanbohan/tunnel/internal/migration"
 	"yuanbohan/tunnel/internal/relay/auth"
 )
 
@@ -25,7 +26,7 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	defer db.Close()
 
 	ctx := context.Background()
-	if err := RunMigrations(ctx, db, testSchemaDir(t)); err != nil {
+	if err := migration.RunMigrations(ctx, db, testSchemaDir(t)); err != nil {
 		t.Fatalf("RunMigrations returned error: %v", err)
 	}
 
@@ -116,7 +117,7 @@ func TestPostgresStoreIntegration(t *testing.T) {
 func testSchemaDir(t *testing.T) string {
 	t.Helper()
 
-	dir := filepath.Join("..", "..", "..", "..", "schema", "relay")
+	dir := filepath.Join("..", "..", "..", "..", "schema")
 	if _, err := os.Stat(dir); err != nil {
 		t.Fatalf("stat schema dir %q: %v", dir, err)
 	}

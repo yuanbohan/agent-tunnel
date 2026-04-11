@@ -222,7 +222,8 @@ Closing the agent process ends the session. A later agent launch starts a differ
 - `internal/relay/operator/`: operator invite and user-maintenance services
 - `internal/relay/session/`: live session registry, owner metadata, and attach-session indexing
 - `internal/relay/handler/`: Gin router assembly plus subpackages for middleware, REST API, agent WebSocket flows, attach WebSocket flows, shared request helpers, and HTTP DTOs
-- `internal/relay/store/postgres/`: PostgreSQL-backed auth and operator persistence plus embedded migrations
+- `internal/migration/`: relay schema migration runner and `schema_migrations` tracking
+- `internal/relay/store/postgres/`: PostgreSQL-backed auth and operator persistence
 - `internal/protocol/`: shared attach-oriented wire types
 
 ## Related Documents

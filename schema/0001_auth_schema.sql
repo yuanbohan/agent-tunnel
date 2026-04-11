@@ -1,4 +1,4 @@
-create table users (
+create table if not exists users (
     id bigint generated always as identity primary key,
     username text not null,
     username_norm text not null unique,
@@ -7,7 +7,7 @@ create table users (
     updated_at timestamptz not null
 );
 
-create table invite_codes (
+create table if not exists invite_codes (
     id bigint generated always as identity primary key,
     code_digest text not null unique,
     code_hint text not null,
@@ -20,10 +20,10 @@ create table invite_codes (
     consumed_by_user_id bigint references users(id) on delete set null
 );
 
-create index invite_codes_created_at_idx on invite_codes(created_at desc);
-create index invite_codes_consumed_at_idx on invite_codes(consumed_at);
+create index if not exists invite_codes_created_at_idx on invite_codes(created_at desc);
+create index if not exists invite_codes_consumed_at_idx on invite_codes(consumed_at);
 
-create table app_sessions (
+create table if not exists app_sessions (
     id text primary key,
     user_id bigint not null references users(id) on delete cascade,
     access_token_digest text not null unique,
@@ -36,11 +36,11 @@ create table app_sessions (
     updated_at timestamptz not null
 );
 
-create index app_sessions_user_id_idx on app_sessions(user_id);
-create index app_sessions_access_expires_at_idx on app_sessions(access_expires_at);
-create index app_sessions_refresh_expires_at_idx on app_sessions(refresh_expires_at);
+create index if not exists app_sessions_user_id_idx on app_sessions(user_id);
+create index if not exists app_sessions_access_expires_at_idx on app_sessions(access_expires_at);
+create index if not exists app_sessions_refresh_expires_at_idx on app_sessions(refresh_expires_at);
 
-create table agent_tokens (
+create table if not exists agent_tokens (
     id text primary key,
     user_id bigint not null references users(id) on delete cascade,
     name text not null,
@@ -52,5 +52,5 @@ create table agent_tokens (
     revoke_reason text not null default ''
 );
 
-create index agent_tokens_user_id_idx on agent_tokens(user_id);
-create index agent_tokens_last_used_at_idx on agent_tokens(last_used_at);
+create index if not exists agent_tokens_user_id_idx on agent_tokens(user_id);
+create index if not exists agent_tokens_last_used_at_idx on agent_tokens(last_used_at);

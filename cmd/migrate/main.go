@@ -11,7 +11,7 @@ import (
 	"strings"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
-	"yuanbohan/tunnel/internal/relay/store/postgres"
+	"yuanbohan/tunnel/internal/migration"
 )
 
 type runtimeEnv struct {
@@ -59,14 +59,14 @@ func run(args []string, env runtimeEnv) error {
 	}
 
 	if strings.TrimSpace(cfg.Baseline) != "" {
-		if err := postgres.BaselineMigrations(context.Background(), db, cfg.SchemaDir, cfg.Baseline); err != nil {
+		if err := migration.BaselineMigrations(context.Background(), db, cfg.SchemaDir, cfg.Baseline); err != nil {
 			return err
 		}
 		_, _ = fmt.Fprintf(env.stdout, "baselined relay schema through %s\n", cfg.Baseline)
 		return nil
 	}
 
-	if err := postgres.RunMigrations(context.Background(), db, cfg.SchemaDir); err != nil {
+	if err := migration.RunMigrations(context.Background(), db, cfg.SchemaDir); err != nil {
 		return err
 	}
 	_, _ = io.WriteString(env.stdout, "relay schema migrations applied\n")

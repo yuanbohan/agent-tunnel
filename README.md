@@ -36,7 +36,7 @@ The relay now requires PostgreSQL, an application secret used for credential dig
 export RELAY_DATABASE_URL=postgres://localhost/agent_tunnel?sslmode=disable
 export RELAY_APP_SECRET=change-me
 export RELAY_OPERATOR_TOKEN=change-me-operator-token
-go run ./cmd/relay-migrate
+go run ./cmd/migrate --schema-dir ./schema
 go run ./cmd/relay serve --listen-addr 127.0.0.1:8586
 ```
 
@@ -128,7 +128,7 @@ RELAY_APP_SECRET=<long-random-secret>
 RELAY_OPERATOR_TOKEN=<long-random-operator-token>
 EOF
 sudo chmod 600 /etc/agentunnel/relay.env
-sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && ./bin/agentunnel-relay-migrate --schema-dir ./schema/relay'
+sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && ./bin/agentunnel-relay-migrate --schema-dir ./schema'
 sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && ./bin/relay serve --listen-addr 127.0.0.1:8586'
 
 # in another shell on the same host
@@ -175,7 +175,7 @@ make test              # go test ./...
 make test-relay        # focused relay/protocol contract tests
 make tunnel LAUNCHER=claude       # run tunnel directly
 go run ./cmd/relay serve          # run relay server
-go run ./cmd/relay-migrate --schema-dir ./schema/relay
+go run ./cmd/migrate --schema-dir ./schema
 ```
 
 ## Protocol
