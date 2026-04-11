@@ -19,7 +19,7 @@ import (
 //	runtime.asyncPreempt()
 //	golang.org/x/sys/unix.poll(...)
 //	golang.org/x/sys/unix.Poll(...)
-//	yuanbohan/tunnel/session.waitForInput(...)
+//	yuanbohan/tunnel/internal/tunnel/session.waitForInput(...)
 //
 // The failure was inside the poll path rather than inside hub/input logic, so
 // Darwin uses select(2) here as a narrow crash workaround. The short timeout

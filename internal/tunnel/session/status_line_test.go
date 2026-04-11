@@ -51,7 +51,7 @@ func TestStatusLineFallsBackToNoticeWithoutTerminalSize(t *testing.T) {
 	line := NewStatusLine(&buf)
 	line.Show("relay reconnecting")
 
-	if got := buf.String(); got != "[agentunnel] relay reconnecting\n" {
+	if got := buf.String(); got != "[tunnel] relay reconnecting\n" {
 		t.Fatalf("fallback = %q", got)
 	}
 }

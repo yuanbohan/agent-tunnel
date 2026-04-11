@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"yuanbohan/tunnel/protocol"
+	"yuanbohan/tunnel/internal/protocol"
 )
 
 type mockWSConn struct {
@@ -206,6 +206,30 @@ func TestHandlerRejectsSessionsWithoutBasicAuth(t *testing.T) {
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+	if got := rec.Header().Get("WWW-Authenticate"); got != `Basic realm="tunnel relay"` {
+		t.Fatalf("WWW-Authenticate = %q, want %q", got, `Basic realm="tunnel relay"`)
+	}
+}
+
+func TestHandlerRejectsAttachWithoutBasicAuth(t *testing.T) {
+	reg := NewRegistry()
+	handler := NewHandler(HandlerConfig{
+		Registry:   reg,
+		User:       "demo",
+		Password:   "secret",
+		AgentToken: "agent-token",
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/sess-1/attach/ws", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+	if got := rec.Header().Get("WWW-Authenticate"); got != `Basic realm="tunnel relay"` {
+		t.Fatalf("WWW-Authenticate = %q, want %q", got, `Basic realm="tunnel relay"`)
 	}
 }
 

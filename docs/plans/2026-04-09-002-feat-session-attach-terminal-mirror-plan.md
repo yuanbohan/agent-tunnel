@@ -18,9 +18,9 @@ This plan also picks a concrete fidelity strategy: use `github.com/gitpod-io/xte
 
 The current repository contract is deeply tied to replay frames:
 
-- `protocol/message.go` defines `ReplayFrame`, `history_request`, `history_response`, `latest_seq`, and the client-facing `ClientUpdateMessage`
-- `connector/connector.go` appends PTY output into an agent-side frame buffer and uploads `output` frames continuously
-- `relay/server.go` exposes both `GET /api/updates/ws` and `GET /api/sessions/:id/frames`
+- `internal/protocol/message.go` defines `ReplayFrame`, `history_request`, `history_response`, `latest_seq`, and the client-facing `ClientUpdateMessage`
+- `internal/tunnel/connector/connector.go` appends PTY output into an agent-side frame buffer and uploads `output` frames continuously
+- `internal/relay/server.go` exposes both `GET /api/updates/ws` and `GET /api/sessions/:id/frames`
 - `README.md`, `docs/protocol.md`, `docs/architecture.md`, `CLAUDE.md`, and `AGENTS.md` all describe that frame/history contract
 
 That is now the wrong product model. The user has explicitly rejected transcript/history semantics and wants the simpler, more terminal-native behavior:
@@ -54,13 +54,13 @@ Once history is out of scope, the real hard problem becomes terminal-state fidel
 
 ### Relevant Code and Patterns
 
-- `cmd/agentunnel/main.go` already creates one stable `protocol.SessionInfo` per running process and should continue to own startup and reconnect posture.
-- `session/hub.go` is already the PTY fanout and input-routing boundary. It is the right place to keep output fanout semantics, but its current single `OnResize` callback needs to become multi-subscriber.
-- `session/local_terminal.go` already keeps the local terminal as the primary PTY-size authority; this should remain true.
-- `connector/connector.go` is already the one outbound agent-to-relay transport. It is the right place to host attach multiplexing and per-client forwarding over `/agent/ws`.
-- `relay/registry.go` already owns session identity, peer replacement, and reconnect grace state. It should keep that lifecycle role while dropping replay-specific bookkeeping.
-- `relay/server.go` already owns auth and websocket upgrades. It should become the host for a new session-scoped attach websocket endpoint and should remove `/frames` and `/api/updates/ws`.
-- Existing tests in `connector/connector_test.go`, `relay/server_test.go`, `relay/registry_test.go`, `protocol/relay_types_test.go`, and `session/hub_test.go` already pin most of the surfaces this change will replace.
+- `cmd/tunnel/main.go` already creates one stable `protocol.SessionInfo` per running process and should continue to own startup and reconnect posture.
+- `internal/tunnel/session/hub.go` is already the PTY fanout and input-routing boundary. It is the right place to keep output fanout semantics, but its current single `OnResize` callback needs to become multi-subscriber.
+- `internal/tunnel/session/local_terminal.go` already keeps the local terminal as the primary PTY-size authority; this should remain true.
+- `internal/tunnel/connector/connector.go` is already the one outbound agent-to-relay transport. It is the right place to host attach multiplexing and per-client forwarding over `/agent/ws`.
+- `internal/relay/registry.go` already owns session identity, peer replacement, and reconnect grace state. It should keep that lifecycle role while dropping replay-specific bookkeeping.
+- `internal/relay/server.go` already owns auth and websocket upgrades. It should become the host for a new session-scoped attach websocket endpoint and should remove `/frames` and `/api/updates/ws`.
+- Existing tests in `internal/tunnel/connector/connector_test.go`, `internal/relay/server_test.go`, `internal/relay/registry_test.go`, `internal/protocol/message_test.go`, and `internal/tunnel/session/hub_test.go` already pin most of the surfaces this change will replace.
 
 ### Institutional Learnings
 
@@ -185,10 +185,10 @@ flowchart TB
 **Dependencies:** None
 
 **Files:**
-- Modify: `protocol/message.go`
-- Modify: `protocol/relay_types_test.go`
-- Create: `protocol/attach_packet.go`
-- Create: `protocol/attach_packet_test.go`
+- Modify: `internal/protocol/message.go`
+- Modify: `internal/protocol/message_test.go`
+- Create: `internal/protocol/attach_packet.go`
+- Create: `internal/protocol/attach_packet_test.go`
 
 **Approach:**
 - Remove `ReplayFrame`, `history_request`, `history_response`, `ClientUpdateMessage`, and `latest_seq` from the shared protocol surface.
@@ -204,8 +204,8 @@ flowchart TB
 **Execution note:** Start with failing protocol round-trip tests so the transport rewrite lands on a pinned contract instead of ad hoc structs.
 
 **Patterns to follow:**
-- `protocol/relay_types_test.go` for stable field names and wire-level round-trip coverage
-- Current `protocol/message.go` helper style for small encoding/decoding constructors
+- `internal/protocol/message_test.go` for stable field names and wire-level round-trip coverage
+- Current `internal/protocol/message.go` helper style for small encoding/decoding constructors
 
 **Test scenarios:**
 - Happy path: a register frame still round-trips with stable `session_id`, launcher, cwd, and state fields.
@@ -228,10 +228,10 @@ flowchart TB
 **Files:**
 - Modify: `go.mod`
 - Modify: `go.sum`
-- Modify: `session/hub.go`
-- Modify: `session/hub_test.go`
-- Create: `session/terminal_mirror.go`
-- Create: `session/terminal_mirror_test.go`
+- Modify: `internal/tunnel/session/hub.go`
+- Modify: `internal/tunnel/session/hub_test.go`
+- Create: `internal/tunnel/session/terminal_mirror.go`
+- Create: `internal/tunnel/session/terminal_mirror_test.go`
 
 **Approach:**
 - Add `github.com/gitpod-io/xterm-go` as the primary mirror dependency.
@@ -252,8 +252,8 @@ flowchart TB
 **Execution note:** Start with mirror round-trip tests that prove snapshot bytes can reconstruct the same xterm-go state in a fresh terminal.
 
 **Patterns to follow:**
-- `session/hub.go` output fanout and size tracking
-- `session/local_terminal.go` current PTY size ownership model
+- `internal/tunnel/session/hub.go` output fanout and size tracking
+- `internal/tunnel/session/local_terminal.go` current PTY size ownership model
 
 **Test scenarios:**
 - Happy path: plain visible-screen content serializes and replays into a fresh mirror with identical cursor position and visible text.
@@ -277,12 +277,12 @@ flowchart TB
 **Dependencies:** Unit 1, Unit 2
 
 **Files:**
-- Modify: `connector/connector.go`
-- Modify: `connector/connector_test.go`
-- Modify: `cmd/agentunnel/main.go`
-- Modify: `cmd/agentunnel/main_test.go`
-- Delete: `session/history_buffer.go`
-- Delete: `session/history_buffer_test.go`
+- Modify: `internal/tunnel/connector/connector.go`
+- Modify: `internal/tunnel/connector/connector_test.go`
+- Modify: `cmd/tunnel/main.go`
+- Modify: `cmd/tunnel/main_test.go`
+- Delete: `internal/tunnel/session/history_buffer.go`
+- Delete: `internal/tunnel/session/history_buffer_test.go`
 
 **Approach:**
 - Remove the continuous replay/output upload model from `connector.WriteOutput`.
@@ -301,8 +301,8 @@ flowchart TB
 **Execution note:** Start with failing connector tests for attach-open snapshot delivery, multi-client live fanout, and no-output-upload-without-attach behavior.
 
 **Patterns to follow:**
-- `connector/connector.go` as the single relay transport boundary
-- Existing reconnect/session-id continuity tests in `connector/connector_test.go`
+- `internal/tunnel/connector/connector.go` as the single relay transport boundary
+- Existing reconnect/session-id continuity tests in `internal/tunnel/connector/connector_test.go`
 
 **Test scenarios:**
 - Happy path: opening an attach yields one resize control followed by snapshot bytes.
@@ -325,15 +325,15 @@ flowchart TB
 **Dependencies:** Unit 1, Unit 3
 
 **Files:**
-- Modify: `relay/registry.go`
-- Modify: `relay/registry_test.go`
-- Modify: `relay/server.go`
-- Modify: `relay/server_test.go`
-- Delete: `relay/client_updates.go`
-- Delete: `relay/client_update_ws.go`
+- Modify: `internal/relay/registry.go`
+- Modify: `internal/relay/registry_test.go`
+- Modify: `internal/relay/server.go`
+- Modify: `internal/relay/server_test.go`
+- Delete: `internal/relay/client_updates.go`
+- Delete: `internal/relay/client_update_ws.go`
 
 **Approach:**
-- Keep `relay/registry.go` focused on:
+- Keep `internal/relay/registry.go` focused on:
   - live session snapshots
   - owner peer replacement
   - online-only discovery
@@ -354,9 +354,9 @@ flowchart TB
 **Execution note:** Start with failing relay tests that exercise attach happy path, reconnecting rejection, attach-close-on-disconnect, and removal of the old endpoints.
 
 **Patterns to follow:**
-- `relay/server.go` current auth and websocket-upgrade structure
-- `relay/registry.go` current owner validation and reconnect grace logic
-- `relay/server_test.go` current HTTP/WebSocket contract testing style
+- `internal/relay/server.go` current auth and websocket-upgrade structure
+- `internal/relay/registry.go` current owner validation and reconnect grace logic
+- `internal/relay/server_test.go` current HTTP/WebSocket contract testing style
 
 **Test scenarios:**
 - Happy path: authenticated `GET /api/sessions/:id/attach/ws` upgrades successfully for a connected session and receives resize plus snapshot data.
@@ -387,10 +387,10 @@ flowchart TB
 - Modify: `CLAUDE.md`
 - Modify: `AGENTS.md`
 - Modify: `docs/plans/2026-04-09-001-feat-agent-side-session-history-plan.md`
-- Modify: `protocol/relay_types_test.go`
-- Modify: `connector/connector_test.go`
-- Modify: `relay/server_test.go`
-- Modify: `relay/registry_test.go`
+- Modify: `internal/protocol/message_test.go`
+- Modify: `internal/tunnel/connector/connector_test.go`
+- Modify: `internal/relay/server_test.go`
+- Modify: `internal/relay/registry_test.go`
 
 **Approach:**
 - Rewrite docs to describe:
@@ -410,7 +410,7 @@ flowchart TB
 
 **Patterns to follow:**
 - Documentation alignment expectations in `CLAUDE.md`
-- Existing contract-style tests in `protocol/relay_types_test.go` and `relay/server_test.go`
+- Existing contract-style tests in `internal/protocol/message_test.go` and `internal/relay/server_test.go`
 
 **Test scenarios:**
 - Happy path: session snapshot JSON still includes stable discovery fields.
@@ -456,13 +456,13 @@ flowchart TB
 ## Sources & References
 
 - **Origin document:** `docs/brainstorms/2026-04-09-session-attach-terminal-mirror-requirements.md`
-- Related code: `cmd/agentunnel/main.go`
-- Related code: `session/hub.go`
-- Related code: `session/local_terminal.go`
-- Related code: `connector/connector.go`
-- Related code: `relay/registry.go`
-- Related code: `relay/server.go`
-- Related code: `protocol/message.go`
+- Related code: `cmd/tunnel/main.go`
+- Related code: `internal/tunnel/session/hub.go`
+- Related code: `internal/tunnel/session/local_terminal.go`
+- Related code: `internal/tunnel/connector/connector.go`
+- Related code: `internal/relay/registry.go`
+- Related code: `internal/relay/server.go`
+- Related code: `internal/protocol/message.go`
 - Superseded prior plan: `docs/plans/2026-04-09-001-feat-agent-side-session-history-plan.md`
 - Related prior plan: `docs/plans/2026-04-06-002-feat-relay-startup-reconnect-plan.md`
 - External reference: https://github.com/xtermjs/xterm.js

@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"yuanbohan/tunnel/protocol"
+	"yuanbohan/tunnel/internal/protocol"
 )
 
 type attachOutbound struct {

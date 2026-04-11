@@ -27,7 +27,7 @@ DEPLOY_SERVICE ?= agentunnel-relay
 DEPLOY_INSTALL_PATH ?= /usr/local/bin/relay
 
 # Internal paths shared by related targets.
-TUNNEL_PKG := ./cmd/agentunnel
+TUNNEL_PKG := ./cmd/tunnel
 RELAY_PKG := ./cmd/relay
 TUNNEL_BIN := $(BIN_DIR)/tunnel
 RELAY_BUILD_BIN := $(BIN_DIR)/relay
@@ -142,4 +142,4 @@ test: ## Run the full Go test suite.
 	go test ./...
 
 test-relay: ## Run the focused protocol and relay package tests.
-	go test ./protocol ./relay
+	go test ./internal/protocol ./internal/relay

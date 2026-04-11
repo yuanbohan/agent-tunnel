@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"yuanbohan/tunnel/connector"
-	"yuanbohan/tunnel/launcher"
-	"yuanbohan/tunnel/protocol"
-	"yuanbohan/tunnel/session"
+	"yuanbohan/tunnel/internal/protocol"
+	"yuanbohan/tunnel/internal/tunnel/connector"
+	"yuanbohan/tunnel/internal/tunnel/launcher"
+	"yuanbohan/tunnel/internal/tunnel/session"
 )
 
 type fakeRelayConnector struct {

@@ -5,7 +5,7 @@ import (
 	"sort"
 	"sync"
 
-	"yuanbohan/tunnel/protocol"
+	"yuanbohan/tunnel/internal/protocol"
 )
 
 var (

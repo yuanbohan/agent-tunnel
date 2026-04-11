@@ -520,9 +520,9 @@ This model does not guarantee:
 
 ## 12. Implementation References
 
-- [session/process.go](../session/process.go): reads PTY output and broadcasts it through the session hub
-- [session/terminal_mirror.go](../session/terminal_mirror.go): maintains the `xterm-go` mirror and serializes snapshots
-- [connector/connector.go](../connector/connector.go): performs attach snapshot handoff and live-byte forwarding
-- [relay/registry.go](../relay/registry.go): routes attach lifecycle and client-scoped bytes
+- [internal/tunnel/session/process.go](../internal/tunnel/session/process.go): reads PTY output and broadcasts it through the session hub
+- [internal/tunnel/session/terminal_mirror.go](../internal/tunnel/session/terminal_mirror.go): maintains the `xterm-go` mirror and serializes snapshots
+- [internal/tunnel/connector/connector.go](../internal/tunnel/connector/connector.go): performs attach snapshot handoff and live-byte forwarding
+- [internal/relay/registry.go](../internal/relay/registry.go): routes attach lifecycle and client-scoped bytes
 - [docs/protocol.md](./protocol.md): wire-format contract
 - [docs/architecture.md](./architecture.md): package-level architecture

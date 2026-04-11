@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"yuanbohan/tunnel/protocol"
-	"yuanbohan/tunnel/session"
+	"yuanbohan/tunnel/internal/protocol"
+	"yuanbohan/tunnel/internal/tunnel/session"
 )
 
 type State string

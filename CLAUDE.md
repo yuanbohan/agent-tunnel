@@ -7,13 +7,13 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 ## Start Here
 
 - The main product is the `tunnel` CLI with relay-first startup semantics and background reconnect after local session start.
-- `cmd/agentunnel` builds the `tunnel` CLI. It launches `claude`, `codex`, or `gemini`, keeps the local terminal interactive, and maintains the authoritative headless terminal mirror for the current PTY session.
+- `cmd/tunnel` builds the `tunnel` CLI. It launches `claude`, `codex`, or `gemini`, keeps the local terminal interactive, and maintains the authoritative headless terminal mirror for the current PTY session.
 - `cmd/relay` is the standalone relay server. It exposes authenticated HTTP and WebSocket APIs for external clients, authenticates clients with Basic Auth, authenticates agents with a bearer token, and maintains a live in-memory session registry with session-scoped attach routing. It does not retain transcript history. Supports `--port` flag to override listen address.
-- `session/` owns PTY lifecycle, Hub fanout, local terminal attach, resize/input forwarding, and the terminal mirror used for attach snapshots.
-- `protocol/` defines attach-oriented wire types: agent registration, attach control, session info, structured input, and client-routed terminal-byte packets.
-- `connector/` is the mandatory outbound connector from a local `tunnel` process to `/agent/ws` on the relay. It registers sessions, publishes resize metadata, answers attach-open/attach-close control, and routes client-scoped terminal bytes.
-- `relay/` owns relay auth, registry, session-scoped attach websockets, and agent/client routing handlers.
-- `launcher/` is the supported-launcher registry and PATH resolution layer.
+- `internal/tunnel/session/` owns PTY lifecycle, Hub fanout, local terminal attach, resize/input forwarding, and the terminal mirror used for attach snapshots.
+- `internal/protocol/` defines attach-oriented wire types: agent registration, attach control, session info, structured input, and client-routed terminal-byte packets.
+- `internal/tunnel/connector/` is the mandatory outbound connector from a local `tunnel` process to `/agent/ws` on the relay. It registers sessions, publishes resize metadata, answers attach-open/attach-close control, and routes client-scoped terminal bytes.
+- `internal/relay/` owns relay auth, registry, session-scoped attach websockets, and agent/client routing handlers.
+- `internal/tunnel/launcher/` is the supported-launcher registry and PATH resolution layer.
 - `docs/architecture.md` describes how all Go packages and relay-facing protocols interact.
 
 ## Current Product Boundaries
@@ -50,7 +50,7 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 ## Verification
 
 - `go test ./...`
-- `go test ./protocol ./relay`
+- `go test ./internal/protocol ./internal/relay`
 - `make test`
 - `make test-relay`
 - `make build`
