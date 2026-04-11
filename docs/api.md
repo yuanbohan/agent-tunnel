@@ -1,17 +1,17 @@
-# Agent Tunnel Relay API
+# Agent Tunnel Public Relay API
 
-This document is the source of truth for the relay server's current API surface.
+This document is the source of truth for the relay server's current public app-facing API surface.
 
-If any relay route, auth requirement, request body, success response, error status or reason, WebSocket message, or attach close reason changes, update this file in the same change.
+If any public relay route, app-facing auth requirement, request body, success response, error status or reason, or client attach WebSocket message changes, update this file in the same change.
 
 This file covers:
 
 - public app-facing HTTP endpoints under `/api/...`
-- operator-only HTTP endpoints outside `/api/...`
 - the client attach WebSocket
-- the agent WebSocket
 
 For lower-level wire details such as the binary attach packet format, also see [docs/protocol.md](./protocol.md).
+
+This document intentionally does not cover operator-only routes or the `tunnel`-owned agent socket at `/agent/ws`.
 
 ## Conventions
 
@@ -31,7 +31,7 @@ The relay currently uses three token classes:
 |-------|---------|---------------|
 | App access token | mobile/web/native app clients | `Authorization: Bearer <access-token>` on `/api/...` and `GET /api/sessions/:sessionID/attach/ws` |
 | App refresh token | app clients | JSON body for `POST /api/auth/refresh` |
-| Agent token | `tunnel` | `Authorization: Bearer <agent-token>` on `GET /agent/ws` |
+| Agent token | created by app clients, used later by `tunnel` | returned by `POST /api/agent-tokens`; not used by mobile clients for their own relay session |
 
 ### JSON Request Rules
 
@@ -622,246 +622,6 @@ Currently supported `input_key` values:
 - `DELETE`
 
 For the full attach message contract, see [docs/protocol.md](./protocol.md) and [docs/tui-attach-flow.md](./tui-attach-flow.md).
-
-## Operator HTTP API
-
-Operator routes are intentionally outside `/api/...`.
-
-Current operator constraints:
-
-- request must come from a direct loopback address
-- forwarded proxy headers such as `X-Forwarded-For`, `X-Real-IP`, or `Forwarded` cause rejection
-- auth uses a fixed bearer token from relay configuration
-
-Shared operator auth failure behavior:
-
-| Status | Body | Meaning |
-|--------|------|---------|
-| `401` | plain text | missing or invalid operator bearer token |
-| `403` | plain text | request is not direct loopback or includes forwarded proxy headers |
-| `503` | plain text | operator token or service is unavailable |
-
-### `POST /operator/invite-codes`
-
-Create one or more invite codes.
-
-Auth: operator bearer token, loopback-only
-
-Headers:
-
-```text
-Authorization: Bearer <operator-token>
-```
-
-Request:
-
-```json
-{
-  "count": 3,
-  "expires_in_days": 7
-}
-```
-
-Success:
-
-- `201 Created`
-
-Response:
-
-```json
-{
-  "codes": ["AB2C3D", "EF4G5H", "JK7M8N"]
-}
-```
-
-Error responses:
-
-| Status | Body | Meaning |
-|--------|------|---------|
-| `400` | `{"reason":"invalid_request"}` | malformed JSON, request shape mismatch, or non-positive `count` / `expires_in_days` |
-| `500` | plain text | unexpected server failure |
-| `503` | plain text | operator service unavailable |
-
-### `POST /operator/invite-codes/disable`
-
-Disable one invite code.
-
-Auth: operator bearer token, loopback-only
-
-Request:
-
-```json
-{
-  "code": "AB2C3D"
-}
-```
-
-Success:
-
-- `204 No Content`
-
-Error responses:
-
-| Status | Body | Meaning |
-|--------|------|---------|
-| `400` | `{"reason":"invalid_request"}` | malformed JSON, request shape mismatch, or invalid invite code format |
-| `404` | `{"reason":"invite_code_not_found"}` | invite code does not exist |
-| `409` | `{"reason":"invite_code_disabled"}` | invite was already disabled |
-| `409` | `{"reason":"invite_code_consumed"}` | invite was already used |
-| `409` | `{"reason":"invite_code_expired"}` | invite is already expired |
-| `500` | plain text | unexpected server failure |
-| `503` | plain text | operator service unavailable |
-
-### `POST /operator/users/delete`
-
-Delete one user account.
-
-Auth: operator bearer token, loopback-only
-
-Request:
-
-```json
-{
-  "username": "alice"
-}
-```
-
-Success:
-
-- `204 No Content`
-
-Notes:
-
-- the relay disconnects that user's live sessions immediately
-- affected attaches are closed with `closing { "reason": "account_deleted" }`
-
-Error responses:
-
-| Status | Body | Meaning |
-|--------|------|---------|
-| `400` | `{"reason":"invalid_request"}` | malformed JSON, request shape mismatch, or invalid username format |
-| `404` | `{"reason":"user_not_found"}` | user does not exist |
-| `500` | plain text | unexpected server failure |
-| `503` | plain text | operator service unavailable |
-
-## Agent WebSocket
-
-### `GET /agent/ws`
-
-Owning agent connection used by `tunnel`.
-
-Auth: agent token
-
-Headers:
-
-```text
-Authorization: Bearer <agent-token>
-```
-
-Pre-upgrade error responses:
-
-| Status | Body | Meaning |
-|--------|------|---------|
-| `401` | plain text | missing or invalid agent bearer token |
-| `503` | plain text | agent token service unavailable |
-
-Success:
-
-- HTTP upgrades to WebSocket
-- the first agent text frame must be `register`
-
-Initial agent -> relay `register` frame:
-
-```json
-{
-  "type": "register",
-  "session": {
-    "session_id": "sess-1",
-    "launcher": "codex",
-    "cwd": "/repo",
-    "command_preview": "codex --profile prod",
-    "started_at": 1775376000
-  }
-}
-```
-
-Current relay -> agent JSON control messages:
-
-- `attach_open`
-- `attach_close`
-- `input_text`
-- `input_key`
-
-Examples:
-
-```json
-{
-  "type": "attach_open",
-  "client_id": "4d2c6ec8-787a-49c9-b9a0-5dbd8d31b7b1"
-}
-```
-
-```json
-{
-  "type": "attach_close",
-  "client_id": "4d2c6ec8-787a-49c9-b9a0-5dbd8d31b7b1",
-  "reason": "client_closed"
-}
-```
-
-```json
-{
-  "type": "input_text",
-  "client_id": "4d2c6ec8-787a-49c9-b9a0-5dbd8d31b7b1",
-  "text": "hello",
-  "submit": true
-}
-```
-
-```json
-{
-  "type": "input_key",
-  "client_id": "4d2c6ec8-787a-49c9-b9a0-5dbd8d31b7b1",
-  "key": "TAB"
-}
-```
-
-Current agent -> relay JSON control messages:
-
-- `resize`
-- `attach_ready`
-- `snapshot_done`
-- `attach_close`
-
-Examples:
-
-```json
-{
-  "type": "attach_ready",
-  "client_id": "4d2c6ec8-787a-49c9-b9a0-5dbd8d31b7b1",
-  "cols": 120,
-  "rows": 40
-}
-```
-
-```json
-{
-  "type": "snapshot_done",
-  "client_id": "4d2c6ec8-787a-49c9-b9a0-5dbd8d31b7b1"
-}
-```
-
-Binary frames sent from agent to relay use the attach packet format:
-
-- `1 byte` packet type
-- `16 bytes` raw UUID for `client_id`
-- remaining bytes are raw terminal payload
-
-Current packet types:
-
-- `0x01` = `terminal_bytes`
-
-For full binary and frame semantics, see [docs/protocol.md](./protocol.md).
 
 ## Removed Endpoints
 

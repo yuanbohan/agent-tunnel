@@ -22,7 +22,7 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 - `internal/migration/` owns the relay schema migration runner and migration tracking logic.
 - `internal/relay/store/postgres/` owns PostgreSQL persistence for relay auth and operator state.
 - `internal/tunnel/launcher/` is the supported-launcher registry and PATH resolution layer.
-- `docs/api.md` is the current endpoint-level relay API reference, including auth, request and response shapes, and error contracts.
+- `docs/api.md` is the current public app-facing relay API reference, including auth, request and response shapes, and error contracts.
 - `docs/architecture.md` describes how all Go packages and relay-facing protocols interact.
 
 ## Current Product Boundaries
@@ -52,7 +52,7 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 ## Docs Expectations
 
 - Keep `README.md`, `docs/api.md`, `docs/protocol.md`, `docs/architecture.md`, `CLAUDE.md`, and `AGENTS.md` aligned with the active attach-based contract and current implementation status when behavior or scope changes.
-- If you change relay auth, client-facing endpoints, request or response shapes, error statuses or reasons, or WebSocket message contracts, update `docs/api.md`.
+- If you change app-facing relay auth, public client endpoints, request or response shapes, app-visible error statuses or reasons, or client attach WebSocket message contracts, update `docs/api.md`.
 - If you change relay auth, relay lifecycle, client-facing endpoints, or PTY/input behavior, update `docs/architecture.md`.
 - If you change attach lifecycle semantics, session-state semantics, `/api/sessions/:id/attach/ws`, or `/agent/ws` attach-control messages, update `README.md`, `docs/protocol.md`, `docs/architecture.md`, `CLAUDE.md`, and `AGENTS.md`.
 - If you change snapshot generation, live-byte delivery, resize ownership, or structured input semantics, update `README.md`, `docs/protocol.md`, `docs/architecture.md`, `CLAUDE.md`, and `AGENTS.md`.
