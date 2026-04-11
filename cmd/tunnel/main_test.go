@@ -229,6 +229,60 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
 	}
 }
 
+func TestRunWithArgsUsesUserProvidedCommandForPreview(t *testing.T) {
+	setTestEnv(t)
+
+	oldResolve := resolveLauncher
+	oldPrepare := prepareLocalTerminal
+	oldStartSession := startSession
+	oldStartLocalTerminal := startLocalTerminal
+	oldWaitForExit := waitForExit
+	oldNewConnector := newConnector
+	t.Cleanup(func() {
+		resolveLauncher = oldResolve
+		prepareLocalTerminal = oldPrepare
+		startSession = oldStartSession
+		startLocalTerminal = oldStartLocalTerminal
+		waitForExit = oldWaitForExit
+		newConnector = oldNewConnector
+	})
+
+	resolveLauncher = func(name string, args []string) (launcher.Command, error) {
+		return launcher.Command{Name: name, Path: "/private/tmp/custom-agent", Args: append([]string(nil), args...)}, nil
+	}
+
+	prepareLocalTerminal = func() (*session.LocalTerminal, error) {
+		return &session.LocalTerminal{}, nil
+	}
+
+	var gotInfo protocol.SessionInfo
+	newConnector = func(url, token string, info protocol.SessionInfo) relayConnector {
+		gotInfo = info
+		return &fakeRelayConnector{waitConnected: true, state: connector.StateConnected}
+	}
+
+	wantErr := errors.New("start session failed")
+	startSession = func(_ context.Context, path string, args []string, sinks map[string]session.OutputSink) (*session.Running, error) {
+		return nil, wantErr
+	}
+
+	waitForExit = func(context.Context, <-chan struct{}, <-chan error) error {
+		return nil
+	}
+
+	var stderr bytes.Buffer
+	err := runWithArgs([]string{"tunnel", "/opt/bin/custom-agent", "--mode", "fast"}, &stderr)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("runWithArgs error = %v, want %v", err, wantErr)
+	}
+	if gotInfo.Launcher != "/opt/bin/custom-agent" {
+		t.Fatalf("Launcher = %q, want /opt/bin/custom-agent", gotInfo.Launcher)
+	}
+	if gotInfo.CommandPreview != "/opt/bin/custom-agent --mode fast" {
+		t.Fatalf("CommandPreview = %q, want /opt/bin/custom-agent --mode fast", gotInfo.CommandPreview)
+	}
+}
+
 func TestStartupBannerUsesRelayState(t *testing.T) {
 	if got := startupBanner("codex", "sess-123", "127.0.0.1:8586", connector.StateConnected); got != "\r\x1b[2K\x1b[92m▶ tunnel codex — session sess-123; relay connected (127.0.0.1:8586)\x1b[0m\r" {
 		t.Fatalf("connected banner = %q", got)

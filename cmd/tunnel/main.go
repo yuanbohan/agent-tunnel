@@ -7,7 +7,6 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -82,7 +81,7 @@ func runWithArgs(args []string, stderr io.Writer) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	commandPreview := strings.TrimSpace(strings.Join(append([]string{filepath.Base(command.Path)}, command.Args...), " "))
+	commandPreview := strings.TrimSpace(strings.Join(append([]string{command.Name}, command.Args...), " "))
 	sessionID := fmt.Sprintf("%d", time.Now().UnixNano())
 	info := protocol.SessionInfo{
 		SessionID:      sessionID,
