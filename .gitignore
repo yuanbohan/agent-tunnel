@@ -25,7 +25,10 @@ go.work
 go.work.sum
 
 # env files (.env, .env.prod, .env.dev, ...)
-.env*
+.env
+.env.*
+!.env.example
+!.env.sample
 
 # Editor/IDE
 .idea/

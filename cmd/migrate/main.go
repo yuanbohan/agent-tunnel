@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"database/sql"
 	"flag"
@@ -25,6 +26,7 @@ type config struct {
 	DatabaseURL string
 	SchemaDir   string
 	Baseline    string
+	EnvFile     string
 }
 
 func main() {
@@ -77,12 +79,11 @@ func run(args []string, env runtimeEnv) error {
 }
 
 func loadConfig(getenv func(string) string, args []string) (config, error) {
-	cfg := config{
-		DatabaseURL: envValue(getenv, "RELAY_DATABASE_URL"),
-	}
+	cfg := config{}
 
 	fs := flag.NewFlagSet("relay-migrate", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
+	fs.StringVar(&cfg.EnvFile, "env-file", "", "read RELAY_* values from this env file before falling back to the process environment")
 	fs.StringVar(&cfg.SchemaDir, "schema-dir", cfg.SchemaDir, "directory containing ordered relay schema SQL files")
 	fs.StringVar(&cfg.Baseline, "baseline", "", "mark migrations up to and including this version as applied without executing SQL")
 	if err := fs.Parse(args); err != nil {
@@ -91,6 +92,20 @@ func loadConfig(getenv func(string) string, args []string) (config, error) {
 	if len(fs.Args()) != 0 {
 		return config{}, usagef("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
+	lookupEnv := getenv
+	if strings.TrimSpace(cfg.EnvFile) != "" {
+		fileEnv, err := loadLiteralEnvFile(cfg.EnvFile)
+		if err != nil {
+			return config{}, usagef("load --env-file %s: %v", cfg.EnvFile, err)
+		}
+		lookupEnv = func(key string) string {
+			if value, ok := fileEnv[key]; ok {
+				return value
+			}
+			return envValue(getenv, key)
+		}
+	}
+	cfg.DatabaseURL = envValue(lookupEnv, "RELAY_DATABASE_URL")
 	switch {
 	case cfg.DatabaseURL == "":
 		return config{}, usagef("missing RELAY_DATABASE_URL")
@@ -99,6 +114,64 @@ func loadConfig(getenv func(string) string, args []string) (config, error) {
 	default:
 		return cfg, nil
 	}
+}
+
+func loadLiteralEnvFile(path string) (map[string]string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	values := make(map[string]string)
+	scanner := bufio.NewScanner(file)
+	lineNo := 0
+	for scanner.Scan() {
+		lineNo++
+		line := strings.TrimSpace(scanner.Text())
+		switch {
+		case line == "":
+			continue
+		case strings.HasPrefix(line, "#"):
+			continue
+		}
+
+		idx := strings.IndexByte(line, '=')
+		if idx <= 0 {
+			return nil, fmt.Errorf("line %d is not KEY=VALUE", lineNo)
+		}
+
+		key := line[:idx]
+		if !isValidEnvKey(key) {
+			return nil, fmt.Errorf("line %d has invalid env key %q", lineNo, key)
+		}
+		values[key] = line[idx+1:]
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return values, nil
+}
+
+func isValidEnvKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	for i := 0; i < len(key); i++ {
+		ch := key[i]
+		switch {
+		case i == 0 && ch >= 'A' && ch <= 'Z':
+		case i == 0 && ch >= 'a' && ch <= 'z':
+		case i == 0 && ch == '_':
+		case i > 0 && ch >= 'A' && ch <= 'Z':
+		case i > 0 && ch >= 'a' && ch <= 'z':
+		case i > 0 && ch >= '0' && ch <= '9':
+		case i > 0 && ch == '_':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 type usageError struct {

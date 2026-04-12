@@ -5,6 +5,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -51,6 +53,37 @@ func TestLoadConfigRequiresSchemaDir(t *testing.T) {
 	}), nil)
 	if err == nil || !strings.Contains(err.Error(), "missing --schema-dir") {
 		t.Fatalf("loadConfig error = %v, want missing --schema-dir", err)
+	}
+}
+
+func TestLoadConfigAllowsEnvFile(t *testing.T) {
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, "relay.env")
+	if err := os.WriteFile(envFile, []byte("RELAY_DATABASE_URL=postgres://from-file\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	cfg, err := loadConfig(testEnv(map[string]string{
+		"RELAY_DATABASE_URL": "postgres://from-process-env",
+	}), []string{"--env-file", envFile, "--schema-dir", "/tmp/schema"})
+	if err != nil {
+		t.Fatalf("loadConfig returned error: %v", err)
+	}
+	if cfg.DatabaseURL != "postgres://from-file" {
+		t.Fatalf("DatabaseURL = %q, want postgres://from-file", cfg.DatabaseURL)
+	}
+}
+
+func TestLoadConfigRejectsInvalidEnvFileLine(t *testing.T) {
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, "relay.env")
+	if err := os.WriteFile(envFile, []byte("export RELAY_DATABASE_URL=postgres://relay\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	_, err := loadConfig(testEnv(nil), []string{"--env-file", envFile, "--schema-dir", "/tmp/schema"})
+	if err == nil || !strings.Contains(err.Error(), "line 1 has invalid env key") {
+		t.Fatalf("loadConfig error = %v, want invalid env key", err)
 	}
 }
 

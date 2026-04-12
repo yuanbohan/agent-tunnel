@@ -85,7 +85,7 @@ Enable and start:
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable agentunnel-relay
-sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && /usr/local/bin/relay-migrate --schema-dir /etc/agentunnel/schema'
+sudo /usr/local/bin/relay-migrate --env-file /etc/agentunnel/relay.env --schema-dir /etc/agentunnel/schema
 sudo systemctl start agentunnel-relay
 ```
 
@@ -236,7 +236,7 @@ sudo systemctl is-active agentunnel-relay
 
 ### Manual deploy
 
-The manual flow below is the raw equivalent of `make deploy-prod`. Prefer the Make targets; keep this as a reference.
+The manual flow below is a close approximation of `make deploy-prod`. Prefer the Make targets; keep this as a reference.
 
 ```bash
 # On dev machine
@@ -246,12 +246,18 @@ scp bin/relay-migrate diarome:~/relay-migrate
 ssh diarome 'rm -rf /tmp/agentunnel-relay-schema && mkdir -p /tmp/agentunnel-relay-schema'
 scp schema/*.sql diarome:/tmp/agentunnel-relay-schema/
 ssh diarome 'sudo install -m 0755 ~/relay-migrate /usr/local/bin/relay-migrate'
-scp .env.prod diarome:/tmp/agentunnel-relay.env
+tmp_env="$(mktemp)"
+trap 'rm -f "$tmp_env"' EXIT
+grep -v '^RELAY_LOG_FILE=' .env.prod >"$tmp_env"
+printf '\nRELAY_LOG_FILE=/var/log/agentunnel/relay.log\n' >>"$tmp_env"
+scp "$tmp_env" diarome:/tmp/agentunnel-relay.env
 ssh diarome 'sudo rm -rf /etc/agentunnel/schema && sudo install -d -m 0755 /etc/agentunnel/schema && sudo install -m 0644 /tmp/agentunnel-relay-schema/*.sql /etc/agentunnel/schema/'
-ssh diarome 'sudo /bin/sh -lc '"'"'tmp_env=$$(mktemp /tmp/agentunnel-relay.env.XXXXXX); trap "rm -f $$tmp_env" EXIT; cat /tmp/agentunnel-relay.env > "$$tmp_env"; set -a && . "$$tmp_env" && set +a && /usr/local/bin/relay-migrate --schema-dir /etc/agentunnel/schema'"'"''
+ssh diarome 'sudo /usr/local/bin/relay-migrate --env-file /tmp/agentunnel-relay.env --schema-dir /etc/agentunnel/schema'
 ssh diarome 'sudo install -m 0755 ~/relay /usr/local/bin/relay'
 ssh diarome 'sudo install -d -m 0755 /etc/agentunnel && sudo install -m 0600 /tmp/agentunnel-relay.env /etc/agentunnel/relay.env && rm -f /tmp/agentunnel-relay.env'
 ssh diarome 'sudo systemctl restart agentunnel-relay'
+rm -f "$tmp_env"
+trap - EXIT
 ```
 
 ### One-command deploy
@@ -320,8 +326,8 @@ sudo systemctl restart agentunnel-relay
 sudo systemctl stop agentunnel-relay
 
 # Relay migrations and operator workflows (run on the relay host)
-sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && /usr/local/bin/relay-migrate --schema-dir /etc/agentunnel/schema'
-sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && /usr/local/bin/relay-migrate --schema-dir /etc/agentunnel/schema --baseline 0002_operator_audit.sql'
+sudo /usr/local/bin/relay-migrate --env-file /etc/agentunnel/relay.env --schema-dir /etc/agentunnel/schema
+sudo /usr/local/bin/relay-migrate --env-file /etc/agentunnel/relay.env --schema-dir /etc/agentunnel/schema --baseline 0002_operator_audit.sql
 sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && /usr/local/bin/relay invite create --count 5 --expires-in 7d'
 sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && /usr/local/bin/relay invite disable --code AB2C3D'
 sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && /usr/local/bin/relay user delete --username alice'
@@ -377,7 +383,8 @@ Minimal monitoring checklist:
 
 ### Disk Space
 
-- Relay logs accumulate in journald. If the VPS has limited disk, configure journal size limits in `/etc/systemd/journald.conf` (`SystemMaxUse=200M`).
+- Application logs accumulate in `/var/log/agentunnel/relay.log`. Add logrotate when that file starts to matter.
+- systemd unit-state logs still accumulate in journald. If the VPS has limited disk, configure journal size limits in `/etc/systemd/journald.conf` (`SystemMaxUse=200M`).
 - Certbot keeps old cert versions in `/etc/letsencrypt/archive/`. These are small but can be cleaned with `sudo certbot delete --cert-name <domain>` if you rotate domains.
 
 ## Connecting tunnel to the Deployed Relay

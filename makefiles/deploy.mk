@@ -21,8 +21,7 @@ deploy-env: ## Install local `$(ENV_FILE)` on the remote host as `$(DEPLOY_ENV_F
 deploy-migrate: ## Run relay schema migrations on the remote host using the selected local env file.
 	@$(DEPLOY_SCRIPT) migrate $(DEPLOY_SCRIPT_FLAGS)
 
-deploy-schema-migrate: ## Sync schema files and run relay migrations using the selected local env file.
-	@$(DEPLOY_SCRIPT) migrate $(DEPLOY_SCRIPT_FLAGS)
+deploy-schema-migrate: deploy-migrate ## Alias for schema sync + migrate using the selected local env file.
 
 deploy-restart: ## Restart the relay systemd service on the remote host.
 	@$(DEPLOY_SCRIPT) restart $(DEPLOY_SCRIPT_FLAGS)

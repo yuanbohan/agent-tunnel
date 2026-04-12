@@ -24,14 +24,15 @@ Notes:
 - nginx should proxy `/api/` and `/agent/ws` only. It should not proxy the operator routes.
 - Operator commands call the running relay. That means `relay serve` must already be running when you execute `relay invite ...` or `relay user delete`.
 - `RELAY_LISTEN_ADDR` is shared by `relay serve` and the operator commands. If you start the relay on a different local address, set the same value before running invite or user commands.
-- On a systemd-managed host, the usual source of truth is `/etc/agentunnel/relay.env`. `make deploy-env` pins `RELAY_LOG_FILE=/var/log/agentunnel/relay.log` there. You can source that file before running the commands below instead of exporting variables by hand.
+- On a systemd-managed host, the usual source of truth is `/etc/agentunnel/relay.env`. `make deploy-env` pins `RELAY_LOG_FILE=/var/log/agentunnel/relay.log` there. You can source that file before running relay commands, or pass it directly to `relay-migrate --env-file /etc/agentunnel/relay.env`.
 
 ## Command Summary
 
 | Command | Purpose |
 |---------|---------|
 | `relay-migrate --schema-dir <dir>` | Apply PostgreSQL schema migrations from an explicit schema directory |
-| `relay-migrate --schema-dir <dir> --baseline <version>` | Mark migrations through a known version as already applied |
+| `relay-migrate --env-file <path> --schema-dir <dir>` | Apply migrations using literal `KEY=VALUE` pairs loaded from an env file |
+| `relay-migrate --env-file <path> --schema-dir <dir> --baseline <version>` | Mark migrations through a known version as already applied |
 | `relay serve` | Start the relay HTTP and WebSocket service |
 | `relay invite create` | Create one or more invite codes |
 | `relay invite disable` | Disable an existing invite code |
@@ -72,6 +73,12 @@ Apply all unapplied SQL files from `schema/`:
 export RELAY_DATABASE_URL=postgres://relay_user:change-me-db-password@localhost/agent_tunnel?sslmode=disable
 
 relay-migrate --schema-dir ./schema
+```
+
+On a systemd-managed relay host:
+
+```bash
+relay-migrate --env-file /etc/agentunnel/relay.env --schema-dir /etc/agentunnel/schema
 ```
 
 Baseline an existing database that already matches migrations through `0002_operator_audit.sql`:

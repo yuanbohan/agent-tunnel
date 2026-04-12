@@ -134,7 +134,7 @@ RELAY_APP_SECRET=<long-random-secret>
 RELAY_OPERATOR_TOKEN=<long-random-operator-token>
 EOF
 sudo chmod 600 /etc/agentunnel/relay.env
-sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && ./bin/relay-migrate --schema-dir ./schema'
+sudo ./bin/relay-migrate --env-file /etc/agentunnel/relay.env --schema-dir ./schema
 sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && ./bin/relay serve --listen-addr 127.0.0.1:8586'
 
 # in another shell on the same host
