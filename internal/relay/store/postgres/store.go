@@ -180,6 +180,27 @@ func nullableInt64(value *int64) any {
 	return *value
 }
 
+func nullStringDest(dest *string) any {
+	return &nullStringScanner{dest: dest}
+}
+
+type nullStringScanner struct {
+	dest *string
+}
+
+func (s *nullStringScanner) Scan(value any) error {
+	var ns sql.NullString
+	if err := ns.Scan(value); err != nil {
+		return err
+	}
+	if !ns.Valid {
+		*s.dest = ""
+		return nil
+	}
+	*s.dest = ns.String
+	return nil
+}
+
 func isUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) {
