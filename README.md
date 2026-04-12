@@ -22,6 +22,18 @@ Client input uses structured events:
 
 The relay forwards those events to the owning `tunnel` session. `tunnel` translates supported key events into PTY bytes locally, and it handles `input_text { submit: true }` as one serialized submit operation: write the provided text first, then write the same carriage return semantics used for `ENTER`, with no interleaving input for that session.
 
+## Cloud Principle: Multi-Tenant Session Isolation
+
+For any hosted relay deployment, multi-tenant isolation is a hard product invariant.
+
+- every agent token is owned by exactly one user account
+- when `tunnel` connects to `/agent/ws`, the relay binds that live session to the owning user of that token
+- `GET /api/sessions` returns only the authenticated user's live sessions
+- `GET /api/sessions/:id/attach/ws` treats another user's session as not found
+- one user's token must never list, reveal, or attach to another user's session, even when both users are online at the same time
+
+This is one of the most important cloud guarantees in Agent Tunnel.
+
 ## Requirements
 
 - Go 1.25+

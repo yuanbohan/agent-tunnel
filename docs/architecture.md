@@ -8,6 +8,8 @@ This document describes the current system shape for the attach-based protocol.
 
 The relay exposes authenticated APIs so external clients can register accounts, log in, manage agent tokens, discover live sessions, attach to one online session, and send structured input. Operator maintenance routes stay outside the public `/api/` namespace and are intended for host-local use only. PostgreSQL is the durable source of truth for users, invite codes, app sessions, agent tokens, and operator audit records. App auth uses opaque bearer access tokens with a nominal 24 hour lifetime, rotating refresh tokens with a 30 day sliding lifetime, and a 90 day absolute session lifetime anchored at the original login. The relay is not the terminal-state authority and it does not retain transcript history.
 
+For hosted deployments, the security invariant is strict user scoping: the user who owns the agent token also owns the live session, `GET /api/sessions` returns only that user's sessions, and cross-user attach attempts resolve as not found.
+
 See [docs/api.md](./api.md) for the current endpoint inventory, auth requirements, request and response examples, and error contracts.
 
 Protocol-facing timestamps such as `started_at` are Unix timestamps encoded as JSON integers in seconds.
@@ -83,11 +85,13 @@ The relay is a live broker, not durable storage and not a semantic interpreter o
 It owns:
 
 - app-bearer auth, agent-token auth, and invite-gated account registration
+- binding each live session to the user who owns the authenticating agent token
 - fixed-token local-only operator control routes for invite creation, invite disable, and account deletion
 - current live-session snapshots for discovery
 - current online-session discovery and immediate offline removal when the owning agent disconnects
 - the owner websocket for each live session
 - client attach websockets for online sessions
+- enforcing user-scoped discovery and attach authorization so one user's sessions stay invisible to other users
 - routing JSON control messages and client-scoped binary terminal bytes between clients and the owning agent
 - closing active attaches promptly when the owning agent disappears
 - synchronously evicting live sessions when a user is deleted or an agent token is revoked

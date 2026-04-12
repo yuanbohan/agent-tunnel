@@ -13,6 +13,7 @@ The current protocol is built around these boundaries:
 - `session_id` identifies one running `tunnel` process. Relay reconnects for that process keep the same `session_id`. A fresh agent launch gets a fresh `session_id`.
 - The owning agent is the authority for the current terminal state of that session.
 - The relay is a discovery, auth, and routing layer. It does not retain transcript history and does not emulate the terminal.
+- Hosted relay deployments rely on strict multi-tenant isolation: sessions are owned by the user behind the authenticating agent token, and other users must not discover or attach to them.
 - Sessions are discoverable only while the owning agent websocket is connected. If the agent disconnects, the session disappears from discovery immediately and reappears when the agent re-registers with the same `session_id`.
 - Remote viewing is session-scoped: a client attaches to one session, receives a fresh terminal-state snapshot, and then receives subsequent live PTY bytes on that same attach.
 - Remote recovery in this revision is fresh snapshot recovery only. Snapshot bytes may include bounded agent-local normal-buffer scrollback, but there is no transcript replay API.

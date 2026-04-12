@@ -76,6 +76,7 @@ Important current behavior:
 
 - `GET /api/sessions` returns only live sessions whose owning agent socket is currently connected
 - session discovery is user-scoped
+- user-scoped discovery and attach authorization are a hard multi-tenant guarantee for hosted relay deployments
 - a missing session can mean "offline now", not just "never existed"
 - a session can disappear and later reappear with the same `session_id` if the same running `tunnel` process reconnects
 
@@ -483,6 +484,7 @@ Notes:
 
 - the list is sorted newest-first by `started_at`
 - only sessions owned by the authenticated user are returned
+- another user's live sessions must remain invisible even when both users have active `tunnel` connections
 - the list is live-only, not history
 
 Error responses:
@@ -518,6 +520,10 @@ Pre-upgrade error responses:
 | `401` | plain text | missing or invalid app bearer token |
 | `403` | plain text | browser cross-origin attach attempt |
 | `404` | `{"reason":"session_not_found"}` | session is unknown, belongs to another user, or is currently offline |
+
+Multi-tenant rule:
+
+- cross-user attach attempts must fail as `404 session_not_found` and must not leak whether another user's session is online
 
 Success:
 
