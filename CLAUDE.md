@@ -22,8 +22,10 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 - `internal/migration/` owns the relay schema migration runner and migration tracking logic.
 - `internal/relay/store/postgres/` owns PostgreSQL persistence for relay auth and operator state.
 - `internal/tunnel/launcher/` is the thin PATH resolution layer for the user-provided launcher command.
+- `internal/buildinfo/` owns shared tunnel/relay version metadata and compatibility-line helpers used by release builds, public manifests, and version reporting.
 - `docs/api.md` is the current public app-facing relay API reference, including auth, request and response shapes, and error contracts.
 - `docs/architecture.md` describes how all Go packages and relay-facing protocols interact.
+- `docs/release-distribution.md` describes the private-source/public-distribution release workflow for `tunnel`.
 
 ## Current Product Boundaries
 
@@ -48,6 +50,8 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 - PTY size remains local-terminal-owned in this phase. Remote clients follow forwarded resize events and do not become size authority.
 - Structured remote input remains `input_text` and `input_key`, with PTY-byte translation owned by `tunnel`.
 - The relay does not ship a bundled frontend. Any UI or client experience is owned by external clients such as the mobile app.
+- Public `tunnel` binary distribution lives in `yuanbohan/tunnel`, which is a distribution-only repo with stable `install.sh`, `latest.json`, and GitHub Releases assets.
+- Tunnel and relay compatibility is guaranteed only within the same compatibility line. For `v1+`, that line is the semver major version. For pre-`v1`, that line is `0.minor`, so `v0.1.x` and `v0.2.x` are different compatibility lines.
 - Stronger delivery guarantees may be explored later, but do not document or imply them before they exist in code and protocol.
 
 ## Docs Expectations
@@ -58,6 +62,7 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 - If you change attach lifecycle semantics, session-state semantics, `/api/sessions/:id/attach/ws`, or `/agent/ws` attach-control messages, update `README.md`, `docs/protocol.md`, `docs/architecture.md`, `CLAUDE.md`, and `AGENTS.md`.
 - If you change snapshot generation, live-byte delivery, resize ownership, or structured input semantics, update `README.md`, `docs/protocol.md`, `docs/architecture.md`, `CLAUDE.md`, and `AGENTS.md`.
 - If you change operator-facing startup flow or environment variables, update `README.md`.
+- If you change the public `tunnel` release flow, installer contract, compatibility-line contract, or distribution repo surface, update `README.md`, `docs/release-distribution.md`, `docs/public-distribution-readme.md`, `CLAUDE.md`, and `AGENTS.md`.
 
 ## Verification
 

@@ -63,6 +63,11 @@ func runWithHandlers(args []string, env runtimeEnv, handlers commandHandlers) er
 	}
 
 	switch args[0] {
+	case "version":
+		if len(args) != 1 {
+			return usagef("%s", rootUsage())
+		}
+		return writeVersion(env.stdout)
 	case "serve":
 		cfg, err := loadServeConfig(env.getenv, args[1:])
 		if err != nil {
@@ -160,6 +165,7 @@ func newCommandHandlers(env runtimeEnv) commandHandlers {
 func rootUsage() string {
 	return strings.TrimSpace(`
 Usage:
+  relay version          Print the relay version
   relay serve            Start the relay HTTP and WebSocket service
   relay invite create    Create one or more invite codes through the running relay
   relay invite disable   Disable an unconsumed invite code through the running relay

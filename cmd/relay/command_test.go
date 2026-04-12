@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"strings"
 	"testing"
@@ -43,6 +44,17 @@ func TestRunWithHandlersRejectsUnknownCommand(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "relay serve") {
 		t.Fatalf("error = %q, want root usage", err.Error())
+	}
+}
+
+func TestRunWithHandlersPrintsVersion(t *testing.T) {
+	var stdout bytes.Buffer
+	err := runWithHandlers([]string{"version"}, runtimeEnv{stdout: &stdout}, commandHandlers{})
+	if err != nil {
+		t.Fatalf("runWithHandlers returned error: %v", err)
+	}
+	if got := stdout.String(); got != "relay v0.1.0-dev\n" {
+		t.Fatalf("stdout = %q, want relay v0.1.0-dev", got)
 	}
 }
 

@@ -39,6 +39,31 @@ This is one of the most important cloud guarantees in Agent Tunnel.
 - Go 1.25+
 - A launcher executable installed on `PATH`
 
+## Install Tunnel
+
+The public distribution repo is [yuanbohan/tunnel](https://github.com/yuanbohan/tunnel). Install the latest release with:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/yuanbohan/tunnel/main/install.sh | sh
+```
+
+Pin a specific release with:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/yuanbohan/tunnel/main/install.sh | VERSION=v0.1.2 sh
+```
+
+The installer writes `tunnel` to `~/.local/bin/tunnel` and supports `darwin/arm64`, `darwin/amd64`, `linux/amd64`, and `linux/arm64`.
+
+Tunnel and Relay are guaranteed compatible within the same compatibility line:
+
+- for `v1+`, the compatibility line is the major version
+- for pre-`v1`, the compatibility line is `0.minor`, so `v0.1.x` and `v0.2.x` are different lines
+
+The `Release Tunnel` workflow enforces that a published `tunnel` version stays within the current repo relay compatibility line. It does not publish `relay` binaries.
+
+Verify the installed version with `tunnel --version`.
+
 ## Quick Start
 
 ### 1. Start the relay
@@ -217,3 +242,4 @@ See [docs/protocol.md](docs/protocol.md) for the full wire format specification.
 See [docs/tui-attach-flow.md](docs/tui-attach-flow.md) for the end-to-end snapshot, live-byte, relay, and client reconnect flow.
 See [docs/deployment.md](docs/deployment.md) for VPS deployment, nginx/TLS setup, and operations guide.
 See [docs/operation.md](docs/operation.md) for day-to-day relay CLI usage and operator command examples.
+See [docs/release-distribution.md](docs/release-distribution.md) for public `tunnel` release publishing and distribution-repo operations.
