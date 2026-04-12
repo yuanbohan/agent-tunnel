@@ -176,10 +176,16 @@ make build             # builds bin/tunnel, bin/relay, and bin/agentunnel-relay-
 make install           # installs tunnel, relay, and agentunnel-relay-migrate to ~/.local/bin
 make test              # go test ./...
 make test-relay        # focused relay/protocol contract tests
+make local-e2e-db-up   # start fixed-version Docker PostgreSQL for local E2E
+make test-local-e2e    # run local E2E against AGENTUNNEL_TEST_DATABASE_URL
+make test-local-e2e-docker # start fixed-version Docker PostgreSQL and run local E2E
+make test-local-e2e-clean  # reset DB, run local E2E, save output to tmp/local-e2e/latest.log, and fail on test or cleanup errors
 make tunnel LAUNCHER=claude       # run tunnel directly
 go run ./cmd/relay serve          # run relay server
 make migrate           # run relay schema migrations using .env or the shell environment
 ```
+
+See [docs/local-e2e.md](docs/local-e2e.md) for the Docker-backed local E2E workflow, manual acceptance checklist, and database inspection queries.
 
 ## Protocol
 
