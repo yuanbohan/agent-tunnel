@@ -155,13 +155,20 @@ run_cmd() {
 	return 1
 }
 
+run_cmd_or_return() {
+	if run_cmd "$@"; then
+		return 0
+	fi
+	return 1
+}
+
 acquire_remote_lock() {
 	if [ "$dry_run" -eq 1 ] || [ "$remote_lock_held" -eq 1 ]; then
 		return 0
 	fi
 
 	require_ssh_deps
-	run_cmd ssh $ssh_opts "$deploy_host" "sudo /bin/sh -lc 'lock_dir=\"$remote_lock_dir\"; attempts=0; while ! mkdir \"\$lock_dir\" 2>/dev/null; do attempts=\$((attempts + 1)); if [ \"\$attempts\" -ge 300 ]; then echo \"error: timed out waiting for deploy lock $remote_lock_dir\" >&2; exit 1; fi; sleep 1; done'"
+	run_cmd_or_return ssh $ssh_opts "$deploy_host" "sudo /bin/sh -lc 'lock_dir=\"$remote_lock_dir\"; attempts=0; while ! mkdir \"\$lock_dir\" 2>/dev/null; do attempts=\$((attempts + 1)); if [ \"\$attempts\" -ge 300 ]; then echo \"error: timed out waiting for deploy lock $remote_lock_dir\" >&2; exit 1; fi; sleep 1; done'"
 	remote_lock_held=1
 }
 
@@ -259,10 +266,83 @@ build_deploy_env_file() {
 
 build_linux() {
 	debug "repo_root=$repo_root"
-	run_cmd mkdir -p "$bin_dir"
-	run_cmd env GOOS=linux GOARCH=amd64 go build -ldflags=-s\ -w -o "$relay_bin" ./cmd/relay
-	run_cmd env GOOS=linux GOARCH=amd64 go build -ldflags=-s\ -w -o "$migrator_bin" ./cmd/migrate
+	run_cmd_or_return mkdir -p "$bin_dir"
+	run_cmd_or_return env GOOS=linux GOARCH=amd64 go build -ldflags=-s\ -w -o "$relay_bin" ./cmd/relay
+	run_cmd_or_return env GOOS=linux GOARCH=amd64 go build -ldflags=-s\ -w -o "$migrator_bin" ./cmd/migrate
 	set_step_result ok "$bin_dir ready"
+}
+
+upload_binary_archive() {
+	label="$1"
+	archive_path="$2"
+	archive_sha="$3"
+	remote_stage="$4"
+	part_prefix="${remote_stage}.part."
+	parts_dir="$(mktemp -d "${TMPDIR:-/tmp}/agentunnel-deploy-parts.XXXXXX")"
+
+	if ! split -b 2m "$archive_path" "$parts_dir/part."; then
+		rm -rf "$parts_dir"
+		last_error_reason="failed to split $label archive for upload"
+		return 1
+	fi
+
+	for part_path in "$parts_dir"/part.*; do
+		part_name="$(basename "$part_path")"
+		remote_part="${part_prefix}${part_name#part.}"
+		attempt=1
+		while [ "$attempt" -le 3 ]; do
+			if run_cmd scp -O -q "$part_path" "$deploy_host:$remote_part"; then
+				break
+			fi
+
+			if [ "$attempt" -ge 3 ]; then
+				ssh $ssh_opts "$deploy_host" "rm -f $part_prefix* $remote_stage" >/dev/null 2>&1 || true
+				rm -rf "$parts_dir"
+				return 1
+			fi
+
+			ssh $ssh_opts "$deploy_host" "rm -f $remote_part" >/dev/null 2>&1 || true
+			debug "$label $part_name upload attempt $attempt failed; retrying"
+			attempt=$((attempt + 1))
+		done
+	done
+
+	rm -rf "$parts_dir"
+
+	if ! run_cmd_or_return ssh $ssh_opts "$deploy_host" "cat $part_prefix* > $remote_stage && rm -f $part_prefix*"; then
+		ssh $ssh_opts "$deploy_host" "rm -f $part_prefix* $remote_stage" >/dev/null 2>&1 || true
+		return 1
+	fi
+
+	uploaded_sha="$(ssh $ssh_opts "$deploy_host" "sha256sum $remote_stage 2>/dev/null | cut -d' ' -f1" 2>/dev/null || true)"
+	debug "$label uploaded_archive_sha=${uploaded_sha:-missing}"
+	if [ -n "$uploaded_sha" ] && [ "$archive_sha" = "$uploaded_sha" ]; then
+		return 0
+	fi
+
+	last_error_reason="uploaded $label archive hash mismatch on $deploy_host"
+	ssh $ssh_opts "$deploy_host" "rm -f $remote_stage" >/dev/null 2>&1 || true
+	return 1
+}
+
+install_binary_archive() {
+	label="$1"
+	local_sha="$2"
+	remote_stage="$3"
+	remote_install="$4"
+
+	if ! run_cmd ssh $ssh_opts "$deploy_host" "tmp_path=\$(mktemp /tmp/agentunnel-deploy-bin.XXXXXX) && set +e && gzip -dc $remote_stage > \"\$tmp_path\" && sudo install -m 0755 \"\$tmp_path\" $remote_install; rc=\$?; rm -f \"\$tmp_path\" $remote_stage; exit \$rc"; then
+		return 1
+	fi
+
+	installed_sha="$(ssh $ssh_opts "$deploy_host" "sha256sum $remote_install 2>/dev/null | cut -d' ' -f1" 2>/dev/null || true)"
+	debug "$label installed_sha=${installed_sha:-missing}"
+	if [ "$local_sha" != "$installed_sha" ]; then
+		last_error_reason="installed $label hash mismatch on $deploy_host"
+		return 1
+	fi
+
+	return 0
 }
 
 install_binary_if_changed() {
@@ -274,8 +354,8 @@ install_binary_if_changed() {
 	if [ "$dry_run" -eq 1 ]; then
 		debug "$label local_sha=<skipped in dry-run>"
 		debug "$label remote_sha=<skipped in dry-run>"
-		run_cmd rsync -aqz --partial --inplace -e "ssh $ssh_keepalive_opts" "$local_path" "$deploy_host:$remote_stage"
-		run_cmd ssh $ssh_opts "$deploy_host" "sudo install -m 0755 $remote_stage $remote_install"
+		run_cmd_or_return scp -O -q "$local_path" "$deploy_host:$remote_stage"
+		run_cmd_or_return ssh $ssh_opts "$deploy_host" "sudo install -m 0755 $remote_stage $remote_install"
 		set_step_result ok 'hash check skipped in dry-run'
 		return 0
 	fi
@@ -291,18 +371,28 @@ install_binary_if_changed() {
 		return 0
 	fi
 
-	acquire_remote_lock
-	run_cmd rsync -aqz --partial --inplace -e "ssh $ssh_keepalive_opts" "$local_path" "$deploy_host:$remote_stage"
+	if ! acquire_remote_lock; then
+		return 1
+	fi
+	archive_path="$(mktemp "${TMPDIR:-/tmp}/agentunnel-deploy-bin.XXXXXX")"
+	if ! gzip -n -c "$local_path" >"$archive_path"; then
+		rm -f "$archive_path"
+		last_error_reason="failed to compress $label for upload"
+		return 1
+	fi
+	archive_sha="$(hash_file "$archive_path")"
+	debug "$label local_archive_sha=$archive_sha"
 
-	uploaded_sha="$(ssh $ssh_opts "$deploy_host" "sha256sum $remote_stage | cut -d' ' -f1")"
-	debug "$label uploaded_sha=$uploaded_sha"
-	if [ "$local_sha" != "$uploaded_sha" ]; then
-		last_error_reason="uploaded $label hash mismatch on $deploy_host"
-		printf 'error: uploaded %s hash mismatch on %s\n' "$label" "$deploy_host" >&2
+	if ! upload_binary_archive "$label" "$archive_path" "$archive_sha" "$remote_stage"; then
+		rm -f "$archive_path"
+		return 1
+	fi
+	rm -f "$archive_path"
+
+	if ! install_binary_archive "$label" "$local_sha" "$remote_stage" "$remote_install"; then
 		return 1
 	fi
 
-	run_cmd ssh $ssh_opts "$deploy_host" "sudo install -m 0755 $remote_stage $remote_install && rm -f $remote_stage"
 	set_step_result changed 'uploaded and installed'
 }
 
@@ -315,17 +405,22 @@ install_relay() {
 }
 
 sync_schema() {
-	acquire_remote_lock
-	run_cmd ssh $ssh_opts "$deploy_host" "rm -rf $deploy_schema_stage_dir && mkdir -p $deploy_schema_stage_dir"
-	run_cmd rsync -aqz --delete -e "ssh $ssh_keepalive_opts" "$repo_root/schema/" "$deploy_host:$deploy_schema_stage_dir/"
-	run_cmd ssh $ssh_opts "$deploy_host" "sudo rm -rf $deploy_schema_dir && sudo install -d -m 0755 $deploy_schema_dir && sudo install -m 0644 $deploy_schema_stage_dir/*.sql $deploy_schema_dir/ && rm -rf $deploy_schema_stage_dir"
+	if ! acquire_remote_lock; then
+		return 1
+	fi
+	run_cmd_or_return ssh $ssh_opts "$deploy_host" "rm -rf $deploy_schema_stage_dir && mkdir -p $deploy_schema_stage_dir"
+	run_cmd_or_return rsync -aqz --delete -e "ssh $ssh_keepalive_opts" "$repo_root/schema/" "$deploy_host:$deploy_schema_stage_dir/"
+	run_cmd_or_return ssh $ssh_opts "$deploy_host" "sudo rm -rf $deploy_schema_dir && sudo install -d -m 0755 $deploy_schema_dir && sudo install -m 0644 $deploy_schema_stage_dir/*.sql $deploy_schema_dir/ && rm -rf $deploy_schema_stage_dir"
 	set_step_result changed 'remote schema refreshed'
 }
 
 install_env() {
 	local_tmp_env="$(mktemp "${TMPDIR:-/tmp}/agentunnel-env.XXXXXX")"
 	build_deploy_env_file "$local_tmp_env"
-	acquire_remote_lock
+	if ! acquire_remote_lock; then
+		rm -f "$local_tmp_env"
+		return 1
+	fi
 	if run_cmd scp -q "$local_tmp_env" "$deploy_host:$deploy_env_stage_file"; then
 		rm -f "$local_tmp_env"
 	else
@@ -334,14 +429,17 @@ install_env() {
 		return "$status"
 	fi
 
-	run_cmd ssh $ssh_opts "$deploy_host" "sudo install -d -m 0755 $deploy_env_dir && sudo install -m 0600 $deploy_env_stage_file $deploy_env_file && rm -f $deploy_env_stage_file"
+	run_cmd_or_return ssh $ssh_opts "$deploy_host" "sudo install -d -m 0755 $deploy_env_dir && sudo install -m 0600 $deploy_env_stage_file $deploy_env_file && rm -f $deploy_env_stage_file"
 	set_step_result changed "installed env with RELAY_LOG_FILE=$deploy_relay_log_file"
 }
 
 run_migrate() {
 	local_tmp_env="$(mktemp "${TMPDIR:-/tmp}/agentunnel-migrate-env.XXXXXX")"
 	build_deploy_env_file "$local_tmp_env"
-	acquire_remote_lock
+	if ! acquire_remote_lock; then
+		rm -f "$local_tmp_env"
+		return 1
+	fi
 	if run_cmd scp -q "$local_tmp_env" "$deploy_host:$deploy_migrate_env_stage_file"; then
 		rm -f "$local_tmp_env"
 	else
@@ -356,13 +454,15 @@ run_migrate() {
 	fi
 	remote_cmd="$remote_cmd >/dev/null; then rc=0; else rc=\$?; fi; rm -f $deploy_migrate_env_stage_file; exit \$rc"
 
-	run_cmd ssh $ssh_opts "$deploy_host" "sudo /bin/sh -lc '$remote_cmd'"
+	run_cmd_or_return ssh $ssh_opts "$deploy_host" "sudo /bin/sh -lc '$remote_cmd'"
 	set_step_result ok 'schema is current'
 }
 
 restart_service() {
-	acquire_remote_lock
-	run_cmd ssh $ssh_opts "$deploy_host" "sudo systemctl restart $deploy_service"
+	if ! acquire_remote_lock; then
+		return 1
+	fi
+	run_cmd_or_return ssh $ssh_opts "$deploy_host" "sudo systemctl restart $deploy_service"
 	set_step_result changed 'service restarted'
 }
 
@@ -478,7 +578,9 @@ prepare_build_linux() {
 
 prepare_install_binary() {
 	require_build_deps
-	require_copy_deps
+	require_scp_deps
+	require_cmd gzip
+	require_cmd split
 }
 
 prepare_sync_schema() {
@@ -494,6 +596,8 @@ prepare_migrate() {
 	require_build_deps
 	require_copy_deps
 	require_scp_deps
+	require_cmd gzip
+	require_cmd split
 	require_env_file
 }
 
