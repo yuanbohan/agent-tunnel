@@ -58,13 +58,16 @@ func main() {
 }
 
 func run() error {
-	return runWithArgs(os.Args, os.Stderr)
+	return runWithArgs(os.Args, os.Stdout, os.Stderr)
 }
 
-func runWithArgs(args []string, stderr io.Writer) error {
+func runWithArgs(args []string, stdout, stderr io.Writer) error {
 	parsed, err := parseRunArgs(args)
 	if err != nil {
 		return err
+	}
+	if parsed.ShowVersion {
+		return writeVersion(stdout)
 	}
 	relayURL := relayWebSocketBaseURL(parsed.BaseURL)
 

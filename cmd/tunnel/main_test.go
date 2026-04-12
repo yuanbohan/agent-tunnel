@@ -116,13 +116,69 @@ func TestRunWithArgsStopsBeforeStartingSessionWhenLocalTerminalPreparationFails(
 		return &fakeRelayConnector{waitConnected: true, state: connector.StateConnected}
 	}
 
+	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	err := runWithArgs([]string{"tunnel", "codex", "--version"}, &stderr)
+	err := runWithArgs([]string{"tunnel", "codex", "--profile", "prod"}, &stdout, &stderr)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("runWithArgs error = %v, want %v", err, wantErr)
 	}
 	if startedSession {
 		t.Fatal("runWithArgs started the child session before local terminal preparation succeeded")
+	}
+}
+
+func TestRunWithArgsPrintsVersionWithoutStartingSession(t *testing.T) {
+	setTestEnv(t)
+
+	oldResolve := resolveLauncher
+	oldPrepare := prepareLocalTerminal
+	oldStartSession := startSession
+	oldNewConnector := newConnector
+	t.Cleanup(func() {
+		resolveLauncher = oldResolve
+		prepareLocalTerminal = oldPrepare
+		startSession = oldStartSession
+		newConnector = oldNewConnector
+	})
+
+	resolveCalled := false
+	resolveLauncher = func(name string, args []string) (launcher.Command, error) {
+		resolveCalled = true
+		return launcher.Command{}, nil
+	}
+
+	prepareCalled := false
+	prepareLocalTerminal = func() (*session.LocalTerminal, error) {
+		prepareCalled = true
+		return &session.LocalTerminal{}, nil
+	}
+
+	startCalled := false
+	startSession = func(context.Context, string, []string, map[string]session.OutputSink) (*session.Running, error) {
+		startCalled = true
+		return nil, nil
+	}
+
+	connectorCalled := false
+	newConnector = func(url, token string, info protocol.SessionInfo) relayConnector {
+		connectorCalled = true
+		return &fakeRelayConnector{}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := runWithArgs([]string{"tunnel", "--version"}, &stdout, &stderr); err != nil {
+		t.Fatalf("runWithArgs error = %v", err)
+	}
+
+	if got := stdout.String(); got != "tunnel v0.1.0-dev\n" {
+		t.Fatalf("stdout = %q, want tunnel v0.1.0-dev", got)
+	}
+	if got := stderr.String(); got != "" {
+		t.Fatalf("stderr = %q, want empty", got)
+	}
+	if resolveCalled || prepareCalled || startCalled || connectorCalled {
+		t.Fatalf("version fast path unexpectedly touched runtime: resolve=%v prepare=%v start=%v connector=%v", resolveCalled, prepareCalled, startCalled, connectorCalled)
 	}
 }
 
@@ -177,8 +233,9 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
 		return nil
 	}
 
+	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	err := runWithArgs([]string{"tunnel", "--label", "api-fix", "codex", "--profile", "prod"}, &stderr)
+	err := runWithArgs([]string{"tunnel", "--label", "api-fix", "codex", "--profile", "prod"}, &stdout, &stderr)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("runWithArgs error = %v, want %v", err, wantErr)
 	}
@@ -270,8 +327,9 @@ func TestRunWithArgsUsesUserProvidedCommandForPreview(t *testing.T) {
 		return nil
 	}
 
+	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	err := runWithArgs([]string{"tunnel", "/opt/bin/custom-agent", "--mode", "fast"}, &stderr)
+	err := runWithArgs([]string{"tunnel", "/opt/bin/custom-agent", "--mode", "fast"}, &stdout, &stderr)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("runWithArgs error = %v, want %v", err, wantErr)
 	}
@@ -334,8 +392,9 @@ func TestRunWithArgsPrintsStartupBannerOnExit(t *testing.T) {
 		return &fakeRelayConnector{waitConnected: true, state: connector.StateConnected}
 	}
 
+	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	if err := runWithArgs([]string{"tunnel", "codex"}, &stderr); err != nil {
+	if err := runWithArgs([]string{"tunnel", "codex"}, &stdout, &stderr); err != nil {
 		t.Fatalf("runWithArgs error = %v", err)
 	}
 
@@ -386,8 +445,9 @@ func TestRunWithArgsPrintsReconnectingBannerAfterStartupWait(t *testing.T) {
 		return &fakeRelayConnector{waitConnected: false, state: connector.StateReconnecting}
 	}
 
+	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	if err := runWithArgs([]string{"tunnel", "codex"}, &stderr); err != nil {
+	if err := runWithArgs([]string{"tunnel", "codex"}, &stdout, &stderr); err != nil {
 		t.Fatalf("runWithArgs error = %v", err)
 	}
 

@@ -5,8 +5,12 @@
 RELAY_BIN ?= ./relay
 ## RELAY_PORT: Relay port used by `make start` and `make status`.
 RELAY_PORT ?= 8586
+## GO: Go toolchain binary used by build and test targets.
+GO ?= go
 ## BIN_DIR: Output directory for built binaries.
 BIN_DIR ?= bin
+## RELEASE_DIR: Output directory root for packaged tunnel release artifacts.
+RELEASE_DIR ?= dist/releases
 ## INSTALL_DIR: Install destination for `make install`.
 INSTALL_DIR ?= $(HOME)/.local/bin
 ## INSTALL_HOST: SSH host for remote install targets. Defaults to `DEPLOY_HOST`.

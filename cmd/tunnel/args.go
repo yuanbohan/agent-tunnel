@@ -17,6 +17,7 @@ const (
 )
 
 type runArgs struct {
+	ShowVersion  bool
 	Label        string
 	BaseURL      string
 	AuthToken    string
@@ -29,11 +30,15 @@ func parseRunArgs(argv []string) (runArgs, error) {
 	fs.SetOutput(io.Discard)
 
 	var cfg runArgs
+	fs.BoolVar(&cfg.ShowVersion, "version", false, "print tunnel version and exit")
 	fs.StringVar(&cfg.Label, "label", "", "optional session label for relay clients")
 	fs.StringVar(&cfg.BaseURL, "base-url", "", "relay base URL (fallback: TUNNEL_BASE_URL, default: https://diaro.me)")
 
 	if err := fs.Parse(argv[1:]); err != nil {
 		return runArgs{}, err
+	}
+	if cfg.ShowVersion {
+		return cfg, nil
 	}
 
 	if cfg.BaseURL == "" {

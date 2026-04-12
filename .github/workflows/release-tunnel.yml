@@ -1,0 +1,57 @@
+name: Release Tunnel
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version in the form vX.Y.Z
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+      TUNNEL_DIST_REPO: yuanbohan/tunnel
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Validate release version
+        run: ./scripts/render-latest-manifest.sh "$RELEASE_VERSION" >/dev/null
+
+      - name: Run test suite
+        run: go test ./...
+
+      - name: Run release smoke tests
+        run: |
+          make test-release-package
+          make test-release-installer
+          make test-release-publish
+
+      - name: Package release artifacts
+        run: make release-package RELEASE_VERSION="$RELEASE_VERSION"
+
+      - name: Require public distribution token
+        env:
+          TUNNEL_DIST_REPO_TOKEN: ${{ secrets.TUNNEL_DIST_REPO_TOKEN }}
+        run: |
+          if [ -z "$TUNNEL_DIST_REPO_TOKEN" ]; then
+            echo "error: TUNNEL_DIST_REPO_TOKEN is not configured" >&2
+            exit 1
+          fi
+
+      - name: Publish public release
+        env:
+          TUNNEL_DIST_REPO_TOKEN: ${{ secrets.TUNNEL_DIST_REPO_TOKEN }}
+        run: ./scripts/publish-tunnel-release.sh "$RELEASE_VERSION"
