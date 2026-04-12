@@ -7,8 +7,10 @@ import (
 )
 
 const (
-	defaultMirrorCols = 80
-	defaultMirrorRows = 24
+	defaultMirrorCols         = 80
+	defaultMirrorRows         = 24
+	defaultMirrorScrollback   = 256
+	defaultSnapshotScrollback = 256
 )
 
 type TerminalMirror struct {
@@ -30,7 +32,7 @@ func NewTerminalMirror(cols, rows int) *TerminalMirror {
 	term := xterm.New(
 		xterm.WithCols(cols),
 		xterm.WithRows(rows),
-		xterm.WithScrollback(0),
+		xterm.WithScrollback(defaultMirrorScrollback),
 	)
 
 	return &TerminalMirror{
@@ -67,7 +69,7 @@ func (m *TerminalMirror) Snapshot() ([]byte, int, int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	scrollback := 0
+	scrollback := defaultSnapshotScrollback
 	snapshot := m.serializer.Serialize(&xterm.SerializeOptions{
 		Scrollback: &scrollback,
 	})

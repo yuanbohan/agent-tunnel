@@ -28,6 +28,20 @@ func (c *recordingCloser) Close() error {
 	return nil
 }
 
+func joinedBufferText(t *testing.T, buf *xterm.Buffer) string {
+	t.Helper()
+
+	lines := make([]string, buf.Lines.Length())
+	for i := range lines {
+		line := buf.Lines.Get(i)
+		if line == nil {
+			t.Fatalf("line %d = nil", i)
+		}
+		lines[i] = line.TranslateToString(true, 0, -1)
+	}
+	return strings.Join(lines, "\n")
+}
+
 func TestConnectorSendsRegisterBeforeStreamingOutput(t *testing.T) {
 	received := make(chan protocol.AgentFrame, 1)
 	upgrader := websocket.Upgrader{}
@@ -395,8 +409,8 @@ func TestConnectorAttachOpenSendsSnapshotThenLiveBytes(t *testing.T) {
 		SessionID: "sess-1",
 		Launcher:  "codex",
 	})
-	c.applyResize(120, 40, false)
-	c.mirror.WriteOutput([]byte("snapshot line"))
+	c.applyResize(120, 3, false)
+	c.mirror.WriteOutput([]byte("line001\r\nline002\r\nline003\r\nline004"))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -416,8 +430,8 @@ func TestConnectorAttachOpenSendsSnapshotThenLiveBytes(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for attach_ready")
 	}
-	if attachReady.ClientID != clientID || attachReady.Cols != 120 || attachReady.Rows != 40 {
-		t.Fatalf("attach_ready = %#v, want client id %s size 120x40", attachReady, clientID)
+	if attachReady.ClientID != clientID || attachReady.Cols != 120 || attachReady.Rows != 3 {
+		t.Fatalf("attach_ready = %#v, want client id %s size 120x3", attachReady, clientID)
 	}
 
 	var snapshot protocol.AttachPacket
@@ -430,10 +444,18 @@ func TestConnectorAttachOpenSendsSnapshotThenLiveBytes(t *testing.T) {
 		t.Fatalf("snapshot client_id = %q, want %q", snapshot.ClientID, clientID)
 	}
 
-	restored := xterm.New(xterm.WithCols(attachReady.Cols), xterm.WithRows(attachReady.Rows), xterm.WithScrollback(0))
+	restored := xterm.New(xterm.WithCols(attachReady.Cols), xterm.WithRows(attachReady.Rows), xterm.WithScrollback(256))
 	_, _ = restored.Write(snapshot.Payload)
-	if !strings.Contains(restored.String(), "snapshot line") {
-		t.Fatalf("restored snapshot = %q, want snapshot content", restored.String())
+	for _, want := range []string{"line002", "line003", "line004"} {
+		if !strings.Contains(restored.String(), want) {
+			t.Fatalf("restored snapshot viewport = %q, want %q", restored.String(), want)
+		}
+	}
+	if strings.Contains(restored.String(), "line001") {
+		t.Fatalf("restored snapshot viewport = %q, did not expect scrollback-only line", restored.String())
+	}
+	if got := joinedBufferText(t, restored.NormalBuffer()); !strings.Contains(got, "line001") {
+		t.Fatalf("restored normal buffer = %q, want scrollback line001", got)
 	}
 
 	if err := c.WriteOutput([]byte("live bytes")); err != nil {

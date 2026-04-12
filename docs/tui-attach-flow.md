@@ -100,13 +100,13 @@ The connector does two things with each PTY output chunk:
 1. it feeds the bytes into the agent-side `xterm-go` mirror
 2. it forwards the same bytes to any currently attached remote clients as live bytes
 
-Because the mirror sees the same byte stream as the local terminal, it tracks the current visible screen using terminal semantics rather than plain text concatenation.
+Because the mirror sees the same byte stream as the local terminal, it tracks terminal state using terminal semantics rather than plain text concatenation.
 
 ## 2. What `xterm-go` Adds
 
 Without `xterm-go`, the live streaming path can still work for a client that was attached from the beginning, because the client terminal emulator can interpret the raw PTY byte stream on its own.
 
-What breaks without a mirror is current-screen recovery:
+What breaks without a mirror is fresh snapshot recovery:
 
 - a client that attaches after the session has already been running needs a correct current screen
 - a client that disconnected cannot safely continue from stale local state because it may have missed bytes
@@ -119,9 +119,9 @@ What breaks without a mirror is current-screen recovery:
 - wide characters
 - terminal modes needed to interpret later bytes correctly
 
-On attach, the mirror serializes the current visible terminal state into snapshot bytes. Those bytes are not a screenshot and not a JSON diff. They are escape sequences and text that a fresh terminal emulator can replay to reconstruct the current screen.
+On attach, the mirror serializes the current terminal state into snapshot bytes. Those bytes are not a screenshot and not a JSON diff. They are escape sequences and text that a fresh terminal emulator can replay to reconstruct the current screen and, when the normal buffer has history available, bounded recent scrollback above that screen.
 
-This repository configures the mirror with no scrollback history, so the snapshot represents the current visible screen, not transcript replay.
+This repository configures the mirror with bounded normal-buffer scrollback, so the snapshot can restore recent in-memory history without turning reconnect into transcript replay. If the terminal is currently on the alternate screen, the snapshot still restores that current alt-screen state. The alternate buffer itself does not gain scrollback, although bounded normal-buffer history may remain available underneath it.
 
 ## 3. Attach Flow: Snapshot Then Live Bytes
 
@@ -167,18 +167,19 @@ The snapshot is a checkpoint for a fresh terminal emulator.
 It contains enough terminal instructions to restore the current visible state, including:
 
 - the active screen buffer when the TUI is on the alternate screen
+- bounded recent normal-buffer scrollback when the mirror still has it
 - visible text and styling
 - cursor and mode state needed for later bytes to make sense
 
 It does not contain:
 
-- transcript history
+- durable transcript history
 - durable replay of every old PTY byte
 - a relay-generated interpretation of the TUI
 
 The practical consequence is:
 
-- a new client can attach mid-session and render the current screen correctly
+- a new client can attach mid-session and render the current screen correctly, with bounded recent normal-buffer history when available
 - a client can recover the latest current screen by rediscovering the session after the agent comes back online
 - a client cannot ask the relay for the exact bytes it missed while disconnected
 
@@ -510,7 +511,7 @@ Structured input still goes over the attach websocket as `input_text` and `input
 
 This model guarantees:
 
-- a fresh attach can reconstruct the current visible screen
+- a fresh attach can reconstruct the current visible screen and bounded recent normal-buffer scrollback when available
 - snapshot bytes and later live bytes form one continuous stream for that attach
 - relay reconnect for the same running agent keeps the same `session_id`
 - the local terminal remains usable even if the relay is unavailable
