@@ -1,24 +1,27 @@
 # Relay Deployment & Operations
 
-This guide covers deploying the relay server behind nginx with TLS on an Ubuntu VPS, installing PostgreSQL for durable auth state, automating binary deploys from a dev machine, and day-to-day operations.
+This guide covers deploying the relay server on an Ubuntu VPS, automating binary deploys and schema migrations from a dev machine, and day-to-day operations.
+
+nginx, certbot, and PostgreSQL are treated as pre-installed infrastructure; installing and configuring them is out of scope for this guide. Only the relay-specific nginx site config, the relay systemd unit, and the schema migration step are documented below. Schema migrations are wired into `make deploy`, so every normal deploy keeps the database in sync.
 
 For the relay CLI command reference itself, see [operation.md](./operation.md).
 
 ## Prerequisites
 
-- Ubuntu VPS with a public IP and ports 80/443 open
-- A domain with DNS A-record pointing to the VPS IP
+- Ubuntu VPS with a public IP (ports 80/443 open if you intend to serve the relay over HTTPS)
 - SSH access from dev machine (passwordless recommended)
 - Go toolchain on dev machine (for cross-compilation)
-- PostgreSQL installed on the VPS
+- nginx already installed and running on the VPS
+- certbot already installed on the VPS if you plan to terminate TLS there
+- PostgreSQL already installed and running on the VPS, with a role and database that match the DSN in your env file (e.g. role `relay_user`, database `agent_tunnel`)
 
 ## Server Layout
 
 ```text
 /usr/local/bin/relay                         # installed relay binary (used by systemd)
-/usr/local/bin/agentunnel-relay-migrate     # installed migrator binary
+/usr/local/bin/relay-migrate     # installed migrator binary
 ~/relay                                      # uploaded staging binary from dev machine
-~/agentunnel-relay-migrate                   # uploaded staging migrator binary
+~/relay-migrate                   # uploaded staging migrator binary
 /etc/agentunnel/schema/                      # installed relay schema SQL files
 /etc/systemd/system/agentunnel-relay.service # systemd unit
 /etc/nginx/sites-available/<domain>          # nginx site config
@@ -28,79 +31,32 @@ For the relay CLI command reference itself, see [operation.md](./operation.md).
 
 ## Initial Setup
 
-### 1. Install nginx
-
-```bash
-sudo apt update
-sudo apt install -y nginx
-```
-
-Verify nginx is running:
-
-```bash
-sudo systemctl status nginx
-curl -s -o /dev/null -w "%{http_code}" http://localhost
-# Should return 200 (default welcome page)
-```
-
-### 1.5 Install PostgreSQL
-
-```bash
-sudo apt update
-sudo apt install -y postgresql
-sudo systemctl enable postgresql
-sudo systemctl start postgresql
-
-sudo -u postgres psql <<'SQL'
-create role relay_user login password 'change-me-db-password';
-create database agent_tunnel owner relay_user;
-SQL
-```
-
-Replace `change-me-db-password` with a strong password before using the DSN examples below.
-
-### 2. Install certbot via snap
-
-Snap is the recommended install method for certbot. It keeps certbot up to date automatically and includes a built-in renewal timer.
-
-```bash
-sudo snap install --classic certbot
-sudo ln -s /snap/bin/certbot /usr/bin/certbot
-certbot --version
-```
-
-The symlink ensures `certbot` is available system-wide. If `/usr/bin/certbot` already exists from a previous apt install, remove the old package first:
-
-```bash
-sudo apt remove -y certbot   # only if previously installed via apt
-sudo snap install --classic certbot
-sudo ln -sf /snap/bin/certbot /usr/bin/certbot
-```
-
-### 3. Build and upload the relay artifacts
+### 1. Build and upload the relay artifacts
 
 From the project root on your dev machine:
 
 ```bash
 make build-linux          # cross-compile for linux/amd64
 scp bin/relay diarome:~/relay
-scp bin/agentunnel-relay-migrate diarome:~/agentunnel-relay-migrate
+scp bin/relay-migrate diarome:~/relay-migrate
 ssh diarome 'rm -rf /tmp/agentunnel-relay-schema && mkdir -p /tmp/agentunnel-relay-schema'
 scp schema/*.sql diarome:/tmp/agentunnel-relay-schema/
 ```
 
 `diarome` here is an SSH config host alias. Replace with `user@your-vps-ip` if you don't have one.
 
-### 4. Install the binaries and schema files on the VPS
+### 2. Install the binaries and schema files on the VPS
 
 ```bash
 sudo install -m 0755 ~/relay /usr/local/bin/relay
-sudo install -m 0755 ~/agentunnel-relay-migrate /usr/local/bin/agentunnel-relay-migrate
+sudo install -m 0755 ~/relay-migrate /usr/local/bin/relay-migrate
 sudo install -d -m 0755 /etc/agentunnel/schema
 sudo install -m 0644 /tmp/agentunnel-relay-schema/*.sql /etc/agentunnel/schema/
 ```
 
-### 5. Create the systemd service
+### 3. Create the systemd service
+
+The canonical unit file lives in the repo at `deploy/systemd/agentunnel-relay.service`. It reads `RELAY_LOG_FILE` from `/etc/agentunnel/relay.env`, and uses `LogsDirectory=agentunnel` so systemd creates `/var/log/agentunnel` with the right ownership. `make deploy-env` always writes `RELAY_LOG_FILE=/var/log/agentunnel/relay.log` into that env file. systemd unit-state messages and anything that still writes directly to stdout/stderr continue to flow through `journalctl`.
 
 First, create a root-only env file at `/etc/agentunnel/relay.env`:
 
@@ -114,32 +70,22 @@ EOF
 sudo chmod 600 /etc/agentunnel/relay.env
 ```
 
-Create `/etc/systemd/system/agentunnel-relay.service`:
+Copy the repo's unit file to the VPS (one-time, or whenever the repo unit changes):
 
-```ini
-[Unit]
-Description=Agent Tunnel Relay
-After=network.target postgresql.service
-
-[Service]
-Type=simple
-User=root
-Group=root
-ExecStart=/usr/local/bin/relay serve --listen-addr 127.0.0.1:8586
-EnvironmentFile=/etc/agentunnel/relay.env
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
+```bash
+scp deploy/systemd/agentunnel-relay.service diarome:/tmp/
+ssh diarome 'sudo install -m 0644 /tmp/agentunnel-relay.service /etc/systemd/system/agentunnel-relay.service && \
+  sudo systemctl daemon-reload && sudo systemctl enable agentunnel-relay && rm /tmp/agentunnel-relay.service'
 ```
+
+`make deploy` does not install the unit file; it is a rarely-changing piece of host config. Log rotation is not set up: at current traffic, `/var/log/agentunnel/relay.log` is expected to grow slowly. When it eventually becomes a concern, add a `/etc/logrotate.d/agentunnel-relay` config (weekly, 8 rotations, `copytruncate`) manually.
 
 Enable and start:
 
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable agentunnel-relay
-sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && /usr/local/bin/agentunnel-relay-migrate --schema-dir /etc/agentunnel/schema'
+sudo /usr/local/bin/relay-migrate --env-file /etc/agentunnel/relay.env --schema-dir /etc/agentunnel/schema
 sudo systemctl start agentunnel-relay
 ```
 
@@ -156,27 +102,29 @@ ss -lntp | grep 8586
 #### Systemd key settings explained
 
 - **`Restart=always`** and **`RestartSec=5`**: If the relay crashes, systemd restarts it after 5 seconds. This keeps the relay self-healing without manual intervention.
-- **`EnvironmentFile=/etc/agentunnel/relay.env`**: systemd and `make deploy` both read the same source of truth for relay environment variables.
-- **Run `agentunnel-relay-migrate` before restart**: schema changes are explicit and are not applied automatically by `relay serve`.
+- **`EnvironmentFile=/etc/agentunnel/relay.env`**: systemd reads this file at service start. `make deploy` uploads the selected local env file (`.env.prod` or `.env.dev`) to this same path and pins `RELAY_LOG_FILE=/var/log/agentunnel/relay.log`.
+- **Run `relay-migrate` before restart**: schema changes are explicit and are not applied automatically by `relay serve`.
 - **`After=network.target`**: Ensures the relay starts only after the network is up.
 - **`WantedBy=multi-user.target`**: The service starts automatically on boot.
 
 #### Viewing relay logs
 
-Relay logs go to journald (systemd's log system):
+Structured relay logs written through `logx` are appended to `/var/log/agentunnel/relay.log` when `RELAY_LOG_FILE` is set. systemd unit-state messages and any direct stdout/stderr output still go to journald.
 
 ```bash
-# Live tail
+# Live tail of the application log
+sudo tail -f /var/log/agentunnel/relay.log
+
+# Filter by structured event with jq
+sudo tail -n 1000 /var/log/agentunnel/relay.log | jq 'select(.event == "relay_started")'
+
+# systemd-level events (restarts, failures, etc.)
 sudo journalctl -u agentunnel-relay -f
-
-# Recent logs
-sudo journalctl -u agentunnel-relay --since "1 hour ago"
-
-# Filter by event with jq
-sudo journalctl -u agentunnel-relay -o cat | jq 'select(.event == "relay_started")'
 ```
 
-### 6. Configure nginx
+### 4. Configure the nginx site for the relay
+
+nginx itself is assumed to be installed and running. The steps below add only the relay-specific site config.
 
 Reference configs are checked into `deploy/nginx/`. Copy them to the VPS:
 
@@ -252,7 +200,9 @@ Key nginx settings to pay attention to:
 - **`Upgrade` and `Connection` headers with `map`**: The `$connection_upgrade` variable (from `websocket_map.conf`) ensures `Connection: upgrade` is only sent for actual WebSocket requests. Without the map and these headers, WebSocket connections fail silently.
 - **`proxy_http_version 1.1`**: WebSocket requires HTTP/1.1. nginx defaults to 1.0 for upstream connections.
 
-### 7. Obtain TLS certificate
+### 5. Issue a TLS cert for the relay domain (optional)
+
+certbot itself is assumed to be installed. If this host needs a new cert for the relay domain, issue it with the nginx plugin:
 
 ```bash
 sudo certbot --nginx \
@@ -261,63 +211,9 @@ sudo certbot --nginx \
   -m your-email@example.com
 ```
 
-Certbot will:
-- Obtain the cert from Let's Encrypt
-- Modify the nginx config to add SSL directives and HTTP-to-HTTPS redirect
-- The snap-installed certbot includes a built-in renewal timer (`snap.certbot.renew.timer`)
+If certbot already manages this domain, skip this step. Cert renewal is handled by the existing certbot installation.
 
-Verify the cert was issued and HTTPS works:
-
-```bash
-# Should return 401 (bearer auth required) over HTTPS
-curl -s -o /dev/null -w "%{http_code}" https://example.com/api/sessions
-
-# Check cert details
-sudo certbot certificates
-```
-
-### 8. Verify automatic certificate renewal
-
-Snap-installed certbot ships with `snap.certbot.renew.timer`, a systemd timer that checks for renewal twice daily. No cron job is needed.
-
-Verify the timer is active:
-
-```bash
-sudo systemctl list-timers | grep certbot
-```
-
-You should see `snap.certbot.renew.timer` listed with a next-run time.
-
-How automatic renewal works:
-
-- Let's Encrypt certificates expire after **90 days**
-- Certbot renews when a cert has **fewer than 30 days remaining**, so renewal effectively happens every ~60 days
-- The timer runs **twice daily** but only triggers actual renewal when needed
-- On successful renewal, certbot reloads nginx automatically to pick up the new cert
-
-Test that renewal would succeed (dry run, does not actually renew):
-
-```bash
-sudo certbot renew --dry-run
-```
-
-If the dry run fails, common causes are:
-
-- Port 80 is blocked by a firewall (Let's Encrypt needs to reach it for HTTP-01 challenges)
-- nginx is misconfigured or not running
-- DNS no longer points to this server
-
-#### Monitoring cert expiry
-
-```bash
-# Check all managed certs and their expiry dates
-sudo certbot certificates
-
-# One-liner to check days until expiry
-sudo openssl x509 -in /etc/letsencrypt/live/<domain>/fullchain.pem -noout -dates
-```
-
-### 9. End-to-end verification
+### 6. End-to-end verification
 
 ```bash
 # Should return 401 (bearer auth required)
@@ -340,49 +236,72 @@ sudo systemctl is-active agentunnel-relay
 
 ### Manual deploy
 
+The manual flow below is a close approximation of `make deploy-prod`. Prefer the Make targets; keep this as a reference.
+
 ```bash
 # On dev machine
 make build-linux
 scp bin/relay diarome:~/relay
-scp bin/agentunnel-relay-migrate diarome:~/agentunnel-relay-migrate
+scp bin/relay-migrate diarome:~/relay-migrate
 ssh diarome 'rm -rf /tmp/agentunnel-relay-schema && mkdir -p /tmp/agentunnel-relay-schema'
 scp schema/*.sql diarome:/tmp/agentunnel-relay-schema/
+ssh diarome 'sudo install -m 0755 ~/relay-migrate /usr/local/bin/relay-migrate'
+tmp_env="$(mktemp)"
+trap 'rm -f "$tmp_env"' EXIT
+grep -v '^RELAY_LOG_FILE=' .env.prod >"$tmp_env"
+printf '\nRELAY_LOG_FILE=/var/log/agentunnel/relay.log\n' >>"$tmp_env"
+scp "$tmp_env" diarome:/tmp/agentunnel-relay.env
+ssh diarome 'sudo rm -rf /etc/agentunnel/schema && sudo install -d -m 0755 /etc/agentunnel/schema && sudo install -m 0644 /tmp/agentunnel-relay-schema/*.sql /etc/agentunnel/schema/'
+ssh diarome 'sudo /usr/local/bin/relay-migrate --env-file /tmp/agentunnel-relay.env --schema-dir /etc/agentunnel/schema'
 ssh diarome 'sudo install -m 0755 ~/relay /usr/local/bin/relay'
-ssh diarome 'sudo install -m 0755 ~/agentunnel-relay-migrate /usr/local/bin/agentunnel-relay-migrate'
-ssh diarome 'sudo mkdir -p /etc/agentunnel/schema && sudo install -m 0644 /tmp/agentunnel-relay-schema/*.sql /etc/agentunnel/schema/'
-ssh diarome 'sudo /bin/sh -lc '"'"'set -a && . /etc/agentunnel/relay.env && set +a && /usr/local/bin/agentunnel-relay-migrate --schema-dir /etc/agentunnel/schema'"'"''
+ssh diarome 'sudo install -d -m 0755 /etc/agentunnel && sudo install -m 0600 /tmp/agentunnel-relay.env /etc/agentunnel/relay.env && rm -f /tmp/agentunnel-relay.env'
 ssh diarome 'sudo systemctl restart agentunnel-relay'
+rm -f "$tmp_env"
+trap - EXIT
 ```
 
 ### One-command deploy
 
-The Makefile keeps the common path simple:
+The Makefile keeps the common path simple and supports a prod env and a dev env side-by-side via two separate env files (`.env.prod` and `.env.dev`). Both are gitignored. The env file also carries `DEPLOY_HOST` for that environment, so the `make` targets below pick up the right host automatically.
 
-- `make deploy` builds, uploads, syncs `.env`, installs, and restarts the relay
-- `make deploy-env` uploads the local repo `.env` file to `/etc/agentunnel/relay.env`
-- `make deploy-schema` uploads `schema/*.sql` to the remote host
-- `make deploy-migrate` runs `agentunnel-relay-migrate` separately when a release actually changes the PostgreSQL schema
+`make deploy` now always reruns the migrator before it installs the new relay binary and env file. That is the safer default for this repo: the migrator records applied versions in `schema_migrations`, takes a PostgreSQL advisory lock to avoid concurrent runners, and executes each migration inside its own transaction. If the database is already current, rerunning the migrator is a no-op.
+
+Core targets:
+
+- `make deploy` builds, syncs schema, safely reruns migrations, installs the selected relay binary and env file, and restarts the relay. `ENV_FILE` defaults to `.env.prod`.
+- `make deploy-install` only uploads and installs binaries whose sha256 differs from the copy already at the installed path on the remote, so repeat runs on unchanged builds are cheap no-ops.
+- `make deploy-env` uploads the selected local env file to `/etc/agentunnel/relay.env` and pins `RELAY_LOG_FILE=/var/log/agentunnel/relay.log`.
+- `make deploy-schema` mirrors the local `schema/` directory to `/etc/agentunnel/schema` on the remote host so removed SQL files do not linger forever.
+- `make deploy-migrate` streams the selected local `$(ENV_FILE)` to the remote host temporarily, runs `relay-migrate`, and cleans up the temp file before returning.
+- `make deploy-schema-migrate` is the combined “sync schema + rerun migrator” step.
+- `make deploy-restart` restarts the `agentunnel-relay` systemd unit.
+
+Convenience targets:
+
+- `make deploy-dev` → `make deploy ENV_FILE=.env.dev`
+- `make deploy-prod` → `make deploy ENV_FILE=.env.prod`
+
+Typical flows:
 
 ```bash
-make deploy
+make deploy-prod        # prod deploy
+make deploy-dev         # dev deploy
+make deploy-dev DEPLOY_DRY_RUN=1    # structured preview without making changes
+make deploy-dev DEPLOY_VERBOSE=1    # include deploy debug details
+make deploy-install     # just refresh relay + migrator binaries if needed
 ```
 
-Override defaults for different environments:
+Notes:
+
+- `make -n deploy-dev` is still a Make-level dry-run, but it now only prints the deploy script entrypoint.
+- For a readable preview of the actual deploy plan, prefer `make deploy-dev DEPLOY_DRY_RUN=1` or `make deploy-prod DEPLOY_DRY_RUN=1`.
+- GNU Make does not support a custom `--verbose` flag for project-defined behavior. For verbose deploy logs, use `DEPLOY_VERBOSE=1` on the same `make deploy-dev` or `make deploy-prod` command you would normally run.
+
+You can still override individual variables or run steps one at a time:
 
 ```bash
-make deploy DEPLOY_HOST=staging DEPLOY_RELAY_PATH=~/relay DEPLOY_SERVICE=agentunnel-relay
-make deploy-env DEPLOY_HOST=staging DEPLOY_ENV_FILE=/etc/agentunnel/relay.env
-make deploy-migrate DEPLOY_HOST=staging DEPLOY_ENV_FILE=/etc/agentunnel/relay.env
-```
-
-When a release includes a migration, run the explicit sequence:
-
-```bash
-make deploy-env
-make deploy-install
-make deploy-schema
-make deploy-migrate
-make deploy-restart
+make deploy ENV_FILE=.env.dev DEPLOY_HOST=user@1.2.3.4
+make deploy-migrate ENV_FILE=.env.dev
 ```
 
 ### What happens during restart
@@ -407,8 +326,8 @@ sudo systemctl restart agentunnel-relay
 sudo systemctl stop agentunnel-relay
 
 # Relay migrations and operator workflows (run on the relay host)
-sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && /usr/local/bin/agentunnel-relay-migrate --schema-dir /etc/agentunnel/schema'
-sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && /usr/local/bin/agentunnel-relay-migrate --schema-dir /etc/agentunnel/schema --baseline 0002_operator_audit.sql'
+sudo /usr/local/bin/relay-migrate --env-file /etc/agentunnel/relay.env --schema-dir /etc/agentunnel/schema
+sudo /usr/local/bin/relay-migrate --env-file /etc/agentunnel/relay.env --schema-dir /etc/agentunnel/schema --baseline 0002_operator_audit.sql
 sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && /usr/local/bin/relay invite create --count 5 --expires-in 7d'
 sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && /usr/local/bin/relay invite disable --code AB2C3D'
 sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && /usr/local/bin/relay user delete --username alice'
@@ -421,12 +340,6 @@ sudo journalctl -u agentunnel-relay --since "1 hour ago"
 
 # Check what is listening on the relay port
 ss -lntp | grep 8586
-
-# TLS cert status
-sudo certbot certificates
-
-# Test renewal (does not actually renew)
-sudo certbot renew --dry-run
 
 # nginx config test
 sudo nginx -t
@@ -447,9 +360,7 @@ sudo systemctl reload nginx
 
 ### TLS / Certificates
 
-- **Cert renewal is automatic** but can fail silently if port 80 is blocked or nginx is misconfigured. Check `sudo certbot renew --dry-run` periodically, especially after nginx config changes.
-- **Do not edit the `# managed by Certbot` lines** in the nginx config. Certbot needs them to locate its own directives during renewal.
-- **If you change the domain**, you need a new cert: `sudo certbot --nginx -d new-domain.com`.
+TLS termination uses the existing nginx + certbot install on the VPS; cert issuance and renewal are managed outside this deployment flow. When adding a new relay domain, issue a cert with `sudo certbot --nginx -d new-domain.com` as a one-off step and then run the normal deploy targets.
 
 ### WebSocket Stability
 
@@ -468,12 +379,12 @@ Minimal monitoring checklist:
 
 - **Is the relay process running?** `systemctl is-active agentunnel-relay`
 - **Is nginx healthy?** `systemctl is-active nginx`
-- **Is the cert valid?** `sudo certbot certificates` (check expiry date)
 - **Can a client reach the relay?** `curl -s -o /dev/null -w "%{http_code}" https://your-domain/api/sessions` should return `401`
 
 ### Disk Space
 
-- Relay logs accumulate in journald. If the VPS has limited disk, configure journal size limits in `/etc/systemd/journald.conf` (`SystemMaxUse=200M`).
+- Application logs accumulate in `/var/log/agentunnel/relay.log`. Add logrotate when that file starts to matter.
+- systemd unit-state logs still accumulate in journald. If the VPS has limited disk, configure journal size limits in `/etc/systemd/journald.conf` (`SystemMaxUse=200M`).
 - Certbot keeps old cert versions in `/etc/letsencrypt/archive/`. These are small but can be cleaned with `sudo certbot delete --cert-name <domain>` if you rotate domains.
 
 ## Connecting tunnel to the Deployed Relay

@@ -42,6 +42,36 @@ func TestLoadServeConfigAllowsListenAddrFlag(t *testing.T) {
 	}
 }
 
+func TestLoadServeConfigUsesLogFileEnv(t *testing.T) {
+	cfg, err := loadServeConfig(testEnv(map[string]string{
+		"RELAY_DATABASE_URL":   "postgres://relay",
+		"RELAY_APP_SECRET":     "secret",
+		"RELAY_OPERATOR_TOKEN": "operator-secret",
+		"RELAY_LOG_FILE":       "/tmp/relay.log",
+	}), nil)
+	if err != nil {
+		t.Fatalf("loadServeConfig returned error: %v", err)
+	}
+	if cfg.LogFile != "/tmp/relay.log" {
+		t.Fatalf("LogFile = %q, want /tmp/relay.log", cfg.LogFile)
+	}
+}
+
+func TestLoadServeConfigAllowsLogFileFlag(t *testing.T) {
+	cfg, err := loadServeConfig(testEnv(map[string]string{
+		"RELAY_DATABASE_URL":   "postgres://relay",
+		"RELAY_APP_SECRET":     "secret",
+		"RELAY_OPERATOR_TOKEN": "operator-secret",
+		"RELAY_LOG_FILE":       "/tmp/from-env.log",
+	}), []string{"--log-file", "/tmp/from-flag.log"})
+	if err != nil {
+		t.Fatalf("loadServeConfig returned error: %v", err)
+	}
+	if cfg.LogFile != "/tmp/from-flag.log" {
+		t.Fatalf("LogFile = %q, want /tmp/from-flag.log", cfg.LogFile)
+	}
+}
+
 func TestLoadInviteCreateConfigUsesDefaultSevenDays(t *testing.T) {
 	cfg, err := loadInviteCreateConfig(testEnv(map[string]string{
 		"RELAY_OPERATOR_TOKEN": "operator-secret",

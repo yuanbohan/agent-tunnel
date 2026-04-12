@@ -14,6 +14,7 @@ const defaultRelayListenAddr = relayconfig.DefaultRelayListenAddr
 
 type serveConfig struct {
 	ListenAddr string
+	LogFile    string
 }
 
 type inviteCreateConfig struct {
@@ -50,10 +51,12 @@ func usagef(format string, args ...any) error {
 func loadServeConfig(getenv func(string) string, args []string) (serveConfig, error) {
 	cfg := serveConfig{
 		ListenAddr: envOrDefault(getenv, "RELAY_LISTEN_ADDR", defaultRelayListenAddr),
+		LogFile:    envValue(getenv, "RELAY_LOG_FILE"),
 	}
 
 	fs := newFlagSet("serve")
 	fs.StringVar(&cfg.ListenAddr, "listen-addr", cfg.ListenAddr, "relay listen address")
+	fs.StringVar(&cfg.LogFile, "log-file", cfg.LogFile, "append structured logs to this file (default: stderr)")
 	if err := fs.Parse(args); err != nil {
 		return serveConfig{}, usagef("%v", err)
 	}
@@ -63,7 +66,7 @@ func loadServeConfig(getenv func(string) string, args []string) (serveConfig, er
 	if err := relayconfig.SetupRelay(getenv, cfg.ListenAddr); err != nil {
 		return serveConfig{}, usagef("%v", err)
 	}
-	return serveConfig{ListenAddr: relayconfig.RelayListenAddr()}, nil
+	return serveConfig{ListenAddr: relayconfig.RelayListenAddr(), LogFile: cfg.LogFile}, nil
 }
 
 func loadInviteCreateConfig(getenv func(string) string, args []string) (inviteCreateConfig, error) {

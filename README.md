@@ -122,7 +122,7 @@ Stronger delivery guarantees, transcript history, and remote-driven PTY sizing a
 
 ## VPS Deployment
 
-See [docs/deployment.md](docs/deployment.md) for the full deployment guide covering nginx, TLS, systemd, automated deploys, and operational runbook.
+See [docs/deployment.md](docs/deployment.md) for the full deployment guide covering PostgreSQL, systemd, the relay-specific nginx site config, automated deploys, and operational runbook. nginx and certbot themselves are treated as pre-installed infrastructure.
 
 Quick start on the remote host:
 
@@ -134,7 +134,7 @@ RELAY_APP_SECRET=<long-random-secret>
 RELAY_OPERATOR_TOKEN=<long-random-operator-token>
 EOF
 sudo chmod 600 /etc/agentunnel/relay.env
-sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && ./bin/agentunnel-relay-migrate --schema-dir ./schema'
+sudo ./bin/relay-migrate --env-file /etc/agentunnel/relay.env --schema-dir ./schema
 sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && ./bin/relay serve --listen-addr 127.0.0.1:8586'
 
 # in another shell on the same host
@@ -149,21 +149,18 @@ export TUNNEL_AUTH_TOKEN=<user-owned-agent-token>
 ./bin/tunnel --label "feature-branch" claude
 ```
 
-Keep a populated repo-root `.env` file for deploys and local migrations. Deploy ordinary relay updates with:
+Keep two gitignored env files at the repo root: `.env.prod` for production and `.env.dev` for the dev VPS. Each file also carries its own `DEPLOY_HOST` so the Make targets pick up the right host automatically.
+
+Deploy:
 
 ```bash
-make deploy
+make deploy-prod    # prod
+make deploy-dev     # dev
 ```
 
-If the release includes a schema change, run the migration explicitly between install and restart:
+Every deploy syncs `schema/` to the remote host and reruns the migrator before the new relay binary and env file are activated. That is safe to repeat: the migrator records applied versions in `schema_migrations`, holds a PostgreSQL advisory lock while it runs, and applies each migration in its own transaction. `make deploy-install` skips binary installs when the remote copy already has the same sha256, so re-running a deploy on an unchanged build is still cheap. `make deploy` defaults to `ENV_FILE=.env.prod`; override with `make deploy ENV_FILE=.env.dev` or with individual flags when needed.
 
-```bash
-make deploy-env
-make deploy-install
-make deploy-schema
-make deploy-migrate
-make deploy-restart
-```
+For deploy output, `make deploy-dev DEPLOY_DRY_RUN=1` gives a structured preview and `make deploy-dev DEPLOY_VERBOSE=1` prints debug details.
 
 ## Launchers
 
@@ -172,8 +169,8 @@ make deploy-restart
 ## Development
 
 ```bash
-make build             # builds bin/tunnel, bin/relay, and bin/agentunnel-relay-migrate
-make install           # installs tunnel, relay, and agentunnel-relay-migrate to ~/.local/bin
+make build             # builds bin/tunnel, bin/relay, and bin/relay-migrate
+make install           # installs tunnel, relay, and relay-migrate to ~/.local/bin
 make test              # go test ./...
 make test-relay        # focused relay/protocol contract tests
 make local-e2e-db-up   # start fixed-version Docker PostgreSQL for local E2E
@@ -182,7 +179,7 @@ make test-local-e2e-docker # start fixed-version Docker PostgreSQL and run local
 make test-local-e2e-clean  # reset DB, run local E2E, save output to tmp/local-e2e/latest.log, and fail on test or cleanup errors
 make tunnel LAUNCHER=claude       # run tunnel directly
 go run ./cmd/relay serve          # run relay server
-make migrate           # run relay schema migrations using .env or the shell environment
+make migrate           # run relay schema migrations using $(ENV_FILE) (default .env.prod) or the shell environment
 ```
 
 See [docs/local-e2e.md](docs/local-e2e.md) for the Docker-backed local E2E workflow, manual acceptance checklist, and database inspection queries.

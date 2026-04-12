@@ -1,0 +1,22 @@
+[Unit]
+Description=Agent Tunnel Relay
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/local/bin/relay serve --listen-addr 127.0.0.1:8586
+EnvironmentFile=/etc/agentunnel/relay.env
+Restart=always
+RestartSec=5
+
+# `make deploy-env` writes RELAY_LOG_FILE=/var/log/agentunnel/relay.log
+# into /etc/agentunnel/relay.env. `LogsDirectory=agentunnel` ensures the
+# parent directory exists with the right ownership. systemd unit-state
+# messages and any direct stdout/stderr output still appear in journalctl.
+LogsDirectory=agentunnel
+LogsDirectoryMode=0750
+
+[Install]
+WantedBy=multi-user.target

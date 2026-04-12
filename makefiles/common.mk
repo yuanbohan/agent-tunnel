@@ -20,19 +20,25 @@ DEPLOY_HOST ?= diarome
 ## DEPLOY_RELAY_PATH: Remote staging path for the relay binary.
 DEPLOY_RELAY_PATH ?= ~/relay
 ## DEPLOY_MIGRATOR_PATH: Remote staging path for the relay migrator binary.
-DEPLOY_MIGRATOR_PATH ?= ~/agentunnel-relay-migrate
+DEPLOY_MIGRATOR_PATH ?= ~/relay-migrate
 ## DEPLOY_SERVICE: Systemd service name restarted by deploy targets.
 DEPLOY_SERVICE ?= agentunnel-relay
 ## DEPLOY_INSTALL_PATH: Installed relay path used by systemd ExecStart.
 DEPLOY_INSTALL_PATH ?= /usr/local/bin/relay
 ## DEPLOY_MIGRATOR_INSTALL_PATH: Installed relay migrator path.
-DEPLOY_MIGRATOR_INSTALL_PATH ?= /usr/local/bin/agentunnel-relay-migrate
-## DEPLOY_ENV_FILE: Remote env file installed by `make deploy-env` and sourced by `make deploy-migrate`.
+DEPLOY_MIGRATOR_INSTALL_PATH ?= /usr/local/bin/relay-migrate
+## DEPLOY_ENV_FILE: Remote env file installed by `make deploy-env` and read by systemd on service start.
 DEPLOY_ENV_FILE ?= /etc/agentunnel/relay.env
+## DEPLOY_RELAY_LOG_FILE: Relay log file path written into the deployed remote env file.
+DEPLOY_RELAY_LOG_FILE ?= /var/log/agentunnel/relay.log
 ## DEPLOY_SCHEMA_DIR: Remote directory containing relay schema SQL files.
 DEPLOY_SCHEMA_DIR ?= /etc/agentunnel/schema
 ## MIGRATOR_ARGS: Extra arguments passed to the remote migrator, for example `--baseline 0002_operator_audit.sql`.
 MIGRATOR_ARGS ?=
+## DEPLOY_VERBOSE: Set to 1 to print deploy debug details.
+DEPLOY_VERBOSE ?= 0
+## DEPLOY_DRY_RUN: Set to 1 for a structured deploy preview without executing commands.
+DEPLOY_DRY_RUN ?= 0
 ## LOCAL_E2E_PG_IMAGE: Fixed Docker image tag used for local E2E PostgreSQL.
 LOCAL_E2E_PG_IMAGE ?= postgres:16.11-alpine
 ## LOCAL_E2E_PG_CONTAINER: Docker container name used for local E2E PostgreSQL.
@@ -60,10 +66,10 @@ RELAY_PKG := ./cmd/relay
 MIGRATOR_PKG := ./cmd/migrate
 TUNNEL_BIN := $(BIN_DIR)/tunnel
 RELAY_BUILD_BIN := $(BIN_DIR)/relay
-MIGRATOR_BUILD_BIN := $(BIN_DIR)/agentunnel-relay-migrate
+MIGRATOR_BUILD_BIN := $(BIN_DIR)/relay-migrate
 INSTALL_TUNNEL_BIN := $(INSTALL_DIR)/tunnel
 INSTALL_RELAY_BIN := $(INSTALL_DIR)/relay
-INSTALL_MIGRATOR_BIN := $(INSTALL_DIR)/agentunnel-relay-migrate
+INSTALL_MIGRATOR_BIN := $(INSTALL_DIR)/relay-migrate
 LOCAL_E2E_PG_SCRIPT := ./scripts/local-e2e-postgres.sh
 LOCAL_E2E_RUNNER_SCRIPT := ./scripts/local-e2e-run.sh
 LOCAL_E2E_PG_ENV = LOCAL_E2E_PG_IMAGE="$(LOCAL_E2E_PG_IMAGE)" LOCAL_E2E_PG_CONTAINER="$(LOCAL_E2E_PG_CONTAINER)" LOCAL_E2E_PG_VOLUME="$(LOCAL_E2E_PG_VOLUME)" LOCAL_E2E_PG_PORT="$(LOCAL_E2E_PG_PORT)" LOCAL_E2E_PG_HOST="$(LOCAL_E2E_PG_HOST)" LOCAL_E2E_PG_USER="$(LOCAL_E2E_PG_USER)" LOCAL_E2E_PG_PASSWORD="$(LOCAL_E2E_PG_PASSWORD)" LOCAL_E2E_PG_DATABASE="$(LOCAL_E2E_PG_DATABASE)" LOCAL_E2E_PG_READY_TIMEOUT="$(LOCAL_E2E_PG_READY_TIMEOUT)"

@@ -16,11 +16,14 @@ func TestRunWithHandlersDispatchesServeCommand(t *testing.T) {
 	}
 
 	called := false
-	err := runWithHandlers([]string{"serve", "--listen-addr", "127.0.0.1:9999"}, env, commandHandlers{
+	err := runWithHandlers([]string{"serve", "--listen-addr", "127.0.0.1:9999", "--log-file", "/tmp/relay.log"}, env, commandHandlers{
 		serve: func(_ context.Context, cfg serveConfig) error {
 			called = true
 			if cfg.ListenAddr != "127.0.0.1:9999" {
 				t.Fatalf("ListenAddr = %q, want 127.0.0.1:9999", cfg.ListenAddr)
+			}
+			if cfg.LogFile != "/tmp/relay.log" {
+				t.Fatalf("LogFile = %q, want /tmp/relay.log", cfg.LogFile)
 			}
 			return nil
 		},
