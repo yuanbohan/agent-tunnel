@@ -193,9 +193,15 @@ if [ "$actual_checksum" != "$expected_checksum" ]; then
 	exit 1
 fi
 
-tar -xzf "$archive_path" -C "$extract_dir"
-if [ ! -f "$extract_dir/tunnel" ]; then
-	printf 'error: archive %s did not contain tunnel\n' "$asset_name" >&2
+archive_members=$(tar -tzf "$archive_path")
+if [ "$archive_members" != "tunnel" ]; then
+	printf 'error: archive %s must contain only tunnel\n' "$asset_name" >&2
+	exit 1
+fi
+
+tar -xzf "$archive_path" -C "$extract_dir" tunnel
+if [ ! -f "$extract_dir/tunnel" ] || [ -L "$extract_dir/tunnel" ]; then
+	printf 'error: archive %s did not contain a safe tunnel binary\n' "$asset_name" >&2
 	exit 1
 fi
 

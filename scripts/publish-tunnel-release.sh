@@ -169,12 +169,12 @@ Compatibility line: $compatibility_line
 Tunnel and Relay are guaranteed compatible within the same compatibility line." \
 	--draft
 
+GH_TOKEN="$token" gh release edit "$version" --repo "$dist_repo" --draft=false >/dev/null
+
 sync_stable_files "$clone_dir" "$version" "$install_source" "$readme_source" "$manifest_script"
 git -C "$clone_dir" add install.sh latest.json README.md
 if git_commit_if_needed "$clone_dir" "release: publish tunnel $version"; then
 	git -C "$clone_dir" push origin "$dist_branch" >/dev/null
 fi
-
-GH_TOKEN="$token" gh release edit "$version" --repo "$dist_repo" --draft=false >/dev/null
 
 printf 'published tunnel %s to %s\n' "$version" "$dist_repo"

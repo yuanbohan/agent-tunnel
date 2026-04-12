@@ -3,7 +3,6 @@
 set -eu
 
 script_dir=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
-repo_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
 
 # shellcheck source=/dev/null
 . "$script_dir/release-common.sh"
@@ -14,10 +13,16 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-version="v0.1.2"
 release_root="$tmpdir/releases"
-output_dir="$release_root/$version"
 go_bin="${GO:-go}"
+repo_relay_version=$("$go_bin" run ./cmd/relay version | awk 'NR==1 {print $2}')
+if [ -z "$repo_relay_version" ]; then
+	printf 'error: could not determine current relay version\n' >&2
+	exit 1
+fi
+version="${TEST_RELEASE_VERSION:-$(release_fixture_version "$repo_relay_version")}"
+incompatible_version=$(release_incompatible_version "$repo_relay_version")
+output_dir="$release_root/$version"
 
 GO="$go_bin" RELEASE_DIR="$release_root" "$script_dir/release-package.sh" "$version" >/dev/null
 
@@ -83,7 +88,7 @@ if ! grep -q 'version must look like v0.1.0' "$tmpdir/invalid-version.err"; then
 	exit 1
 fi
 
-if GO="$go_bin" RELEASE_DIR="$release_root" "$script_dir/release-package.sh" "v0.2.0" >/dev/null 2>"$tmpdir/compatibility.err"
+if GO="$go_bin" RELEASE_DIR="$release_root" "$script_dir/release-package.sh" "$incompatible_version" >/dev/null 2>"$tmpdir/compatibility.err"
 then
 	printf 'error: mismatched compatibility line unexpectedly packaged\n' >&2
 	exit 1

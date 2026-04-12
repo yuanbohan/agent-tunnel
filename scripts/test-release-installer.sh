@@ -7,6 +7,20 @@ script_dir=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 # shellcheck source=/dev/null
 . "$script_dir/release-common.sh"
 
+replace_checksum_entry() {
+	checksums_file="$1"
+	asset_name="$2"
+	checksum="$3"
+	awk -v asset="$asset_name" -v checksum="$checksum" '
+		$2 == asset {
+			print checksum "  " asset
+			next
+		}
+		{ print }
+	' "$checksums_file" >"$checksums_file.tmp"
+	mv "$checksums_file.tmp" "$checksums_file"
+}
+
 start_fixture_server() {
 	fixture_dir="$1"
 	port_file="$2"
@@ -51,11 +65,16 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-version="v0.1.2"
 fixture_root="$tmpdir/fixture"
 release_root="$fixture_root/releases/download"
 mkdir -p "$release_root"
 go_bin="${GO:-go}"
+repo_relay_version=$("$go_bin" run ./cmd/relay version | awk 'NR==1 {print $2}')
+if [ -z "$repo_relay_version" ]; then
+	printf 'error: could not determine current relay version\n' >&2
+	exit 1
+fi
+version="${TEST_RELEASE_VERSION:-$(release_fixture_version "$repo_relay_version")}"
 
 GO="$go_bin" RELEASE_DIR="$release_root" "$script_dir/release-package.sh" "$version" >/dev/null
 "$script_dir/render-latest-manifest.sh" "$version" >"$fixture_root/latest.json"
@@ -160,15 +179,70 @@ chmod 0755 "$home_dir/.local/bin/tunnel"
 current_os=$("$go_bin" env GOOS)
 current_arch=$("$go_bin" env GOARCH)
 current_asset=$(release_asset_name "$version" "$current_os" "$current_arch")
+current_asset_path="$fixture_root/releases/download/$version/$current_asset"
 checksums_file="$fixture_root/releases/download/$version/checksums.txt"
-mv "$checksums_file" "$checksums_file.good"
-awk -v asset="$current_asset" '
-	$2 == asset {
-		print "badbadbadbadbadbadbadbadbadbadbadbadbadbadbadbadbadbadbadbadbadb  " asset
-		next
-	}
-	{ print }
-' "$checksums_file.good" >"$checksums_file"
+cp "$current_asset_path" "$current_asset_path.good"
+cp "$checksums_file" "$checksums_file.good"
+
+bad_members_dir="$tmpdir/bad-members"
+mkdir -p "$bad_members_dir"
+cp "$home_dir/.local/bin/tunnel" "$bad_members_dir/tunnel"
+printf 'surprise\n' >"$bad_members_dir/bonus"
+tar -C "$bad_members_dir" -czf "$current_asset_path" tunnel bonus
+replace_checksum_entry "$checksums_file" "$current_asset" "$(release_hash_file "$current_asset_path")"
+
+if PATH="/usr/bin:/bin" HOME="$home_dir" \
+	TUNNEL_INSTALL_BASE_URL="$base_url" \
+	TUNNEL_RELEASE_BASE_URL="$release_base_url" \
+	TUNNEL_INSTALL_DIR="$home_dir/.local/bin" \
+	"$script_dir/install-tunnel.sh" >/dev/null 2>"$tmpdir/archive-members.err"
+then
+	printf 'error: archive with extra members unexpectedly installed\n' >&2
+	exit 1
+fi
+
+if ! grep -q "archive $current_asset must contain only tunnel" "$tmpdir/archive-members.err"; then
+	printf 'error: archive member validation path did not explain failure\n' >&2
+	exit 1
+fi
+
+if [ "$("$home_dir/.local/bin/tunnel")" != "tunnel old-version" ]; then
+	printf 'error: unsafe archive replaced existing tunnel binary\n' >&2
+	exit 1
+fi
+
+cp "$current_asset_path.good" "$current_asset_path"
+cp "$checksums_file.good" "$checksums_file"
+
+bad_link_dir="$tmpdir/bad-link"
+mkdir -p "$bad_link_dir"
+ln -sf /etc/passwd "$bad_link_dir/tunnel"
+tar -C "$bad_link_dir" -czf "$current_asset_path" tunnel
+replace_checksum_entry "$checksums_file" "$current_asset" "$(release_hash_file "$current_asset_path")"
+
+if PATH="/usr/bin:/bin" HOME="$home_dir" \
+	TUNNEL_INSTALL_BASE_URL="$base_url" \
+	TUNNEL_RELEASE_BASE_URL="$release_base_url" \
+	TUNNEL_INSTALL_DIR="$home_dir/.local/bin" \
+	"$script_dir/install-tunnel.sh" >/dev/null 2>"$tmpdir/archive-link.err"
+then
+	printf 'error: symlink archive unexpectedly installed\n' >&2
+	exit 1
+fi
+
+if ! grep -q "archive $current_asset did not contain a safe tunnel binary" "$tmpdir/archive-link.err"; then
+	printf 'error: symlink archive path did not explain failure\n' >&2
+	exit 1
+fi
+
+if [ "$("$home_dir/.local/bin/tunnel")" != "tunnel old-version" ]; then
+	printf 'error: symlink archive replaced existing tunnel binary\n' >&2
+	exit 1
+fi
+
+cp "$current_asset_path.good" "$current_asset_path"
+cp "$checksums_file.good" "$checksums_file"
+replace_checksum_entry "$checksums_file" "$current_asset" "badbadbadbadbadbadbadbadbadbadbadbadbadbadbadbadbadbadbadbadbadb"
 
 if PATH="/usr/bin:/bin" HOME="$home_dir" \
 	TUNNEL_INSTALL_BASE_URL="$base_url" \

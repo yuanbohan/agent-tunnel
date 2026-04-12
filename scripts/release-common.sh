@@ -39,6 +39,31 @@ release_compatibility_line() {
 	printf '%s\n' "$major"
 }
 
+release_fixture_version() {
+	line=$(release_compatibility_line "${1:-}")
+	case "$line" in
+		0.*)
+			printf 'v%s.2\n' "$line"
+			;;
+		*)
+			printf 'v%s.0.2\n' "$line"
+			;;
+	esac
+}
+
+release_incompatible_version() {
+	line=$(release_compatibility_line "${1:-}")
+	case "$line" in
+		0.*)
+			minor="${line#0.}"
+			printf 'v0.%s.0\n' "$((minor + 1))"
+			;;
+		*)
+			printf 'v%s.0.0\n' "$((line + 1))"
+			;;
+	esac
+}
+
 release_hash_file() {
 	if command -v shasum >/dev/null 2>&1; then
 		shasum -a 256 "$1" | awk '{print $1}'

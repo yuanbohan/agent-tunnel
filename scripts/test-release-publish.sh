@@ -4,17 +4,36 @@ set -eu
 
 script_dir=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 
+# shellcheck source=/dev/null
+. "$script_dir/release-common.sh"
+
 tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/tunnel-release-publish-test.XXXXXX")
 cleanup() {
 	rm -rf "$tmpdir"
 }
 trap cleanup EXIT INT TERM
 
-version="v0.1.2"
 release_root="$tmpdir/releases"
 go_bin="${GO:-go}"
+repo_relay_version=$("$go_bin" run ./cmd/relay version | awk 'NR==1 {print $2}')
+if [ -z "$repo_relay_version" ]; then
+	printf 'error: could not determine current relay version\n' >&2
+	exit 1
+fi
+version="${TEST_RELEASE_VERSION:-$(release_fixture_version "$repo_relay_version")}"
 
 GO="$go_bin" RELEASE_DIR="$release_root" "$script_dir/release-package.sh" "$version" >/dev/null
+
+if "$script_dir/render-latest-manifest.sh" "$version" extra >/dev/null 2>"$tmpdir/manifest-args.err"
+then
+	printf 'error: render-latest-manifest accepted extra args\n' >&2
+	exit 1
+fi
+
+if ! grep -q '^usage:' "$tmpdir/manifest-args.err"; then
+	printf 'error: manifest arg-count path did not explain failure\n' >&2
+	exit 1
+fi
 
 output=$(
 	PUBLISH_DRY_RUN=1 \
