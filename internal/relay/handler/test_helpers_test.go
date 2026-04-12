@@ -212,7 +212,7 @@ func (s *fakeStore) CreateAppSession(_ context.Context, params auth.CreateAppSes
 	return session, nil
 }
 
-func (s *fakeStore) FindAppSessionByAccessToken(_ context.Context, accessTokenDigest string, now time.Time) (auth.AppSession, error) {
+func (s *fakeStore) FindAppSessionByAccessToken(_ context.Context, accessTokenDigest string, now time.Time, absoluteTTL time.Duration) (auth.AppSession, error) {
 	id, ok := s.sessionIDByAccess[accessTokenDigest]
 	if !ok {
 		return auth.AppSession{}, auth.ErrAppSessionNotFound
@@ -220,6 +220,9 @@ func (s *fakeStore) FindAppSessionByAccessToken(_ context.Context, accessTokenDi
 	session := s.sessionsByID[id]
 	if session.RevokedAt != nil {
 		return auth.AppSession{}, auth.ErrAppSessionRevoked
+	}
+	if absoluteTTL > 0 && !session.CreatedAt.Add(absoluteTTL).After(now) {
+		return auth.AppSession{}, auth.ErrAppSessionExpired
 	}
 	if !session.AccessExpiresAt.After(now) {
 		return auth.AppSession{}, auth.ErrAppSessionExpired
@@ -236,8 +239,20 @@ func (s *fakeStore) RotateAppSessionByRefreshToken(_ context.Context, params aut
 	if session.RevokedAt != nil {
 		return auth.AppSession{}, auth.ErrAppSessionRevoked
 	}
+	if params.AbsoluteTTL > 0 && !session.CreatedAt.Add(params.AbsoluteTTL).After(params.Now) {
+		return auth.AppSession{}, auth.ErrAppSessionExpired
+	}
 	if !session.RefreshExpiresAt.After(params.Now) {
 		return auth.AppSession{}, auth.ErrAppSessionExpired
+	}
+	if params.AbsoluteTTL > 0 {
+		absoluteExpiresAt := session.CreatedAt.Add(params.AbsoluteTTL)
+		if params.NewAccessExpiresAt.After(absoluteExpiresAt) {
+			params.NewAccessExpiresAt = absoluteExpiresAt
+		}
+		if params.NewRefreshExpiresAt.After(absoluteExpiresAt) {
+			params.NewRefreshExpiresAt = absoluteExpiresAt
+		}
 	}
 	delete(s.sessionIDByAccess, session.AccessTokenDigest)
 	delete(s.sessionIDByRefresh, session.RefreshTokenDigest)
@@ -414,7 +429,7 @@ func newHandlerTestEnv(t *testing.T) *handlerTestEnv {
 	throttle := NewRegisterThrottle(5, 10*time.Minute)
 	throttle.SetNowFunc(func() time.Time { return now })
 
-	return &handlerTestEnv{
+	env := &handlerTestEnv{
 		t:           t,
 		now:         now,
 		store:       store,
@@ -426,6 +441,9 @@ func newHandlerTestEnv(t *testing.T) *handlerTestEnv {
 		throttle:    throttle,
 		registry:    NewRegistry(),
 	}
+	env.appAuth.SetNowFunc(func() time.Time { return env.now })
+	env.throttle.SetNowFunc(func() time.Time { return env.now })
+	return env
 }
 
 func (e *handlerTestEnv) handler(logWriter io.Writer) http.Handler {

@@ -179,14 +179,15 @@ Response:
 {
   "access_token": "<access-token>",
   "refresh_token": "<refresh-token>",
-  "expires_in": 900,
+  "expires_in": 86400,
   "token_type": "Bearer"
 }
 ```
 
 Notes:
 
-- `expires_in` is currently 900 seconds
+- `expires_in` is currently up to 86400 seconds (24 hours)
+- each app session also has a 90 day absolute lifetime measured from the original login
 - `token_type` is always `Bearer`
 
 Error responses:
@@ -222,7 +223,7 @@ Response:
 {
   "access_token": "<new-access-token>",
   "refresh_token": "<new-refresh-token>",
-  "expires_in": 900,
+  "expires_in": 86400,
   "token_type": "Bearer"
 }
 ```
@@ -231,13 +232,15 @@ Notes:
 
 - refresh rotates both tokens
 - clients should replace both tokens atomically
+- each successful refresh extends the refresh token for another 30 days from that refresh time, unless the session hits the 90 day absolute lifetime from the original login
+- `expires_in` is currently up to 86400 seconds (24 hours) and may be shorter near the 90 day absolute session boundary
 
 Error responses:
 
 | Status | Body | Meaning |
 |--------|------|---------|
 | `400` | `{"reason":"invalid_request"}` | malformed JSON or request shape |
-| `401` | `{"reason":"invalid_session"}` | refresh token is unknown, expired, or revoked |
+| `401` | `{"reason":"invalid_session"}` | refresh token is unknown, expired, revoked, or the session has reached its 90 day absolute lifetime |
 | `500` | plain text | unexpected server failure |
 | `503` | plain text | auth service unavailable |
 

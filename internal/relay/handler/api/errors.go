@@ -49,10 +49,14 @@ func isRefreshFailure(err error) bool {
 }
 
 func newAppSessionResponse(issued auth.IssuedAppSession) types.AppSessionResponse {
+	expiresIn := issued.ExpiresIn
+	if expiresIn < 0 {
+		expiresIn = 0
+	}
 	return types.AppSessionResponse{
 		AccessToken:  issued.AccessToken,
 		RefreshToken: issued.RefreshToken,
-		ExpiresIn:    int64(auth.DefaultAccessTokenTTL / time.Second),
+		ExpiresIn:    int64(expiresIn / time.Second),
 		TokenType:    "Bearer",
 	}
 }

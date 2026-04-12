@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"yuanbohan/tunnel/internal/protocol"
+	relayauth "yuanbohan/tunnel/internal/relay/auth"
 )
 
 func TestHandlerRejectsSessionsWithoutBearerAuth(t *testing.T) {
@@ -55,6 +56,9 @@ func TestHandlerRegisterLoginRefreshLogoutFlow(t *testing.T) {
 	if loginResp.AccessToken == "" || loginResp.RefreshToken == "" {
 		t.Fatalf("login response = %#v, want tokens", loginResp)
 	}
+	if loginResp.ExpiresIn != int64(relayauth.DefaultAccessTokenTTL/time.Second) {
+		t.Fatalf("login expires_in = %d, want %d", loginResp.ExpiresIn, int64(relayauth.DefaultAccessTokenTTL/time.Second))
+	}
 
 	refreshRec := httptest.NewRecorder()
 	refreshReq := httptest.NewRequest(http.MethodPost, "/api/auth/refresh", strings.NewReader(`{"refresh_token":"`+loginResp.RefreshToken+`"}`))
@@ -70,6 +74,9 @@ func TestHandlerRegisterLoginRefreshLogoutFlow(t *testing.T) {
 	if refreshResp.AccessToken == loginResp.AccessToken || refreshResp.RefreshToken == loginResp.RefreshToken {
 		t.Fatalf("refresh response = %#v, want rotated tokens", refreshResp)
 	}
+	if refreshResp.ExpiresIn != int64(relayauth.DefaultAccessTokenTTL/time.Second) {
+		t.Fatalf("refresh expires_in = %d, want %d", refreshResp.ExpiresIn, int64(relayauth.DefaultAccessTokenTTL/time.Second))
+	}
 
 	logoutRec := httptest.NewRecorder()
 	logoutReq := httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil)
@@ -84,6 +91,103 @@ func TestHandlerRegisterLoginRefreshLogoutFlow(t *testing.T) {
 	handler.ServeHTTP(refreshAfterLogoutRec, refreshAfterLogoutReq)
 	if refreshAfterLogoutRec.Code != http.StatusUnauthorized {
 		t.Fatalf("refresh after logout status = %d, want 401", refreshAfterLogoutRec.Code)
+	}
+}
+
+func TestHandlerRefreshClampsExpiresInAtAbsoluteSessionBoundary(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	env.registerUser(t, "alice", "password123", "AB2C3D")
+	issued := env.login(t, "alice", "password123")
+	currentRefreshToken := issued.RefreshToken
+	handler := env.handler(nil)
+
+	env.now = env.now.Add(29 * 24 * time.Hour)
+	refreshRec := httptest.NewRecorder()
+	refreshReq := httptest.NewRequest(http.MethodPost, "/api/auth/refresh", strings.NewReader(`{"refresh_token":"`+currentRefreshToken+`"}`))
+	handler.ServeHTTP(refreshRec, refreshReq)
+	if refreshRec.Code != http.StatusOK {
+		t.Fatalf("refresh at 29 days status = %d, want 200", refreshRec.Code)
+	}
+	var refreshed appSessionResponse
+	if err := json.Unmarshal(refreshRec.Body.Bytes(), &refreshed); err != nil {
+		t.Fatalf("refresh at 29 days unmarshal error: %v", err)
+	}
+	currentRefreshToken = refreshed.RefreshToken
+
+	env.now = env.now.Add(29 * 24 * time.Hour)
+	refreshRec = httptest.NewRecorder()
+	refreshReq = httptest.NewRequest(http.MethodPost, "/api/auth/refresh", strings.NewReader(`{"refresh_token":"`+currentRefreshToken+`"}`))
+	handler.ServeHTTP(refreshRec, refreshReq)
+	if refreshRec.Code != http.StatusOK {
+		t.Fatalf("refresh at 58 days status = %d, want 200", refreshRec.Code)
+	}
+	if err := json.Unmarshal(refreshRec.Body.Bytes(), &refreshed); err != nil {
+		t.Fatalf("refresh at 58 days unmarshal error: %v", err)
+	}
+	currentRefreshToken = refreshed.RefreshToken
+
+	env.now = env.now.Add(29 * 24 * time.Hour)
+	refreshRec = httptest.NewRecorder()
+	refreshReq = httptest.NewRequest(http.MethodPost, "/api/auth/refresh", strings.NewReader(`{"refresh_token":"`+currentRefreshToken+`"}`))
+	handler.ServeHTTP(refreshRec, refreshReq)
+	if refreshRec.Code != http.StatusOK {
+		t.Fatalf("refresh at 87 days status = %d, want 200", refreshRec.Code)
+	}
+	if err := json.Unmarshal(refreshRec.Body.Bytes(), &refreshed); err != nil {
+		t.Fatalf("refresh at 87 days unmarshal error: %v", err)
+	}
+	currentRefreshToken = refreshed.RefreshToken
+
+	env.now = env.now.Add(3*24*time.Hour - time.Hour)
+
+	refreshRec = httptest.NewRecorder()
+	refreshReq = httptest.NewRequest(http.MethodPost, "/api/auth/refresh", strings.NewReader(`{"refresh_token":"`+currentRefreshToken+`"}`))
+	handler.ServeHTTP(refreshRec, refreshReq)
+	if refreshRec.Code != http.StatusOK {
+		t.Fatalf("refresh near absolute expiry status = %d, want 200", refreshRec.Code)
+	}
+
+	var refreshResp appSessionResponse
+	if err := json.Unmarshal(refreshRec.Body.Bytes(), &refreshResp); err != nil {
+		t.Fatalf("refresh response unmarshal error: %v", err)
+	}
+	if refreshResp.ExpiresIn != int64(time.Hour/time.Second) {
+		t.Fatalf("refresh expires_in near absolute expiry = %d, want %d", refreshResp.ExpiresIn, int64(time.Hour/time.Second))
+	}
+
+	env.now = env.now.Add(time.Hour)
+
+	sessionsAtBoundaryRec := httptest.NewRecorder()
+	sessionsAtBoundaryReq := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+	sessionsAtBoundaryReq.Header.Set("Authorization", bearerAuth(refreshResp.AccessToken))
+	handler.ServeHTTP(sessionsAtBoundaryRec, sessionsAtBoundaryReq)
+	if sessionsAtBoundaryRec.Code != http.StatusUnauthorized {
+		t.Fatalf("sessions at absolute expiry status = %d, want 401", sessionsAtBoundaryRec.Code)
+	}
+
+	refreshAtBoundaryRec := httptest.NewRecorder()
+	refreshAtBoundaryReq := httptest.NewRequest(http.MethodPost, "/api/auth/refresh", strings.NewReader(`{"refresh_token":"`+refreshResp.RefreshToken+`"}`))
+	handler.ServeHTTP(refreshAtBoundaryRec, refreshAtBoundaryReq)
+	if refreshAtBoundaryRec.Code != http.StatusUnauthorized {
+		t.Fatalf("refresh at absolute expiry status = %d, want 401", refreshAtBoundaryRec.Code)
+	}
+
+	env.now = env.now.Add(time.Minute)
+
+	sessionsRec := httptest.NewRecorder()
+	sessionsReq := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+	sessionsReq.Header.Set("Authorization", bearerAuth(refreshResp.AccessToken))
+	handler.ServeHTTP(sessionsRec, sessionsReq)
+	if sessionsRec.Code != http.StatusUnauthorized {
+		t.Fatalf("sessions after absolute expiry status = %d, want 401", sessionsRec.Code)
+	}
+
+	refreshExpiredRec := httptest.NewRecorder()
+	refreshExpiredReq := httptest.NewRequest(http.MethodPost, "/api/auth/refresh", strings.NewReader(`{"refresh_token":"`+refreshResp.RefreshToken+`"}`))
+	handler.ServeHTTP(refreshExpiredRec, refreshExpiredReq)
+	if refreshExpiredRec.Code != http.StatusUnauthorized {
+		t.Fatalf("refresh after absolute expiry status = %d, want 401", refreshExpiredRec.Code)
 	}
 }
 
