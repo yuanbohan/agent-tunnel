@@ -115,7 +115,16 @@ func newCommandHandlers(env runtimeEnv) commandHandlers {
 
 	return commandHandlers{
 		serve: func(ctx context.Context, cfg serveConfig) error {
-			logx.Setup(env.stderr)
+			logSink := env.stderr
+			if cfg.LogFile != "" {
+				f, err := os.OpenFile(cfg.LogFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o640)
+				if err != nil {
+					return err
+				}
+				defer f.Close()
+				logSink = f
+			}
+			logx.Setup(logSink)
 
 			db, err := env.openDB(relayconfig.RelayDatabaseURL())
 			if err != nil {

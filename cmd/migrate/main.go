@@ -81,7 +81,7 @@ func loadConfig(getenv func(string) string, args []string) (config, error) {
 		DatabaseURL: envValue(getenv, "RELAY_DATABASE_URL"),
 	}
 
-	fs := flag.NewFlagSet("agentunnel-relay-migrate", flag.ContinueOnError)
+	fs := flag.NewFlagSet("relay-migrate", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	fs.StringVar(&cfg.SchemaDir, "schema-dir", cfg.SchemaDir, "directory containing ordered relay schema SQL files")
 	fs.StringVar(&cfg.Baseline, "baseline", "", "mark migrations up to and including this version as applied without executing SQL")

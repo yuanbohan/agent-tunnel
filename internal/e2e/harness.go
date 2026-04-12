@@ -156,7 +156,7 @@ func (h *Harness) buildBinaries(ctx context.Context) error {
 	}
 
 	targets := []target{
-		{pkg: "./cmd/migrate", name: "agentunnel-relay-migrate", dest: &h.binaries.migrator},
+		{pkg: "./cmd/migrate", name: "relay-migrate", dest: &h.binaries.migrator},
 		{pkg: "./cmd/relay", name: "relay", dest: &h.binaries.relay},
 		{pkg: "./cmd/tunnel", name: "tunnel", dest: &h.binaries.tunnel},
 		{pkg: "./cmd/e2e-launcher", name: "e2e-launcher", dest: &h.binaries.launcher},
@@ -182,7 +182,7 @@ func (h *Harness) runMigrations(ctx context.Context) error {
 	cmd.Env = h.commandEnv(map[string]string{
 		"RELAY_DATABASE_URL": h.dsn,
 	})
-	if output, err := runCommand("agentunnel-relay-migrate", cmd); err != nil {
+	if output, err := runCommand("relay-migrate", cmd); err != nil {
 		return err
 	} else if output != "" {
 		h.t.Logf("%s", output)

@@ -8,7 +8,7 @@ origin: docs/brainstorms/2026-04-11-invite-code-relay-auth-requirements.md
 
 # feat: Add invite-gated relay accounts and user-scoped auth
 
-> Historical note: this plan is superseded by the shipped implementation. The final version uses loopback-only operator HTTP routes outside `/api/`, does not run a revocation reconciliation loop, and applies schema changes through the standalone `agentunnel-relay-migrate --schema-dir ...` command.
+> Historical note: this plan is superseded by the shipped implementation. The final version uses loopback-only operator HTTP routes outside `/api/`, does not run a revocation reconciliation loop, and applies schema changes through the standalone `relay-migrate --schema-dir ...` command.
 
 ## Overview
 
