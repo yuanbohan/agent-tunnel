@@ -5,7 +5,7 @@ go 1.25.0
 require (
 	github.com/creack/pty v1.1.24
 	github.com/gin-gonic/gin v1.11.0
-	github.com/gitpod-io/xterm-go v0.0.0-20260408140746-46436f1050ee
+	github.com/gitpod-io/xterm-go v0.0.0-20260411140828-a3e166284026
 	github.com/gorilla/websocket v1.5.3
 	github.com/jackc/pgx/v5 v5.9.1
 	golang.org/x/crypto v0.50.0
