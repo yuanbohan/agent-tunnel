@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -76,6 +77,30 @@ func setTestEnv(t *testing.T) {
 				os.Unsetenv(kv[0])
 			}
 		})
+	}
+}
+
+func assertHelpText(t *testing.T, text string) {
+	t.Helper()
+	for _, fragment := range []string{
+		"Usage:\n  tunnel [--label label] [--base-url url] <command> [args...]",
+		"-h, --help",
+		"--version",
+		"--label",
+		"--base-url",
+		"TUNNEL_BASE_URL",
+		"TUNNEL_AUTH_TOKEN",
+		defaultTunnelBaseURL,
+		"tunnel claude",
+		"tunnel --label api-fix codex --profile prod",
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Fatalf("help text = %q, want fragment %q", text, fragment)
+		}
+	}
+	const wantEnvBlock = "Environment:\n  TUNNEL_AUTH_TOKEN  Required agent token for normal execution\n  TUNNEL_BASE_URL    Optional relay base URL (default: https://diaro.me)"
+	if !strings.Contains(text, wantEnvBlock) {
+		t.Fatalf("help text = %q, want aligned environment block %q", text, wantEnvBlock)
 	}
 }
 
@@ -179,6 +204,155 @@ func TestRunWithArgsPrintsVersionWithoutStartingSession(t *testing.T) {
 	}
 	if resolveCalled || prepareCalled || startCalled || connectorCalled {
 		t.Fatalf("version fast path unexpectedly touched runtime: resolve=%v prepare=%v start=%v connector=%v", resolveCalled, prepareCalled, startCalled, connectorCalled)
+	}
+}
+
+func TestRunWithArgsPrintsHelpWithoutStartingSession(t *testing.T) {
+	setTestEnv(t)
+
+	oldResolve := resolveLauncher
+	oldPrepare := prepareLocalTerminal
+	oldStartSession := startSession
+	oldNewConnector := newConnector
+	t.Cleanup(func() {
+		resolveLauncher = oldResolve
+		prepareLocalTerminal = oldPrepare
+		startSession = oldStartSession
+		newConnector = oldNewConnector
+	})
+
+	resolveCalled := false
+	resolveLauncher = func(name string, args []string) (launcher.Command, error) {
+		resolveCalled = true
+		return launcher.Command{}, nil
+	}
+
+	prepareCalled := false
+	prepareLocalTerminal = func() (*session.LocalTerminal, error) {
+		prepareCalled = true
+		return &session.LocalTerminal{}, nil
+	}
+
+	startCalled := false
+	startSession = func(context.Context, string, []string, map[string]session.OutputSink) (*session.Running, error) {
+		startCalled = true
+		return nil, nil
+	}
+
+	connectorCalled := false
+	newConnector = func(url, token string, info protocol.SessionInfo) relayConnector {
+		connectorCalled = true
+		return &fakeRelayConnector{}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := runWithArgs([]string{"tunnel", "--help"}, &stdout, &stderr); err != nil {
+		t.Fatalf("runWithArgs error = %v", err)
+	}
+
+	assertHelpText(t, stdout.String())
+	if got := stderr.String(); got != "" {
+		t.Fatalf("stderr = %q, want empty", got)
+	}
+	if resolveCalled || prepareCalled || startCalled || connectorCalled {
+		t.Fatalf("help fast path unexpectedly touched runtime: resolve=%v prepare=%v start=%v connector=%v", resolveCalled, prepareCalled, startCalled, connectorCalled)
+	}
+}
+
+func TestRunWithArgsPrintsShortHelpWithoutStartingSession(t *testing.T) {
+	setTestEnv(t)
+
+	oldResolve := resolveLauncher
+	oldPrepare := prepareLocalTerminal
+	oldStartSession := startSession
+	oldNewConnector := newConnector
+	t.Cleanup(func() {
+		resolveLauncher = oldResolve
+		prepareLocalTerminal = oldPrepare
+		startSession = oldStartSession
+		newConnector = oldNewConnector
+	})
+
+	resolveCalled := false
+	resolveLauncher = func(name string, args []string) (launcher.Command, error) {
+		resolveCalled = true
+		return launcher.Command{}, nil
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := runWithArgs([]string{"tunnel", "-h"}, &stdout, &stderr); err != nil {
+		t.Fatalf("runWithArgs error = %v", err)
+	}
+
+	assertHelpText(t, stdout.String())
+	if got := stderr.String(); got != "" {
+		t.Fatalf("stderr = %q, want empty", got)
+	}
+	if resolveCalled {
+		t.Fatal("help fast path unexpectedly resolved launcher")
+	}
+}
+
+func TestRunWithArgsPrintsUsageHelpForMissingLauncher(t *testing.T) {
+	setTestEnv(t)
+
+	oldResolve := resolveLauncher
+	oldPrepare := prepareLocalTerminal
+	oldStartSession := startSession
+	oldNewConnector := newConnector
+	t.Cleanup(func() {
+		resolveLauncher = oldResolve
+		prepareLocalTerminal = oldPrepare
+		startSession = oldStartSession
+		newConnector = oldNewConnector
+	})
+
+	resolveCalled := false
+	resolveLauncher = func(name string, args []string) (launcher.Command, error) {
+		resolveCalled = true
+		return launcher.Command{}, nil
+	}
+
+	prepareCalled := false
+	prepareLocalTerminal = func() (*session.LocalTerminal, error) {
+		prepareCalled = true
+		return &session.LocalTerminal{}, nil
+	}
+
+	startCalled := false
+	startSession = func(context.Context, string, []string, map[string]session.OutputSink) (*session.Running, error) {
+		startCalled = true
+		return nil, nil
+	}
+
+	connectorCalled := false
+	newConnector = func(url, token string, info protocol.SessionInfo) relayConnector {
+		connectorCalled = true
+		return &fakeRelayConnector{}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err := runWithArgs([]string{"tunnel"}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("runWithArgs error = nil, want usage error")
+	}
+	var usageErr usageError
+	if !errors.As(err, &usageErr) {
+		t.Fatalf("error = %#v, want usageError", err)
+	}
+
+	if got := stdout.String(); got != "" {
+		t.Fatalf("stdout = %q, want empty", got)
+	}
+	assertHelpText(t, stderr.String())
+	if strings.Contains(stderr.String(), "missing launcher command") {
+		t.Fatalf("stderr = %q, want clean help text without extra error line", stderr.String())
+	}
+	if resolveCalled || prepareCalled || startCalled || connectorCalled {
+		t.Fatalf("missing-launcher path unexpectedly touched runtime: resolve=%v prepare=%v start=%v connector=%v", resolveCalled, prepareCalled, startCalled, connectorCalled)
 	}
 }
 

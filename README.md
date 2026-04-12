@@ -63,6 +63,7 @@ Tunnel and Relay are guaranteed compatible within the same compatibility line:
 The `Release Tunnel` workflow enforces that a published `tunnel` version stays within the current repo relay compatibility line. It does not publish `relay` binaries.
 
 Verify the installed version with `tunnel --version`.
+For CLI usage, flags, and examples, run `tunnel --help`.
 
 ## Quick Start
 
