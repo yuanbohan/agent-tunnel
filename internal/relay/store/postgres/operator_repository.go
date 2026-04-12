@@ -49,7 +49,7 @@ func insertInviteCode(ctx context.Context, db queryer, params auth.CreateInviteC
 		&record.CreatedAt,
 		&record.ExpiresAt,
 		nullTimeDest(&record.DisabledAt),
-		&record.DisabledBy,
+		nullStringDest(&record.DisabledBy),
 		nullTimeDest(&record.ConsumedAt),
 		nullInt64Dest(&record.ConsumedByUserID),
 	)
