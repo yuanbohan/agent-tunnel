@@ -1,6 +1,7 @@
 package session
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -11,7 +12,7 @@ func snapshotRoundTrip(t *testing.T, mirror *TerminalMirror) (*xterm.Terminal, [
 	t.Helper()
 
 	snapshot, cols, rows := mirror.Snapshot()
-	restored := xterm.New(xterm.WithCols(cols), xterm.WithRows(rows), xterm.WithScrollback(0))
+	restored := xterm.New(xterm.WithCols(cols), xterm.WithRows(rows), xterm.WithScrollback(defaultMirrorScrollback))
 	_, _ = restored.Write(snapshot)
 	return restored, snapshot, cols, rows
 }
@@ -26,6 +27,20 @@ func viewportCell(t *testing.T, term *xterm.Terminal, row, col int) *xterm.CellD
 	cell := xterm.NewCellData()
 	line.LoadCell(col, cell)
 	return cell
+}
+
+func bufferText(t *testing.T, buf *xterm.Buffer) []string {
+	t.Helper()
+
+	lines := make([]string, buf.Lines.Length())
+	for i := range lines {
+		line := buf.Lines.Get(i)
+		if line == nil {
+			t.Fatalf("line %d = nil", i)
+		}
+		lines[i] = line.TranslateToString(true, 0, -1)
+	}
+	return lines
 }
 
 func TestTerminalMirrorSnapshotRoundTripPlainText(t *testing.T) {
@@ -46,38 +61,65 @@ func TestTerminalMirrorSnapshotRoundTripPlainText(t *testing.T) {
 }
 
 func TestTerminalMirrorSnapshotPreservesAlternateBuffer(t *testing.T) {
-	mirror := NewTerminalMirror(20, 5)
+	mirror := NewTerminalMirror(20, 2)
+	mirror.WriteOutput([]byte("shell line 1\r\nshell line 2\r\nshell line 3"))
 	mirror.WriteOutput([]byte("\x1b[?1049h"))
-	mirror.WriteOutput([]byte("alt screen"))
+	mirror.WriteOutput([]byte("alt line 1\r\nalt line 2\r\nalt line 3"))
 
 	snapshot, cols, rows := mirror.Snapshot()
-	restored := xterm.New(xterm.WithCols(cols), xterm.WithRows(rows), xterm.WithScrollback(0))
+	restored := xterm.New(xterm.WithCols(cols), xterm.WithRows(rows), xterm.WithScrollback(defaultMirrorScrollback))
 	_, _ = restored.Write(snapshot)
 
 	if !restored.IsAltBufferActive() {
 		t.Fatal("restored terminal is not in alt buffer")
 	}
-	if !strings.Contains(restored.String(), "alt screen") {
-		t.Fatalf("restored viewport = %q, want alt screen content", restored.String())
+	if got := restored.String(); !strings.Contains(got, "alt line 2") || !strings.Contains(got, "alt line 3") {
+		t.Fatalf("restored alt viewport = %q, want latest alt content", got)
+	}
+	if got := restored.String(); strings.Contains(got, "alt line 1") {
+		t.Fatalf("restored alt viewport = %q, did not expect trimmed alt line", got)
+	}
+
+	normalBuffer := strings.Join(bufferText(t, restored.NormalBuffer()), "\n")
+	for _, want := range []string{"shell line 1", "shell line 2", "shell line 3"} {
+		if !strings.Contains(normalBuffer, want) {
+			t.Fatalf("restored normal buffer = %q, want %q", normalBuffer, want)
+		}
 	}
 }
 
-func TestTerminalMirrorSnapshotExcludesScrollback(t *testing.T) {
+func TestTerminalMirrorSnapshotIncludesBoundedScrollback(t *testing.T) {
 	mirror := NewTerminalMirror(20, 3)
-	mirror.WriteOutput([]byte("line1\r\nline2\r\nline3\r\nline4"))
+	totalLines := defaultSnapshotScrollback + 8
+	for i := range totalLines {
+		if i > 0 {
+			mirror.WriteOutput([]byte("\r\n"))
+		}
+		mirror.WriteOutput([]byte(fmt.Sprintf("line%03d", i)))
+	}
 
 	snapshot, cols, rows := mirror.Snapshot()
-	restored := xterm.New(xterm.WithCols(cols), xterm.WithRows(rows), xterm.WithScrollback(0))
+	restored := xterm.New(xterm.WithCols(cols), xterm.WithRows(rows), xterm.WithScrollback(defaultMirrorScrollback))
 	_, _ = restored.Write(snapshot)
 
-	got := restored.String()
-	if strings.Contains(got, "line1") {
-		t.Fatalf("restored viewport = %q, did not expect scrollback line1", got)
-	}
-	for _, want := range []string{"line2", "line3", "line4"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("restored viewport = %q, want %q", got, want)
+	gotViewport := restored.String()
+	for _, want := range []string{
+		fmt.Sprintf("line%03d", totalLines-3),
+		fmt.Sprintf("line%03d", totalLines-2),
+		fmt.Sprintf("line%03d", totalLines-1),
+	} {
+		if !strings.Contains(gotViewport, want) {
+			t.Fatalf("restored viewport = %q, want %q", gotViewport, want)
 		}
+	}
+
+	gotBuffer := strings.Join(bufferText(t, restored.NormalBuffer()), "\n")
+	oldestKept := totalLines - (defaultSnapshotScrollback + rows)
+	if !strings.Contains(gotBuffer, fmt.Sprintf("line%03d", oldestKept)) {
+		t.Fatalf("restored buffer = %q, want oldest kept line line%03d", gotBuffer, oldestKept)
+	}
+	if strings.Contains(gotBuffer, "line000") {
+		t.Fatalf("restored buffer = %q, did not expect trimmed oldest line", gotBuffer)
 	}
 }
 

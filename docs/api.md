@@ -574,9 +574,10 @@ Current relay-emitted `closing.reason` values:
 Relay -> client binary frames:
 
 - every binary frame carries raw terminal bytes
-- bytes before `snapshot_done` are the current-screen snapshot
+- bytes before `snapshot_done` are the fresh terminal-state snapshot and may include bounded agent-local normal-buffer scrollback ahead of the current viewport
 - bytes after `snapshot_done` are live PTY output
 - frame boundaries are not semantic terminal boundaries
+- clients should keep local terminal scrollback enabled if they want those replayed snapshot lines to remain available after restore
 
 Client -> relay input messages:
 

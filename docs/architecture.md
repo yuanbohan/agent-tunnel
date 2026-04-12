@@ -12,7 +12,7 @@ See [docs/api.md](./api.md) for the current endpoint inventory, auth requirement
 
 Protocol-facing timestamps such as `started_at` are Unix timestamps encoded as JSON integers in seconds.
 
-The local terminal is still the primary and most complete view of the PTY session. Remote access is session-scoped: a client attaches to one session, receives a current-screen snapshot, and then receives subsequent live PTY bytes on that same attach.
+The local terminal is still the primary and most complete view of the PTY session. Remote access is session-scoped: a client attaches to one session, receives a fresh terminal-state snapshot that may include bounded agent-local normal-buffer scrollback, and then receives subsequent live PTY bytes on that same attach.
 
 `tunnel` treats relay availability in two phases:
 
@@ -127,7 +127,7 @@ client opens /api/sessions/:id/attach/ws
 → relay sends attach_open to the owning agent
 → agent terminal mirror atomically:
      - captures current cols / rows
-     - serializes the current visible terminal state
+     - serializes the current terminal state
      - registers the attached client for subsequent live bytes
 → relay sends attached { session_id, cols, rows }
 → relay forwards snapshot bytes as binary frames
@@ -139,10 +139,10 @@ The critical invariant is gap-free handoff: there must be no byte gap between th
 
 ## Terminal Mirror
 
-The terminal mirror exists to make current-screen recovery precise without transcript replay.
+The terminal mirror exists to make fresh snapshot recovery precise without transcript replay.
 
 - it is fed from the same PTY output stream seen by the local terminal
-- it preserves the currently visible terminal state, not transcript history
+- it preserves the current terminal state and a bounded amount of in-memory normal-buffer scrollback, not durable transcript history
 - it is the source of snapshot bytes on attach
 - it fans out subsequent live bytes to attached clients after the snapshot boundary
 - it follows PTY resize updates owned by the local terminal session

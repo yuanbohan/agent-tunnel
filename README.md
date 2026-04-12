@@ -2,7 +2,7 @@
 
 Launch a terminal agent locally and expose the running PTY through a relay-backed session attach API.
 
-The remote contract is attach-only: clients discover live sessions with `GET /api/sessions`, then attach to one session with `GET /api/sessions/:id/attach/ws`. On attach, the owning `tunnel` process sends a current-screen snapshot and then continues streaming live PTY bytes on that same websocket.
+The remote contract is attach-only: clients discover live sessions with `GET /api/sessions`, then attach to one session with `GET /api/sessions/:id/attach/ws`. On attach, the owning `tunnel` process sends a fresh terminal-state snapshot, which may include bounded agent-local normal-buffer scrollback, and then continues streaming live PTY bytes on that same websocket.
 
 `tunnel` starts a real CLI command such as `claude`, `codex`, `gemini`, `qwen`, or `aider`, keeps the launching terminal interactive, and registers the session with a relay server. The relay is API-only: it authenticates app clients with user-scoped bearer tokens, authenticates agents with user-owned long-lived agent tokens, lists live sessions, brokers session-scoped attaches, and forwards structured input. Operator maintenance routes stay host-local outside the public `/api/` namespace. It does not retain transcript history and it does not emulate the terminal.
 
@@ -11,8 +11,9 @@ On startup, `tunnel` gives relay registration a short first chance to succeed. I
 The local terminal remains the primary view of the PTY session. Remote clients are intentionally narrower:
 
 - they can recover the current screen state on a fresh attach
+- they can recover bounded recent normal-buffer scrollback when the agent mirror still has it
 - they can continue receiving live terminal bytes after that snapshot
-- they do not get transcript replay or history recovery in this protocol revision
+- they do not get full transcript replay, durable history recovery, or exact missed-byte recovery in this protocol revision
 
 Client input uses structured events:
 
@@ -97,12 +98,12 @@ Browser attach clients must be same-origin with the relay. Native clients that d
 The attach websocket is session-scoped:
 
 - the first JSON control message is `attached` with `session_id`, `cols`, and `rows`
-- the next binary frames are snapshot bytes for the current visible terminal state
+- the next binary frames are snapshot bytes for the current terminal state, including bounded agent-local normal-buffer scrollback when available
 - a `snapshot_done` control message marks the boundary after which binary frames are live PTY bytes
 - later `resize` control messages tell the client to resize its terminal emulator
 - client input goes back on the same websocket as JSON `input_text` and `input_key`
 
-If the attach drops, the client should create a fresh terminal emulator state and open a fresh attach. Recovery in this protocol revision is current-screen recovery only, not transcript replay.
+If the attach drops, the client should create a fresh terminal emulator state and open a fresh attach. Recovery in this protocol revision is fresh snapshot recovery, not transcript replay. A fresh snapshot may include bounded in-memory scrollback, but it is not a replay of every missed PTY byte.
 
 ## Session Attach Model
 
@@ -111,10 +112,11 @@ The current remote model is:
 - `tunnel` owns the PTY and maintains the authoritative headless terminal mirror for that running session
 - the relay stores live session metadata such as `started_at`
 - `started_at` is a Unix timestamp encoded as a JSON integer in seconds
-- a remote attach asks the agent for the current visible screen, not for old output history
+- a remote attach asks the agent for the current terminal state, plus bounded in-memory normal-buffer scrollback when available, not for relay-owned or durable old output history
 - after the initial snapshot, the same attach continues as an ordered live byte stream for that client
 - if the owning agent disconnects, the relay closes active attaches and removes the session from discovery immediately
 - if an app session logs out or all app sessions are revoked by password change, the relay closes the affected app-side attaches but leaves the owning agent session online
+- if the terminal is currently on the alternate screen, the snapshot restores that current alt-screen state; any preserved history comes from the underlying normal buffer, not from alt-screen replay
 
 Stronger delivery guarantees, transcript history, and remote-driven PTY sizing are out of scope for this protocol revision.
 
