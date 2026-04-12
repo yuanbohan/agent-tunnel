@@ -1,19 +1,17 @@
 # Relay Deployment & Operations
 
-This guide covers deploying the relay server on an Ubuntu VPS, automating binary deploys and schema migrations from a dev machine, and day-to-day operations.
+This guide covers one-time host bootstrap on an Ubuntu VPS, automated relay deploys and schema migrations from a dev machine, and day-to-day operations.
 
-nginx, certbot, and PostgreSQL are treated as pre-installed infrastructure; installing and configuring them is out of scope for this guide. Only the relay-specific nginx site config, the relay systemd unit, and the schema migration step are documented below. Schema migrations are wired into `make deploy`, so every normal deploy keeps the database in sync.
+The repo now owns the relay-facing host setup as well as the binary deploy. `make install-dev` bootstraps `nginx` and PostgreSQL for the dev VPS, syncs the repo-controlled HTTP nginx site, and restarts nginx. `make install-prod` does the same for production, plus `certbot`, certificate issuance, a renewal hook, and the repo-controlled TLS nginx site. Schema migrations remain wired into `make deploy`, so every normal deploy keeps the database in sync.
 
 For the relay CLI command reference itself, see [operation.md](./operation.md).
 
 ## Prerequisites
 
-- Ubuntu VPS with a public IP (ports 80/443 open if you intend to serve the relay over HTTPS)
-- SSH access from dev machine (passwordless recommended)
+- Ubuntu VPS with a public IP (port 80 open for dev; ports 80/443 open for production TLS)
+- SSH access from dev machine, with passwordless `sudo` on the VPS because the install script uses `sudo -n`
 - Go toolchain on dev machine (for cross-compilation)
-- nginx already installed and running on the VPS
-- certbot already installed on the VPS if you plan to terminate TLS there
-- PostgreSQL already installed and running on the VPS, with a role and database that match the DSN in your env file (e.g. role `relay_user`, database `agent_tunnel`)
+- A PostgreSQL role and database that match the DSN in your env file (for example role `relay_user`, database `agent_tunnel`). The `postgresql` package itself can be installed by `make install-dev` or `make install-prod`.
 
 ## Server Layout
 
@@ -24,14 +22,41 @@ For the relay CLI command reference itself, see [operation.md](./operation.md).
 ~/relay-migrate                   # uploaded staging migrator binary
 /etc/agentunnel/schema/                      # installed relay schema SQL files
 /etc/systemd/system/agentunnel-relay.service # systemd unit
+/etc/systemd/system/nginx.service.d/agentunnel-restart.conf # nginx auto-restart override
 /etc/nginx/sites-available/<domain>          # nginx site config
 /etc/nginx/conf.d/websocket_map.conf         # shared WebSocket header map
+/var/www/certbot/                            # ACME HTTP-01 webroot used by certbot
 /etc/letsencrypt/live/<domain>/              # TLS cert (managed by certbot)
+/etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh # reload nginx after cert renewal
 ```
 
 ## Initial Setup
 
-### 1. Build and upload the relay artifacts
+### 1. Bootstrap the host once
+
+From the project root on your dev machine:
+
+```bash
+make install-dev
+make install-prod
+make install-prod INSTALL_CERTBOT_EMAIL=ops@example.com
+```
+
+Useful overrides:
+
+- `INSTALL_HOST=user@1.2.3.4` to override the SSH destination for a single run
+- `INSTALL_DEV_SERVER_NAMES="dev.example.com www.dev.example.com"` to replace the dev default `server_name`
+- `INSTALL_PROD_SERVER_NAMES="example.com www.example.com"` and `INSTALL_PROD_PRIMARY_DOMAIN=example.com` to point production at a different domain set
+- `INSTALL_NGINX_SITE_NAME=my-site` if you do not want the default site filename (`agentunnel-dev` on dev, the primary prod domain on prod)
+- `INSTALL_CERTBOT_EMAIL=ops@example.com` to provide the required certbot email non-interactively
+- `INSTALL_DRY_RUN=1` or `INSTALL_VERBOSE=1` for preview/debug output
+
+What the install targets do:
+
+- `make install-dev` installs `nginx` and PostgreSQL if they are missing, syncs `deploy/nginx/websocket_map.conf`, renders `deploy/nginx/agentunnel-http.conf.template`, installs `deploy/systemd/nginx-restart.conf`, enables PostgreSQL, and restarts nginx.
+- `make install-prod` first requires a certbot email. If `INSTALL_CERTBOT_EMAIL` is missing, it stops and prompts on stdin until you enter one. Then it performs the same base work, installs `certbot`, issues or refreshes the certificate with `certbot certonly --webroot`, installs `deploy/certbot/reload-nginx.sh`, enables `certbot.timer`, renders `deploy/nginx/agentunnel-tls.conf.template`, and restarts nginx again with TLS enabled.
+
+### 2. Build and upload the relay artifacts
 
 From the project root on your dev machine:
 
@@ -45,7 +70,7 @@ scp schema/*.sql diarome:/tmp/agentunnel-relay-schema/
 
 `diarome` here is an SSH config host alias. Replace with `user@your-vps-ip` if you don't have one.
 
-### 2. Install the binaries and schema files on the VPS
+### 3. Install the binaries and schema files on the VPS
 
 ```bash
 sudo install -m 0755 ~/relay /usr/local/bin/relay
@@ -54,7 +79,7 @@ sudo install -d -m 0755 /etc/agentunnel/schema
 sudo install -m 0644 /tmp/agentunnel-relay-schema/*.sql /etc/agentunnel/schema/
 ```
 
-### 3. Create the systemd service
+### 4. Create the systemd service
 
 The canonical unit file lives in the repo at `deploy/systemd/agentunnel-relay.service`. It reads `RELAY_LOG_FILE` from `/etc/agentunnel/relay.env`, and uses `LogsDirectory=agentunnel` so systemd creates `/var/log/agentunnel` with the right ownership. `make deploy-env` always writes `RELAY_LOG_FILE=/var/log/agentunnel/relay.log` into that env file. systemd unit-state messages and anything that still writes directly to stdout/stderr continue to flow through `journalctl`.
 
@@ -122,107 +147,50 @@ sudo tail -n 1000 /var/log/agentunnel/relay.log | jq 'select(.event == "relay_st
 sudo journalctl -u agentunnel-relay -f
 ```
 
-### 4. Configure the nginx site for the relay
+### 5. Nginx and TLS configuration
 
-nginx itself is assumed to be installed and running. The steps below add only the relay-specific site config.
+`make install-dev` and `make install-prod` automate the host bootstrap below. Keep the manual equivalent here for inspection and emergency repair.
 
-Reference configs are checked into `deploy/nginx/`. Copy them to the VPS:
+Repo-controlled files:
 
-```bash
-scp deploy/nginx/websocket_map.conf diarome:/tmp/
-scp deploy/nginx/diaro.me diarome:/tmp/
-ssh diarome 'sudo mv /tmp/websocket_map.conf /etc/nginx/conf.d/ && sudo mv /tmp/diaro.me /etc/nginx/sites-available/'
-```
+- `deploy/nginx/websocket_map.conf` -> `/etc/nginx/conf.d/websocket_map.conf`
+- `deploy/nginx/agentunnel-http.conf.template` -> rendered HTTP site on dev, and the production HTTP bootstrap site used for ACME challenges
+- `deploy/nginx/agentunnel-tls.conf.template` -> rendered final production TLS site
+- `deploy/systemd/nginx-restart.conf` -> `/etc/systemd/system/nginx.service.d/agentunnel-restart.conf`
+- `deploy/certbot/reload-nginx.sh` -> `/etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh`
 
-Or create them manually. First, add the WebSocket map in `/etc/nginx/conf.d/websocket_map.conf`:
+Important defaults:
 
-```nginx
-map $http_upgrade $connection_upgrade {
-    default upgrade;
-    ''      close;
-}
-```
+- Dev uses `server_name _;` unless `INSTALL_DEV_SERVER_NAMES` overrides it. If the SSH host resolves to an IPv4 address, the script also adds that IP to the dev `server_name` list.
+- Prod defaults to `INSTALL_PROD_SERVER_NAMES="diaro.me www.diaro.me"` and `INSTALL_PROD_PRIMARY_DOMAIN=diaro.me`.
+- The nginx site proxies only `/api/` and `/agent/ws`. Operator control routes stay host-local.
+- `proxy_read_timeout` and `proxy_send_timeout` are pinned to `86400s` for long-lived WebSocket sessions.
 
-This conditionally sets the `Connection` header: `upgrade` when the client sends an `Upgrade` header (WebSocket), `close` otherwise (plain HTTP). Without the map, you would have to hardcode `Connection "upgrade"` on every request, which works but is technically incorrect for non-WebSocket routes.
-
-Then create `/etc/nginx/sites-available/<domain>` with an HTTP-only config (certbot will add TLS in the next step):
-
-```nginx
-server {
-    listen 80;
-    listen [::]:80;
-    server_name example.com www.example.com;
-
-    location = /agent/ws {
-        proxy_pass http://127.0.0.1:8586;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection $connection_upgrade;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 86400s;
-        proxy_send_timeout 86400s;
-    }
-
-    location /api/ {
-        proxy_pass http://127.0.0.1:8586;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection $connection_upgrade;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 86400s;
-        proxy_send_timeout 86400s;
-    }
-
-    location / {
-        return 404;
-    }
-}
-```
-
-Enable the site and reload:
+For a manual production certificate bootstrap, the repo now uses a webroot flow instead of the nginx plugin so the tracked nginx templates stay authoritative:
 
 ```bash
-sudo ln -sf /etc/nginx/sites-available/<domain> /etc/nginx/sites-enabled/<domain>
-sudo rm -f /etc/nginx/sites-enabled/default   # remove default site if present
-sudo nginx -t && sudo systemctl reload nginx
+sudo install -d -m 0755 /var/www/certbot
+sudo certbot certonly --webroot -w /var/www/certbot \
+  --non-interactive --agree-tos --keep-until-expiring \
+  -m your-email@example.com \
+  -d example.com -d www.example.com
+sudo install -m 0755 deploy/certbot/reload-nginx.sh /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
+sudo systemctl enable --now certbot.timer
 ```
-
-Key nginx settings to pay attention to:
-
-- **`proxy_read_timeout 86400s`** and **`proxy_send_timeout 86400s`**: WebSocket connections (agent `/agent/ws` and client `/api/sessions/:id/attach/ws`) are long-lived. The default 60s timeout will kill them. Set these to at least 24 hours.
-- **Only proxy `/api/` and `/agent/ws`**: operator control routes live outside `/api/` and must stay host-local. Returning `404` for everything else prevents accidental public exposure.
-- **`Upgrade` and `Connection` headers with `map`**: The `$connection_upgrade` variable (from `websocket_map.conf`) ensures `Connection: upgrade` is only sent for actual WebSocket requests. Without the map and these headers, WebSocket connections fail silently.
-- **`proxy_http_version 1.1`**: WebSocket requires HTTP/1.1. nginx defaults to 1.0 for upstream connections.
-
-### 5. Issue a TLS cert for the relay domain (optional)
-
-certbot itself is assumed to be installed. If this host needs a new cert for the relay domain, issue it with the nginx plugin:
-
-```bash
-sudo certbot --nginx \
-  -d example.com -d www.example.com \
-  --non-interactive --agree-tos \
-  -m your-email@example.com
-```
-
-If certbot already manages this domain, skip this step. Cert renewal is handled by the existing certbot installation.
 
 ### 6. End-to-end verification
 
 ```bash
-# Should return 401 (bearer auth required)
+# Prod: should return 401 (bearer auth required)
 curl -s -o /dev/null -w "%{http_code}" https://example.com/api/sessions
 
-# Check cert expiry
+# Dev: same check over plain HTTP
+curl -s -o /dev/null -w "%{http_code}" http://dev-host-or-ip/api/sessions
+
+# Prod only: check cert expiry
 sudo certbot certificates
 
-# Check renewal timer is active
+# Prod only: check renewal timer is active
 sudo systemctl list-timers | grep certbot
 
 # Check relay is listening
@@ -262,12 +230,23 @@ trap - EXIT
 
 ### One-command deploy
 
-The Makefile keeps the common path simple and supports a prod env and a dev env side-by-side via two separate env files (`.env.prod` and `.env.dev`). Both are gitignored. The env file also carries `DEPLOY_HOST` for that environment, so the `make` targets below pick up the right host automatically.
+The Makefile keeps the common path simple and supports a prod env and a dev env side-by-side via two separate env files (`.env.prod` and `.env.dev`). Both are gitignored. Each file carries its own `DEPLOY_HOST`, and the remote install targets default `INSTALL_HOST` to that same value.
 
 `make deploy` now always reruns the migrator before it installs the new relay binary and env file. That is the safer default for this repo: the migrator records applied versions in `schema_migrations`, takes a PostgreSQL advisory lock to avoid concurrent runners, and executes each migration inside its own transaction. If the database is already current, rerunning the migrator is a no-op.
 
+Deploy is intentionally limited in scope. It manages relay artifacts only:
+
+- `relay` and `relay-migrate` binaries
+- `schema/` synced to `/etc/agentunnel/schema`
+- `/etc/agentunnel/relay.env`
+- restart of `agentunnel-relay`
+
+Deploy does not install or reconfigure `nginx`, `certbot`, or `postgresql`, and it does not rewrite those host-level config files. Keep those changes in `make install-dev`, `make install-prod`, or manual host administration.
+
 Core targets:
 
+- `make install-dev` installs `nginx` and PostgreSQL if they are missing, syncs the HTTP nginx site for the dev VPS, and restarts nginx.
+- `make install-prod` does the same for production, plus `certbot`, certificate issuance/refresh, the renewal hook, and the final TLS nginx site.
 - `make deploy` builds, syncs schema, safely reruns migrations, installs the selected relay binary and env file, and restarts the relay. `ENV_FILE` defaults to `.env.prod`.
 - `make deploy-install` only uploads and installs binaries whose sha256 differs from the copy already at the installed path on the remote, so repeat runs on unchanged builds are cheap no-ops.
 - `make deploy-env` uploads the selected local env file to `/etc/agentunnel/relay.env` and pins `RELAY_LOG_FILE=/var/log/agentunnel/relay.log`.
@@ -284,8 +263,12 @@ Convenience targets:
 Typical flows:
 
 ```bash
+make install-prod                                         # one-time prod bootstrap; prompts for certbot email
+make install-prod INSTALL_CERTBOT_EMAIL=ops@example.com   # same bootstrap with the email provided up front
+make install-dev                                          # one-time dev bootstrap
 make deploy-prod        # prod deploy
 make deploy-dev         # dev deploy
+make install-dev INSTALL_DRY_RUN=1   # preview dev bootstrap without changing the VPS
 make deploy-dev DEPLOY_DRY_RUN=1    # structured preview without making changes
 make deploy-dev DEPLOY_VERBOSE=1    # include deploy debug details
 make deploy-install     # just refresh relay + migrator binaries if needed
@@ -293,6 +276,8 @@ make deploy-install     # just refresh relay + migrator binaries if needed
 
 Notes:
 
+- `make install-prod` always requires a certbot email before it continues. Pass `INSTALL_CERTBOT_EMAIL=<ops@example.com>` to avoid the interactive prompt.
+- For a readable preview of host bootstrap, prefer `make install-dev INSTALL_DRY_RUN=1` or `make install-prod INSTALL_DRY_RUN=1`.
 - `make -n deploy-dev` is still a Make-level dry-run, but it now only prints the deploy script entrypoint.
 - For a readable preview of the actual deploy plan, prefer `make deploy-dev DEPLOY_DRY_RUN=1` or `make deploy-prod DEPLOY_DRY_RUN=1`.
 - GNU Make does not support a custom `--verbose` flag for project-defined behavior. For verbose deploy logs, use `DEPLOY_VERBOSE=1` on the same `make deploy-dev` or `make deploy-prod` command you would normally run.
@@ -360,7 +345,7 @@ sudo systemctl reload nginx
 
 ### TLS / Certificates
 
-TLS termination uses the existing nginx + certbot install on the VPS; cert issuance and renewal are managed outside this deployment flow. When adding a new relay domain, issue a cert with `sudo certbot --nginx -d new-domain.com` as a one-off step and then run the normal deploy targets.
+Production TLS termination now lives inside the install flow. `make install-prod` installs `certbot` if needed, obtains or refreshes the certificate with the webroot challenge, enables `certbot.timer`, and installs the nginx reload hook used after renewal. When you add a new relay domain, update `INSTALL_PROD_SERVER_NAMES` and `INSTALL_PROD_PRIMARY_DOMAIN`, rerun `make install-prod INSTALL_CERTBOT_EMAIL=...`, and then continue with the normal deploy targets.
 
 ### WebSocket Stability
 

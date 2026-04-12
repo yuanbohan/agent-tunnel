@@ -9,6 +9,28 @@ RELAY_PORT ?= 8586
 BIN_DIR ?= bin
 ## INSTALL_DIR: Install destination for `make install`.
 INSTALL_DIR ?= $(HOME)/.local/bin
+## INSTALL_HOST: SSH host for remote install targets. Defaults to `DEPLOY_HOST`.
+INSTALL_HOST ?= $(DEPLOY_HOST)
+## INSTALL_ENV: Internal selector used by the remote install script (`dev` or `prod`).
+INSTALL_ENV ?=
+## INSTALL_NGINX_SITE_NAME: Remote nginx site filename. Defaults to `agentunnel-dev` for dev and the primary prod domain for prod.
+INSTALL_NGINX_SITE_NAME ?=
+## INSTALL_NGINX_UPSTREAM_ADDR: Relay upstream address proxied by nginx on the remote host.
+INSTALL_NGINX_UPSTREAM_ADDR ?= 127.0.0.1:8586
+## INSTALL_DEV_SERVER_NAMES: Space-separated nginx `server_name` values for the dev site. Defaults to `_`, plus the SSH hostname when it resolves to an IPv4 address.
+INSTALL_DEV_SERVER_NAMES ?=
+## INSTALL_PROD_SERVER_NAMES: Space-separated nginx `server_name` values for the production site.
+INSTALL_PROD_SERVER_NAMES ?= diaro.me www.diaro.me
+## INSTALL_PROD_PRIMARY_DOMAIN: Primary production domain used for TLS certificate paths and certbot renewal.
+INSTALL_PROD_PRIMARY_DOMAIN ?= diaro.me
+## INSTALL_CERTBOT_EMAIL: Contact email used for the first production certbot registration.
+INSTALL_CERTBOT_EMAIL ?=
+## INSTALL_CERTBOT_WEBROOT: Webroot served for ACME HTTP-01 challenges.
+INSTALL_CERTBOT_WEBROOT ?= /var/www/certbot
+## INSTALL_VERBOSE: Set to 1 to print remote install debug details.
+INSTALL_VERBOSE ?= 0
+## INSTALL_DRY_RUN: Set to 1 for a structured remote install preview without executing changes.
+INSTALL_DRY_RUN ?= 0
 ## LOG_DIR: Directory for relay background logs and pid files.
 LOG_DIR ?= logs
 ## RELAY_PID_FILE: PID file used by `make start`, `make stop`, and `make status`.

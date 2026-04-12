@@ -1,4 +1,4 @@
-.PHONY: all build build-linux install migrate clean vet test test-relay
+.PHONY: all build build-linux migrate clean vet test test-relay
 
 all: build ## Build default local binaries.
 
@@ -15,13 +15,6 @@ build-linux: ## Build Linux amd64 `tunnel`, `relay`, and `relay-migrate` binarie
 	@GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o "$(RELAY_BUILD_BIN)" $(RELAY_PKG)
 	@GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o "$(MIGRATOR_BUILD_BIN)" $(MIGRATOR_PKG)
 	@printf '✅ Linux binaries are ready in %s\n' "$(BIN_DIR)"
-
-install: build ## Install `tunnel`, `relay`, and `relay-migrate` into `$(INSTALL_DIR)`.
-	@set -e; \
-	mkdir -p "$(INSTALL_DIR)"; \
-	rm -f "$(INSTALL_TUNNEL_BIN)" "$(INSTALL_RELAY_BIN)" "$(INSTALL_MIGRATOR_BIN)"; \
-	cp -f "$(TUNNEL_BIN)" "$(RELAY_BUILD_BIN)" "$(MIGRATOR_BUILD_BIN)" "$(INSTALL_DIR)/"; \
-	echo "installed tunnel, relay, and relay-migrate to $(INSTALL_DIR)"
 
 migrate: ## Run relay schema migrations locally using `$(ENV_FILE)` (default `.env.prod`) or the shell environment.
 	go run $(MIGRATOR_PKG) --schema-dir ./schema $(MIGRATOR_ARGS)
