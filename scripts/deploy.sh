@@ -5,6 +5,7 @@ set -eu
 usage() {
 	printf 'usage: %s <command> [--verbose] [--dry-run]\n' "$0" >&2
 	printf 'commands: build-linux install-migrator install-relay install sync-schema install-env migrate restart deploy\n' >&2
+	printf 'note: deploy commands manage relay artifacts only; nginx/certbot/postgresql installation and host config live under make install-dev/install-prod\n' >&2
 }
 
 truthy() {

@@ -4,7 +4,7 @@ This guide covers the day-to-day relay CLI commands introduced for PostgreSQL-ba
 
 The commands here use the `relay` and `relay-migrate` binaries from this repository.
 `relay-migrate` requires an explicit `--schema-dir` so it never guesses where SQL files live.
-Per-environment env files at the repo root (`.env.prod` and `.env.dev`) are ignored by git and act as the local source of truth for `make migrate`, `make start`, and deploy-related Make targets. `ENV_FILE` selects which file is loaded and defaults to `.env.prod`.
+Per-environment env files at the repo root (`.env.prod` and `.env.dev`) are ignored by git and act as the local source of truth for `make migrate`, `make start`, and the remote install/deploy Make targets. `ENV_FILE` selects which file is loaded and defaults to `.env.prod`.
 
 ## Environment Variables
 
@@ -37,14 +37,24 @@ Notes:
 | `relay invite create` | Create one or more invite codes |
 | `relay invite disable` | Disable an existing invite code |
 | `relay user delete` | Delete a user account and free the username |
+| `make install` / `make install-local` | Install the local `tunnel`, `relay`, and `relay-migrate` binaries into `$(INSTALL_DIR)` |
+| `make install-dev` | Install `nginx` and PostgreSQL on the dev VPS if missing, sync the HTTP nginx site, and restart nginx |
+| `make install-prod` | Dev bootstrap plus `certbot`, certificate issuance/renewal wiring, and the HTTPS nginx site for prod |
 | `make migrate` | Apply local schema migrations using values loaded from `$(ENV_FILE)` (default `.env.prod`) |
 | `make deploy-env` | Upload the local `$(ENV_FILE)` to the remote relay host |
 | `make deploy-dev` / `make deploy-prod` | One-shot deploy against `.env.dev` / `.env.prod` with schema sync and a safe migrator rerun before activation |
+
+Install output controls:
+
+- `INSTALL_DRY_RUN=1` prints the remote install plan in a structured way without changing the remote host.
+- `INSTALL_VERBOSE=1` includes remote install debug details.
+- `make install-prod` always requires a certbot email. Pass `INSTALL_CERTBOT_EMAIL=<ops@example.com>` up front, or let the command stop and prompt for it interactively before it continues.
 
 Deploy output controls:
 
 - `DEPLOY_DRY_RUN=1` prints the deploy plan in a structured way without changing the remote host.
 - `DEPLOY_VERBOSE=1` includes deploy debug details.
+- Deploy manages relay artifacts only: binaries, schema files, `/etc/agentunnel/relay.env`, and the `agentunnel-relay` service restart. It does not install or reconfigure `nginx`, `certbot`, or `postgresql`, and it does not rewrite those host-level config files.
 
 ## Start the Relay
 

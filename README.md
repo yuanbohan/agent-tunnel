@@ -122,7 +122,7 @@ Stronger delivery guarantees, transcript history, and remote-driven PTY sizing a
 
 ## VPS Deployment
 
-See [docs/deployment.md](docs/deployment.md) for the full deployment guide covering PostgreSQL, systemd, the relay-specific nginx site config, automated deploys, and operational runbook. nginx and certbot themselves are treated as pre-installed infrastructure.
+See [docs/deployment.md](docs/deployment.md) for the full deployment guide covering one-time host bootstrap (`nginx`, PostgreSQL, and optional `certbot`), systemd, the relay-specific nginx site config, automated deploys, and the operational runbook.
 
 Quick start on the remote host:
 
@@ -149,7 +149,15 @@ export TUNNEL_AUTH_TOKEN=<user-owned-agent-token>
 ./bin/tunnel --label "feature-branch" claude
 ```
 
-Keep two gitignored env files at the repo root: `.env.prod` for production and `.env.dev` for the dev VPS. Each file also carries its own `DEPLOY_HOST` so the Make targets pick up the right host automatically.
+Keep two gitignored env files at the repo root: `.env.prod` for production and `.env.dev` for the dev VPS. Each file carries its own `DEPLOY_HOST`, and the remote install targets default `INSTALL_HOST` to that same value.
+
+Bootstrap each host once:
+
+```bash
+make install-prod                                          # prod: prompts for certbot email, then installs nginx + PostgreSQL + certbot + TLS nginx site
+make install-prod INSTALL_CERTBOT_EMAIL=ops@example.com   # prod: same flow, with the email provided up front
+make install-dev                                          # dev: nginx + PostgreSQL + HTTP nginx site
+```
 
 Deploy:
 
@@ -158,9 +166,13 @@ make deploy-prod    # prod
 make deploy-dev     # dev
 ```
 
+`make install-prod` always requires a certbot email before it does anything else. If `INSTALL_CERTBOT_EMAIL` is missing, it stops and prompts in the terminal until you enter one. Then it installs `certbot`, issues or refreshes the TLS certificate with a webroot challenge, enables `certbot.timer`, and installs a renewal hook that reloads nginx after renewal. `make install-dev` skips `certbot` entirely and keeps the dev relay on plain HTTP port 80. `make install` remains the local binary install alias.
+
 Every deploy syncs `schema/` to the remote host and reruns the migrator before the new relay binary and env file are activated. That is safe to repeat: the migrator records applied versions in `schema_migrations`, holds a PostgreSQL advisory lock while it runs, and applies each migration in its own transaction. `make deploy-install` skips binary installs when the remote copy already has the same sha256, so re-running a deploy on an unchanged build is still cheap. `make deploy` defaults to `ENV_FILE=.env.prod`; override with `make deploy ENV_FILE=.env.dev` or with individual flags when needed.
 
-For deploy output, `make deploy-dev DEPLOY_DRY_RUN=1` gives a structured preview and `make deploy-dev DEPLOY_VERBOSE=1` prints debug details.
+Deploy is intentionally narrower than install: it does not install or reconfigure `nginx`, `certbot`, or `postgresql`, and it does not rewrite those host-level config files. Those changes stay in the install phase so later manual host edits are not overwritten by routine relay deploys.
+
+For install output, `make install-dev INSTALL_DRY_RUN=1` gives a structured preview and `make install-dev INSTALL_VERBOSE=1` prints debug details. Deploy output follows the same pattern with `DEPLOY_DRY_RUN=1` and `DEPLOY_VERBOSE=1`.
 
 ## Launchers
 
@@ -171,6 +183,8 @@ For deploy output, `make deploy-dev DEPLOY_DRY_RUN=1` gives a structured preview
 ```bash
 make build             # builds bin/tunnel, bin/relay, and bin/relay-migrate
 make install           # installs tunnel, relay, and relay-migrate to ~/.local/bin
+make install-dev       # installs nginx + PostgreSQL on the dev VPS if needed and syncs the HTTP nginx site
+make install-prod    # prompts for certbot email, then installs prod nginx + PostgreSQL + certbot and syncs the TLS nginx site
 make test              # go test ./...
 make test-relay        # focused relay/protocol contract tests
 make local-e2e-db-up   # start fixed-version Docker PostgreSQL for local E2E

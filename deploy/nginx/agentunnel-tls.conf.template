@@ -1,8 +1,8 @@
 server {
-    server_name diaro.me www.diaro.me;
+    server_name __SERVER_NAMES__;
 
     location = /agent/ws {
-        proxy_pass http://127.0.0.1:8586;
+        proxy_pass http://__UPSTREAM_ADDR__;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $connection_upgrade;
@@ -15,7 +15,7 @@ server {
     }
 
     location /api/ {
-        proxy_pass http://127.0.0.1:8586;
+        proxy_pass http://__UPSTREAM_ADDR__;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $connection_upgrade;
@@ -31,25 +31,23 @@ server {
         return 404;
     }
 
-    listen [::]:443 ssl ipv6only=on; # managed by Certbot
-    listen 443 ssl; # managed by Certbot
-    ssl_certificate /etc/letsencrypt/live/diaro.me/fullchain.pem; # managed by Certbot
-    ssl_certificate_key /etc/letsencrypt/live/diaro.me/privkey.pem; # managed by Certbot
-    include /etc/letsencrypt/options-ssl-nginx.conf; # managed by Certbot
-    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem; # managed by Certbot
+    listen [::]:443 ssl ipv6only=on;
+    listen 443 ssl;
+    ssl_certificate /etc/letsencrypt/live/__PRIMARY_DOMAIN__/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/__PRIMARY_DOMAIN__/privkey.pem;
 }
 
 server {
-    if ($host = www.diaro.me) {
-        return 301 https://$host$request_uri;
-    } # managed by Certbot
-
-    if ($host = diaro.me) {
-        return 301 https://$host$request_uri;
-    } # managed by Certbot
-
     listen 80;
     listen [::]:80;
-    server_name diaro.me www.diaro.me;
-    return 404; # managed by Certbot
+    server_name __SERVER_NAMES__;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root __CERTBOT_WEBROOT__;
+        default_type "text/plain";
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
 }
