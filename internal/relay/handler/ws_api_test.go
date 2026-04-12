@@ -25,6 +25,7 @@ func TestAttachWebSocketRejectsCrossOriginBrowserDial(t *testing.T) {
 
 	agentConn := dialAndRegisterAgent(t, server.URL, agentToken.Plaintext, "sess-1")
 	defer agentConn.Close()
+	waitForOwnedSession(t, env.registry, "sess-1", user.ID)
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/sessions/sess-1/attach/ws"
 	headers := http.Header{}
@@ -56,6 +57,7 @@ func TestAttachWebSocketForwardsSnapshotLiveBytesAndInputForOwner(t *testing.T) 
 
 	agentConn := dialAndRegisterAgent(t, server.URL, agentToken.Plaintext, "sess-1")
 	defer agentConn.Close()
+	waitForOwnedSession(t, env.registry, "sess-1", user.ID)
 
 	attachConn := dialAttachClient(t, server.URL, issued.AccessToken, "sess-1")
 	defer attachConn.Close()
@@ -127,6 +129,7 @@ func TestLogoutClosesOnlyCurrentAppSessionAttachAndKeepsAgentSessionAlive(t *tes
 
 	agentConn := dialAndRegisterAgent(t, server.URL, agentToken.Plaintext, "sess-1")
 	defer agentConn.Close()
+	waitForOwnedSession(t, env.registry, "sess-1", user.ID)
 
 	attachConn := dialAttachClient(t, server.URL, firstIssued.AccessToken, "sess-1")
 	defer attachConn.Close()
@@ -184,6 +187,7 @@ func TestPasswordChangeClosesUserAttachesAndKeepsAgentSessionAlive(t *testing.T)
 
 	agentConn := dialAndRegisterAgent(t, server.URL, agentToken.Plaintext, "sess-1")
 	defer agentConn.Close()
+	waitForOwnedSession(t, env.registry, "sess-1", user.ID)
 
 	attachConn := dialAttachClient(t, server.URL, issued.AccessToken, "sess-1")
 	defer attachConn.Close()
@@ -254,6 +258,7 @@ func TestAttachWebSocketReturnsNotFoundForCrossUserAttach(t *testing.T) {
 
 	agentConn := dialAndRegisterAgent(t, server.URL, bobToken.Plaintext, "sess-b")
 	defer agentConn.Close()
+	waitForOwnedSession(t, env.registry, "sess-b", bob.ID)
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/sessions/sess-b/attach/ws"
 	headers := http.Header{}
@@ -319,8 +324,10 @@ func TestAgentRegistrationKeepsLiveSessionsUserScopedAcrossOwners(t *testing.T) 
 
 	aliceAgentConn := dialAndRegisterAgent(t, server.URL, aliceToken.Plaintext, "sess-a")
 	defer aliceAgentConn.Close()
+	waitForOwnedSession(t, env.registry, "sess-a", alice.ID)
 	bobAgentConn := dialAndRegisterAgent(t, server.URL, bobToken.Plaintext, "sess-b")
 	defer bobAgentConn.Close()
+	waitForOwnedSession(t, env.registry, "sess-b", bob.ID)
 
 	aliceResp := doBearerGET(t, server.URL+"/api/sessions", aliceIssued.AccessToken)
 	defer aliceResp.Body.Close()

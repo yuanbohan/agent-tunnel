@@ -619,6 +619,20 @@ func dialAndRegisterAgent(t *testing.T, serverURL, agentToken, sessionID string)
 	return conn
 }
 
+func waitForOwnedSession(t *testing.T, registry *Registry, sessionID string, userID int64) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok := registry.SessionForUser(sessionID, userID); ok {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("session %q for user %d was not registered before timeout", sessionID, userID)
+}
+
 func dialAttachClient(t *testing.T, serverURL, accessToken, sessionID string) *websocket.Conn {
 	t.Helper()
 	wsURL := "ws" + strings.TrimPrefix(serverURL, "http") + "/api/sessions/" + sessionID + "/attach/ws"
