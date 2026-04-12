@@ -53,7 +53,7 @@ Flags:
 
 Environment:
   %s  Required agent token for normal execution
-  %s   Optional relay base URL (default: %s)
+  %s    Optional relay base URL (default: %s)
 
 Examples:
   tunnel claude

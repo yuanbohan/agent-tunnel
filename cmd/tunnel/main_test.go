@@ -98,6 +98,10 @@ func assertHelpText(t *testing.T, text string) {
 			t.Fatalf("help text = %q, want fragment %q", text, fragment)
 		}
 	}
+	const wantEnvBlock = "Environment:\n  TUNNEL_AUTH_TOKEN  Required agent token for normal execution\n  TUNNEL_BASE_URL    Optional relay base URL (default: https://diaro.me)"
+	if !strings.Contains(text, wantEnvBlock) {
+		t.Fatalf("help text = %q, want aligned environment block %q", text, wantEnvBlock)
+	}
 }
 
 func TestRunWithArgsStopsBeforeStartingSessionWhenLocalTerminalPreparationFails(t *testing.T) {
