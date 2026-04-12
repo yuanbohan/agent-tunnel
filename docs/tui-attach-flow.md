@@ -26,7 +26,7 @@ Both the local terminal and the remote client render the session by consuming te
 
 ## Core Objects
 
-- **PTY output**: raw bytes emitted by the real local CLI process such as `claude`, `codex`, or `gemini`
+- **PTY output**: raw bytes emitted by the real local CLI process such as `claude`, `codex`, `gemini`, `qwen`, or `aider`
 - **terminal mirror**: the headless `xterm-go` terminal inside `tunnel` that consumes the same PTY output stream
 - **snapshot bytes**: a serialized current-screen checkpoint generated from the mirror on attach
 - **live bytes**: subsequent raw PTY output bytes after the snapshot boundary
@@ -39,7 +39,7 @@ The steady-state path is:
 
 ```mermaid
 flowchart LR
-  TUI["Local TUI Process<br/>claude / codex / gemini"]
+  TUI["Local TUI Process<br/>PATH-resolved CLI agent"]
   PTY["PTY"]
   HUB["session.Hub<br/>output fanout"]
   LOCAL["Local Terminal"]

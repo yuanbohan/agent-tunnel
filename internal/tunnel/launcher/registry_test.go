@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestResolveSupportedLauncher(t *testing.T) {
+func TestResolveLauncher(t *testing.T) {
 	cmd, err := resolveWithLookPath("claude", []string{"--resume"}, func(file string) (string, error) {
 		if file != "claude" {
 			t.Fatalf("lookPath called with %q, want claude", file)
@@ -28,27 +28,32 @@ func TestResolveSupportedLauncher(t *testing.T) {
 	}
 }
 
-func TestResolveRejectsUnsupportedLauncher(t *testing.T) {
-	_, err := resolveWithLookPath("python", nil, func(string) (string, error) {
-		t.Fatal("lookPath should not be called for unsupported launchers")
-		return "", nil
+func TestResolvePreservesUserProvidedCommand(t *testing.T) {
+	cmd, err := resolveWithLookPath("/opt/bin/custom-agent", nil, func(file string) (string, error) {
+		if file != "/opt/bin/custom-agent" {
+			t.Fatalf("lookPath called with %q, want /opt/bin/custom-agent", file)
+		}
+		return "/private/opt/custom-agent", nil
 	})
-	if err == nil {
-		t.Fatal("expected an error for unsupported launcher")
+	if err != nil {
+		t.Fatalf("Resolve returned error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "supported launchers: claude, codex, gemini") {
-		t.Fatalf("unexpected error: %v", err)
+	if cmd.Name != "/opt/bin/custom-agent" {
+		t.Fatalf("Name = %q, want /opt/bin/custom-agent", cmd.Name)
+	}
+	if cmd.Path != "/private/opt/custom-agent" {
+		t.Fatalf("Path = %q, want /private/opt/custom-agent", cmd.Path)
 	}
 }
 
 func TestResolveReportsMissingExecutable(t *testing.T) {
-	_, err := resolveWithLookPath("gemini", nil, func(string) (string, error) {
+	_, err := resolveWithLookPath("openclaw", nil, func(string) (string, error) {
 		return "", exec.ErrNotFound
 	})
 	if err == nil {
 		t.Fatal("expected an error for missing executable")
 	}
-	if !strings.Contains(err.Error(), "gemini executable not found in PATH") {
+	if !strings.Contains(err.Error(), "openclaw executable not found in PATH") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

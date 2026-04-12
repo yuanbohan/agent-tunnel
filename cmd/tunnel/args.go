@@ -50,7 +50,7 @@ func parseRunArgs(argv []string) (runArgs, error) {
 
 	rest := fs.Args()
 	if len(rest) == 0 {
-		return runArgs{}, fmt.Errorf("usage: tunnel [--label label] [--base-url url] <claude|codex|gemini> [args...]")
+		return runArgs{}, fmt.Errorf("usage: tunnel [--label label] [--base-url url] <command> [args...]")
 	}
 
 	cfg.Launcher = rest[0]
