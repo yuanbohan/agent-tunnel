@@ -65,8 +65,8 @@ None.
 
 ### Deferred to Planning
 
-- [Affects R4-R8][Technical] What exact help text layout best fits the existing CLI style while staying concise enough for terminal use?
-- [Affects R12][Technical] Where should `README.md` mention `tunnel --help` so it improves discoverability without duplicating too much CLI usage prose?
+- [Affects R4-R8] (Technical) What exact help text layout best fits the existing CLI style while staying concise enough for terminal use?
+- [Affects R12] (Technical) Where should `README.md` mention `tunnel --help` so it improves discoverability without duplicating too much CLI usage prose?
 
 ## Next Steps
 
