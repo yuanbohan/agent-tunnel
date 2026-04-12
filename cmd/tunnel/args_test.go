@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -56,11 +57,49 @@ func TestParseRunArgsVersionFastPath(t *testing.T) {
 	if !cfg.ShowVersion {
 		t.Fatal("ShowVersion = false, want true")
 	}
+	if cfg.ShowHelp {
+		t.Fatal("ShowHelp = true, want false on version fast path")
+	}
 	if cfg.AuthToken != "" {
 		t.Fatalf("AuthToken = %q, want empty on version fast path", cfg.AuthToken)
 	}
 	if cfg.Launcher != "" {
 		t.Fatalf("Launcher = %q, want empty on version fast path", cfg.Launcher)
+	}
+}
+
+func TestParseRunArgsHelpFastPath(t *testing.T) {
+	setEnv(t, "TUNNEL_BASE_URL", "")
+	setEnv(t, "TUNNEL_AUTH_TOKEN", "")
+
+	cfg, err := parseRunArgs([]string{"tunnel", "--help"})
+	if err != nil {
+		t.Fatalf("parseRunArgs returned error: %v", err)
+	}
+	if !cfg.ShowHelp {
+		t.Fatal("ShowHelp = false, want true")
+	}
+	if cfg.ShowVersion {
+		t.Fatal("ShowVersion = true, want false on help fast path")
+	}
+	if cfg.AuthToken != "" {
+		t.Fatalf("AuthToken = %q, want empty on help fast path", cfg.AuthToken)
+	}
+	if cfg.Launcher != "" {
+		t.Fatalf("Launcher = %q, want empty on help fast path", cfg.Launcher)
+	}
+}
+
+func TestParseRunArgsShortHelpFastPath(t *testing.T) {
+	setEnv(t, "TUNNEL_BASE_URL", "")
+	setEnv(t, "TUNNEL_AUTH_TOKEN", "")
+
+	cfg, err := parseRunArgs([]string{"tunnel", "-h"})
+	if err != nil {
+		t.Fatalf("parseRunArgs returned error: %v", err)
+	}
+	if !cfg.ShowHelp {
+		t.Fatal("ShowHelp = false, want true")
 	}
 }
 
@@ -96,6 +135,38 @@ func TestParseRunArgsTreatsVersionAfterLauncherAsLauncherArg(t *testing.T) {
 	}
 }
 
+func TestParseRunArgsTreatsHelpAfterLauncherAsLauncherArg(t *testing.T) {
+	setEnv(t, "TUNNEL_BASE_URL", "http://127.0.0.1:8586")
+	setEnv(t, "TUNNEL_AUTH_TOKEN", "secret")
+
+	cfg, err := parseRunArgs([]string{"tunnel", "codex", "--help"})
+	if err != nil {
+		t.Fatalf("parseRunArgs returned error: %v", err)
+	}
+	if cfg.ShowHelp {
+		t.Fatal("ShowHelp = true, want false when flag appears after launcher")
+	}
+	if cfg.Launcher != "codex" {
+		t.Fatalf("Launcher = %q, want codex", cfg.Launcher)
+	}
+	if len(cfg.LauncherArgs) != 1 || cfg.LauncherArgs[0] != "--help" {
+		t.Fatalf("LauncherArgs = %#v, want [--help]", cfg.LauncherArgs)
+	}
+}
+
+func TestParseRunArgsHelpWinsBeforeBaseURLValidation(t *testing.T) {
+	setEnv(t, "TUNNEL_BASE_URL", "ws://127.0.0.1:8586")
+	setEnv(t, "TUNNEL_AUTH_TOKEN", "")
+
+	cfg, err := parseRunArgs([]string{"tunnel", "--help"})
+	if err != nil {
+		t.Fatalf("parseRunArgs returned error: %v", err)
+	}
+	if !cfg.ShowHelp {
+		t.Fatal("ShowHelp = false, want true")
+	}
+}
+
 func TestParseRunArgsRejectsWebSocketScheme(t *testing.T) {
 	setEnv(t, "TUNNEL_BASE_URL", "")
 	setEnv(t, "TUNNEL_AUTH_TOKEN", "secret")
@@ -106,6 +177,23 @@ func TestParseRunArgsRejectsWebSocketScheme(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "http://") {
 		t.Fatalf("error = %q, want base URL guidance", err)
+	}
+}
+
+func TestParseRunArgsRejectsWebSocketSchemeBeforeMissingLauncher(t *testing.T) {
+	setEnv(t, "TUNNEL_BASE_URL", "")
+	setEnv(t, "TUNNEL_AUTH_TOKEN", "secret")
+
+	_, err := parseRunArgs([]string{"tunnel", "--base-url", "ws://127.0.0.1:8586"})
+	if err == nil {
+		t.Fatal("expected error for websocket scheme in base URL without launcher")
+	}
+	if !strings.Contains(err.Error(), "http://") {
+		t.Fatalf("error = %q, want base URL guidance", err)
+	}
+	var usageErr usageError
+	if errors.As(err, &usageErr) {
+		t.Fatalf("error = %#v, want base URL validation error before usageError", err)
 	}
 }
 
@@ -149,6 +237,10 @@ func TestParseRunArgsMissingLauncher(t *testing.T) {
 	_, err := parseRunArgs([]string{"tunnel"})
 	if err == nil {
 		t.Fatal("expected error for missing launcher")
+	}
+	var usageErr usageError
+	if !errors.As(err, &usageErr) {
+		t.Fatalf("error = %#v, want usageError", err)
 	}
 }
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -53,6 +54,10 @@ var (
 
 func main() {
 	if err := run(); err != nil {
+		var usageErr usageError
+		if errors.As(err, &usageErr) {
+			os.Exit(2)
+		}
 		log.Fatal(err)
 	}
 }
@@ -64,7 +69,15 @@ func run() error {
 func runWithArgs(args []string, stdout, stderr io.Writer) error {
 	parsed, err := parseRunArgs(args)
 	if err != nil {
+		var usageErr usageError
+		if errors.As(err, &usageErr) {
+			_, _ = io.WriteString(stderr, tunnelHelpText())
+		}
 		return err
+	}
+	if parsed.ShowHelp {
+		_, _ = io.WriteString(stdout, tunnelHelpText())
+		return nil
 	}
 	if parsed.ShowVersion {
 		return writeVersion(stdout)

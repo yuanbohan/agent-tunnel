@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -17,12 +18,47 @@ const (
 )
 
 type runArgs struct {
+	ShowHelp     bool
 	ShowVersion  bool
 	Label        string
 	BaseURL      string
 	AuthToken    string
 	Launcher     string
 	LauncherArgs []string
+}
+
+type usageError struct {
+	msg string
+}
+
+func (e usageError) Error() string {
+	return e.msg
+}
+
+func usagef(format string, args ...any) error {
+	return usageError{msg: fmt.Sprintf(format, args...)}
+}
+
+func tunnelHelpText() string {
+	return fmt.Sprintf(`Usage:
+  tunnel [--label label] [--base-url url] <command> [args...]
+  tunnel --help
+  tunnel --version
+
+Flags:
+  -h, --help   Show this help message and exit
+  --version    Print tunnel version and exit
+  --label      Optional session label for relay clients
+  --base-url   Relay base URL (fallback: %s, default: %s)
+
+Environment:
+  %s  Required agent token for normal execution
+  %s   Optional relay base URL (default: %s)
+
+Examples:
+  tunnel claude
+  tunnel --label api-fix codex --profile prod
+`, tunnelBaseURLEnv, defaultTunnelBaseURL, tunnelAuthTokenEnv, tunnelBaseURLEnv, defaultTunnelBaseURL)
 }
 
 func parseRunArgs(argv []string) (runArgs, error) {
@@ -34,8 +70,14 @@ func parseRunArgs(argv []string) (runArgs, error) {
 	fs.StringVar(&cfg.Label, "label", "", "optional session label for relay clients")
 	fs.StringVar(&cfg.BaseURL, "base-url", "", "relay base URL (fallback: TUNNEL_BASE_URL, default: https://diaro.me)")
 
-	if err := fs.Parse(argv[1:]); err != nil {
+	if err := fs.Parse(argv[1:]); errors.Is(err, flag.ErrHelp) {
+		cfg.ShowHelp = true
+		return cfg, nil
+	} else if err != nil {
 		return runArgs{}, err
+	}
+	if cfg.ShowHelp {
+		return cfg, nil
 	}
 	if cfg.ShowVersion {
 		return cfg, nil
@@ -53,14 +95,14 @@ func parseRunArgs(argv []string) (runArgs, error) {
 	}
 	cfg.BaseURL = baseURL
 
+	rest := fs.Args()
+	if len(rest) == 0 {
+		return runArgs{}, usagef("missing launcher command")
+	}
+
 	cfg.AuthToken = strings.TrimSpace(os.Getenv(tunnelAuthTokenEnv))
 	if cfg.AuthToken == "" {
 		return runArgs{}, fmt.Errorf("TUNNEL_AUTH_TOKEN environment variable is required")
-	}
-
-	rest := fs.Args()
-	if len(rest) == 0 {
-		return runArgs{}, fmt.Errorf("usage: tunnel [--label label] [--base-url url] <command> [args...]")
 	}
 
 	cfg.Launcher = rest[0]
