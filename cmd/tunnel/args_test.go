@@ -24,8 +24,8 @@ func setEnv(t *testing.T, key, val string) {
 }
 
 func TestParseRunArgsValid(t *testing.T) {
-	setEnv(t, "AGENTUNNEL_BASE_URL", "http://127.0.0.1:8586")
-	setEnv(t, "AGENTUNNEL_AUTH_TOKEN", "secret")
+	setEnv(t, "TUNNEL_BASE_URL", "http://127.0.0.1:8586")
+	setEnv(t, "TUNNEL_AUTH_TOKEN", "secret")
 
 	cfg, err := parseRunArgs([]string{"tunnel", "codex", "--profile", "prod"})
 	if err != nil {
@@ -46,8 +46,8 @@ func TestParseRunArgsValid(t *testing.T) {
 }
 
 func TestParseRunArgsFlagOverridesEnvForBaseURL(t *testing.T) {
-	setEnv(t, "AGENTUNNEL_BASE_URL", "http://127.0.0.1:8586")
-	setEnv(t, "AGENTUNNEL_AUTH_TOKEN", "secret")
+	setEnv(t, "TUNNEL_BASE_URL", "http://127.0.0.1:8586")
+	setEnv(t, "TUNNEL_AUTH_TOKEN", "secret")
 
 	cfg, err := parseRunArgs([]string{"tunnel", "--base-url", "https://relay.example.com", "codex"})
 	if err != nil {
@@ -59,8 +59,8 @@ func TestParseRunArgsFlagOverridesEnvForBaseURL(t *testing.T) {
 }
 
 func TestParseRunArgsRejectsWebSocketScheme(t *testing.T) {
-	setEnv(t, "AGENTUNNEL_BASE_URL", "")
-	setEnv(t, "AGENTUNNEL_AUTH_TOKEN", "secret")
+	setEnv(t, "TUNNEL_BASE_URL", "")
+	setEnv(t, "TUNNEL_AUTH_TOKEN", "secret")
 
 	_, err := parseRunArgs([]string{"tunnel", "--base-url", "ws://127.0.0.1:8586", "codex"})
 	if err == nil {
@@ -72,8 +72,8 @@ func TestParseRunArgsRejectsWebSocketScheme(t *testing.T) {
 }
 
 func TestParseRunArgsUsesDefaultBaseURL(t *testing.T) {
-	setEnv(t, "AGENTUNNEL_BASE_URL", "")
-	setEnv(t, "AGENTUNNEL_AUTH_TOKEN", "secret")
+	setEnv(t, "TUNNEL_BASE_URL", "")
+	setEnv(t, "TUNNEL_AUTH_TOKEN", "secret")
 
 	cfg, err := parseRunArgs([]string{"tunnel", "codex"})
 	if err != nil {
@@ -85,8 +85,8 @@ func TestParseRunArgsUsesDefaultBaseURL(t *testing.T) {
 }
 
 func TestParseRunArgsRejectsBareHostBaseURL(t *testing.T) {
-	setEnv(t, "AGENTUNNEL_BASE_URL", "")
-	setEnv(t, "AGENTUNNEL_AUTH_TOKEN", "secret")
+	setEnv(t, "TUNNEL_BASE_URL", "")
+	setEnv(t, "TUNNEL_AUTH_TOKEN", "secret")
 
 	_, err := parseRunArgs([]string{"tunnel", "--base-url", "diaro.me", "codex"})
 	if err == nil {
@@ -95,8 +95,8 @@ func TestParseRunArgsRejectsBareHostBaseURL(t *testing.T) {
 }
 
 func TestParseRunArgsMissingToken(t *testing.T) {
-	setEnv(t, "AGENTUNNEL_BASE_URL", "http://127.0.0.1:8586")
-	setEnv(t, "AGENTUNNEL_AUTH_TOKEN", "")
+	setEnv(t, "TUNNEL_BASE_URL", "http://127.0.0.1:8586")
+	setEnv(t, "TUNNEL_AUTH_TOKEN", "")
 
 	_, err := parseRunArgs([]string{"tunnel", "codex"})
 	if err == nil {
@@ -105,8 +105,8 @@ func TestParseRunArgsMissingToken(t *testing.T) {
 }
 
 func TestParseRunArgsMissingLauncher(t *testing.T) {
-	setEnv(t, "AGENTUNNEL_BASE_URL", "http://127.0.0.1:8586")
-	setEnv(t, "AGENTUNNEL_AUTH_TOKEN", "secret")
+	setEnv(t, "TUNNEL_BASE_URL", "http://127.0.0.1:8586")
+	setEnv(t, "TUNNEL_AUTH_TOKEN", "secret")
 
 	_, err := parseRunArgs([]string{"tunnel"})
 	if err == nil {
@@ -115,8 +115,8 @@ func TestParseRunArgsMissingLauncher(t *testing.T) {
 }
 
 func TestParseRunArgsWithLabelAndArgs(t *testing.T) {
-	setEnv(t, "AGENTUNNEL_BASE_URL", "http://127.0.0.1:8586")
-	setEnv(t, "AGENTUNNEL_AUTH_TOKEN", "secret")
+	setEnv(t, "TUNNEL_BASE_URL", "http://127.0.0.1:8586")
+	setEnv(t, "TUNNEL_AUTH_TOKEN", "secret")
 
 	cfg, err := parseRunArgs([]string{
 		"tunnel",
@@ -139,6 +139,34 @@ func TestParseRunArgsWithLabelAndArgs(t *testing.T) {
 	}
 	if len(cfg.LauncherArgs) != 2 || cfg.LauncherArgs[0] != "--profile" || cfg.LauncherArgs[1] != "prod" {
 		t.Fatalf("LauncherArgs = %#v, want [--profile prod]", cfg.LauncherArgs)
+	}
+}
+
+func TestParseRunArgsIgnoresLegacyBaseURLEnv(t *testing.T) {
+	setEnv(t, "TUNNEL_BASE_URL", "")
+	setEnv(t, "TUNNEL_AUTH_TOKEN", "secret")
+	setEnv(t, "AGENTUNNEL_BASE_URL", "http://127.0.0.1:8586")
+
+	cfg, err := parseRunArgs([]string{"tunnel", "codex"})
+	if err != nil {
+		t.Fatalf("parseRunArgs returned error: %v", err)
+	}
+	if cfg.BaseURL != defaultTunnelBaseURL {
+		t.Fatalf("BaseURL = %q, want %q", cfg.BaseURL, defaultTunnelBaseURL)
+	}
+}
+
+func TestParseRunArgsIgnoresLegacyAuthTokenEnv(t *testing.T) {
+	setEnv(t, "TUNNEL_BASE_URL", "http://127.0.0.1:8586")
+	setEnv(t, "TUNNEL_AUTH_TOKEN", "")
+	setEnv(t, "AGENTUNNEL_AUTH_TOKEN", "legacy-secret")
+
+	_, err := parseRunArgs([]string{"tunnel", "codex"})
+	if err == nil {
+		t.Fatal("expected error for missing TUNNEL_AUTH_TOKEN")
+	}
+	if !strings.Contains(err.Error(), "TUNNEL_AUTH_TOKEN") {
+		t.Fatalf("error = %q, want TUNNEL_AUTH_TOKEN guidance", err)
 	}
 }
 

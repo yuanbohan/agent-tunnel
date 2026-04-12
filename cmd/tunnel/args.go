@@ -11,6 +11,11 @@ import (
 
 const defaultTunnelBaseURL = "https://diaro.me"
 
+const (
+	tunnelBaseURLEnv   = "TUNNEL_BASE_URL"
+	tunnelAuthTokenEnv = "TUNNEL_AUTH_TOKEN"
+)
+
 type runArgs struct {
 	Label        string
 	BaseURL      string
@@ -25,14 +30,14 @@ func parseRunArgs(argv []string) (runArgs, error) {
 
 	var cfg runArgs
 	fs.StringVar(&cfg.Label, "label", "", "optional session label for relay clients")
-	fs.StringVar(&cfg.BaseURL, "base-url", "", "relay base URL (fallback: AGENTUNNEL_BASE_URL, default: https://diaro.me)")
+	fs.StringVar(&cfg.BaseURL, "base-url", "", "relay base URL (fallback: TUNNEL_BASE_URL, default: https://diaro.me)")
 
 	if err := fs.Parse(argv[1:]); err != nil {
 		return runArgs{}, err
 	}
 
 	if cfg.BaseURL == "" {
-		cfg.BaseURL = strings.TrimSpace(os.Getenv("AGENTUNNEL_BASE_URL"))
+		cfg.BaseURL = strings.TrimSpace(os.Getenv(tunnelBaseURLEnv))
 	}
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = defaultTunnelBaseURL
@@ -43,9 +48,9 @@ func parseRunArgs(argv []string) (runArgs, error) {
 	}
 	cfg.BaseURL = baseURL
 
-	cfg.AuthToken = strings.TrimSpace(os.Getenv("AGENTUNNEL_AUTH_TOKEN"))
+	cfg.AuthToken = strings.TrimSpace(os.Getenv(tunnelAuthTokenEnv))
 	if cfg.AuthToken == "" {
-		return runArgs{}, fmt.Errorf("AGENTUNNEL_AUTH_TOKEN environment variable is required")
+		return runArgs{}, fmt.Errorf("TUNNEL_AUTH_TOKEN environment variable is required")
 	}
 
 	rest := fs.Args()

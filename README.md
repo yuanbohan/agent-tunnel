@@ -53,12 +53,12 @@ After a user has registered, logged in, and created an agent token, point `tunne
 
 ```bash
 make build
-export AGENTUNNEL_BASE_URL=http://127.0.0.1:8586
-export AGENTUNNEL_AUTH_TOKEN=<user-owned-agent-token>
+export TUNNEL_BASE_URL=http://127.0.0.1:8586
+export TUNNEL_AUTH_TOKEN=<user-owned-agent-token>
 ./bin/tunnel claude
 ```
 
-If you use the hosted relay at `https://diaro.me`, `AGENTUNNEL_BASE_URL` is optional because that is the default.
+If you use the hosted relay at `https://diaro.me`, `TUNNEL_BASE_URL` is optional because that is the default.
 
 Or with a label:
 
@@ -144,8 +144,8 @@ sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && ./bin/relay
 After the user registers in the app and creates an agent token, on each developer machine:
 
 ```bash
-export AGENTUNNEL_BASE_URL=https://diaro.me
-export AGENTUNNEL_AUTH_TOKEN=<user-owned-agent-token>
+export TUNNEL_BASE_URL=https://diaro.me
+export TUNNEL_AUTH_TOKEN=<user-owned-agent-token>
 ./bin/tunnel --label "feature-branch" claude
 ```
 
