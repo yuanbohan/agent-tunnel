@@ -124,7 +124,7 @@ func (s *fakeStore) CreateAppSession(_ context.Context, params CreateAppSessionP
 	return session, nil
 }
 
-func (s *fakeStore) FindAppSessionByAccessToken(_ context.Context, accessTokenDigest string, now time.Time) (AppSession, error) {
+func (s *fakeStore) FindAppSessionByAccessToken(_ context.Context, accessTokenDigest string, now time.Time, absoluteTTL time.Duration) (AppSession, error) {
 	id, ok := s.sessionIDByAccess[accessTokenDigest]
 	if !ok {
 		return AppSession{}, ErrAppSessionNotFound
@@ -132,6 +132,9 @@ func (s *fakeStore) FindAppSessionByAccessToken(_ context.Context, accessTokenDi
 	session := s.sessionsByID[id]
 	if session.RevokedAt != nil {
 		return AppSession{}, ErrAppSessionRevoked
+	}
+	if absoluteTTL > 0 && !session.CreatedAt.Add(absoluteTTL).After(now) {
+		return AppSession{}, ErrAppSessionExpired
 	}
 	if !session.AccessExpiresAt.After(now) {
 		return AppSession{}, ErrAppSessionExpired
@@ -148,8 +151,20 @@ func (s *fakeStore) RotateAppSessionByRefreshToken(_ context.Context, params Rot
 	if session.RevokedAt != nil {
 		return AppSession{}, ErrAppSessionRevoked
 	}
+	if params.AbsoluteTTL > 0 && !session.CreatedAt.Add(params.AbsoluteTTL).After(params.Now) {
+		return AppSession{}, ErrAppSessionExpired
+	}
 	if !session.RefreshExpiresAt.After(params.Now) {
 		return AppSession{}, ErrAppSessionExpired
+	}
+	if params.AbsoluteTTL > 0 {
+		absoluteExpiresAt := session.CreatedAt.Add(params.AbsoluteTTL)
+		if params.NewAccessExpiresAt.After(absoluteExpiresAt) {
+			params.NewAccessExpiresAt = absoluteExpiresAt
+		}
+		if params.NewRefreshExpiresAt.After(absoluteExpiresAt) {
+			params.NewRefreshExpiresAt = absoluteExpiresAt
+		}
 	}
 	delete(s.sessionIDByAccess, session.AccessTokenDigest)
 	delete(s.sessionIDByRefresh, session.RefreshTokenDigest)
@@ -324,6 +339,9 @@ func TestAppAuthServiceRegisterAndLogin(t *testing.T) {
 	if issued.AccessToken == "" || issued.RefreshToken == "" {
 		t.Fatal("expected access and refresh token")
 	}
+	if issued.ExpiresIn != DefaultAccessTokenTTL {
+		t.Fatalf("ExpiresIn = %s, want %s", issued.ExpiresIn, DefaultAccessTokenTTL)
+	}
 }
 
 func TestAppAuthServiceRefreshLogoutAndPasswordChange(t *testing.T) {
@@ -374,6 +392,9 @@ func TestAppAuthServiceRefreshLogoutAndPasswordChange(t *testing.T) {
 	if refreshed.RefreshToken == issued.RefreshToken {
 		t.Fatal("expected refresh token rotation")
 	}
+	if refreshed.ExpiresIn != DefaultAccessTokenTTL {
+		t.Fatalf("Refresh ExpiresIn = %s, want %s", refreshed.ExpiresIn, DefaultAccessTokenTTL)
+	}
 
 	if err := service.ChangePassword(context.Background(), auth, "password123", "newpassword123"); err != nil {
 		t.Fatalf("ChangePassword returned error: %v", err)
@@ -395,6 +416,87 @@ func TestAppAuthServiceRefreshLogoutAndPasswordChange(t *testing.T) {
 	}
 	if _, err := service.AuthenticateAccessToken(context.Background(), issuedAgain.AccessToken); err == nil {
 		t.Fatal("expected access token to fail after logout")
+	}
+}
+
+func TestAppAuthServiceEnforcesAbsoluteSessionLifetime(t *testing.T) {
+	now := time.Date(2026, time.April, 11, 12, 0, 0, 0, time.UTC)
+	store := newFakeStore(func() time.Time { return now })
+	digester, err := NewSecretDigester("test-secret")
+	if err != nil {
+		t.Fatalf("NewSecretDigester returned error: %v", err)
+	}
+	hasher := PasswordHasher{
+		MemoryKiB:   8 * 1024,
+		Iterations:  1,
+		Parallelism: 1,
+		SaltLength:  8,
+		KeyLength:   16,
+	}
+	passwordHash, err := hasher.HashPassword(context.Background(), "password123")
+	if err != nil {
+		t.Fatalf("HashPassword returned error: %v", err)
+	}
+	user := User{
+		ID:           1,
+		Username:     "alice",
+		UsernameNorm: "alice",
+		PasswordHash: passwordHash,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	store.usersByName[user.UsernameNorm] = user
+	store.usersByID[user.ID] = user
+
+	service := NewAppAuthService(store, digester, hasher)
+	service.now = func() time.Time { return now }
+
+	issued, err := service.Login(context.Background(), "alice", "password123")
+	if err != nil {
+		t.Fatalf("Login returned error: %v", err)
+	}
+
+	now = now.Add(29 * 24 * time.Hour)
+	refreshed, err := service.Refresh(context.Background(), issued.RefreshToken)
+	if err != nil {
+		t.Fatalf("Refresh at 29 days returned error: %v", err)
+	}
+
+	now = now.Add(29 * 24 * time.Hour)
+	refreshed, err = service.Refresh(context.Background(), refreshed.RefreshToken)
+	if err != nil {
+		t.Fatalf("Refresh at 58 days returned error: %v", err)
+	}
+
+	now = now.Add(29 * 24 * time.Hour)
+	refreshed, err = service.Refresh(context.Background(), refreshed.RefreshToken)
+	if err != nil {
+		t.Fatalf("Refresh at 87 days returned error: %v", err)
+	}
+
+	now = now.Add(3*24*time.Hour - time.Hour)
+	refreshed, err = service.Refresh(context.Background(), refreshed.RefreshToken)
+	if err != nil {
+		t.Fatalf("Refresh near absolute limit returned error: %v", err)
+	}
+	if refreshed.ExpiresIn != time.Hour {
+		t.Fatalf("ExpiresIn near absolute limit = %s, want %s", refreshed.ExpiresIn, time.Hour)
+	}
+
+	now = now.Add(time.Hour)
+	if _, err := service.AuthenticateAccessToken(context.Background(), refreshed.AccessToken); err != ErrAppSessionExpired {
+		t.Fatalf("AuthenticateAccessToken at absolute expiry = %v, want ErrAppSessionExpired", err)
+	}
+	if _, err := service.Refresh(context.Background(), refreshed.RefreshToken); err != ErrAppSessionExpired {
+		t.Fatalf("Refresh at absolute expiry = %v, want ErrAppSessionExpired", err)
+	}
+
+	now = now.Add(time.Minute)
+	if _, err := service.AuthenticateAccessToken(context.Background(), refreshed.AccessToken); err != ErrAppSessionExpired {
+		t.Fatalf("AuthenticateAccessToken after absolute expiry = %v, want ErrAppSessionExpired", err)
+	}
+	if _, err := service.Refresh(context.Background(), refreshed.RefreshToken); err != ErrAppSessionExpired {
+		t.Fatalf("Refresh after absolute expiry = %v, want ErrAppSessionExpired", err)
 	}
 }
 

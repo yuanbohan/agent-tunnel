@@ -11,11 +11,17 @@ import (
 )
 
 type PostgresStore struct {
-	db *sql.DB
+	db  *sql.DB
+	now func() time.Time
 }
 
 func NewPostgresStore(db *sql.DB) *PostgresStore {
-	return &PostgresStore{db: db}
+	return &PostgresStore{
+		db: db,
+		now: func() time.Time {
+			return time.Now().UTC()
+		},
+	}
 }
 
 type inviteStatus struct {
@@ -97,14 +103,42 @@ func queryAppSession(ctx context.Context, db queryer, query string, args ...any)
 	return session, nil
 }
 
-func validateAccessSession(session auth.AppSession, now time.Time) (auth.AppSession, error) {
+func validateAccessSession(session auth.AppSession, now time.Time, absoluteTTL time.Duration) (auth.AppSession, error) {
 	if session.RevokedAt != nil {
 		return auth.AppSession{}, auth.ErrAppSessionRevoked
+	}
+	if isAbsoluteSessionExpired(session, now, absoluteTTL) {
+		return auth.AppSession{}, auth.ErrAppSessionExpired
 	}
 	if !session.AccessExpiresAt.After(now) {
 		return auth.AppSession{}, auth.ErrAppSessionExpired
 	}
 	return session, nil
+}
+
+func isAbsoluteSessionExpired(session auth.AppSession, now time.Time, absoluteTTL time.Duration) bool {
+	if absoluteTTL <= 0 {
+		return false
+	}
+	return !session.CreatedAt.Add(absoluteTTL).After(now)
+}
+
+func clampSessionExpiry(session auth.AppSession, requested time.Time, absoluteTTL time.Duration) time.Time {
+	if absoluteTTL <= 0 {
+		return requested
+	}
+	absoluteExpiresAt := session.CreatedAt.Add(absoluteTTL)
+	if requested.After(absoluteExpiresAt) {
+		return absoluteExpiresAt
+	}
+	return requested
+}
+
+func maxTime(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
 }
 
 func queryAgentToken(ctx context.Context, db queryer, query string, args ...any) (auth.AgentTokenRecord, error) {

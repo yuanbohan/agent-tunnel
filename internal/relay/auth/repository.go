@@ -13,7 +13,7 @@ type Repository interface {
 	ChangeUserPassword(ctx context.Context, userID int64, passwordHash string, now time.Time) error
 
 	CreateAppSession(ctx context.Context, params CreateAppSessionParams) (AppSession, error)
-	FindAppSessionByAccessToken(ctx context.Context, accessTokenDigest string, now time.Time) (AppSession, error)
+	FindAppSessionByAccessToken(ctx context.Context, accessTokenDigest string, now time.Time, absoluteTTL time.Duration) (AppSession, error)
 	RotateAppSessionByRefreshToken(ctx context.Context, params RotateAppSessionParams) (AppSession, error)
 	RevokeAppSession(ctx context.Context, sessionID string, now time.Time, reason string) error
 

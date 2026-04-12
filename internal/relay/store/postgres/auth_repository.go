@@ -130,7 +130,7 @@ func (s *PostgresStore) CreateAppSession(ctx context.Context, params auth.Create
 	return session, err
 }
 
-func (s *PostgresStore) FindAppSessionByAccessToken(ctx context.Context, accessTokenDigest string, now time.Time) (auth.AppSession, error) {
+func (s *PostgresStore) FindAppSessionByAccessToken(ctx context.Context, accessTokenDigest string, now time.Time, absoluteTTL time.Duration) (auth.AppSession, error) {
 	session, err := queryAppSession(ctx, s.db, `
 		select id, user_id, access_token_digest, access_expires_at,
 			refresh_token_digest, refresh_expires_at,
@@ -141,7 +141,7 @@ func (s *PostgresStore) FindAppSessionByAccessToken(ctx context.Context, accessT
 	if err != nil {
 		return auth.AppSession{}, err
 	}
-	return validateAccessSession(session, now)
+	return validateAccessSession(session, now, absoluteTTL)
 }
 
 func (s *PostgresStore) RotateAppSessionByRefreshToken(ctx context.Context, params auth.RotateAppSessionParams) (auth.AppSession, error) {
@@ -165,9 +165,18 @@ func (s *PostgresStore) RotateAppSessionByRefreshToken(ctx context.Context, para
 	if session.RevokedAt != nil {
 		return auth.AppSession{}, auth.ErrAppSessionRevoked
 	}
-	if !session.RefreshExpiresAt.After(params.Now) {
+	effectiveNow := maxTime(params.Now, s.now())
+	if isAbsoluteSessionExpired(session, effectiveNow, params.AbsoluteTTL) {
 		return auth.AppSession{}, auth.ErrAppSessionExpired
 	}
+	if !session.RefreshExpiresAt.After(effectiveNow) {
+		return auth.AppSession{}, auth.ErrAppSessionExpired
+	}
+
+	accessTTL := params.NewAccessExpiresAt.Sub(params.Now)
+	refreshTTL := params.NewRefreshExpiresAt.Sub(params.Now)
+	newAccessExpiresAt := clampSessionExpiry(session, effectiveNow.Add(accessTTL), params.AbsoluteTTL)
+	newRefreshExpiresAt := clampSessionExpiry(session, effectiveNow.Add(refreshTTL), params.AbsoluteTTL)
 
 	err = tx.QueryRowContext(ctx, `
 		update app_sessions
@@ -180,8 +189,8 @@ func (s *PostgresStore) RotateAppSessionByRefreshToken(ctx context.Context, para
 		returning id, user_id, access_token_digest, access_expires_at,
 			refresh_token_digest, refresh_expires_at,
 			revoked_at, revoke_reason, created_at, updated_at
-	`, session.ID, params.NewAccessTokenDigest, params.NewAccessExpiresAt,
-		params.NewRefreshTokenDigest, params.NewRefreshExpiresAt, params.Now).Scan(
+	`, session.ID, params.NewAccessTokenDigest, newAccessExpiresAt,
+		params.NewRefreshTokenDigest, newRefreshExpiresAt, effectiveNow).Scan(
 		&session.ID,
 		&session.UserID,
 		&session.AccessTokenDigest,

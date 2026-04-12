@@ -100,6 +100,7 @@ type RotateAppSessionParams struct {
 	NewAccessExpiresAt    time.Time
 	NewRefreshTokenDigest string
 	NewRefreshExpiresAt   time.Time
+	AbsoluteTTL           time.Duration
 	Now                   time.Time
 }
 
