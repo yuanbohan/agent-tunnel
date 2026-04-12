@@ -244,10 +244,10 @@ func TestAttachWebSocketReturnsNotFoundForCrossUserAttach(t *testing.T) {
 	env.addInvite(t, "AB2C3D")
 	env.addInvite(t, "EF4G5H")
 	alice := env.registerUser(t, "alice", "password123", "AB2C3D")
-	env.registerUser(t, "bob1", "password123", "EF4G5H")
+	bob := env.registerUser(t, "bob1", "password123", "EF4G5H")
 	aliceIssued := env.login(t, "alice", "password123")
 	bobIssued := env.login(t, "bob1", "password123")
-	bobToken := env.createAgentToken(t, 2, "Bob Laptop")
+	bobToken := env.createAgentToken(t, bob.ID, "Bob Laptop")
 
 	server := httptest.NewServer(env.handler(nil))
 	defer server.Close()
@@ -303,21 +303,24 @@ func TestAgentWebSocketRejectsUnknownAgentToken(t *testing.T) {
 	}
 }
 
-func TestAgentRegistrationMakesSessionVisibleOnlyToOwner(t *testing.T) {
+func TestAgentRegistrationKeepsLiveSessionsUserScopedAcrossOwners(t *testing.T) {
 	env := newHandlerTestEnv(t)
 	env.addInvite(t, "AB2C3D")
 	env.addInvite(t, "EF4G5H")
 	alice := env.registerUser(t, "alice", "password123", "AB2C3D")
-	env.registerUser(t, "bob1", "password123", "EF4G5H")
+	bob := env.registerUser(t, "bob1", "password123", "EF4G5H")
 	aliceIssued := env.login(t, "alice", "password123")
 	bobIssued := env.login(t, "bob1", "password123")
-	agentToken := env.createAgentToken(t, alice.ID, "Laptop")
+	aliceToken := env.createAgentToken(t, alice.ID, "Alice Laptop")
+	bobToken := env.createAgentToken(t, bob.ID, "Bob Laptop")
 
 	server := httptest.NewServer(env.handler(nil))
 	defer server.Close()
 
-	agentConn := dialAndRegisterAgent(t, server.URL, agentToken.Plaintext, "sess-a")
-	defer agentConn.Close()
+	aliceAgentConn := dialAndRegisterAgent(t, server.URL, aliceToken.Plaintext, "sess-a")
+	defer aliceAgentConn.Close()
+	bobAgentConn := dialAndRegisterAgent(t, server.URL, bobToken.Plaintext, "sess-b")
+	defer bobAgentConn.Close()
 
 	aliceResp := doBearerGET(t, server.URL+"/api/sessions", aliceIssued.AccessToken)
 	defer aliceResp.Body.Close()
@@ -329,7 +332,7 @@ func TestAgentRegistrationMakesSessionVisibleOnlyToOwner(t *testing.T) {
 		t.Fatalf("Decode alice sessions returned error: %v", err)
 	}
 	if len(aliceSessions) != 1 || aliceSessions[0].SessionID != "sess-a" {
-		t.Fatalf("alice sessions = %#v, want sess-a", aliceSessions)
+		t.Fatalf("alice sessions = %#v, want only sess-a", aliceSessions)
 	}
 
 	bobResp := doBearerGET(t, server.URL+"/api/sessions", bobIssued.AccessToken)
@@ -341,7 +344,7 @@ func TestAgentRegistrationMakesSessionVisibleOnlyToOwner(t *testing.T) {
 	if err := json.NewDecoder(bobResp.Body).Decode(&bobSessions); err != nil {
 		t.Fatalf("Decode bob sessions returned error: %v", err)
 	}
-	if len(bobSessions) != 0 {
-		t.Fatalf("bob sessions = %#v, want none", bobSessions)
+	if len(bobSessions) != 1 || bobSessions[0].SessionID != "sess-b" {
+		t.Fatalf("bob sessions = %#v, want only sess-b", bobSessions)
 	}
 }

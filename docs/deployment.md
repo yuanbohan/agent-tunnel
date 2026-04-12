@@ -6,6 +6,16 @@ The repo now owns the relay-facing host setup as well as the binary deploy. `mak
 
 For the relay CLI command reference itself, see [operation.md](./operation.md).
 
+## Hosted Relay Invariant
+
+For any cloud or VPS-hosted relay, multi-tenant session isolation is non-negotiable:
+
+- agent tokens are user-owned credentials, not one relay-wide shared secret
+- each live session registered on `/agent/ws` is bound to that token's owning user
+- `GET /api/sessions` must return only that user's sessions
+- `GET /api/sessions/:id/attach/ws` must return `404 session_not_found` for another user's session
+- one tenant must never learn that another tenant's session exists from discovery or attach behavior
+
 ## Prerequisites
 
 - Ubuntu VPS with a public IP (port 80 open for dev; ports 80/443 open for production TLS)
