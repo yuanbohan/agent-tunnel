@@ -64,8 +64,8 @@ func (f *fakeRelayConnector) WriteOutput([]byte) error {
 func setTestEnv(t *testing.T) {
 	t.Helper()
 	for _, kv := range [][2]string{
-		{"AGENTUNNEL_BASE_URL", "http://127.0.0.1:8586"},
-		{"AGENTUNNEL_AUTH_TOKEN", "test-token"},
+		{"TUNNEL_BASE_URL", "http://127.0.0.1:8586"},
+		{"TUNNEL_AUTH_TOKEN", "test-token"},
 	} {
 		old, existed := os.LookupEnv(kv[0])
 		os.Setenv(kv[0], kv[1])

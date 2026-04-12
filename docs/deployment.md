@@ -481,9 +481,9 @@ Minimal monitoring checklist:
 From your dev machine:
 
 ```bash
-export AGENTUNNEL_BASE_URL=https://diaro.me
-export AGENTUNNEL_AUTH_TOKEN=<your-agent-token>
+export TUNNEL_BASE_URL=https://diaro.me
+export TUNNEL_AUTH_TOKEN=<your-agent-token>
 ./bin/tunnel claude
 ```
 
-`AGENTUNNEL_BASE_URL` is optional when you use `https://diaro.me`, because that is the built-in default. For local or staging relays, point it at the full `http://` or `https://` base URL.
+`TUNNEL_BASE_URL` is optional when you use `https://diaro.me`, because that is the built-in default. For local or staging relays, point it at the full `http://` or `https://` base URL.
