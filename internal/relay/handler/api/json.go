@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"yuanbohan/tunnel/internal/relay/handler/response"
 )
 
 const maxJSONBodyBytes = 1 << 20
@@ -27,13 +29,15 @@ func DecodeJSONBody(w http.ResponseWriter, r *http.Request, dest any) error {
 }
 
 func WriteJSON(w http.ResponseWriter, status int, payload any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(payload)
+	response.Write(w, status, payload)
 }
 
 func WriteJSONError(w http.ResponseWriter, status int, reason string) {
-	WriteJSON(w, status, map[string]string{"reason": reason})
+	response.WriteError(w, status, reason)
+}
+
+func WriteJSONErrorWithMessage(w http.ResponseWriter, status int, reason, message string) {
+	response.WriteErrorWithMessage(w, status, reason, message)
 }
 
 func formatRetryAfter(delay time.Duration) string {

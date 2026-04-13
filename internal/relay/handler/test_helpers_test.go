@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"sort"
 	"strings"
 	"sync"
@@ -42,6 +43,7 @@ type createdAgentTokenResponse = handlertypes.CreatedAgentTokenResponse
 const (
 	OperatorInviteCodesPath   = handlertypes.OperatorInviteCodesPath
 	OperatorInviteDisablePath = handlertypes.OperatorInviteDisablePath
+	OperatorInviteListPath    = handlertypes.OperatorInviteListPath
 	OperatorDeleteUserPath    = handlertypes.OperatorDeleteUserPath
 )
 
@@ -125,7 +127,7 @@ func newFakeStore(now func() time.Time) *fakeStore {
 }
 
 func (s *fakeStore) RegisterUser(_ context.Context, params auth.RegisterUserParams) (auth.User, error) {
-	invite, ok := s.invites[params.InviteCodeDigest]
+	invite, ok := s.invites[params.InviteCode]
 	if !ok {
 		return auth.User{}, auth.ErrInviteCodeNotFound
 	}
@@ -154,7 +156,8 @@ func (s *fakeStore) RegisterUser(_ context.Context, params auth.RegisterUserPara
 	s.usersByID[user.ID] = user
 	invite.ConsumedAt = timePtr(params.Now)
 	invite.ConsumedByUserID = int64Ptr(user.ID)
-	s.invites[params.InviteCodeDigest] = invite
+	invite.ConsumedByUsername = user.UsernameNorm
+	s.invites[params.InviteCode] = invite
 	return user, nil
 }
 
@@ -281,15 +284,28 @@ func (s *fakeStore) RevokeAppSession(_ context.Context, sessionID string, now ti
 
 func (s *fakeStore) CreateInviteCode(_ context.Context, params auth.CreateInviteCodeParams) (auth.InviteCodeRecord, error) {
 	record := auth.InviteCodeRecord{
-		ID:         int64(len(s.invites) + 1),
-		CodeDigest: params.CodeDigest,
-		CodeHint:   params.CodeHint,
-		CreatedBy:  params.CreatedBy,
-		CreatedAt:  params.Now,
-		ExpiresAt:  params.ExpiresAt,
+		ID:        int64(len(s.invites) + 1),
+		Code:      params.Code,
+		CreatedBy: params.CreatedBy,
+		CreatedAt: params.Now,
+		ExpiresAt: params.ExpiresAt,
 	}
-	s.invites[params.CodeDigest] = record
+	s.invites[params.Code] = record
 	return record, nil
+}
+
+func (s *fakeStore) ListInviteCodes(_ context.Context) ([]auth.InviteCodeRecord, error) {
+	out := make([]auth.InviteCodeRecord, 0, len(s.invites))
+	for _, invite := range s.invites {
+		out = append(out, invite)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].ID > out[j].ID
+		}
+		return out[i].CreatedAt.After(out[j].CreatedAt)
+	})
+	return out, nil
 }
 
 func (s *fakeStore) CreateInviteCodes(ctx context.Context, params []auth.CreateInviteCodeParams) error {
@@ -301,14 +317,14 @@ func (s *fakeStore) CreateInviteCodes(ctx context.Context, params []auth.CreateI
 	return nil
 }
 
-func (s *fakeStore) DisableInviteCode(_ context.Context, codeDigest string, actor string, now time.Time) error {
-	record, ok := s.invites[codeDigest]
+func (s *fakeStore) DisableInviteCode(_ context.Context, code string, actor string, now time.Time) error {
+	record, ok := s.invites[code]
 	if !ok {
 		return auth.ErrInviteCodeNotFound
 	}
 	record.DisabledAt = timePtr(now)
 	record.DisabledBy = actor
-	s.invites[codeDigest] = record
+	s.invites[code] = record
 	return nil
 }
 
@@ -425,7 +441,7 @@ func newHandlerTestEnv(t *testing.T) *handlerTestEnv {
 	}
 	appAuth := NewAppAuthService(store, digester, hasher)
 	agentTokens := NewAgentTokenService(store, digester)
-	operator := NewOperatorService(store, digester)
+	operator := NewOperatorService(store)
 	throttle := NewRegisterThrottle(5, 10*time.Minute)
 	throttle.SetNowFunc(func() time.Time { return now })
 
@@ -466,11 +482,10 @@ func (e *handlerTestEnv) handler(logWriter io.Writer) http.Handler {
 func (e *handlerTestEnv) addInvite(t *testing.T, code string) {
 	t.Helper()
 	if _, err := e.store.CreateInviteCode(context.Background(), CreateInviteCodeParams{
-		CodeDigest: e.digester.Digest(code),
-		CodeHint:   code[len(code)-2:],
-		CreatedBy:  "tester",
-		ExpiresAt:  e.now.Add(24 * time.Hour),
-		Now:        e.now,
+		Code:      code,
+		CreatedBy: "tester",
+		ExpiresAt: e.now.Add(24 * time.Hour),
+		Now:       e.now,
 	}); err != nil {
 		t.Fatalf("CreateInviteCode returned error: %v", err)
 	}
@@ -505,6 +520,93 @@ func (e *handlerTestEnv) createAgentToken(t *testing.T, userID int64, name strin
 
 func bearerAuth(token string) string {
 	return "Bearer " + token
+}
+
+type apiEnvelope struct {
+	Code    int             `json:"code"`
+	Message string          `json:"message"`
+	Body    json.RawMessage `json:"body"`
+}
+
+func decodeAPIEnvelope(t *testing.T, statusCode int, payload []byte, wantStatus int, out any) {
+	t.Helper()
+
+	if statusCode != wantStatus {
+		t.Fatalf("status = %d, want %d", statusCode, wantStatus)
+	}
+
+	var env apiEnvelope
+	if err := json.Unmarshal(payload, &env); err != nil {
+		t.Fatalf("decode response envelope: %v, body=%q", err, strings.TrimSpace(string(payload)))
+	}
+	if env.Code != 0 {
+		t.Fatalf("api code = %d, message = %q", env.Code, env.Message)
+	}
+	if env.Message != "success" {
+		t.Fatalf("api success message = %q, want success", env.Message)
+	}
+	if out == nil {
+		if strings.TrimSpace(string(env.Body)) != "null" {
+			t.Fatalf("response body = %q, want null", strings.TrimSpace(string(env.Body)))
+		}
+		return
+	}
+	if len(env.Body) == 0 || strings.TrimSpace(string(env.Body)) == "null" {
+		t.Fatalf("response body is empty or null, want business payload")
+	}
+	if err := json.Unmarshal(env.Body, out); err != nil {
+		t.Fatalf("decode response body: %v", err)
+	}
+}
+
+func decodeAPIEnvelopeFromResponse(t *testing.T, response *http.Response, wantStatus int, out any) {
+	t.Helper()
+	payload, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+	decodeAPIEnvelope(t, response.StatusCode, payload, wantStatus, out)
+}
+
+func decodeAPIEnvelopeFromRecorder(t *testing.T, recorder *httptest.ResponseRecorder, wantStatus int, out any) {
+	t.Helper()
+	decodeAPIEnvelope(t, recorder.Code, recorder.Body.Bytes(), wantStatus, out)
+}
+
+func decodeAPIErrorEnvelopeFromResponse(t *testing.T, response *http.Response, wantStatus, wantCode int, wantMessage string) {
+	t.Helper()
+	payload, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+	decodeAPIErrorEnvelope(t, response.StatusCode, payload, wantStatus, wantCode, wantMessage)
+}
+
+func decodeAPIErrorEnvelopeFromRecorder(t *testing.T, recorder *httptest.ResponseRecorder, wantStatus, wantCode int, wantMessage string) {
+	t.Helper()
+	decodeAPIErrorEnvelope(t, recorder.Code, recorder.Body.Bytes(), wantStatus, wantCode, wantMessage)
+}
+
+func decodeAPIErrorEnvelope(t *testing.T, statusCode int, payload []byte, wantStatus, wantCode int, wantMessage string) {
+	t.Helper()
+
+	if statusCode != wantStatus {
+		t.Fatalf("status = %d, want %d", statusCode, wantStatus)
+	}
+
+	var env apiEnvelope
+	if err := json.Unmarshal(payload, &env); err != nil {
+		t.Fatalf("decode error envelope: %v, body=%q", err, strings.TrimSpace(string(payload)))
+	}
+	if env.Code != wantCode {
+		t.Fatalf("api error code = %d, want %d", env.Code, wantCode)
+	}
+	if env.Message != wantMessage {
+		t.Fatalf("api error message = %q, want %q", env.Message, wantMessage)
+	}
+	if strings.TrimSpace(string(env.Body)) != "null" {
+		t.Fatalf("error response body = %q, want null", strings.TrimSpace(string(env.Body)))
+	}
 }
 
 func doBearerGET(t *testing.T, target, accessToken string) *http.Response {

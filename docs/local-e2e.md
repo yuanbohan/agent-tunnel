@@ -456,7 +456,7 @@ from users
 order by id desc
 limit 5;
 
-select id, code_hint, consumed_at, consumed_by_user_id
+select id, consumed_at, consumed_by_user_id, consumed_by_username
 from invite_codes
 order by id desc
 limit 5;

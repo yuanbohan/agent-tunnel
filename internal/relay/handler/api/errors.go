@@ -27,19 +27,43 @@ func WriteOperatorError(w http.ResponseWriter, err error) {
 	case errors.Is(err, auth.ErrUserNotFound):
 		WriteJSONError(w, http.StatusNotFound, "user_not_found")
 	default:
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		WriteJSONError(w, http.StatusInternalServerError, "internal_error")
 	}
 }
 
 func isRegisterFailure(err error) bool {
-	return errors.Is(err, auth.ErrInvalidUsername) ||
-		errors.Is(err, auth.ErrInvalidPassword) ||
-		errors.Is(err, auth.ErrInvalidInviteCode) ||
-		errors.Is(err, auth.ErrInviteCodeNotFound) ||
-		errors.Is(err, auth.ErrInviteCodeExpired) ||
-		errors.Is(err, auth.ErrInviteCodeDisabled) ||
-		errors.Is(err, auth.ErrInviteCodeConsumed) ||
-		errors.Is(err, auth.ErrUsernameTaken)
+	_, ok := registerFailureDetailsFromError(err)
+	return ok
+}
+
+func registerFailureReasonFromError(err error) string {
+	reason, ok := registerFailureDetailsFromError(err)
+	if !ok {
+		return ""
+	}
+	return reason
+}
+
+func registerFailureDetailsFromError(err error) (string, bool) {
+	switch {
+	case errors.Is(err, auth.ErrUsernameTaken):
+		return "username_taken", true
+	case errors.Is(err, auth.ErrInvalidPassword):
+		return "password_too_short", true
+	case errors.Is(err, auth.ErrInvalidInviteCode):
+		return "invalid_access_code", true
+	case errors.Is(err, auth.ErrInviteCodeNotFound):
+		return "invite_code_not_found", true
+	case errors.Is(err, auth.ErrInviteCodeExpired):
+		return "invite_code_expired", true
+	case errors.Is(err, auth.ErrInviteCodeDisabled):
+		return "invite_code_disabled", true
+	case errors.Is(err, auth.ErrInviteCodeConsumed):
+		return "invite_code_consumed", true
+	case errors.Is(err, auth.ErrInvalidUsername):
+		return "invalid_username", true
+	}
+	return "", false
 }
 
 func isRefreshFailure(err error) bool {

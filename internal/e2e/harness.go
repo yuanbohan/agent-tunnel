@@ -40,6 +40,7 @@ type Harness struct {
 	baseURL       string
 	appSecret     string
 	operatorToken string
+	relayLogFile  string
 	httpClient    *http.Client
 	relay         *managedProcess
 	tunnel        *TunnelProcess
@@ -68,6 +69,11 @@ func newHarness(t *testing.T) *Harness {
 		listenAddr: listenAddr,
 		baseURL:    "http://" + listenAddr,
 		appSecret:  fmt.Sprintf("local-e2e-secret-%d", time.Now().UnixNano()),
+		relayLogFile: filepath.Join(
+			tmp,
+			"logs",
+			"relay.log",
+		),
 		operatorToken: fmt.Sprintf(
 			"local-e2e-operator-%d",
 			time.Now().UnixNano(),
@@ -77,6 +83,9 @@ func newHarness(t *testing.T) *Harness {
 
 	if err := os.MkdirAll(h.binDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll bin dir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(h.relayLogFile), 0o755); err != nil {
+		t.Fatalf("MkdirAll relay log dir: %v", err)
 	}
 	t.Cleanup(func() {
 		h.Close()
@@ -197,6 +206,7 @@ func (h *Harness) startRelay(ctx context.Context) error {
 		"RELAY_APP_SECRET":     h.appSecret,
 		"RELAY_OPERATOR_TOKEN": h.operatorToken,
 		"RELAY_LISTEN_ADDR":    h.listenAddr,
+		"RELAY_LOG_FILE":       h.relayLogFile,
 	})
 
 	proc, err := startManagedProcess("relay", cmd)

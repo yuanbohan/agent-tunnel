@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"testing"
+	"strings"
+
+	handlertypes "yuanbohan/tunnel/internal/relay/handler/types"
 )
 
 type inviteClientStub struct {
@@ -12,8 +15,11 @@ type inviteClientStub struct {
 		expiresInDays int
 	}
 	disableCode string
+	listCodes   []handlertypes.OperatorInviteCodeListEntry
 	codes       []string
 }
+
+var _ operatorClient = (*inviteClientStub)(nil)
 
 func (s *inviteClientStub) CreateInvites(_ context.Context, count int, expiresInDays int) ([]string, error) {
 	s.create.count = count
@@ -28,6 +34,10 @@ func (s *inviteClientStub) DisableInvite(_ context.Context, code string) error {
 
 func (s *inviteClientStub) DeleteUser(_ context.Context, username string) error {
 	return nil
+}
+
+func (s *inviteClientStub) ListInvites(_ context.Context) ([]handlertypes.OperatorInviteCodeListEntry, error) {
+	return s.listCodes, nil
 }
 
 func TestRunInviteCreatePrintsReturnedCodes(t *testing.T) {
@@ -64,5 +74,34 @@ func TestRunInviteDisableNormalizesCode(t *testing.T) {
 	}
 	if client.disableCode != "AB2C3D" {
 		t.Fatalf("disableCode = %q, want AB2C3D", client.disableCode)
+	}
+}
+
+func TestRunInviteListPrintsStatusAndOwner(t *testing.T) {
+	client := &inviteClientStub{
+		listCodes: []handlertypes.OperatorInviteCodeListEntry{
+			{Code: "AB2C3D", ExpiresAt: 1700000000, Available: true},
+			{Code: "EF4G5H", ExpiresAt: 1700000000, Consumed: true, ConsumedByUsername: "alice"},
+			{Code: "JK7M8N", ExpiresAt: 1700000000, Disabled: true, DisabledBy: "operator"},
+		},
+	}
+	var stdout bytes.Buffer
+
+	err := runInviteList(context.Background(), client, inviteListConfig{}, &stdout)
+	if err != nil {
+		t.Fatalf("runInviteList returned error: %v", err)
+	}
+	got := stdout.String()
+	if got == "" {
+		t.Fatal("runInviteList output is empty")
+	}
+	if !strings.Contains(got, "AB2C3D") || !strings.Contains(got, "available") {
+		t.Fatalf("runInviteList output = %q, want available invite AB2C3D", got)
+	}
+	if !strings.Contains(got, "EF4G5H") || !strings.Contains(got, "consumed") || !strings.Contains(got, "alice") {
+		t.Fatalf("runInviteList output = %q, want consumed invite EF4G5H owned by alice", got)
+	}
+	if !strings.Contains(got, "JK7M8N") || !strings.Contains(got, "disabled") || !strings.Contains(got, "operator") {
+		t.Fatalf("runInviteList output = %q, want disabled invite JK7M8N by operator", got)
 	}
 }

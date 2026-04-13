@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +9,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"yuanbohan/tunnel/internal/protocol"
+	handlerresponse "yuanbohan/tunnel/internal/relay/handler/response"
 )
 
 func TestAttachWebSocketRejectsCrossOriginBrowserDial(t *testing.T) {
@@ -40,9 +40,11 @@ func TestAttachWebSocketRejectsCrossOriginBrowserDial(t *testing.T) {
 	if resp == nil {
 		t.Fatal("resp = nil, want HTTP response")
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", resp.StatusCode)
 	}
+	decodeAPIErrorEnvelopeFromResponse(t, resp, http.StatusForbidden, handlerresponse.CodeForbidden, "The request is forbidden.")
 }
 
 func TestAttachWebSocketForwardsSnapshotLiveBytesAndInputForOwner(t *testing.T) {
@@ -150,9 +152,10 @@ func TestLogoutClosesOnlyCurrentAppSessionAttachAndKeepsAgentSessionAlive(t *tes
 
 	logoutResp := doBearerPOST(t, server.URL+"/api/auth/logout", firstIssued.AccessToken, "")
 	defer logoutResp.Body.Close()
-	if logoutResp.StatusCode != http.StatusNoContent {
-		t.Fatalf("logout status = %d, want 204", logoutResp.StatusCode)
+	if logoutResp.StatusCode != http.StatusOK {
+		t.Fatalf("logout status = %d, want 200", logoutResp.StatusCode)
 	}
+	decodeAPIEnvelopeFromResponse(t, logoutResp, http.StatusOK, nil)
 
 	if closing := readAttachControl(t, attachConn); closing.Type != "closing" || closing.Reason != "logged_out" {
 		t.Fatalf("closing = %#v, want closing logged_out", closing)
@@ -167,9 +170,7 @@ func TestLogoutClosesOnlyCurrentAppSessionAttachAndKeepsAgentSessionAlive(t *tes
 		t.Fatalf("sessions status = %d, want 200", sessionsResp.StatusCode)
 	}
 	var sessions []protocol.SessionInfo
-	if err := json.NewDecoder(sessionsResp.Body).Decode(&sessions); err != nil {
-		t.Fatalf("Decode sessions returned error: %v", err)
-	}
+	decodeAPIEnvelopeFromResponse(t, sessionsResp, http.StatusOK, &sessions)
 	if len(sessions) != 1 || sessions[0].SessionID != "sess-1" {
 		t.Fatalf("sessions = %#v, want sess-1 still online", sessions)
 	}
@@ -208,9 +209,10 @@ func TestPasswordChangeClosesUserAttachesAndKeepsAgentSessionAlive(t *testing.T)
 
 	changeResp := doBearerPOST(t, server.URL+"/api/auth/password/change", issued.AccessToken, `{"current_password":"password123","new_password":"betterpass456"}`)
 	defer changeResp.Body.Close()
-	if changeResp.StatusCode != http.StatusNoContent {
-		t.Fatalf("password change status = %d, want 204", changeResp.StatusCode)
+	if changeResp.StatusCode != http.StatusOK {
+		t.Fatalf("password change status = %d, want 200", changeResp.StatusCode)
 	}
+	decodeAPIEnvelopeFromResponse(t, changeResp, http.StatusOK, nil)
 
 	if closing := readAttachControl(t, attachConn); closing.Type != "closing" || closing.Reason != "password_changed" {
 		t.Fatalf("closing = %#v, want closing password_changed", closing)
@@ -225,9 +227,7 @@ func TestPasswordChangeClosesUserAttachesAndKeepsAgentSessionAlive(t *testing.T)
 		t.Fatalf("relogin status = %d, want 200", reloginResp.StatusCode)
 	}
 	var relogin appSessionResponse
-	if err := json.NewDecoder(reloginResp.Body).Decode(&relogin); err != nil {
-		t.Fatalf("Decode relogin returned error: %v", err)
-	}
+	decodeAPIEnvelopeFromResponse(t, reloginResp, http.StatusOK, &relogin)
 
 	sessionsResp := doBearerGET(t, server.URL+"/api/sessions", relogin.AccessToken)
 	defer sessionsResp.Body.Close()
@@ -235,9 +235,7 @@ func TestPasswordChangeClosesUserAttachesAndKeepsAgentSessionAlive(t *testing.T)
 		t.Fatalf("sessions status = %d, want 200", sessionsResp.StatusCode)
 	}
 	var sessions []protocol.SessionInfo
-	if err := json.NewDecoder(sessionsResp.Body).Decode(&sessions); err != nil {
-		t.Fatalf("Decode sessions returned error: %v", err)
-	}
+	decodeAPIEnvelopeFromResponse(t, sessionsResp, http.StatusOK, &sessions)
 	if len(sessions) != 1 || sessions[0].SessionID != "sess-1" {
 		t.Fatalf("sessions = %#v, want sess-1 still online", sessions)
 	}
@@ -272,9 +270,11 @@ func TestAttachWebSocketReturnsNotFoundForCrossUserAttach(t *testing.T) {
 	if resp == nil {
 		t.Fatal("resp = nil, want HTTP response")
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", resp.StatusCode)
 	}
+	decodeAPIErrorEnvelopeFromResponse(t, resp, http.StatusNotFound, handlerresponse.CodeSessionNotFound, "The session was not found or is offline.")
 
 	_ = agentConn.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
 	var frame protocol.AgentFrame
@@ -335,9 +335,7 @@ func TestAgentRegistrationKeepsLiveSessionsUserScopedAcrossOwners(t *testing.T) 
 		t.Fatalf("alice status = %d, want 200", aliceResp.StatusCode)
 	}
 	var aliceSessions []protocol.SessionInfo
-	if err := json.NewDecoder(aliceResp.Body).Decode(&aliceSessions); err != nil {
-		t.Fatalf("Decode alice sessions returned error: %v", err)
-	}
+	decodeAPIEnvelopeFromResponse(t, aliceResp, http.StatusOK, &aliceSessions)
 	if len(aliceSessions) != 1 || aliceSessions[0].SessionID != "sess-a" {
 		t.Fatalf("alice sessions = %#v, want only sess-a", aliceSessions)
 	}
@@ -348,9 +346,7 @@ func TestAgentRegistrationKeepsLiveSessionsUserScopedAcrossOwners(t *testing.T) 
 		t.Fatalf("bob status = %d, want 200", bobResp.StatusCode)
 	}
 	var bobSessions []protocol.SessionInfo
-	if err := json.NewDecoder(bobResp.Body).Decode(&bobSessions); err != nil {
-		t.Fatalf("Decode bob sessions returned error: %v", err)
-	}
+	decodeAPIEnvelopeFromResponse(t, bobResp, http.StatusOK, &bobSessions)
 	if len(bobSessions) != 1 || bobSessions[0].SessionID != "sess-b" {
 		t.Fatalf("bob sessions = %#v, want only sess-b", bobSessions)
 	}

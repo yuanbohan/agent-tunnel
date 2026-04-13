@@ -41,36 +41,57 @@ JSON request bodies are strict:
 - unknown fields are rejected
 - trailing data after the first JSON value is rejected
 
-The relay treats malformed JSON or schema mismatches as `400 {"reason":"invalid_request"}` on JSON endpoints that validate request bodies.
+The relay treats malformed JSON or schema mismatches as `400` with `{"code":1001,"message":"The request is invalid.","body":null}` on JSON endpoints that validate request bodies.
 
 ### Timestamps
 
 All JSON timestamps are Unix timestamps in whole seconds.
 
-### Error Body Shapes
+### Unified Response Envelope
 
-The relay currently uses two error styles:
-
-1. Structured JSON API errors:
+All app-facing HTTP responses now use this JSON envelope:
 
 ```json
 {
-  "reason": "invalid_request"
+  "code": 0,
+  "message": "success",
+  "body": {}
 }
 ```
 
-2. Plain-text HTTP errors from middleware or generic operational failures, such as:
+- `code === 0`: request succeeded
+- `code !== 0`: business failure
+- on business failures, `body` is always `null`
+- HTTP status code still indicates transport outcome (`400`, `401`, `403`, `500`, etc.)
 
-```text
-unauthorized
-```
+Middleware failures also use this envelope, including auth and rate-limit checks.
 
-Important current behavior:
+Code map (excerpt):
 
-- bearer-auth failures return `401 Unauthorized` with `WWW-Authenticate: Bearer realm="tunnel relay"`
-- same-origin failures for browser attach dials return plain `403 Forbidden`
-- generic unexpected failures currently return plain `500 Internal Server Error`
-- missing service configuration currently returns plain `503 Service Unavailable`
+| code | message |
+|------|---------|
+| `0` | `success` |
+| `1001` | `The request is invalid.` |
+| `1002` | `Too many requests. Please try again later.` |
+| `1003` | `The username is already taken.` |
+| `1004` | `The password must be at least 6 characters.` |
+| `1005` | `Invalid access code.` |
+| `1006` | `This access code is invalid.` |
+| `1007` | `This access code has expired.` |
+| `1008` | `This access code has been disabled.` |
+| `1009` | `This access code has already been used.` |
+| `1010` | `The username is invalid.` |
+| `1011` | `The username or password is invalid.` |
+| `1012` | `The session is invalid.` |
+| `1013` | `This agent token was not found.` |
+| `1014` | `The user was not found.` |
+| `1015` | `The session was not found or is offline.` |
+| `1016` | `The request is unauthorized.` |
+| `1017` | `The request is forbidden.` |
+| `1018` | `The requested endpoint was not found.` |
+| `1019` | `The HTTP method is not allowed for this endpoint.` |
+| `2001` | `The service is temporarily unavailable.` |
+| `2002` | `An unexpected internal error occurred.` |
 
 ### Session Model
 
@@ -91,12 +112,18 @@ Auth: none
 Success:
 
 - `200 OK`
-- body: `ok`
+- body (envelope):
 
 Example:
 
-```text
-ok
+```json
+{
+  "code": 0,
+  "message": "success",
+  "body": {
+    "status": "ok"
+  }
+}
 ```
 
 ### `POST /api/auth/register`
@@ -119,20 +146,25 @@ Validation and normalization:
 
 - `username` is trimmed, lowercased, and must be at least 4 characters
 - allowed username characters are `a-z`, `0-9`, `_`, `-`, `.`
-- `password` must be at least 8 characters
+- `password` must be at least 6 characters
 - `invite_code` is trimmed, uppercased, and must be exactly 6 characters from `23456789ABCDEFGHJKMNPQRSTUVWXYZ`
 - failed registration attempts are throttled per remote IP
 
 Success:
 
 - `201 Created`
+- body (envelope):
 
 Response:
 
 ```json
 {
-  "user_id": 1,
-  "username": "alice"
+  "code": 0,
+  "message": "success",
+  "body": {
+    "user_id": 1,
+    "username": "alice"
+  }
 }
 ```
 
@@ -140,11 +172,18 @@ Error responses:
 
 | Status | Body | Meaning |
 |--------|------|---------|
-| `400` | `{"reason":"invalid_request"}` | malformed JSON or request shape |
-| `400` | `{"reason":"registration_failed"}` | invalid username, invalid password, invalid invite code, invite not found, invite expired, invite disabled, invite already consumed, or username already taken |
-| `429` | `{"reason":"rate_limited"}` | too many failed registration attempts from the same IP |
-| `500` | plain text | unexpected server failure |
-| `503` | plain text | auth service unavailable |
+| `400` | `{"code":1001,"message":"The request is invalid.","body":null}` | malformed JSON or request shape |
+| `400` | `{"code":1010,"message":"The username is invalid.","body":null}` | username is missing, too short, or contains invalid characters |
+| `400` | `{"code":1004,"message":"The password must be at least 6 characters.","body":null}` | password is missing or shorter than 6 characters |
+| `400` | `{"code":1005,"message":"Invalid access code.","body":null}` | `invite_code` is malformed |
+| `400` | `{"code":1006,"message":"This access code is invalid.","body":null}` | invite code does not exist |
+| `400` | `{"code":1007,"message":"This access code has expired.","body":null}` | invite code is expired |
+| `400` | `{"code":1008,"message":"This access code has been disabled.","body":null}` | invite code was disabled |
+| `400` | `{"code":1009,"message":"This access code has already been used.","body":null}` | invite code was already used |
+| `400` | `{"code":1003,"message":"The username is already taken.","body":null}` | username already exists |
+| `429` | `{"code":1002,"message":"Too many requests. Please try again later.","body":null}` | too many failed registration attempts from the same IP |
+| `500` | `{"code":2002,"message":"An unexpected internal error occurred.","body":null}` | unexpected server failure |
+| `503` | `{"code":2001,"message":"The service is temporarily unavailable.","body":null}` | service unavailable |
 
 Headers:
 
@@ -173,15 +212,20 @@ Request:
 Success:
 
 - `200 OK`
+- body (envelope):
 
 Response:
 
 ```json
 {
-  "access_token": "<access-token>",
-  "refresh_token": "<refresh-token>",
-  "expires_in": 86400,
-  "token_type": "Bearer"
+  "code": 0,
+  "message": "success",
+  "body": {
+    "access_token": "<access-token>",
+    "refresh_token": "<refresh-token>",
+    "expires_in": 86400,
+    "token_type": "Bearer"
+  }
 }
 ```
 
@@ -195,10 +239,10 @@ Error responses:
 
 | Status | Body | Meaning |
 |--------|------|---------|
-| `400` | `{"reason":"invalid_request"}` | malformed JSON or request shape |
-| `401` | `{"reason":"invalid_credentials"}` | username or password is wrong |
-| `500` | plain text | unexpected server failure |
-| `503` | plain text | auth service unavailable |
+| `400` | `{"code":1001,"message":"The request is invalid.","body":null}` | malformed JSON or request shape |
+| `401` | `{"code":1011,"message":"The username or password is invalid.","body":null}` | username or password is wrong |
+| `500` | `{"code":2002,"message":"An unexpected internal error occurred.","body":null}` | unexpected server failure |
+| `503` | `{"code":2001,"message":"The service is temporarily unavailable.","body":null}` | auth service unavailable |
 
 ### `POST /api/auth/refresh`
 
@@ -217,15 +261,20 @@ Request:
 Success:
 
 - `200 OK`
+- body (envelope):
 
 Response:
 
 ```json
 {
-  "access_token": "<new-access-token>",
-  "refresh_token": "<new-refresh-token>",
-  "expires_in": 86400,
-  "token_type": "Bearer"
+  "code": 0,
+  "message": "success",
+  "body": {
+    "access_token": "<new-access-token>",
+    "refresh_token": "<new-refresh-token>",
+    "expires_in": 86400,
+    "token_type": "Bearer"
+  }
 }
 ```
 
@@ -240,10 +289,10 @@ Error responses:
 
 | Status | Body | Meaning |
 |--------|------|---------|
-| `400` | `{"reason":"invalid_request"}` | malformed JSON or request shape |
-| `401` | `{"reason":"invalid_session"}` | refresh token is unknown, expired, revoked, or the session has reached its 90 day absolute lifetime |
-| `500` | plain text | unexpected server failure |
-| `503` | plain text | auth service unavailable |
+| `400` | `{"code":1001,"message":"The request is invalid.","body":null}` | malformed JSON or request shape |
+| `401` | `{"code":1012,"message":"The session is invalid.","body":null}` | refresh token is unknown, expired, revoked, or the session has reached its 90-day absolute lifetime |
+| `500` | `{"code":2002,"message":"An unexpected internal error occurred.","body":null}` | unexpected server failure |
+| `503` | `{"code":2001,"message":"The service is temporarily unavailable.","body":null}` | auth service unavailable |
 
 ### `POST /api/auth/logout`
 
@@ -261,7 +310,16 @@ Request body: none
 
 Success:
 
-- `204 No Content`
+- `200 OK` (body is `null`)
+- body (envelope):
+
+```json
+{
+  "code": 0,
+  "message": "success",
+  "body": null
+}
+```
 
 Notes:
 
@@ -273,10 +331,10 @@ Error responses:
 
 | Status | Body | Meaning |
 |--------|------|---------|
-| `401` | plain text | missing or invalid app bearer token |
-| `401` | `{"reason":"invalid_session"}` | session became invalid during logout handling |
-| `500` | plain text | unexpected server failure |
-| `503` | plain text | auth service unavailable |
+| `401` | `{"code":1016,"message":"The request is unauthorized.","body":null}` | missing or invalid app bearer token |
+| `401` | `{"code":1012,"message":"The session is invalid.","body":null}` | session became invalid during logout handling |
+| `500` | `{"code":2002,"message":"An unexpected internal error occurred.","body":null}` | unexpected server failure |
+| `503` | `{"code":2001,"message":"The service is temporarily unavailable.","body":null}` | auth service unavailable |
 
 ### `POST /api/auth/password/change`
 
@@ -301,11 +359,20 @@ Request:
 
 Success:
 
-- `204 No Content`
+- `200 OK` (body is `null`)
+- body (envelope):
+
+```json
+{
+  "code": 0,
+  "message": "success",
+  "body": null
+}
+```
 
 Notes:
 
-- `new_password` must meet the current password rules
+- `new_password` must be at least 6 characters
 - all app sessions for that user are revoked
 - active attaches for that user are closed with `closing { "reason": "password_changed" }`
 - the owning agent session stays online
@@ -314,10 +381,11 @@ Error responses:
 
 | Status | Body | Meaning |
 |--------|------|---------|
-| `400` | `{"reason":"invalid_request"}` | malformed JSON, request shape mismatch, or invalid new password |
-| `401` | plain text | missing or invalid app bearer token |
-| `401` | `{"reason":"invalid_credentials"}` | `current_password` is wrong |
-| `500` | plain text | unexpected server failure |
+| `400` | `{"code":1001,"message":"The request is invalid.","body":null}` | malformed JSON or request shape mismatch |
+| `400` | `{"code":1004,"message":"The password must be at least 6 characters.","body":null}` | new password is missing or shorter than 6 characters |
+| `401` | `{"code":1016,"message":"The request is unauthorized.","body":null}` | missing or invalid app bearer token |
+| `401` | `{"code":1011,"message":"The username or password is invalid.","body":null}` | `current_password` is wrong |
+| `500` | `{"code":2002,"message":"An unexpected internal error occurred.","body":null}` | unexpected server failure |
 
 ### `GET /api/agent-tokens`
 
@@ -336,19 +404,24 @@ Request body: none
 Success:
 
 - `200 OK`
+- body (envelope):
 
 Response:
 
 ```json
-[
-  {
-    "id": "agt_123",
-    "name": "MacBook",
-    "created_at": 1775376000,
-    "last_used_at": 1775377000,
-    "revoked_at": 1775378000
-  }
-]
+{
+  "code": 0,
+  "message": "success",
+  "body": [
+    {
+      "id": "agt_123",
+      "name": "MacBook",
+      "created_at": 1775376000,
+      "last_used_at": 1775377000,
+      "revoked_at": 1775378000
+    }
+  ]
+}
 ```
 
 Notes:
@@ -361,9 +434,9 @@ Error responses:
 
 | Status | Body | Meaning |
 |--------|------|---------|
-| `401` | plain text | missing or invalid app bearer token |
-| `500` | plain text | unexpected server failure |
-| `503` | plain text | agent token service unavailable |
+| `401` | `{"code":1016,"message":"The request is unauthorized.","body":null}` | missing or invalid app bearer token |
+| `500` | `{"code":2002,"message":"An unexpected internal error occurred.","body":null}` | unexpected server failure |
+| `503` | `{"code":2001,"message":"The service is temporarily unavailable.","body":null}` | agent token service unavailable |
 
 ### `POST /api/agent-tokens`
 
@@ -388,15 +461,20 @@ Request:
 Success:
 
 - `201 Created`
+- body (envelope):
 
 Response:
 
 ```json
 {
-  "id": "agt_123",
-  "name": "MacBook",
-  "created_at": 1775376000,
-  "token": "<plaintext-agent-token>"
+  "code": 0,
+  "message": "success",
+  "body": {
+    "id": "agt_123",
+    "name": "MacBook",
+    "created_at": 1775376000,
+    "token": "<plaintext-agent-token>"
+  }
 }
 ```
 
@@ -410,10 +488,10 @@ Error responses:
 
 | Status | Body | Meaning |
 |--------|------|---------|
-| `400` | `{"reason":"invalid_request"}` | malformed JSON, request shape mismatch, or blank token name |
-| `401` | plain text | missing or invalid app bearer token |
-| `500` | plain text | unexpected server failure |
-| `503` | plain text | agent token service unavailable |
+| `400` | `{"code":1001,"message":"The request is invalid.","body":null}` | malformed JSON, request shape mismatch, or blank token name |
+| `401` | `{"code":1016,"message":"The request is unauthorized.","body":null}` | missing or invalid app bearer token |
+| `500` | `{"code":2002,"message":"An unexpected internal error occurred.","body":null}` | unexpected server failure |
+| `503` | `{"code":2001,"message":"The service is temporarily unavailable.","body":null}` | agent token service unavailable |
 
 ### `DELETE /api/agent-tokens/:tokenID`
 
@@ -431,7 +509,16 @@ Request body: none
 
 Success:
 
-- `204 No Content`
+- `200 OK` (body is `null`)
+- body (envelope):
+
+```json
+{
+  "code": 0,
+  "message": "success",
+  "body": null
+}
+```
 
 Notes:
 
@@ -442,10 +529,10 @@ Error responses:
 
 | Status | Body | Meaning |
 |--------|------|---------|
-| `401` | plain text | missing or invalid app bearer token |
-| `404` | `{"reason":"agent_token_not_found"}` | token does not exist for this user or is already revoked |
-| `500` | plain text | unexpected server failure |
-| `503` | plain text | agent token service unavailable |
+| `401` | `{"code":1016,"message":"The request is unauthorized.","body":null}` | missing or invalid app bearer token |
+| `404` | `{"code":1013,"message":"This agent token was not found.","body":null}` | token does not exist for this user or is already revoked |
+| `500` | `{"code":2002,"message":"An unexpected internal error occurred.","body":null}` | unexpected server failure |
+| `503` | `{"code":2001,"message":"The service is temporarily unavailable.","body":null}` | agent token service unavailable |
 
 ### `GET /api/sessions`
 
@@ -464,20 +551,25 @@ Request body: none
 Success:
 
 - `200 OK`
+- body (envelope):
 
 Response:
 
 ```json
-[
-  {
-    "session_id": "sess-1",
-    "launcher": "codex",
-    "label": "api-fix",
-    "cwd": "/repo",
-    "command_preview": "codex --profile prod",
-    "started_at": 1775376000
-  }
-]
+{
+  "code": 0,
+  "message": "success",
+  "body": [
+    {
+      "session_id": "sess-1",
+      "launcher": "codex",
+      "label": "api-fix",
+      "cwd": "/repo",
+      "command_preview": "codex --profile prod",
+      "started_at": 1775376000
+    }
+  ]
+}
 ```
 
 Notes:
@@ -491,8 +583,8 @@ Error responses:
 
 | Status | Body | Meaning |
 |--------|------|---------|
-| `401` | plain text | missing or invalid app bearer token |
-| `500` | plain text | unexpected server failure |
+| `401` | `{"code":1016,"message":"The request is unauthorized.","body":null}` | missing or invalid app bearer token |
+| `500` | `{"code":2002,"message":"An unexpected internal error occurred.","body":null}` | unexpected server failure |
 
 ## Client Attach WebSocket
 
@@ -517,13 +609,13 @@ Pre-upgrade error responses:
 
 | Status | Body | Meaning |
 |--------|------|---------|
-| `401` | plain text | missing or invalid app bearer token |
-| `403` | plain text | browser cross-origin attach attempt |
-| `404` | `{"reason":"session_not_found"}` | session is unknown, belongs to another user, or is currently offline |
+| `401` | `{"code":1016,"message":"The request is unauthorized.","body":null}` | missing or invalid app bearer token |
+| `403` | `{"code":1017,"message":"The request is forbidden.","body":null}` | browser cross-origin attach attempt |
+| `404` | `{"code":1015,"message":"The session was not found or is offline.","body":null}` | session is unknown, belongs to another user, or is currently offline |
 
 Multi-tenant rule:
 
-- cross-user attach attempts must fail as `404 session_not_found` and must not leak whether another user's session is online
+- cross-user attach attempts must fail as `404` with `code=1015` and must not leak whether another user's session is online
 
 Success:
 

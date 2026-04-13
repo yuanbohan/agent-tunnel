@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"yuanbohan/tunnel/internal/relay/handler/types"
@@ -12,7 +13,7 @@ import (
 func CreateInvites(operatorSvc *operator.OperatorService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if operatorSvc == nil {
-			http.Error(c.Writer, "service unavailable", http.StatusServiceUnavailable)
+			WriteJSONError(c.Writer, http.StatusServiceUnavailable, "service_unavailable")
 			return
 		}
 
@@ -31,10 +32,53 @@ func CreateInvites(operatorSvc *operator.OperatorService) gin.HandlerFunc {
 	}
 }
 
+func ListInvites(operatorSvc *operator.OperatorService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if operatorSvc == nil {
+			WriteJSONError(c.Writer, http.StatusServiceUnavailable, "service_unavailable")
+			return
+		}
+
+		invites, err := operatorSvc.ListInviteCodes(c.Request.Context())
+		if err != nil {
+			WriteOperatorError(c.Writer, err)
+			return
+		}
+
+		now := time.Now().UTC()
+		resp := make([]types.OperatorInviteCodeListEntry, 0, len(invites))
+		for _, invite := range invites {
+			disabledAt := unixTime(invite.DisabledAt)
+			consumedAt := unixTime(invite.ConsumedAt)
+			expired := !invite.ExpiresAt.After(now)
+			disabled := invite.DisabledAt != nil
+			consumed := invite.ConsumedAt != nil
+			resp = append(resp, types.OperatorInviteCodeListEntry{
+				Code:               invite.Code,
+				CreatedBy:          invite.CreatedBy,
+				CreatedAt:          invite.CreatedAt.Unix(),
+				ExpiresAt:          invite.ExpiresAt.Unix(),
+				Expired:            expired,
+				Available:          !disabled && !consumed && !expired,
+				Disabled:           disabled,
+				DisabledAt:         disabledAt,
+				DisabledBy:         invite.DisabledBy,
+				Consumed:           consumed,
+				ConsumedAt:         consumedAt,
+				ConsumedByUserID:   invite.ConsumedByUserID,
+				ConsumedByUsername: invite.ConsumedByUsername,
+			})
+		}
+		WriteJSON(c.Writer, http.StatusOK, types.OperatorInviteCodesListResponse{
+			Invites: resp,
+		})
+	}
+}
+
 func DisableInvite(operatorSvc *operator.OperatorService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if operatorSvc == nil {
-			http.Error(c.Writer, "service unavailable", http.StatusServiceUnavailable)
+			WriteJSONError(c.Writer, http.StatusServiceUnavailable, "service_unavailable")
 			return
 		}
 
@@ -47,14 +91,14 @@ func DisableInvite(operatorSvc *operator.OperatorService) gin.HandlerFunc {
 			WriteOperatorError(c.Writer, err)
 			return
 		}
-		c.Status(http.StatusNoContent)
+		WriteJSON(c.Writer, http.StatusOK, nil)
 	}
 }
 
 func DeleteUser(operatorSvc *operator.OperatorService, registry *session.Registry) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if operatorSvc == nil || registry == nil {
-			http.Error(c.Writer, "service unavailable", http.StatusServiceUnavailable)
+			WriteJSONError(c.Writer, http.StatusServiceUnavailable, "service_unavailable")
 			return
 		}
 
@@ -70,6 +114,6 @@ func DeleteUser(operatorSvc *operator.OperatorService, registry *session.Registr
 			return
 		}
 		registry.DisconnectUserSessions(result.UserID, "account_deleted")
-		c.Status(http.StatusNoContent)
+		WriteJSON(c.Writer, http.StatusOK, nil)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -22,18 +23,33 @@ type operatorClient interface {
 	CreateInvites(ctx context.Context, count int, expiresInDays int) ([]string, error)
 	DisableInvite(ctx context.Context, code string) error
 	DeleteUser(ctx context.Context, username string) error
+	ListInvites(ctx context.Context) ([]handlertypes.OperatorInviteCodeListEntry, error)
 }
 
 type operatorAPIError struct {
 	StatusCode int
+	Code       int
+	Message    string
 	Reason     string
+}
+
+type operatorAPIResponse struct {
+	Code    int             `json:"code"`
+	Message string          `json:"message"`
+	Body    json.RawMessage `json:"body"`
 }
 
 const defaultOperatorHTTPTimeout = 10 * time.Second
 
 func (e operatorAPIError) Error() string {
+	if e.Message != "" {
+		return e.Message
+	}
 	if e.Reason != "" {
 		return e.Reason
+	}
+	if e.Code != 0 {
+		return fmt.Sprintf("operator API returned status %d with code %d", e.StatusCode, e.Code)
 	}
 	return fmt.Sprintf("operator API returned status %d", e.StatusCode)
 }
@@ -63,13 +79,21 @@ func (c *httpOperatorClient) CreateInvites(ctx context.Context, count int, expir
 func (c *httpOperatorClient) DisableInvite(ctx context.Context, code string) error {
 	return c.doJSON(ctx, http.MethodPost, handlertypes.OperatorInviteDisablePath, handlertypes.OperatorDisableInviteRequest{
 		Code: code,
-	}, http.StatusNoContent, nil)
+	}, http.StatusOK, nil)
 }
 
 func (c *httpOperatorClient) DeleteUser(ctx context.Context, username string) error {
 	return c.doJSON(ctx, http.MethodPost, handlertypes.OperatorDeleteUserPath, handlertypes.OperatorDeleteUserRequest{
 		Username: username,
-	}, http.StatusNoContent, nil)
+	}, http.StatusOK, nil)
+}
+
+func (c *httpOperatorClient) ListInvites(ctx context.Context) ([]handlertypes.OperatorInviteCodeListEntry, error) {
+	var resp handlertypes.OperatorInviteCodesListResponse
+	if err := c.doJSON(ctx, http.MethodPost, handlertypes.OperatorInviteListPath, nil, http.StatusOK, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Invites, nil
 }
 
 func (c *httpOperatorClient) doJSON(ctx context.Context, method, path string, requestBody any, wantStatus int, responseBody any) error {
@@ -91,19 +115,74 @@ func (c *httpOperatorClient) doJSON(ctx context.Context, method, path string, re
 	}
 	defer resp.Body.Close()
 
+	responsePayload, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
 	if resp.StatusCode != wantStatus {
-		var errorBody struct {
-			Reason string `json:"reason"`
+		return parseOperatorAPIError(resp.StatusCode, responsePayload)
+	}
+	return parseOperatorAPISuccess(responsePayload, responseBody)
+}
+
+func parseOperatorAPISuccess(responsePayload []byte, responseBody any) error {
+	trimmed := strings.TrimSpace(string(responsePayload))
+	if trimmed == "" {
+		return fmt.Errorf("operator API returned empty success body")
+	}
+
+	var envelope operatorAPIResponse
+	if err := json.Unmarshal(responsePayload, &envelope); err != nil {
+		return fmt.Errorf("operator API returned invalid envelope success body: %w", err)
+	}
+	if envelope.Code != 0 {
+		return operatorAPIError{
+			StatusCode: http.StatusOK,
+			Code:       envelope.Code,
+			Message:    envelope.Message,
 		}
-		if err := json.NewDecoder(resp.Body).Decode(&errorBody); err == nil && strings.TrimSpace(errorBody.Reason) != "" {
-			return operatorAPIError{StatusCode: resp.StatusCode, Reason: errorBody.Reason}
-		}
-		return operatorAPIError{StatusCode: resp.StatusCode}
+	}
+	if envelope.Message != "success" {
+		return fmt.Errorf("operator API returned invalid envelope success body: unexpected success message %q", envelope.Message)
 	}
 	if responseBody == nil {
+		if !isNullJSON(envelope.Body) {
+			return fmt.Errorf("operator API returned success response with non-null body")
+		}
 		return nil
 	}
-	return json.NewDecoder(resp.Body).Decode(responseBody)
+	if len(strings.TrimSpace(string(envelope.Body))) == 0 || envelope.Body == nil {
+		return fmt.Errorf("operator API returned success response without body")
+	}
+	if isNullJSON(envelope.Body) {
+		return fmt.Errorf("operator API returned success response with null body")
+	}
+	return json.Unmarshal(envelope.Body, responseBody)
+}
+
+func parseOperatorAPIError(statusCode int, responsePayload []byte) error {
+	trimmed := strings.TrimSpace(string(responsePayload))
+	if trimmed == "" {
+		return operatorAPIError{StatusCode: statusCode}
+	}
+
+	var envelope operatorAPIResponse
+	if err := json.Unmarshal(responsePayload, &envelope); err != nil {
+		return fmt.Errorf("operator API returned invalid envelope error body for status %d: %w", statusCode, err)
+	}
+	if envelope.Code == 0 || strings.TrimSpace(envelope.Message) == "" || !isNullJSON(envelope.Body) {
+		return fmt.Errorf("operator API returned invalid envelope error body for status %d", statusCode)
+	}
+	return operatorAPIError{
+		StatusCode: statusCode,
+		Code:       envelope.Code,
+		Message:    envelope.Message,
+	}
+}
+
+func isNullJSON(payload json.RawMessage) bool {
+	return strings.TrimSpace(string(payload)) == "null"
 }
 
 func operatorBaseURL(relayAddr string) string {

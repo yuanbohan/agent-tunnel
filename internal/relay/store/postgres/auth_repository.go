@@ -14,7 +14,7 @@ func (s *PostgresStore) RegisterUser(ctx context.Context, params auth.RegisterUs
 	}
 	defer tx.Rollback()
 
-	inviteID, err := lockInviteCode(ctx, tx, params.InviteCodeDigest, params.Now)
+	inviteID, err := lockInviteCode(ctx, tx, params.InviteCode, params.Now)
 	if err != nil {
 		return auth.User{}, err
 	}
@@ -41,9 +41,9 @@ func (s *PostgresStore) RegisterUser(ctx context.Context, params auth.RegisterUs
 
 	if _, err := tx.ExecContext(ctx, `
 		update invite_codes
-		set consumed_at = $2, consumed_by_user_id = $3
+		set consumed_at = $2, consumed_by_user_id = $3, consumed_by_username = $4
 		where id = $1
-	`, inviteID, params.Now, user.ID); err != nil {
+	`, inviteID, params.Now, user.ID, user.UsernameNorm); err != nil {
 		return auth.User{}, err
 	}
 

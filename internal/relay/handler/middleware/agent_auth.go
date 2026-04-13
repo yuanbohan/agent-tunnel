@@ -6,6 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"yuanbohan/tunnel/internal/relay/auth"
 	"yuanbohan/tunnel/internal/relay/handler/httpx"
+	"yuanbohan/tunnel/internal/relay/handler/response"
 )
 
 const authenticatedAgentContextKey = "relay.authenticated_agent"
@@ -13,7 +14,7 @@ const authenticatedAgentContextKey = "relay.authenticated_agent"
 func AgentAuth(agentTokens *auth.AgentTokenService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if agentTokens == nil {
-			http.Error(c.Writer, "service unavailable", http.StatusServiceUnavailable)
+			response.WriteError(c.Writer, http.StatusServiceUnavailable, "service_unavailable")
 			c.Abort()
 			return
 		}
@@ -22,7 +23,7 @@ func AgentAuth(agentTokens *auth.AgentTokenService) gin.HandlerFunc {
 		if !ok {
 			logAuthFailed(c.Request, "agent_bearer")
 			c.Writer.Header().Set("WWW-Authenticate", `Bearer realm="tunnel relay"`)
-			http.Error(c.Writer, "unauthorized", http.StatusUnauthorized)
+			response.WriteError(c.Writer, http.StatusUnauthorized, "unauthorized")
 			c.Abort()
 			return
 		}
@@ -31,7 +32,7 @@ func AgentAuth(agentTokens *auth.AgentTokenService) gin.HandlerFunc {
 		if err != nil {
 			logAuthFailed(c.Request, "agent_bearer")
 			c.Writer.Header().Set("WWW-Authenticate", `Bearer realm="tunnel relay"`)
-			http.Error(c.Writer, "unauthorized", http.StatusUnauthorized)
+			response.WriteError(c.Writer, http.StatusUnauthorized, "unauthorized")
 			c.Abort()
 			return
 		}

@@ -97,3 +97,28 @@ func TestRunWithHandlersDispatchesInviteSubcommands(t *testing.T) {
 		t.Fatalf("createCalled=%v disableCalled=%v, want both true", createCalled, disableCalled)
 	}
 }
+
+func TestRunWithHandlersDispatchesInviteListSubcommand(t *testing.T) {
+	env := runtimeEnv{
+		getenv: testEnv(map[string]string{
+			"RELAY_OPERATOR_TOKEN": "operator-secret",
+		}),
+	}
+
+	listCalled := false
+	err := runWithHandlers([]string{"invite", "list"}, env, commandHandlers{
+		inviteList: func(_ context.Context, cfg inviteListConfig) error {
+			listCalled = true
+			if cfg.OperatorToken != "operator-secret" {
+				t.Fatalf("OperatorToken = %q, want operator-secret", cfg.OperatorToken)
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("invite list returned error: %v", err)
+	}
+	if !listCalled {
+		t.Fatal("invite list handler not called")
+	}
+}

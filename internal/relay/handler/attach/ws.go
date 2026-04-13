@@ -32,10 +32,14 @@ func Handle(registry *session.Registry, attachSessions *session.AttachSessionInd
 			api.WriteJSONError(c.Writer, http.StatusNotFound, "session_not_found")
 			return
 		}
+		if !checkOrigin(c.Request) {
+			api.WriteJSONError(c.Writer, http.StatusForbidden, "forbidden")
+			return
+		}
 
 		clientID, err := newClientID()
 		if err != nil {
-			http.Error(c.Writer, "internal server error", http.StatusInternalServerError)
+			api.WriteJSONError(c.Writer, http.StatusInternalServerError, "internal_error")
 			return
 		}
 

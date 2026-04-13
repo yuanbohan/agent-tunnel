@@ -37,7 +37,7 @@ func newFakeStore(now func() time.Time) *fakeStore {
 }
 
 func (s *fakeStore) RegisterUser(_ context.Context, params RegisterUserParams) (User, error) {
-	invite, ok := s.invites[params.InviteCodeDigest]
+	invite, ok := s.invites[params.InviteCode]
 	if !ok {
 		return User{}, ErrInviteCodeNotFound
 	}
@@ -66,7 +66,7 @@ func (s *fakeStore) RegisterUser(_ context.Context, params RegisterUserParams) (
 	s.usersByID[user.ID] = user
 	invite.ConsumedAt = timePtr(params.Now)
 	invite.ConsumedByUserID = int64Ptr(user.ID)
-	s.invites[params.InviteCodeDigest] = invite
+	s.invites[params.InviteCode] = invite
 	return user, nil
 }
 
@@ -194,24 +194,23 @@ func (s *fakeStore) RevokeAppSession(_ context.Context, sessionID string, now ti
 func (s *fakeStore) CreateInviteCode(_ context.Context, params CreateInviteCodeParams) (InviteCodeRecord, error) {
 	record := InviteCodeRecord{
 		ID:         int64(len(s.invites) + 1),
-		CodeDigest: params.CodeDigest,
-		CodeHint:   params.CodeHint,
+		Code:       params.Code,
 		CreatedBy:  params.CreatedBy,
 		CreatedAt:  params.Now,
 		ExpiresAt:  params.ExpiresAt,
 	}
-	s.invites[params.CodeDigest] = record
+	s.invites[params.Code] = record
 	return record, nil
 }
 
-func (s *fakeStore) DisableInviteCode(_ context.Context, codeDigest string, actor string, now time.Time) error {
-	record, ok := s.invites[codeDigest]
+func (s *fakeStore) DisableInviteCode(_ context.Context, code string, actor string, now time.Time) error {
+	record, ok := s.invites[code]
 	if !ok {
 		return ErrInviteCodeNotFound
 	}
 	record.DisabledAt = timePtr(now)
 	record.DisabledBy = actor
-	s.invites[codeDigest] = record
+	s.invites[code] = record
 	return nil
 }
 
@@ -306,8 +305,7 @@ func TestAppAuthServiceRegisterAndLogin(t *testing.T) {
 	}
 	code := "AB2C3D"
 	if _, err := store.CreateInviteCode(context.Background(), CreateInviteCodeParams{
-		CodeDigest: digester.Digest(code),
-		CodeHint:   "3D",
+		Code: code,
 		CreatedBy:  "tester",
 		ExpiresAt:  now.Add(time.Hour),
 		Now:        now,

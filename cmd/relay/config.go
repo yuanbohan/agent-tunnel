@@ -30,6 +30,11 @@ type inviteDisableConfig struct {
 	Code          string
 }
 
+type inviteListConfig struct {
+	RelayAddr     string
+	OperatorToken string
+}
+
 type userDeleteConfig struct {
 	RelayAddr     string
 	OperatorToken string
@@ -119,6 +124,27 @@ func loadInviteDisableConfig(getenv func(string) string, args []string) (inviteD
 		return inviteDisableConfig{}, usagef("missing RELAY_OPERATOR_TOKEN")
 	case strings.TrimSpace(cfg.Code) == "":
 		return inviteDisableConfig{}, usagef("missing --code")
+	default:
+		return cfg, nil
+	}
+}
+
+func loadInviteListConfig(getenv func(string) string, args []string) (inviteListConfig, error) {
+	cfg := inviteListConfig{
+		RelayAddr:     envOrDefault(getenv, "RELAY_LISTEN_ADDR", defaultRelayListenAddr),
+		OperatorToken: envValue(getenv, "RELAY_OPERATOR_TOKEN"),
+	}
+
+	fs := newFlagSet("invite list")
+	if err := fs.Parse(args); err != nil {
+		return inviteListConfig{}, usagef("%v", err)
+	}
+	if len(fs.Args()) != 0 {
+		return inviteListConfig{}, usagef("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	switch {
+	case cfg.OperatorToken == "":
+		return inviteListConfig{}, usagef("missing RELAY_OPERATOR_TOKEN")
 	default:
 		return cfg, nil
 	}

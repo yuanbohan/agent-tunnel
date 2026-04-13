@@ -10,6 +10,7 @@ import (
 	"yuanbohan/tunnel/internal/relay/handler/api"
 	"yuanbohan/tunnel/internal/relay/handler/attach"
 	"yuanbohan/tunnel/internal/relay/handler/middleware"
+	"yuanbohan/tunnel/internal/relay/handler/response"
 	"yuanbohan/tunnel/internal/relay/handler/types"
 	"yuanbohan/tunnel/internal/relay/operator"
 	"yuanbohan/tunnel/internal/relay/session"
@@ -44,12 +45,22 @@ func newRouter(
 
 	router := gin.New()
 	router.HandleMethodNotAllowed = true
-	router.Use(gin.Recovery())
+	router.Use(gin.CustomRecoveryWithWriter(gin.DefaultErrorWriter, func(c *gin.Context, recovered any) {
+		response.WriteError(c.Writer, http.StatusInternalServerError, "internal_error")
+		c.Abort()
+	}))
 	router.Use(middleware.AccessLog())
+	router.NoRoute(func(c *gin.Context) {
+		response.WriteError(c.Writer, http.StatusNotFound, "not_found")
+	})
+	router.NoMethod(func(c *gin.Context) {
+		response.WriteError(c.Writer, http.StatusMethodNotAllowed, "method_not_allowed")
+	})
 
 	router.GET("/healthz", api.Healthz())
 
 	router.POST(types.OperatorInviteCodesPath, middleware.OperatorAuth(), api.CreateInvites(operatorSvc))
+	router.POST(types.OperatorInviteListPath, middleware.OperatorAuth(), api.ListInvites(operatorSvc))
 	router.POST(types.OperatorInviteDisablePath, middleware.OperatorAuth(), api.DisableInvite(operatorSvc))
 	router.POST(types.OperatorDeleteUserPath, middleware.OperatorAuth(), api.DeleteUser(operatorSvc, registry))
 

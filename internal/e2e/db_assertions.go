@@ -16,9 +16,9 @@ type UserRow struct {
 
 type InviteRow struct {
 	ID               int64
-	CodeHint         string
 	ConsumedAt       sql.NullTime
 	ConsumedByUserID sql.NullInt64
+	ConsumedByUsername string
 }
 
 type AppSessionRow struct {
@@ -53,16 +53,16 @@ func loadUserByUsername(ctx context.Context, db *sql.DB, username string) (UserR
 func loadInviteForUser(ctx context.Context, db *sql.DB, userID int64) (InviteRow, error) {
 	var row InviteRow
 	err := db.QueryRowContext(ctx, `
-		select id, code_hint, consumed_at, consumed_by_user_id
+		select id, consumed_at, consumed_by_user_id, consumed_by_username
 		from invite_codes
 		where consumed_by_user_id = $1
 		order by id desc
 		limit 1
 	`, userID).Scan(
 		&row.ID,
-		&row.CodeHint,
 		&row.ConsumedAt,
 		&row.ConsumedByUserID,
+		&row.ConsumedByUsername,
 	)
 	return row, err
 }

@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
 	"yuanbohan/tunnel/internal/protocol"
+	"yuanbohan/tunnel/internal/relay/handler/response"
 	handlertypes "yuanbohan/tunnel/internal/relay/handler/types"
 )
 
@@ -23,6 +25,12 @@ type AppClient struct {
 type RegisterResponse struct {
 	UserID   int64  `json:"user_id"`
 	Username string `json:"username"`
+}
+
+type APIEnvelope struct {
+	Code    int             `json:"code"`
+	Message string          `json:"message"`
+	Body    json.RawMessage `json:"body"`
 }
 
 func newAppClient(baseURL string) *AppClient {
@@ -67,32 +75,36 @@ func (c *AppClient) ListSessions(accessToken string) ([]protocol.SessionInfo, er
 	return out, err
 }
 
-func (c *AppClient) GetSessionsStatus(accessToken string) (int, string, error) {
+func (c *AppClient) GetSessionsStatus(accessToken string) (int, APIEnvelope, error) {
 	req, err := http.NewRequest(http.MethodGet, c.baseURL+"/api/sessions", nil)
 	if err != nil {
-		return 0, "", err
+		return 0, APIEnvelope{}, err
 	}
 	if strings.TrimSpace(accessToken) != "" {
 		req.Header.Set("Authorization", "Bearer "+accessToken)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return 0, "", err
+		return 0, APIEnvelope{}, err
 	}
 	defer resp.Body.Close()
 
-	var body bytes.Buffer
-	if _, err := body.ReadFrom(resp.Body); err != nil {
-		return 0, "", err
+	payload, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, APIEnvelope{}, err
 	}
-	return resp.StatusCode, body.String(), nil
+	var envelope APIEnvelope
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		return 0, APIEnvelope{}, fmt.Errorf("GET /api/sessions returned status %d and invalid envelope response: %w", resp.StatusCode, err)
+	}
+	return resp.StatusCode, envelope, nil
 }
 
 func (c *AppClient) ChangePassword(accessToken, currentPassword, newPassword string) error {
 	return c.doJSON(http.MethodPost, "/api/auth/password/change", accessToken, map[string]string{
 		"current_password": currentPassword,
 		"new_password":     newPassword,
-	}, http.StatusNoContent, nil)
+	}, http.StatusOK, nil)
 }
 
 func (c *AppClient) Attach(accessToken, sessionID string) (*websocket.Conn, error) {
@@ -137,16 +149,35 @@ func (c *AppClient) doJSON(method, path, accessToken string, requestBody any, wa
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != wantStatus {
-		var body bytes.Buffer
-		if _, readErr := body.ReadFrom(resp.Body); readErr != nil {
-			return fmt.Errorf("%s %s returned status %d and body read failed: %v", method, path, resp.StatusCode, readErr)
-		}
-		return fmt.Errorf("%s %s returned status %d: %s", method, path, resp.StatusCode, strings.TrimSpace(body.String()))
+	payload, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
 	}
-
+	var envelope struct {
+		Code    int             `json:"code"`
+		Message string          `json:"message"`
+		Body    json.RawMessage `json:"body"`
+	}
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		return fmt.Errorf("%s %s returned status %d and invalid envelope response: %w", method, path, resp.StatusCode, err)
+	}
+	if resp.StatusCode != wantStatus {
+		return fmt.Errorf("%s %s returned status %d code %d: %s", method, path, resp.StatusCode, envelope.Code, envelope.Message)
+	}
+	if envelope.Code != response.CodeSuccess {
+		return fmt.Errorf("%s %s returned error code %d: %s", method, path, envelope.Code, envelope.Message)
+	}
 	if responseBody == nil {
+		if strings.TrimSpace(string(envelope.Body)) != "null" {
+			return fmt.Errorf("%s %s returned success response with non-null body", method, path)
+		}
 		return nil
 	}
-	return json.NewDecoder(resp.Body).Decode(responseBody)
+	if len(envelope.Body) == 0 {
+		return fmt.Errorf("%s %s returned status %d with empty body", method, path, resp.StatusCode)
+	}
+	if err := json.Unmarshal(envelope.Body, responseBody); err != nil {
+		return fmt.Errorf("decode response body: %w", err)
+	}
+	return nil
 }

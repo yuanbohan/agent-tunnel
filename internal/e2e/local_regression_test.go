@@ -97,12 +97,15 @@ func TestLocalRegressionFlow(t *testing.T) {
 	}
 	assertAttachClosed(t, attachConn, 2*time.Second)
 
-	status, body, err := client.GetSessionsStatus(issued.AccessToken)
+	status, envelope, err := client.GetSessionsStatus(issued.AccessToken)
 	if err != nil {
 		t.Fatalf("GetSessionsStatus returned error: %v", err)
 	}
 	if status != 401 {
-		t.Fatalf("old access token status = %d body=%q, want 401", status, body)
+		t.Fatalf("old access token status = %d envelope=%#v, want 401", status, envelope)
+	}
+	if envelope.Code != 1016 || envelope.Message != "The request is unauthorized." {
+		t.Fatalf("old access token envelope = %#v, want unauthorized envelope", envelope)
 	}
 
 	relogin, err := client.Login(username, newPassword)
@@ -158,6 +161,9 @@ func assertDurableState(t *testing.T, ctx context.Context, h *Harness, username 
 	}
 	if !invite.ConsumedByUserID.Valid || invite.ConsumedByUserID.Int64 != user.ID {
 		t.Fatalf("invite consumed_by_user_id = %#v, want %d", invite.ConsumedByUserID, user.ID)
+	}
+	if invite.ConsumedByUsername != user.Username {
+		t.Fatalf("invite consumed_by_username = %q, want %q", invite.ConsumedByUsername, user.Username)
 	}
 
 	appSessions, err := loadAppSessionsForUser(ctx, h.db, user.ID)
