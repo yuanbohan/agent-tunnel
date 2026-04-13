@@ -26,7 +26,13 @@ RELAY_SCHEMA_DIR ?= /etc/agentunnel/schema
 ## ANSIBLE: Binary used for automation playbooks.
 ANSIBLE ?= ansible-playbook
 ## ANSIBLE_CONFIG: Path to ansible config file for this project.
-ANSIBLE_CONFIG ?= ansible/ansible.cfg
+ANSIBLE_CONFIG ?= $(CURDIR)/ansible/ansible.cfg
+## ANSIBLE_ROLES_PATH: Role search path used by Ansible playbooks in this project.
+ANSIBLE_ROLES_PATH ?= $(CURDIR)/ansible/roles
+## ANSIBLE_STDOUT_CALLBACK: Callback plugin used for Ansible command output.
+ANSIBLE_STDOUT_CALLBACK ?= default
+## ANSIBLE_CALLBACK_RESULT_FORMAT: Output format used by the default Ansible callback.
+ANSIBLE_CALLBACK_RESULT_FORMAT ?= yaml
 ## ANSIBLE_PROJECT_ROOT: Repository root passed to Ansible for local artifact paths.
 ANSIBLE_PROJECT_ROOT ?= $(shell pwd)
 ## ANSIBLE_INVENTORY: Inventory file for target host.
@@ -41,15 +47,17 @@ ANSIBLE_WEBSITE_REPO_DIR ?= $(abspath $(WEBSITE_REPO_DIR))
 ANSIBLE_TAGS ?=
 ## ANSIBLE_DRY_RUN: Set to 1 to run ansible in check mode.
 ANSIBLE_DRY_RUN ?= 0
+## DEPLOY_RETRY_COUNT: Retry count for relay binary upload targets when SSH file transfer flakes.
+DEPLOY_RETRY_COUNT ?= 3
+## DEPLOY_RETRY_DELAY: Seconds to wait between retry attempts for relay binary upload targets.
+DEPLOY_RETRY_DELAY ?= 2
+
+export ANSIBLE_CONFIG ANSIBLE_ROLES_PATH ANSIBLE_STDOUT_CALLBACK ANSIBLE_CALLBACK_RESULT_FORMAT
 
 ## WEBSITE_REPO_DIR: Local checkout used to build the deployable website bundle.
 WEBSITE_REPO_DIR ?= ../agent-tunnel-website
 ## WEBSITE_BUILD_DIR: Build output directory inside `$(WEBSITE_REPO_DIR)`.
 WEBSITE_BUILD_DIR ?= dist
-## DEPLOY_WEBSITE_ROOT: Remote website release root used by website deploys.
-DEPLOY_WEBSITE_ROOT ?= /var/www/agentunnel-website
-## DEPLOY_WEBSITE_TMP_DIR: Remote temporary directory used while uploading website release archives.
-DEPLOY_WEBSITE_TMP_DIR ?= /tmp/agentunnel-website
 ## LOCAL_E2E_PG_IMAGE: Fixed Docker image tag used for local E2E PostgreSQL.
 LOCAL_E2E_PG_IMAGE ?= postgres:16.11-alpine
 ## LOCAL_E2E_PG_CONTAINER: Docker container name used for local E2E PostgreSQL.
@@ -87,8 +95,34 @@ LOCAL_E2E_PG_ENV = LOCAL_E2E_PG_IMAGE="$(LOCAL_E2E_PG_IMAGE)" LOCAL_E2E_PG_CONTA
 
 help: ## Show available targets and configurable variables.
 	@printf "Usage: make <target>\n\n"
-	@printf "Targets:\n"
-	@awk 'BEGIN {FS = ":.*## "}; /^[a-zA-Z0-9_.-]+:.*## / {printf "  %-22s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@printf "Targets:\n\n"
+	@awk '\
+	function group_name(file) {\
+		if (file ~ /\/Makefile$$/ || file == "Makefile") return "General";\
+		if (file ~ /common\.mk$$/) return "General";\
+		if (file ~ /runtime\.mk$$/) return "Runtime";\
+		if (file ~ /build\.mk$$/) return "Build and test";\
+		if (file ~ /release\.mk$$/) return "Release";\
+		if (file ~ /install\.mk$$/) return "Install";\
+		if (file ~ /deploy\.mk$$/) return "Deploy";\
+		if (file ~ /local-e2e\.mk$$/) return "Local E2E";\
+		return "Other";\
+	}\
+	BEGIN { FS = ":.*## " }\
+	/^[a-zA-Z0-9_.-]+:.*## / {\
+		group = group_name(FILENAME);\
+		if (!(group in seen)) {\
+			order[++count] = group;\
+			seen[group] = 1;\
+		}\
+		entries[group] = entries[group] sprintf("  %-22s %s\n", $$1, $$2);\
+	}\
+	END {\
+		for (i = 1; i <= count; i++) {\
+			group = order[i];\
+			printf "%s:\n%s\n", group, entries[group];\
+		}\
+	}' $(MAKEFILE_LIST)
 	@printf "\nVariables:\n"
 	@awk '/^## [A-Z0-9_]+: / {line=$$0; sub(/^## /, "", line); name=line; desc=line; sub(/: .*/, "", name); sub(/^[^:]+: /, "", desc); printf "  %-22s %s\n", name, desc}' $(MAKEFILE_LIST)
 	@printf "\nExamples:\n"

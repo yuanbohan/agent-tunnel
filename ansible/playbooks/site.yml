@@ -8,13 +8,32 @@
     relay_project_root: "{{ lookup('env', 'ANSIBLE_PROJECT_ROOT') | default(ansible_playbook_dir, true) }}"
     relay_local_schema_dir: "{{ relay_project_root }}/schema"
     relay_local_bin_dir: "{{ relay_project_root }}/bin"
+    relay_template_dir: "{{ relay_project_root }}/ansible/templates"
     relay_website_repo_dir: "{{ lookup('env', 'ANSIBLE_WEBSITE_REPO_DIR') | default(relay_project_root + '/../agent-tunnel-website', true) }}"
+    relay_secrets_file: "{{ relay_project_root }}/ansible/host_vars/{{ agentunnel_environment }}/relay-secrets.yml"
+
+  pre_tasks:
+    - name: Check for relay secrets file
+      ansible.builtin.stat:
+        path: "{{ relay_secrets_file }}"
+      delegate_to: localhost
+      become: false
+      register: relay_secrets_file_stat
+      tags:
+        - always
+
+    - name: Load relay secrets file
+      ansible.builtin.include_vars:
+        file: "{{ relay_secrets_file }}"
+      when: relay_secrets_file_stat.stat.exists
+      no_log: true
+      tags:
+        - always
 
   roles:
     - deps
     - postgres
     - nginx
     - certbot
-    - nginx
     - relay
     - website

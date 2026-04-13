@@ -210,9 +210,11 @@ make deploy-website-prod    # prod website bundle from ../agent-tunnel-website
 make deploy-website-dev     # dev website bundle from ../agent-tunnel-website
 ```
 
-`make install-prod` reads `relay_certbot_email` from `ansible/host_vars/prod/relay-secrets.yml`. `make install-dev` skips `certbot` and keeps the dev relay on plain HTTP port 80. Both install targets render nginx so `/` serves the static website from `/var/www/agentunnel-website/current` and `/api/` plus `/agent/ws` proxy to the relay. `make install` remains the local binary install alias.
+`make install-prod` reads `relay_certbot_email` from `ansible/host_vars/prod/relay-secrets.yml`. `make install-dev` skips `certbot` and keeps the dev relay on plain HTTP port 80. Both install targets render nginx so `/` serves the static website from `/var/www/agentunnel-website/current` and `/api/` plus `/agent/ws` proxy to the relay. They do not build or publish the website bundle. `make install` remains the local binary install alias.
 
 Every relay deploy builds Linux binaries, syncs `schema/`, reruns the migrator, renders `/etc/agentunnel/relay.env` from Ansible variables, updates the systemd unit, and restarts the relay. Website deploy stays separate: `make deploy-website-*` runs `npm ci`, builds `../agent-tunnel-website`, rejects bundle symlinks, uploads a release under `/var/www/agentunnel-website/releases`, and atomically repoints `/var/www/agentunnel-website/current`.
+
+For targeted relay maintenance, use the sliced deploy targets: `make migrator-dev` / `make migrator-prod` install only `relay-migrate`, `make relay-bin-dev` / `make relay-bin-prod` install only `relay`, `make migrate-dev` / `make migrate-prod` sync `schema/` and run migrations using the already-installed remote migrator, and `make relay-dev` / `make relay-prod` render relay env and systemd config, then restart the service using the already-installed remote relay binary.
 
 Deploy is intentionally narrower than install: it does not install packages, request certificates, or change PostgreSQL users and databases unless you run the dedicated Ansible-tagged targets for those steps.
 

@@ -7,9 +7,7 @@
 
 - name: Resolve website paths
   ansible.builtin.set_fact:
-    relay_website_root: "{{ website_release_root | default('/var/www/agentunnel-website') }}"
-    relay_website_tmp_dir: "{{ website_tmp_dir | default('/tmp/agentunnel-website') }}"
-    relay_website_release_root: "{{ website_release_root | default('/var/www/agentunnel-website') }}"
+    relay_website_release_root: "{{ relay_website_root }}"
     relay_website_build_dir: "{{ website_build_dir | default('dist') }}"
     relay_website_local_tmp_dir: "{{ lookup('env', 'TMPDIR') | default('/tmp', true) }}/agentunnel-website"
     relay_website_release_dir: "{{ relay_website_release_root }}/releases/{{ relay_website_release_id }}"
@@ -25,6 +23,7 @@
     state: directory
     mode: "0755"
   delegate_to: localhost
+  become: false
   tags:
     - website
 
@@ -34,6 +33,7 @@
   args:
     chdir: "{{ relay_website_repo_dir }}"
   delegate_to: localhost
+  become: false
   tags:
     - website
 
@@ -43,6 +43,7 @@
   args:
     chdir: "{{ relay_website_repo_dir }}"
   delegate_to: localhost
+  become: false
   tags:
     - website
 
@@ -52,6 +53,7 @@
       find "{{ relay_website_repo_dir }}/{{ relay_website_build_dir }}"
       -type l -print
   delegate_to: localhost
+  become: false
   register: relay_website_symlinks
   changed_when: false
   tags:
@@ -70,6 +72,7 @@
       tar -czf "{{ relay_website_local_tmp_archive }}"
       -C "{{ relay_website_repo_dir }}/{{ relay_website_build_dir }}" .
   delegate_to: localhost
+  become: false
   tags:
     - website
 
@@ -113,6 +116,7 @@
     path: "{{ relay_website_local_tmp_archive }}"
     state: absent
   delegate_to: localhost
+  become: false
   tags:
     - website
 

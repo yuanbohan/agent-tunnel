@@ -12,8 +12,6 @@ install-local: build ## Install `tunnel`, `relay`, and `relay-migrate` into `$(I
 ANSIBLE_OPTS := -i "$(ANSIBLE_INVENTORY)"
 ANSIBLE_OPTS += -e "project_root=$(ANSIBLE_PROJECT_ROOT)"
 ANSIBLE_OPTS += -e "website_repo_dir=$(ANSIBLE_WEBSITE_REPO_DIR)"
-ANSIBLE_OPTS += -e "website_release_root=$(DEPLOY_WEBSITE_ROOT)"
-ANSIBLE_OPTS += -e "website_tmp_dir=$(DEPLOY_WEBSITE_TMP_DIR)"
 ANSIBLE_OPTS += -e "website_build_dir=$(WEBSITE_BUILD_DIR)"
 
 ANSIBLE_OPTS += $(if $(strip $(ANSIBLE_LIMIT)),--limit "$(ANSIBLE_LIMIT)",)
@@ -23,12 +21,16 @@ ANSIBLE_OPTS += $(if $(filter 1 true TRUE yes YES on ON,$(ANSIBLE_DRY_RUN)),--ch
 
 ansible-run:
 	@echo "ANSIBLE inventory=$(strip $(ANSIBLE_INVENTORY)) tags=$(strip $(ANSIBLE_TAGS))"
-	@$(ANSIBLE) $(ANSIBLE_OPTS) $(ANSIBLE_PLAYBOOK)
+	@ANSIBLE_CONFIG="$(ANSIBLE_CONFIG)" \
+	ANSIBLE_ROLES_PATH="$(ANSIBLE_ROLES_PATH)" \
+	ANSIBLE_STDOUT_CALLBACK="$(ANSIBLE_STDOUT_CALLBACK)" \
+	ANSIBLE_CALLBACK_RESULT_FORMAT="$(ANSIBLE_CALLBACK_RESULT_FORMAT)" \
+	$(ANSIBLE) $(ANSIBLE_OPTS) $(ANSIBLE_PLAYBOOK)
 
-install-dev: ## Bootstrap the dev host (dependencies + nginx + website + relay proxy).
+install-dev: ## Bootstrap the dev host (dependencies + nginx). Use on first machine bootstrap before relay or website deploys.
 	@$(MAKE) install-remote ANSIBLE_INVENTORY=ansible/inventories/dev.yml ANSIBLE_TAGS="deps,nginx"
 
-install-prod: ## Bootstrap the prod host (dependencies + nginx + certbot/tls + website + relay proxy).
+install-prod: ## Bootstrap the prod host (dependencies + certbot/tls + nginx). Use on first machine bootstrap before relay or website deploys.
 	@$(MAKE) install-remote ANSIBLE_INVENTORY=ansible/inventories/prod.yml ANSIBLE_TAGS="deps,certbot,nginx"
 
 install-remote: ansible-run

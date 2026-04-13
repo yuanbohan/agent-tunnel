@@ -46,7 +46,6 @@
     dest: "{{ relay_install_root }}/relay-migrate"
     mode: "0755"
   tags:
-    - relay-binary
     - relay-migrator
 
 - name: Install relay binary
@@ -56,11 +55,10 @@
     mode: "0755"
   tags:
     - relay-binary
-    - relay-service
 
 - name: Render relay env file
   ansible.builtin.template:
-    src: relay-env.j2
+    src: "{{ relay_template_dir }}/relay-env.j2"
     dest: "{{ relay_env_file }}"
     mode: "0600"
     owner: root
@@ -71,7 +69,7 @@
 
 - name: Render relay systemd service
   ansible.builtin.template:
-    src: agentunnel-relay.service.j2
+    src: "{{ relay_template_dir }}/agentunnel-relay.service.j2"
     dest: /etc/systemd/system/agentunnel-relay.service
     mode: "0644"
   tags:

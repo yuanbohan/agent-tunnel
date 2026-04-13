@@ -32,7 +32,7 @@
 
 - name: Ensure certbot deploy hook is present
   ansible.builtin.template:
-    src: certbot-reload-nginx.sh.j2
+    src: "{{ relay_template_dir }}/certbot-reload-nginx.sh.j2"
     dest: /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
     mode: "0755"
     owner: root
