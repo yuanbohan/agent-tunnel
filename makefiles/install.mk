@@ -12,10 +12,10 @@ install-local: build ## Install `tunnel`, `relay`, and `relay-migrate` into `$(I
 	cp -f "$(TUNNEL_BIN)" "$(RELAY_BUILD_BIN)" "$(MIGRATOR_BUILD_BIN)" "$(INSTALL_DIR)/"; \
 	echo "installed tunnel, relay, and relay-migrate to $(INSTALL_DIR)"
 
-install-dev: ## Bootstrap the dev VPS: install nginx/postgresql if missing, sync the HTTP nginx site, enable services, and restart nginx.
+install-dev: ## Bootstrap the dev VPS: install nginx/postgresql if missing, serve the website at `/`, proxy relay routes, and restart nginx.
 	@$(MAKE) install-remote INSTALL_ENV=dev ENV_FILE=.env.dev
 
-install-prod: ## Bootstrap prod: dev bootstrap plus certbot issuance/renewal wiring and the HTTPS nginx site. Requires a certbot email and prompts if omitted.
+install-prod: ## Bootstrap prod: dev bootstrap plus certbot issuance/renewal wiring and the HTTPS nginx site that serves the website at `/`. Requires a certbot email and prompts if omitted.
 	@$(MAKE) install-remote INSTALL_ENV=prod ENV_FILE=.env.prod
 
 install-remote:
@@ -29,6 +29,7 @@ install-remote:
 	INSTALL_PROD_PRIMARY_DOMAIN="$(INSTALL_PROD_PRIMARY_DOMAIN)" \
 	INSTALL_CERTBOT_EMAIL="$(INSTALL_CERTBOT_EMAIL)" \
 	INSTALL_CERTBOT_WEBROOT="$(INSTALL_CERTBOT_WEBROOT)" \
+	INSTALL_WEBSITE_ROOT="$(INSTALL_WEBSITE_ROOT)" \
 	INSTALL_VERBOSE="$(INSTALL_VERBOSE)" \
 	INSTALL_DRY_RUN="$(INSTALL_DRY_RUN)" \
 	$(INSTALL_SCRIPT) "$(INSTALL_ENV)" $(INSTALL_SCRIPT_FLAGS)

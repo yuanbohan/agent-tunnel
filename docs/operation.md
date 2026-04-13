@@ -21,7 +21,7 @@ These are the relay-side environment variables that matter now:
 Notes:
 
 - Operator commands call the running relay over a local-only operator API outside `/api/`. They must run on the relay host, or through an SSH tunnel that lands on the relay host loopback interface.
-- nginx should proxy `/api/` and `/agent/ws` only. It should not proxy the operator routes.
+- nginx should serve the public website on `/`, proxy `/api/` and `/agent/ws`, and keep the operator routes off the public surface.
 - Operator commands call the running relay. That means `relay serve` must already be running when you execute `relay invite ...` or `relay user delete`.
 - `RELAY_LISTEN_ADDR` is shared by `relay serve` and the operator commands. If you start the relay on a different local address, set the same value before running invite or user commands.
 - On a systemd-managed host, the usual source of truth is `/etc/agentunnel/relay.env`. `make deploy-env` pins `RELAY_LOG_FILE=/var/log/agentunnel/relay.log` there. You can source that file before running relay commands, or pass it directly to `relay-migrate --env-file /etc/agentunnel/relay.env`.
@@ -38,11 +38,12 @@ Notes:
 | `relay invite disable` | Disable an existing invite code |
 | `relay user delete` | Delete a user account and free the username |
 | `make install` / `make install-local` | Install the local `tunnel`, `relay`, and `relay-migrate` binaries into `$(INSTALL_DIR)` |
-| `make install-dev` | Install `nginx` and PostgreSQL on the dev VPS if missing, sync the HTTP nginx site, and restart nginx |
+| `make install-dev` | Install `nginx` and PostgreSQL on the dev VPS if missing, sync the HTTP nginx site that serves the website plus relay proxy routes, and restart nginx |
 | `make install-prod` | Dev bootstrap plus `certbot`, certificate issuance/renewal wiring, and the HTTPS nginx site for prod |
 | `make migrate` | Apply local schema migrations using values loaded from `$(ENV_FILE)` (default `.env.prod`) |
 | `make deploy-env` | Upload the local `$(ENV_FILE)` to the remote relay host |
 | `make deploy-dev` / `make deploy-prod` | One-shot deploy against `.env.dev` / `.env.prod` with schema sync and a safe migrator rerun before activation |
+| `make deploy-website-dev` / `make deploy-website-prod` | Build `../agent-tunnel-website` and publish an atomic website release on the remote host |
 
 Install output controls:
 
@@ -54,7 +55,9 @@ Deploy output controls:
 
 - `DEPLOY_DRY_RUN=1` prints the deploy plan in a structured way without changing the remote host.
 - `DEPLOY_VERBOSE=1` includes deploy debug details.
-- Deploy manages relay artifacts only: binaries, schema files, `/etc/agentunnel/relay.env`, and the `agentunnel-relay` service restart. It does not install or reconfigure `nginx`, `certbot`, or `postgresql`, and it does not rewrite those host-level config files.
+- Relay deploy manages relay artifacts only: binaries, schema files, `/etc/agentunnel/relay.env`, and the `agentunnel-relay` service restart.
+- Website deploy manages the static website bundle only: it runs `npm ci`, builds `../agent-tunnel-website`, rejects bundle symlinks, uploads a release under `DEPLOY_WEBSITE_ROOT/releases`, and atomically repoints `DEPLOY_WEBSITE_ROOT/current`.
+- Neither deploy path installs or reconfigures `nginx`, `certbot`, or `postgresql`, and neither rewrites those host-level config files.
 
 ## Start the Relay
 

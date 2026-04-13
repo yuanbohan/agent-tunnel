@@ -35,6 +35,7 @@ server {
     }
 
     location / {
-        return 404;
+        root __WEBSITE_ROOT__/current;
+        try_files $uri $uri/ /index.html;
     }
 }

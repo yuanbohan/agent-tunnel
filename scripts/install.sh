@@ -59,6 +59,20 @@ require_cmd() {
 	exit 1
 }
 
+require_absolute_path() {
+	name="$1"
+	value="$2"
+	case "$value" in
+		/*)
+			return 0
+			;;
+		*)
+			printf 'error: %s must be an absolute path: %s\n' "$name" "$value" >&2
+			exit 1
+			;;
+	esac
+}
+
 hash_file() {
 	if command -v shasum >/dev/null 2>&1; then
 		shasum -a 256 "$1" | awk '{print $1}'
@@ -153,12 +167,14 @@ render_template() {
 	escaped_upstream_addr="$(escape_sed_replacement "$nginx_upstream_addr")"
 	escaped_certbot_webroot="$(escape_sed_replacement "$certbot_webroot")"
 	escaped_primary_domain="$(escape_sed_replacement "$primary_domain")"
+	escaped_website_root="$(escape_sed_replacement "$website_root")"
 
 	sed \
 		-e "s/__SERVER_NAMES__/$escaped_server_names/g" \
 		-e "s/__UPSTREAM_ADDR__/$escaped_upstream_addr/g" \
 		-e "s/__CERTBOT_WEBROOT__/$escaped_certbot_webroot/g" \
 		-e "s/__PRIMARY_DOMAIN__/$escaped_primary_domain/g" \
+		-e "s/__WEBSITE_ROOT__/$escaped_website_root/g" \
 		"$template_path" >"$output_path"
 }
 
@@ -499,6 +515,7 @@ install_host="${INSTALL_HOST:-${DEPLOY_HOST:-}}"
 nginx_upstream_addr="${INSTALL_NGINX_UPSTREAM_ADDR:-127.0.0.1:8586}"
 certbot_webroot="${INSTALL_CERTBOT_WEBROOT:-/var/www/certbot}"
 certbot_email="${INSTALL_CERTBOT_EMAIL:-}"
+website_root="${INSTALL_WEBSITE_ROOT:-/var/www/agentunnel-website}"
 install_run_id="${INSTALL_RUN_ID:-$(date +%Y%m%d%H%M%S)-$$}"
 ssh_opts='-o LogLevel=ERROR'
 
@@ -506,6 +523,7 @@ if [ -z "$install_host" ]; then
 	printf 'error: INSTALL_HOST (or DEPLOY_HOST) is required\n' >&2
 	exit 1
 fi
+require_absolute_path INSTALL_WEBSITE_ROOT "$website_root"
 
 if [ "$install_env" = 'dev' ]; then
 	required_packages='nginx postgresql'
