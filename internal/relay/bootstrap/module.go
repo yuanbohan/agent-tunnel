@@ -27,7 +27,7 @@ func NewServeHandler(db *sql.DB) (http.Handler, error) {
 	registry := session.NewRegistry()
 	appAuth := auth.NewAppAuthService(store, digester, auth.DefaultPasswordHasher())
 	agentTokens := auth.NewAgentTokenService(store, digester)
-	operatorService := operator.NewOperatorService(store, digester)
+	operatorService := operator.NewOperatorService(store)
 	serveHandler := handler.New(registry, appAuth, agentTokens, operatorService)
 
 	return serveHandler, nil

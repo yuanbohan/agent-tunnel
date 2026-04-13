@@ -71,10 +71,10 @@ func (s *AppAuthService) Register(ctx context.Context, username, password, invit
 	}
 	now := s.now()
 	return s.store.RegisterUser(ctx, RegisterUserParams{
-		UsernameNorm:     usernameNorm,
-		InviteCodeDigest: s.digester.Digest(inviteCodeNorm),
-		PasswordHash:     passwordHash,
-		Now:              now,
+		UsernameNorm: usernameNorm,
+		InviteCode:   inviteCodeNorm,
+		PasswordHash: passwordHash,
+		Now:          now,
 	})
 }
 

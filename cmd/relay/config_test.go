@@ -87,6 +87,20 @@ func TestLoadInviteCreateConfigUsesDefaultSevenDays(t *testing.T) {
 	}
 }
 
+func TestLoadInviteListConfigRequiresToken(t *testing.T) {
+	_, err := loadInviteListConfig(testEnv(map[string]string{
+		"RELAY_OPERATOR_TOKEN": "operator-secret",
+	}), []string{})
+	if err != nil {
+		t.Fatalf("loadInviteListConfig returned unexpected error: %v", err)
+	}
+
+	_, err = loadInviteListConfig(testEnv(map[string]string{}), []string{})
+	if err == nil {
+		t.Fatal("expected missing operator token to fail")
+	}
+}
+
 func TestLoadInviteCreateConfigRejectsInvalidValues(t *testing.T) {
 	_, err := loadInviteCreateConfig(testEnv(map[string]string{
 		"RELAY_OPERATOR_TOKEN": "operator-secret",

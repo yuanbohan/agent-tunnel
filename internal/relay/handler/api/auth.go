@@ -15,7 +15,7 @@ import (
 func Register(appAuth *auth.AppAuthService, throttle *RegisterThrottle) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if appAuth == nil {
-			http.Error(c.Writer, "service unavailable", http.StatusServiceUnavailable)
+			WriteJSONError(c.Writer, http.StatusServiceUnavailable, "service_unavailable")
 			return
 		}
 
@@ -37,10 +37,10 @@ func Register(appAuth *auth.AppAuthService, throttle *RegisterThrottle) gin.Hand
 		if err != nil {
 			if isRegisterFailure(err) {
 				throttle.RecordFailure(remoteIP)
-				WriteJSONError(c.Writer, http.StatusBadRequest, "registration_failed")
+				WriteJSONError(c.Writer, http.StatusBadRequest, registerFailureReasonFromError(err))
 				return
 			}
-			http.Error(c.Writer, "internal server error", http.StatusInternalServerError)
+			WriteJSONError(c.Writer, http.StatusInternalServerError, "internal_error")
 			return
 		}
 
@@ -55,7 +55,7 @@ func Register(appAuth *auth.AppAuthService, throttle *RegisterThrottle) gin.Hand
 func Login(appAuth *auth.AppAuthService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if appAuth == nil {
-			http.Error(c.Writer, "service unavailable", http.StatusServiceUnavailable)
+			WriteJSONError(c.Writer, http.StatusServiceUnavailable, "service_unavailable")
 			return
 		}
 
@@ -71,7 +71,7 @@ func Login(appAuth *auth.AppAuthService) gin.HandlerFunc {
 				WriteJSONError(c.Writer, http.StatusUnauthorized, "invalid_credentials")
 				return
 			}
-			http.Error(c.Writer, "internal server error", http.StatusInternalServerError)
+			WriteJSONError(c.Writer, http.StatusInternalServerError, "internal_error")
 			return
 		}
 
@@ -82,7 +82,7 @@ func Login(appAuth *auth.AppAuthService) gin.HandlerFunc {
 func Refresh(appAuth *auth.AppAuthService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if appAuth == nil {
-			http.Error(c.Writer, "service unavailable", http.StatusServiceUnavailable)
+			WriteJSONError(c.Writer, http.StatusServiceUnavailable, "service_unavailable")
 			return
 		}
 
@@ -98,7 +98,7 @@ func Refresh(appAuth *auth.AppAuthService) gin.HandlerFunc {
 				WriteJSONError(c.Writer, http.StatusUnauthorized, "invalid_session")
 				return
 			}
-			http.Error(c.Writer, "internal server error", http.StatusInternalServerError)
+			WriteJSONError(c.Writer, http.StatusInternalServerError, "internal_error")
 			return
 		}
 
@@ -109,7 +109,7 @@ func Refresh(appAuth *auth.AppAuthService) gin.HandlerFunc {
 func Logout(appAuth *auth.AppAuthService, registry *session.Registry, attachSessions *session.AttachSessionIndex) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if appAuth == nil {
-			http.Error(c.Writer, "service unavailable", http.StatusServiceUnavailable)
+			WriteJSONError(c.Writer, http.StatusServiceUnavailable, "service_unavailable")
 			return
 		}
 
@@ -119,11 +119,11 @@ func Logout(appAuth *auth.AppAuthService, registry *session.Registry, attachSess
 				WriteJSONError(c.Writer, http.StatusUnauthorized, "invalid_session")
 				return
 			}
-			http.Error(c.Writer, "internal server error", http.StatusInternalServerError)
+			WriteJSONError(c.Writer, http.StatusInternalServerError, "internal_error")
 			return
 		}
 		attachSessions.DisconnectAppSession(registry, app.Session.ID, "logged_out")
-		c.Status(http.StatusNoContent)
+		WriteJSON(c.Writer, http.StatusOK, nil)
 	}
 }
 
@@ -142,13 +142,13 @@ func ChangePassword(appAuth *auth.AppAuthService, registry *session.Registry, at
 			case errors.Is(err, auth.ErrInvalidCredentials):
 				WriteJSONError(c.Writer, http.StatusUnauthorized, "invalid_credentials")
 			case errors.Is(err, auth.ErrInvalidPassword):
-				WriteJSONError(c.Writer, http.StatusBadRequest, "invalid_request")
+				WriteJSONError(c.Writer, http.StatusBadRequest, "password_too_short")
 			default:
-				http.Error(c.Writer, "internal server error", http.StatusInternalServerError)
+				WriteJSONError(c.Writer, http.StatusInternalServerError, "internal_error")
 			}
 			return
 		}
 		attachSessions.DisconnectUser(registry, app.User.ID, "password_changed")
-		c.Status(http.StatusNoContent)
+		WriteJSON(c.Writer, http.StatusOK, nil)
 	}
 }

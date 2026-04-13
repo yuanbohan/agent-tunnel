@@ -17,7 +17,7 @@ import (
 
 const (
 	minUsernameLength = 4
-	minPasswordLength = 8
+	minPasswordLength = 6
 	inviteCodeLength  = 6
 )
 
@@ -143,14 +143,6 @@ type SecretDigester struct {
 
 func (d *SecretDigester) Digest(raw string) string {
 	return d.digestFunc(raw, sha256.New)
-}
-
-func (d *SecretDigester) DigestNormalizedInviteCode(raw string) (string, error) {
-	normalized, err := NormalizeInviteCode(raw)
-	if err != nil {
-		return "", err
-	}
-	return d.Digest(normalized), nil
 }
 
 func (d *SecretDigester) DigestNormalizedUsername(raw string) (string, error) {

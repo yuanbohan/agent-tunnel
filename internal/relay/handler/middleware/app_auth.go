@@ -7,6 +7,7 @@ import (
 	"yuanbohan/tunnel/internal/logx"
 	"yuanbohan/tunnel/internal/relay/auth"
 	"yuanbohan/tunnel/internal/relay/handler/httpx"
+	"yuanbohan/tunnel/internal/relay/handler/response"
 )
 
 const authenticatedAppContextKey = "relay.authenticated_app"
@@ -14,7 +15,7 @@ const authenticatedAppContextKey = "relay.authenticated_app"
 func AppAuth(appAuth *auth.AppAuthService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if appAuth == nil {
-			http.Error(c.Writer, "service unavailable", http.StatusServiceUnavailable)
+			response.WriteError(c.Writer, http.StatusServiceUnavailable, "service_unavailable")
 			c.Abort()
 			return
 		}
@@ -23,7 +24,7 @@ func AppAuth(appAuth *auth.AppAuthService) gin.HandlerFunc {
 		if !ok {
 			logAuthFailed(c.Request, "app_bearer")
 			c.Writer.Header().Set("WWW-Authenticate", `Bearer realm="tunnel relay"`)
-			http.Error(c.Writer, "unauthorized", http.StatusUnauthorized)
+			response.WriteError(c.Writer, http.StatusUnauthorized, "unauthorized")
 			c.Abort()
 			return
 		}
@@ -32,7 +33,7 @@ func AppAuth(appAuth *auth.AppAuthService) gin.HandlerFunc {
 		if err != nil {
 			logAuthFailed(c.Request, "app_bearer")
 			c.Writer.Header().Set("WWW-Authenticate", `Bearer realm="tunnel relay"`)
-			http.Error(c.Writer, "unauthorized", http.StatusUnauthorized)
+			response.WriteError(c.Writer, http.StatusUnauthorized, "unauthorized")
 			c.Abort()
 			return
 		}

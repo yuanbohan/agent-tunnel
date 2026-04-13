@@ -31,6 +31,7 @@ type commandHandlers struct {
 	serve         func(context.Context, serveConfig) error
 	inviteCreate  func(context.Context, inviteCreateConfig) error
 	inviteDisable func(context.Context, inviteDisableConfig) error
+	inviteList    func(context.Context, inviteListConfig) error
 	userDelete    func(context.Context, userDeleteConfig) error
 }
 
@@ -91,6 +92,12 @@ func runWithHandlers(args []string, env runtimeEnv, handlers commandHandlers) er
 				return err
 			}
 			return handlers.inviteDisable(context.Background(), cfg)
+		case "list":
+			cfg, err := loadInviteListConfig(env.getenv, args[2:])
+			if err != nil {
+				return err
+			}
+			return handlers.inviteList(context.Background(), cfg)
 		default:
 			return usagef("%s", inviteUsage())
 		}
@@ -156,6 +163,9 @@ func newCommandHandlers(env runtimeEnv) commandHandlers {
 		inviteDisable: func(ctx context.Context, cfg inviteDisableConfig) error {
 			return runInviteDisable(ctx, newHTTPOperatorClient(cfg.RelayAddr, cfg.OperatorToken, env.httpClient), cfg, env.stdout)
 		},
+		inviteList: func(ctx context.Context, cfg inviteListConfig) error {
+			return runInviteList(ctx, newHTTPOperatorClient(cfg.RelayAddr, cfg.OperatorToken, env.httpClient), cfg, env.stdout)
+		},
 		userDelete: func(ctx context.Context, cfg userDeleteConfig) error {
 			return runUserDelete(ctx, newHTTPOperatorClient(cfg.RelayAddr, cfg.OperatorToken, env.httpClient), cfg, env.stdout)
 		},
@@ -169,6 +179,7 @@ Usage:
   relay serve            Start the relay HTTP and WebSocket service
   relay invite create    Create one or more invite codes through the running relay
   relay invite disable   Disable an unconsumed invite code through the running relay
+  relay invite list      List invite codes and show whether they can still be used
   relay user delete      Delete a user account through the running relay
 `)
 }
@@ -178,6 +189,7 @@ func inviteUsage() string {
 Usage:
   relay invite create    Create invite codes with whole-day expiry
   relay invite disable   Disable an existing invite code
+  relay invite list      List invite codes and show whether they can still be used
 `)
 }
 

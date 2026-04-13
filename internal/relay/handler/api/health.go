@@ -1,14 +1,12 @@
 package api
 
 import (
-	"net/http"
-
 	"github.com/gin-gonic/gin"
+	"net/http"
 )
 
 func Healthz() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		c.Writer.WriteHeader(http.StatusOK)
-		_, _ = c.Writer.Write([]byte("ok"))
+		WriteJSON(c.Writer, http.StatusOK, map[string]string{"status": "ok"})
 	}
 }

@@ -54,16 +54,16 @@ type AgentTokenRecord struct {
 }
 
 type InviteCodeRecord struct {
-	ID               int64
-	CodeDigest       string
-	CodeHint         string
-	CreatedBy        string
-	CreatedAt        time.Time
-	ExpiresAt        time.Time
-	DisabledAt       *time.Time
-	DisabledBy       string
-	ConsumedAt       *time.Time
-	ConsumedByUserID *int64
+	ID                 int64
+	Code               string
+	CreatedBy          string
+	CreatedAt          time.Time
+	ExpiresAt          time.Time
+	DisabledAt         *time.Time
+	DisabledBy         string
+	ConsumedAt         *time.Time
+	ConsumedByUserID   *int64
+	ConsumedByUsername string
 }
 
 type AuditEvent struct {
@@ -78,10 +78,10 @@ type AuditEvent struct {
 }
 
 type RegisterUserParams struct {
-	UsernameNorm     string
-	InviteCodeDigest string
-	PasswordHash     string
-	Now              time.Time
+	UsernameNorm string
+	InviteCode   string
+	PasswordHash string
+	Now          time.Time
 }
 
 type CreateAppSessionParams struct {
@@ -105,11 +105,10 @@ type RotateAppSessionParams struct {
 }
 
 type CreateInviteCodeParams struct {
-	CodeDigest string
-	CodeHint   string
-	CreatedBy  string
-	ExpiresAt  time.Time
-	Now        time.Time
+	Code      string
+	CreatedBy string
+	ExpiresAt time.Time
+	Now       time.Time
 }
 
 type CreateAgentTokenParams struct {

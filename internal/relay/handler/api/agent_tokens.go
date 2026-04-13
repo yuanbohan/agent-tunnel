@@ -14,14 +14,14 @@ import (
 func ListAgentTokens(agentTokens *auth.AgentTokenService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if agentTokens == nil {
-			http.Error(c.Writer, "service unavailable", http.StatusServiceUnavailable)
+			WriteJSONError(c.Writer, http.StatusServiceUnavailable, "service_unavailable")
 			return
 		}
 
 		app := middleware.AuthenticatedApp(c)
 		tokens, err := agentTokens.List(c.Request.Context(), app.User.ID)
 		if err != nil {
-			http.Error(c.Writer, "internal server error", http.StatusInternalServerError)
+			WriteJSONError(c.Writer, http.StatusInternalServerError, "internal_error")
 			return
 		}
 
@@ -36,7 +36,7 @@ func ListAgentTokens(agentTokens *auth.AgentTokenService) gin.HandlerFunc {
 func CreateAgentToken(agentTokens *auth.AgentTokenService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if agentTokens == nil {
-			http.Error(c.Writer, "service unavailable", http.StatusServiceUnavailable)
+			WriteJSONError(c.Writer, http.StatusServiceUnavailable, "service_unavailable")
 			return
 		}
 
@@ -52,7 +52,7 @@ func CreateAgentToken(agentTokens *auth.AgentTokenService) gin.HandlerFunc {
 				WriteJSONError(c.Writer, http.StatusBadRequest, "invalid_request")
 				return
 			}
-			http.Error(c.Writer, "internal server error", http.StatusInternalServerError)
+			WriteJSONError(c.Writer, http.StatusInternalServerError, "internal_error")
 			return
 		}
 		WriteJSON(c.Writer, http.StatusCreated, types.CreatedAgentTokenResponse{
@@ -65,7 +65,7 @@ func CreateAgentToken(agentTokens *auth.AgentTokenService) gin.HandlerFunc {
 func RevokeAgentToken(agentTokens *auth.AgentTokenService, registry *session.Registry) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if agentTokens == nil || registry == nil {
-			http.Error(c.Writer, "service unavailable", http.StatusServiceUnavailable)
+			WriteJSONError(c.Writer, http.StatusServiceUnavailable, "service_unavailable")
 			return
 		}
 
@@ -76,10 +76,10 @@ func RevokeAgentToken(agentTokens *auth.AgentTokenService, registry *session.Reg
 				WriteJSONError(c.Writer, http.StatusNotFound, "agent_token_not_found")
 				return
 			}
-			http.Error(c.Writer, "internal server error", http.StatusInternalServerError)
+			WriteJSONError(c.Writer, http.StatusInternalServerError, "internal_error")
 			return
 		}
 		registry.DisconnectAgentTokenSessions(tokenID, "agent_token_revoked")
-		c.Status(http.StatusNoContent)
+		WriteJSON(c.Writer, http.StatusOK, nil)
 	}
 }

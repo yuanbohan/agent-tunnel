@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"testing"
+
+	handlertypes "yuanbohan/tunnel/internal/relay/handler/types"
 )
 
 type userClientStub struct {
@@ -21,6 +23,10 @@ func (s *userClientStub) DisableInvite(_ context.Context, code string) error {
 func (s *userClientStub) DeleteUser(_ context.Context, usernameNorm string) error {
 	s.username = usernameNorm
 	return nil
+}
+
+func (s *userClientStub) ListInvites(_ context.Context) ([]handlertypes.OperatorInviteCodeListEntry, error) {
+	return nil, nil
 }
 
 func TestRunUserDeleteNormalizesUsername(t *testing.T) {

@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -10,8 +9,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"yuanbohan/tunnel/internal/protocol"
 	relayauth "yuanbohan/tunnel/internal/relay/auth"
+	handlerresponse "yuanbohan/tunnel/internal/relay/handler/response"
+	handlertypes "yuanbohan/tunnel/internal/relay/handler/types"
 )
 
 func TestHandlerRejectsSessionsWithoutBearerAuth(t *testing.T) {
@@ -28,6 +30,43 @@ func TestHandlerRejectsSessionsWithoutBearerAuth(t *testing.T) {
 	if got := rec.Header().Get("WWW-Authenticate"); got != `Bearer realm="tunnel relay"` {
 		t.Fatalf("WWW-Authenticate = %q, want bearer challenge", got)
 	}
+	decodeAPIErrorEnvelopeFromRecorder(t, rec, http.StatusUnauthorized, handlerresponse.CodeUnauthorized, "The request is unauthorized.")
+}
+
+func TestHandlerNoRouteReturnsEnvelope(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	handler := env.handler(nil)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/does-not-exist", nil)
+	handler.ServeHTTP(rec, req)
+
+	decodeAPIErrorEnvelopeFromRecorder(t, rec, http.StatusNotFound, handlerresponse.CodeNotFound, "The requested endpoint was not found.")
+}
+
+func TestHandlerNoMethodReturnsEnvelope(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	handler := env.handler(nil)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/login", nil)
+	handler.ServeHTTP(rec, req)
+
+	decodeAPIErrorEnvelopeFromRecorder(t, rec, http.StatusMethodNotAllowed, handlerresponse.CodeMethodNotAllowed, "The HTTP method is not allowed for this endpoint.")
+}
+
+func TestHandlerRecoveryReturnsEnvelope(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	handler := env.handler(nil).(*gin.Engine)
+	handler.GET("/api/panic", func(c *gin.Context) {
+		panic("boom")
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/panic", nil)
+	handler.ServeHTTP(rec, req)
+
+	decodeAPIErrorEnvelopeFromRecorder(t, rec, http.StatusInternalServerError, handlerresponse.CodeInternalError, "An unexpected internal error occurred.")
 }
 
 func TestHandlerRegisterLoginRefreshLogoutFlow(t *testing.T) {
@@ -50,9 +89,7 @@ func TestHandlerRegisterLoginRefreshLogoutFlow(t *testing.T) {
 	}
 
 	var loginResp appSessionResponse
-	if err := json.Unmarshal(loginRec.Body.Bytes(), &loginResp); err != nil {
-		t.Fatalf("login response unmarshal error: %v", err)
-	}
+	decodeAPIEnvelopeFromRecorder(t, loginRec, http.StatusOK, &loginResp)
 	if loginResp.AccessToken == "" || loginResp.RefreshToken == "" {
 		t.Fatalf("login response = %#v, want tokens", loginResp)
 	}
@@ -68,9 +105,7 @@ func TestHandlerRegisterLoginRefreshLogoutFlow(t *testing.T) {
 	}
 
 	var refreshResp appSessionResponse
-	if err := json.Unmarshal(refreshRec.Body.Bytes(), &refreshResp); err != nil {
-		t.Fatalf("refresh response unmarshal error: %v", err)
-	}
+	decodeAPIEnvelopeFromRecorder(t, refreshRec, http.StatusOK, &refreshResp)
 	if refreshResp.AccessToken == loginResp.AccessToken || refreshResp.RefreshToken == loginResp.RefreshToken {
 		t.Fatalf("refresh response = %#v, want rotated tokens", refreshResp)
 	}
@@ -82,9 +117,10 @@ func TestHandlerRegisterLoginRefreshLogoutFlow(t *testing.T) {
 	logoutReq := httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil)
 	logoutReq.Header.Set("Authorization", bearerAuth(refreshResp.AccessToken))
 	handler.ServeHTTP(logoutRec, logoutReq)
-	if logoutRec.Code != http.StatusNoContent {
-		t.Fatalf("logout status = %d, want 204", logoutRec.Code)
+	if logoutRec.Code != http.StatusOK {
+		t.Fatalf("logout status = %d, want 200", logoutRec.Code)
 	}
+	decodeAPIEnvelopeFromRecorder(t, logoutRec, http.StatusOK, nil)
 
 	refreshAfterLogoutRec := httptest.NewRecorder()
 	refreshAfterLogoutReq := httptest.NewRequest(http.MethodPost, "/api/auth/refresh", strings.NewReader(`{"refresh_token":"`+refreshResp.RefreshToken+`"}`))
@@ -110,9 +146,7 @@ func TestHandlerRefreshClampsExpiresInAtAbsoluteSessionBoundary(t *testing.T) {
 		t.Fatalf("refresh at 29 days status = %d, want 200", refreshRec.Code)
 	}
 	var refreshed appSessionResponse
-	if err := json.Unmarshal(refreshRec.Body.Bytes(), &refreshed); err != nil {
-		t.Fatalf("refresh at 29 days unmarshal error: %v", err)
-	}
+	decodeAPIEnvelopeFromRecorder(t, refreshRec, http.StatusOK, &refreshed)
 	currentRefreshToken = refreshed.RefreshToken
 
 	env.now = env.now.Add(29 * 24 * time.Hour)
@@ -122,9 +156,7 @@ func TestHandlerRefreshClampsExpiresInAtAbsoluteSessionBoundary(t *testing.T) {
 	if refreshRec.Code != http.StatusOK {
 		t.Fatalf("refresh at 58 days status = %d, want 200", refreshRec.Code)
 	}
-	if err := json.Unmarshal(refreshRec.Body.Bytes(), &refreshed); err != nil {
-		t.Fatalf("refresh at 58 days unmarshal error: %v", err)
-	}
+	decodeAPIEnvelopeFromRecorder(t, refreshRec, http.StatusOK, &refreshed)
 	currentRefreshToken = refreshed.RefreshToken
 
 	env.now = env.now.Add(29 * 24 * time.Hour)
@@ -134,9 +166,7 @@ func TestHandlerRefreshClampsExpiresInAtAbsoluteSessionBoundary(t *testing.T) {
 	if refreshRec.Code != http.StatusOK {
 		t.Fatalf("refresh at 87 days status = %d, want 200", refreshRec.Code)
 	}
-	if err := json.Unmarshal(refreshRec.Body.Bytes(), &refreshed); err != nil {
-		t.Fatalf("refresh at 87 days unmarshal error: %v", err)
-	}
+	decodeAPIEnvelopeFromRecorder(t, refreshRec, http.StatusOK, &refreshed)
 	currentRefreshToken = refreshed.RefreshToken
 
 	env.now = env.now.Add(3*24*time.Hour - time.Hour)
@@ -149,9 +179,7 @@ func TestHandlerRefreshClampsExpiresInAtAbsoluteSessionBoundary(t *testing.T) {
 	}
 
 	var refreshResp appSessionResponse
-	if err := json.Unmarshal(refreshRec.Body.Bytes(), &refreshResp); err != nil {
-		t.Fatalf("refresh response unmarshal error: %v", err)
-	}
+	decodeAPIEnvelopeFromRecorder(t, refreshRec, http.StatusOK, &refreshResp)
 	if refreshResp.ExpiresIn != int64(time.Hour/time.Second) {
 		t.Fatalf("refresh expires_in near absolute expiry = %d, want %d", refreshResp.ExpiresIn, int64(time.Hour/time.Second))
 	}
@@ -202,9 +230,10 @@ func TestHandlerPasswordChangeRevokesCurrentSession(t *testing.T) {
 	changeReq := httptest.NewRequest(http.MethodPost, "/api/auth/password/change", strings.NewReader(`{"current_password":"password123","new_password":"betterpass456"}`))
 	changeReq.Header.Set("Authorization", bearerAuth(issued.AccessToken))
 	handler.ServeHTTP(changeRec, changeReq)
-	if changeRec.Code != http.StatusNoContent {
-		t.Fatalf("password change status = %d, want 204", changeRec.Code)
+	if changeRec.Code != http.StatusOK {
+		t.Fatalf("password change status = %d, want 200", changeRec.Code)
 	}
+	decodeAPIEnvelopeFromRecorder(t, changeRec, http.StatusOK, nil)
 
 	authorizedRec := httptest.NewRecorder()
 	authorizedReq := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
@@ -295,9 +324,7 @@ func TestHandlerReturnsUserScopedLiveSessions(t *testing.T) {
 	}
 
 	var sessions []protocol.SessionInfo
-	if err := json.Unmarshal(rec.Body.Bytes(), &sessions); err != nil {
-		t.Fatalf("Unmarshal returned error: %v", err)
-	}
+	decodeAPIEnvelopeFromRecorder(t, rec, http.StatusOK, &sessions)
 	if len(sessions) != 1 || sessions[0].SessionID != "sess-a" {
 		t.Fatalf("sessions = %#v, want only sess-a", sessions)
 	}
@@ -319,9 +346,7 @@ func TestHandlerAgentTokenEndpoints(t *testing.T) {
 	}
 
 	var created createdAgentTokenResponse
-	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
-		t.Fatalf("create response unmarshal error: %v", err)
-	}
+	decodeAPIEnvelopeFromRecorder(t, createRec, http.StatusCreated, &created)
 	if created.Token == "" || created.Name != "MacBook" {
 		t.Fatalf("create response = %#v, want token and name", created)
 	}
@@ -335,9 +360,7 @@ func TestHandlerAgentTokenEndpoints(t *testing.T) {
 	}
 
 	var listed []agentTokenResponse
-	if err := json.Unmarshal(listRec.Body.Bytes(), &listed); err != nil {
-		t.Fatalf("list response unmarshal error: %v", err)
-	}
+	decodeAPIEnvelopeFromRecorder(t, listRec, http.StatusOK, &listed)
 	if len(listed) != 1 || listed[0].ID != created.ID {
 		t.Fatalf("listed = %#v, want created token metadata", listed)
 	}
@@ -346,9 +369,10 @@ func TestHandlerAgentTokenEndpoints(t *testing.T) {
 	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/agent-tokens/"+created.ID, nil)
 	deleteReq.Header.Set("Authorization", bearerAuth(issued.AccessToken))
 	handler.ServeHTTP(deleteRec, deleteReq)
-	if deleteRec.Code != http.StatusNoContent {
-		t.Fatalf("delete status = %d, want 204", deleteRec.Code)
+	if deleteRec.Code != http.StatusOK {
+		t.Fatalf("delete status = %d, want 200", deleteRec.Code)
 	}
+	decodeAPIEnvelopeFromRecorder(t, deleteRec, http.StatusOK, nil)
 
 	record, err := env.store.AuthenticateAgentToken(context.Background(), env.digester.Digest(created.Token), env.now)
 	if !errors.Is(err, ErrAgentTokenRevoked) {
@@ -384,9 +408,10 @@ func TestHandlerAgentTokenDeleteDisconnectsLiveSessionImmediately(t *testing.T) 
 	req.Header.Set("Authorization", bearerAuth(issued.AccessToken))
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
 	}
+	decodeAPIEnvelopeFromRecorder(t, rec, http.StatusOK, nil)
 	if sessions := env.registry.ListForUser(user.ID); len(sessions) != 0 {
 		t.Fatalf("sessions = %#v, want empty after token revoke", sessions)
 	}
@@ -416,9 +441,10 @@ func TestHandlerOperatorDeleteUserDisconnectsLiveSessionImmediately(t *testing.T
 	req.Header.Set("Authorization", bearerAuth(env.operatorTok))
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
 	}
+	decodeAPIEnvelopeFromRecorder(t, rec, http.StatusOK, nil)
 	if sessions := env.registry.ListForUser(user.ID); len(sessions) != 0 {
 		t.Fatalf("sessions = %#v, want empty after user delete", sessions)
 	}
@@ -472,5 +498,38 @@ func TestHandlerOperatorRoutesRejectForwardedRequests(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+}
+
+func TestHandlerOperatorListInvites(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	env.addInvite(t, "EF4G5H")
+	env.registerUser(t, "alice", "password123", "AB2C3D")
+
+	handler := env.handler(nil)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, OperatorInviteListPath, nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.Header.Set("Authorization", bearerAuth(env.operatorTok))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var payload handlertypes.OperatorInviteCodesListResponse
+	decodeAPIEnvelopeFromRecorder(t, rec, http.StatusOK, &payload)
+	if len(payload.Invites) != 2 {
+		t.Fatalf("len(invites) = %d, want 2", len(payload.Invites))
+	}
+	var consumedByAlice bool
+	for _, invite := range payload.Invites {
+		if invite.Code == "AB2C3D" && invite.Consumed {
+			consumedByAlice = invite.ConsumedByUsername == "alice"
+		}
+	}
+	if !consumedByAlice {
+		t.Fatalf("invites = %#v, want AB2C3D consumed by alice", payload.Invites)
 	}
 }

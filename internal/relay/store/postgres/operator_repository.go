@@ -37,14 +37,13 @@ func (s *PostgresStore) CreateInviteCodes(ctx context.Context, params []auth.Cre
 func insertInviteCode(ctx context.Context, db queryer, params auth.CreateInviteCodeParams) (auth.InviteCodeRecord, error) {
 	var record auth.InviteCodeRecord
 	err := db.QueryRowContext(ctx, `
-		insert into invite_codes(code_digest, code_hint, created_by, created_at, expires_at)
-		values ($1, $2, $3, $4, $5)
-		returning id, code_digest, code_hint, created_by, created_at, expires_at,
-			disabled_at, disabled_by, consumed_at, consumed_by_user_id
-	`, params.CodeDigest, params.CodeHint, params.CreatedBy, params.Now, params.ExpiresAt).Scan(
+		insert into invite_codes(code, created_by, created_at, expires_at)
+		values ($1, $2, $3, $4)
+		returning id, code, created_by, created_at, expires_at,
+			disabled_at, disabled_by, consumed_at, consumed_by_user_id, consumed_by_username
+	`, params.Code, params.CreatedBy, params.Now, params.ExpiresAt).Scan(
 		&record.ID,
-		&record.CodeDigest,
-		&record.CodeHint,
+		&record.Code,
 		&record.CreatedBy,
 		&record.CreatedAt,
 		&record.ExpiresAt,
@@ -52,18 +51,56 @@ func insertInviteCode(ctx context.Context, db queryer, params auth.CreateInviteC
 		nullStringDest(&record.DisabledBy),
 		nullTimeDest(&record.ConsumedAt),
 		nullInt64Dest(&record.ConsumedByUserID),
+		nullStringDest(&record.ConsumedByUsername),
 	)
 	return record, err
 }
 
-func (s *PostgresStore) DisableInviteCode(ctx context.Context, codeDigest string, actor string, now time.Time) error {
+func (s *PostgresStore) ListInviteCodes(ctx context.Context) ([]auth.InviteCodeRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		select ic.id, ic.code, ic.created_by, ic.created_at, ic.expires_at,
+			ic.disabled_at, ic.disabled_by, ic.consumed_at, ic.consumed_by_user_id, ic.consumed_by_username
+		from invite_codes ic
+		order by ic.created_at desc, ic.id desc
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []auth.InviteCodeRecord
+	for rows.Next() {
+		var row auth.InviteCodeRecord
+		if err := rows.Scan(
+			&row.ID,
+			&row.Code,
+			&row.CreatedBy,
+			&row.CreatedAt,
+			&row.ExpiresAt,
+			nullTimeDest(&row.DisabledAt),
+			nullStringDest(&row.DisabledBy),
+			nullTimeDest(&row.ConsumedAt),
+			nullInt64Dest(&row.ConsumedByUserID),
+			nullStringDest(&row.ConsumedByUsername),
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (s *PostgresStore) DisableInviteCode(ctx context.Context, code string, actor string, now time.Time) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
-	inviteID, err := lockInviteCode(ctx, tx, codeDigest, now)
+	inviteID, err := lockInviteCode(ctx, tx, code, now)
 	if err != nil {
 		return err
 	}

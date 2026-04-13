@@ -9,15 +9,15 @@ create table if not exists users (
 
 create table if not exists invite_codes (
     id bigint generated always as identity primary key,
-    code_digest text not null unique,
-    code_hint text not null,
+    code text not null unique,
     created_by text not null,
     created_at timestamptz not null,
     expires_at timestamptz not null,
     disabled_at timestamptz,
     disabled_by text,
     consumed_at timestamptz,
-    consumed_by_user_id bigint references users(id) on delete set null
+    consumed_by_user_id bigint references users(id) on delete set null,
+    consumed_by_username text
 );
 
 create index if not exists invite_codes_created_at_idx on invite_codes(created_at desc);

@@ -14,14 +14,12 @@ var ErrInvalidOperatorRequest = errors.New("invalid operator request")
 
 type OperatorService struct {
 	store    Repository
-	digester *auth.SecretDigester
 	now      func() time.Time
 }
 
-func NewOperatorService(store Repository, digester *auth.SecretDigester) *OperatorService {
+func NewOperatorService(store Repository) *OperatorService {
 	return &OperatorService{
 		store:    store,
-		digester: digester,
 		now:      func() time.Time { return time.Now().UTC() },
 	}
 }
@@ -41,11 +39,10 @@ func (s *OperatorService) CreateInviteCodes(ctx context.Context, count int, expi
 			return nil, err
 		}
 		params = append(params, auth.CreateInviteCodeParams{
-			CodeDigest: s.digester.Digest(code),
-			CodeHint:   code[len(code)-2:],
-			CreatedBy:  OperatorActor,
-			ExpiresAt:  expiresAt,
-			Now:        now,
+			Code:      code,
+			CreatedBy: OperatorActor,
+			ExpiresAt: expiresAt,
+			Now:      now,
 		})
 		codes = append(codes, code)
 	}
@@ -60,7 +57,11 @@ func (s *OperatorService) DisableInviteCode(ctx context.Context, code string) er
 	if err != nil {
 		return err
 	}
-	return s.store.DisableInviteCode(ctx, s.digester.Digest(normalized), OperatorActor, s.now())
+	return s.store.DisableInviteCode(ctx, normalized, OperatorActor, s.now())
+}
+
+func (s *OperatorService) ListInviteCodes(ctx context.Context) ([]auth.InviteCodeRecord, error) {
+	return s.store.ListInviteCodes(ctx)
 }
 
 func (s *OperatorService) DeleteUser(ctx context.Context, username string) (auth.DeleteUserResult, error) {

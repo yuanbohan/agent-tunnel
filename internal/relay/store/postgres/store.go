@@ -31,14 +31,14 @@ type inviteStatus struct {
 	consumedAt sql.NullTime
 }
 
-func lockInviteCode(ctx context.Context, tx *sql.Tx, codeDigest string, now time.Time) (int64, error) {
+func lockInviteCode(ctx context.Context, tx *sql.Tx, code string, now time.Time) (int64, error) {
 	var status inviteStatus
 	err := tx.QueryRowContext(ctx, `
 		select id, expires_at, disabled_at, consumed_at
 		from invite_codes
-		where code_digest = $1
+		where code = $1
 		for update
-	`, codeDigest).Scan(&status.id, &status.expiresAt, &status.disabledAt, &status.consumedAt)
+	`, code).Scan(&status.id, &status.expiresAt, &status.disabledAt, &status.consumedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return 0, auth.ErrInviteCodeNotFound

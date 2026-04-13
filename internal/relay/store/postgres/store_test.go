@@ -47,11 +47,10 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	accessToken := "access-token-" + suffix
 	refreshToken := "refresh-token-" + suffix
 	if _, err := store.CreateInviteCode(ctx, auth.CreateInviteCodeParams{
-		CodeDigest: digester.Digest(code),
-		CodeHint:   code[len(code)-2:],
-		CreatedBy:  "integration-test",
-		ExpiresAt:  now.Add(30 * time.Minute),
-		Now:        now,
+		Code:      code,
+		CreatedBy: "integration-test",
+		ExpiresAt: now.Add(30 * time.Minute),
+		Now:       now,
 	}); err != nil {
 		t.Fatalf("CreateInviteCode returned error: %v", err)
 	}
@@ -69,10 +68,10 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	}
 
 	user, err := store.RegisterUser(ctx, auth.RegisterUserParams{
-		UsernameNorm:     username,
-		InviteCodeDigest: digester.Digest(code),
-		PasswordHash:     passwordHash,
-		Now:              now,
+		UsernameNorm: username,
+		InviteCode:   code,
+		PasswordHash: passwordHash,
+		Now:          now,
 	})
 	if err != nil {
 		t.Fatalf("RegisterUser returned error: %v", err)
@@ -120,6 +119,85 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	}
 }
 
+func TestPostgresStorePersistsInviteConsumerAfterUserDelete(t *testing.T) {
+	dsn := os.Getenv("AGENTUNNEL_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("AGENTUNNEL_TEST_DATABASE_URL is not set")
+	}
+
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open returned error: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if err := migration.RunMigrations(ctx, db, testSchemaDir(t)); err != nil {
+		t.Fatalf("RunMigrations returned error: %v", err)
+	}
+
+	store := NewPostgresStore(db)
+	hasher := auth.PasswordHasher{
+		MemoryKiB:   8 * 1024,
+		Iterations:  1,
+		Parallelism: 1,
+		SaltLength:  8,
+		KeyLength:   16,
+	}
+
+	now := time.Now().UTC()
+	code, err := auth.GenerateInviteCode()
+	if err != nil {
+		t.Fatalf("GenerateInviteCode returned error: %v", err)
+	}
+	suffix := strconv.FormatInt(now.UnixNano(), 10)
+	username := "invite-persistence-" + suffix
+
+	if _, err := store.CreateInviteCode(ctx, auth.CreateInviteCodeParams{
+		Code:      code,
+		CreatedBy: "integration-test",
+		ExpiresAt: now.Add(30 * time.Minute),
+		Now:       now,
+	}); err != nil {
+		t.Fatalf("CreateInviteCode returned error: %v", err)
+	}
+
+	passwordHash, err := hasher.HashPassword(ctx, "password123")
+	if err != nil {
+		t.Fatalf("HashPassword returned error: %v", err)
+	}
+	user, err := store.RegisterUser(ctx, auth.RegisterUserParams{
+		UsernameNorm: username,
+		InviteCode:   code,
+		PasswordHash: passwordHash,
+		Now:          now,
+	})
+	if err != nil {
+		t.Fatalf("RegisterUser returned error: %v", err)
+	}
+
+	if _, err := store.DeleteUser(ctx, user.UsernameNorm, "operator", now); err != nil {
+		t.Fatalf("DeleteUser returned error: %v", err)
+	}
+
+	var consumedByUserID sql.NullInt64
+	var consumedByUsername string
+	err = db.QueryRowContext(ctx, `
+		select consumed_by_user_id, consumed_by_username
+		from invite_codes
+		where code = $1
+	`, code).Scan(&consumedByUserID, &consumedByUsername)
+	if err != nil {
+		t.Fatalf("load invite by code returned error: %v", err)
+	}
+	if consumedByUserID.Valid {
+		t.Fatalf("consumed_by_user_id = %v, want null after user delete", consumedByUserID.Int64)
+	}
+	if consumedByUsername != user.UsernameNorm {
+		t.Fatalf("consumed_by_username = %q, want %q", consumedByUsername, user.UsernameNorm)
+	}
+}
+
 func TestPostgresStoreEnforcesAbsoluteSessionBoundaryDuringRefresh(t *testing.T) {
 	dsn := os.Getenv("AGENTUNNEL_TEST_DATABASE_URL")
 	if dsn == "" {
@@ -159,11 +237,10 @@ func TestPostgresStoreEnforcesAbsoluteSessionBoundaryDuringRefresh(t *testing.T)
 		t.Fatalf("GenerateInviteCode returned error: %v", err)
 	}
 	if _, err := store.CreateInviteCode(ctx, auth.CreateInviteCodeParams{
-		CodeDigest: digester.Digest(code),
-		CodeHint:   code[len(code)-2:],
-		CreatedBy:  "integration-test",
-		ExpiresAt:  createdAt.Add(2 * time.Hour),
-		Now:        createdAt,
+		Code:      code,
+		CreatedBy: "integration-test",
+		ExpiresAt: createdAt.Add(2 * time.Hour),
+		Now:       createdAt,
 	}); err != nil {
 		t.Fatalf("CreateInviteCode returned error: %v", err)
 	}
@@ -180,10 +257,10 @@ func TestPostgresStoreEnforcesAbsoluteSessionBoundaryDuringRefresh(t *testing.T)
 		t.Fatalf("HashPassword returned error: %v", err)
 	}
 	user, err := store.RegisterUser(ctx, auth.RegisterUserParams{
-		UsernameNorm:     username,
-		InviteCodeDigest: digester.Digest(code),
-		PasswordHash:     passwordHash,
-		Now:              createdAt,
+		UsernameNorm: username,
+		InviteCode:   code,
+		PasswordHash: passwordHash,
+		Now:          createdAt,
 	})
 	if err != nil {
 		t.Fatalf("RegisterUser returned error: %v", err)
