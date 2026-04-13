@@ -20,6 +20,26 @@
   tags:
     - nginx
 
+- name: Check whether TLS certificate files exist
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "/etc/letsencrypt/live/{{ relay_primary_domain }}/fullchain.pem"
+    - "/etc/letsencrypt/live/{{ relay_primary_domain }}/privkey.pem"
+  register: relay_tls_certificate_files
+  when:
+    - relay_enable_tls | default(false) | bool
+    - relay_primary_domain is defined
+  tags:
+    - nginx
+
+- name: Resolve nginx TLS readiness
+  ansible.builtin.set_fact:
+    relay_tls_certificate_ready: "{{ relay_tls_certificate_files.results | default([]) | selectattr('stat.exists') | list | length == 2 }}"
+  when: relay_enable_tls | default(false) | bool
+  tags:
+    - nginx
+
 - name: Install nginx restart override
   ansible.builtin.template:
     src: nginx-restart.conf.j2
@@ -42,7 +62,7 @@
     src: nginx-site-http.conf.j2
     dest: "{{ relay_nginx_site_path }}"
     mode: "0644"
-  when: not (relay_enable_tls | default(false) | bool)
+  when: not (relay_enable_tls | default(false) | bool and relay_tls_certificate_ready | default(false) | bool)
   tags:
     - nginx
 
@@ -51,7 +71,9 @@
     src: nginx-site-tls.conf.j2
     dest: "{{ relay_nginx_site_path }}"
     mode: "0644"
-  when: relay_enable_tls | default(false) | bool
+  when:
+    - relay_enable_tls | default(false) | bool
+    - relay_tls_certificate_ready | default(false) | bool
   tags:
     - nginx
 

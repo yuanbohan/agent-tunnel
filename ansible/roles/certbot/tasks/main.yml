@@ -61,6 +61,15 @@
   tags:
     - certbot
 
+- name: Wait for nginx HTTP listener before certbot challenge
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: 80
+    timeout: 30
+  when: relay_enable_certbot | default(false) | bool
+  tags:
+    - certbot
+
 - name: Ensure certbot certificate exists
   ansible.builtin.command:
     cmd: >-

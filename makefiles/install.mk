@@ -1,4 +1,4 @@
-.PHONY: install install-local install-dev install-prod install-remote
+.PHONY: ansible-run install install-local install-dev install-prod install-remote
 
 install: install-local ## Install `tunnel`, `relay`, and `relay-migrate` into `$(INSTALL_DIR)`.
 
@@ -21,12 +21,14 @@ ANSIBLE_OPTS += $(if $(strip $(ANSIBLE_EXTRA_VARS_FILE)), -e "@$(ANSIBLE_EXTRA_V
 ANSIBLE_OPTS += $(if $(strip $(ANSIBLE_TAGS)), --tags "$(ANSIBLE_TAGS)",)
 ANSIBLE_OPTS += $(if $(filter 1 true TRUE yes YES on ON,$(ANSIBLE_DRY_RUN)),--check,)
 
+ansible-run:
+	@echo "ANSIBLE inventory=$(strip $(ANSIBLE_INVENTORY)) tags=$(strip $(ANSIBLE_TAGS))"
+	@$(ANSIBLE) $(ANSIBLE_OPTS) $(ANSIBLE_PLAYBOOK)
+
 install-dev: ## Bootstrap the dev host (dependencies + nginx + website + relay proxy).
 	@$(MAKE) install-remote ANSIBLE_INVENTORY=ansible/inventories/dev.yml ANSIBLE_TAGS="deps,nginx"
 
 install-prod: ## Bootstrap the prod host (dependencies + nginx + certbot/tls + website + relay proxy).
 	@$(MAKE) install-remote ANSIBLE_INVENTORY=ansible/inventories/prod.yml ANSIBLE_TAGS="deps,certbot,nginx"
 
-install-remote:
-	@echo "ANSIBLE [$(strip $(ANSIBLE_TAGS))] inventory=$(strip $(ANSIBLE_INVENTORY))"
-	@$(ANSIBLE) $(ANSIBLE_OPTS) $(ANSIBLE_PLAYBOOK)
+install-remote: ansible-run

@@ -12,8 +12,9 @@
 
   roles:
     - deps
-    - certbot
     - postgres
+    - nginx
+    - certbot
     - nginx
     - relay
     - website
