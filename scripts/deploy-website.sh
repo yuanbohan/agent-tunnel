@@ -319,8 +319,11 @@ EOF
 		return 1
 	fi
 
+	# shellcheck disable=SC2086
 	run_cmd_or_return ssh $ssh_opts "$deploy_website_host" "install -d -m 0755 $q_stage_dir && rm -f $q_stage_file && sudo rm -rf $q_release_dir $q_current_tmp_link"
+	# shellcheck disable=SC2086
 	run_cmd_or_return scp $scp_opts "$local_archive" "$remote_stage_target"
+	# shellcheck disable=SC2086
 	run_cmd_or_return ssh $ssh_opts "$deploy_website_host" "$remote_cmd"
 	set_step_result changed "activated release $deploy_run_id"
 }

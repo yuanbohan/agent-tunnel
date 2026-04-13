@@ -64,11 +64,22 @@ require_absolute_path() {
 	value="$2"
 	case "$value" in
 		/*)
-			return 0
 			;;
 		*)
 			printf 'error: %s must be an absolute path: %s\n' "$name" "$value" >&2
 			exit 1
+			;;
+	esac
+	case "$value" in
+		/)
+			return 0
+			;;
+		*[!A-Za-z0-9._/-]*|*//*|*/)
+			printf 'error: %s contains unsupported characters: %s\n' "$name" "$value" >&2
+			exit 1
+			;;
+		*)
+			return 0
 			;;
 	esac
 }
