@@ -18,7 +18,7 @@ import (
 type fakeRelayConnector struct {
 	waitConnected bool
 	state         connector.State
-	runCalled     bool
+	runCalledCh   chan struct{}
 	boundHub      *session.Hub
 	initialCols   int
 	initialRows   int
@@ -40,7 +40,13 @@ func (f *fakeRelayConnector) BindHub(hub *session.Hub) {
 }
 
 func (f *fakeRelayConnector) Run(context.Context) {
-	f.runCalled = true
+	if f.runCalledCh != nil {
+		select {
+		case <-f.runCalledCh:
+		default:
+			close(f.runCalledCh)
+		}
+	}
 }
 
 func (f *fakeRelayConnector) WaitUntilConnected(context.Context, time.Duration) bool {
@@ -385,6 +391,7 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
 	var gotInfo protocol.SessionInfo
 	var gotURL, gotToken string
 	fakeConnector := &fakeRelayConnector{waitConnected: true, state: connector.StateConnected}
+	fakeConnector.runCalledCh = make(chan struct{})
 	newConnector = func(url, token string, info protocol.SessionInfo) relayConnector {
 		gotURL = url
 		gotToken = token
@@ -449,7 +456,9 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
 	if gotInfo.StartedAt <= 0 {
 		t.Fatal("StartedAt = 0, want current Unix timestamp")
 	}
-	if fakeConnector.runCalled != true {
+	select {
+	case <-fakeConnector.runCalledCh:
+	case <-time.After(100 * time.Millisecond):
 		t.Fatal("connector Run was not called")
 	}
 	if fakeConnector.connectTTL != startupRelayWait {
