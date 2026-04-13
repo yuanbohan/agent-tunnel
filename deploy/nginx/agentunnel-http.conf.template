@@ -22,7 +22,7 @@ server {
     }
 
     location = /api {
-        return 308 /api/;
+        return 308 /api/$is_args$args;
     }
 
     location /api/ {

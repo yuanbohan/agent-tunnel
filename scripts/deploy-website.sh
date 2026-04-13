@@ -108,6 +108,20 @@ require_absolute_path() {
 	esac
 }
 
+require_safe_token() {
+	name="$1"
+	value="$2"
+	case "$value" in
+		''|.|..|-*|*[!A-Za-z0-9._-]*)
+			printf 'error: %s contains unsupported characters: %s\n' "$name" "$value" >&2
+			exit 1
+			;;
+		*)
+			return 0
+			;;
+	esac
+}
+
 run_in_website_repo() {
 	(
 		cd "$website_repo"
@@ -428,6 +442,7 @@ deploy_website_host="${DEPLOY_WEBSITE_HOST:-${DEPLOY_HOST:-}}"
 deploy_website_root="${DEPLOY_WEBSITE_ROOT:-/var/www/agentunnel-website}"
 deploy_website_tmp_dir="${DEPLOY_WEBSITE_TMP_DIR:-/tmp/agentunnel-website}"
 deploy_run_id="${DEPLOY_RUN_ID:-$(date +%Y%m%d%H%M%S)-$$}"
+require_safe_token DEPLOY_RUN_ID "$deploy_run_id"
 website_build_dir="${WEBSITE_BUILD_DIR:-dist}"
 website_dist_dir="$website_repo/$website_build_dir"
 ssh_opts='-o LogLevel=ERROR'
