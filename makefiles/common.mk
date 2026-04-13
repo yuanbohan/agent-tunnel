@@ -1,6 +1,5 @@
-.PHONY: help
+# Runtime configuration.
 
-# Runtime configuration. These can be overridden on the command line.
 ## RELAY_BIN: Relay binary path used by `make start`.
 RELAY_BIN ?= ./relay
 ## RELAY_PORT: Relay port used by `make start` and `make status`.
@@ -11,77 +10,51 @@ GO ?= go
 BIN_DIR ?= bin
 ## RELEASE_DIR: Output directory root for packaged tunnel release artifacts.
 RELEASE_DIR ?= dist/releases
+
 ## INSTALL_DIR: Install destination for `make install`.
 INSTALL_DIR ?= $(HOME)/.local/bin
-## INSTALL_HOST: SSH host for remote install targets. Defaults to `DEPLOY_HOST`.
-INSTALL_HOST ?= $(DEPLOY_HOST)
-## INSTALL_ENV: Internal selector used by the remote install script (`dev` or `prod`).
-INSTALL_ENV ?=
-## INSTALL_NGINX_SITE_NAME: Remote nginx site filename. Defaults to `agentunnel-dev` for dev and the primary prod domain for prod.
-INSTALL_NGINX_SITE_NAME ?=
-## INSTALL_NGINX_UPSTREAM_ADDR: Relay upstream address proxied by nginx on the remote host.
-INSTALL_NGINX_UPSTREAM_ADDR ?= 127.0.0.1:8586
-## INSTALL_DEV_SERVER_NAMES: Space-separated nginx `server_name` values for the dev site. Defaults to `_`, plus the SSH hostname when it resolves to an IPv4 address.
-INSTALL_DEV_SERVER_NAMES ?=
-## INSTALL_PROD_SERVER_NAMES: Space-separated nginx `server_name` values for the production site.
-INSTALL_PROD_SERVER_NAMES ?= diaro.me www.diaro.me
-## INSTALL_PROD_PRIMARY_DOMAIN: Primary production domain used for TLS certificate paths and certbot renewal.
-INSTALL_PROD_PRIMARY_DOMAIN ?= diaro.me
-## INSTALL_CERTBOT_EMAIL: Contact email used for the first production certbot registration.
-INSTALL_CERTBOT_EMAIL ?=
-## INSTALL_CERTBOT_WEBROOT: Webroot served for ACME HTTP-01 challenges.
-INSTALL_CERTBOT_WEBROOT ?= /var/www/certbot
-## INSTALL_WEBSITE_ROOT: Remote website release root; nginx serves `$(INSTALL_WEBSITE_ROOT)/current`.
-INSTALL_WEBSITE_ROOT ?= /var/www/agentunnel-website
-## INSTALL_VERBOSE: Set to 1 to print remote install debug details.
-INSTALL_VERBOSE ?= 0
-## INSTALL_DRY_RUN: Set to 1 for a structured remote install preview without executing changes.
-INSTALL_DRY_RUN ?= 0
+
 ## LOG_DIR: Directory for relay background logs and pid files.
 LOG_DIR ?= logs
 ## RELAY_PID_FILE: PID file used by `make start`, `make stop`, and `make status`.
 RELAY_PID_FILE ?= $(LOG_DIR)/relay.pid
 ## RELAY_LOG_FILE: Relay log file written by `make start`.
 RELAY_LOG_FILE ?= $(LOG_DIR)/relay.log
-## DEPLOY_HOST: SSH host for deploy targets.
-DEPLOY_HOST ?= diarome
-## DEPLOY_RELAY_PATH: Remote staging path for the relay binary.
-DEPLOY_RELAY_PATH ?= ~/relay
-## DEPLOY_MIGRATOR_PATH: Remote staging path for the relay migrator binary.
-DEPLOY_MIGRATOR_PATH ?= ~/relay-migrate
-## DEPLOY_SERVICE: Systemd service name restarted by deploy targets.
-DEPLOY_SERVICE ?= agentunnel-relay
-## DEPLOY_INSTALL_PATH: Installed relay path used by systemd ExecStart.
-DEPLOY_INSTALL_PATH ?= /usr/local/bin/relay
-## DEPLOY_MIGRATOR_INSTALL_PATH: Installed relay migrator path.
-DEPLOY_MIGRATOR_INSTALL_PATH ?= /usr/local/bin/relay-migrate
-## DEPLOY_ENV_FILE: Remote env file installed by `make deploy-env` and read by systemd on service start.
-DEPLOY_ENV_FILE ?= /etc/agentunnel/relay.env
-## DEPLOY_RELAY_LOG_FILE: Relay log file path written into the deployed remote env file.
-DEPLOY_RELAY_LOG_FILE ?= /var/log/agentunnel/relay.log
-## DEPLOY_SCHEMA_DIR: Remote directory containing relay schema SQL files.
-DEPLOY_SCHEMA_DIR ?= /etc/agentunnel/schema
+
+## RELAY_SCHEMA_DIR: Remote directory for relay SQL files.
+RELAY_SCHEMA_DIR ?= /etc/agentunnel/schema
+## ANSIBLE: Binary used for automation playbooks.
+ANSIBLE ?= ansible-playbook
+## ANSIBLE_CONFIG: Path to ansible config file for this project.
+ANSIBLE_CONFIG ?= ansible/ansible.cfg
+## ANSIBLE_PROJECT_ROOT: Repository root passed to Ansible for local artifact paths.
+ANSIBLE_PROJECT_ROOT ?= $(shell pwd)
+## ANSIBLE_INVENTORY: Inventory file for target host.
+ANSIBLE_INVENTORY ?= ansible/inventories/dev.yml
+## ANSIBLE_PLAYBOOK: Primary Ansible playbook file.
+ANSIBLE_PLAYBOOK ?= ansible/playbooks/site.yml
+## ANSIBLE_EXTRA_VARS_FILE: Optional YAML/JSON vars file (recommended for secrets).
+ANSIBLE_EXTRA_VARS_FILE ?=
+## ANSIBLE_WEBSITE_REPO_DIR: Absolute path to the website checkout for remote website deploy.
+ANSIBLE_WEBSITE_REPO_DIR ?= $(abspath $(WEBSITE_REPO_DIR))
+## ANSIBLE_TAGS: Optional comma-separated tag list passed to ansible-playbook.
+ANSIBLE_TAGS ?=
+## ANSIBLE_DRY_RUN: Set to 1 to run ansible in check mode.
+ANSIBLE_DRY_RUN ?= 0
+
 ## WEBSITE_REPO_DIR: Local checkout used to build the deployable website bundle.
 WEBSITE_REPO_DIR ?= ../agent-tunnel-website
 ## WEBSITE_BUILD_DIR: Build output directory inside `$(WEBSITE_REPO_DIR)`.
 WEBSITE_BUILD_DIR ?= dist
-## DEPLOY_WEBSITE_HOST: SSH host for website deploy targets. Defaults to `DEPLOY_HOST`.
-DEPLOY_WEBSITE_HOST ?= $(DEPLOY_HOST)
-## DEPLOY_WEBSITE_ROOT: Remote website release root used by deploy-website targets.
-DEPLOY_WEBSITE_ROOT ?= $(INSTALL_WEBSITE_ROOT)
+## DEPLOY_WEBSITE_ROOT: Remote website release root used by website deploys.
+DEPLOY_WEBSITE_ROOT ?= /var/www/agentunnel-website
 ## DEPLOY_WEBSITE_TMP_DIR: Remote temporary directory used while uploading website release archives.
 DEPLOY_WEBSITE_TMP_DIR ?= /tmp/agentunnel-website
-## MIGRATOR_ARGS: Extra arguments passed to the remote migrator, for example `--baseline 0002_operator_audit.sql`.
-MIGRATOR_ARGS ?=
-## DEPLOY_VERBOSE: Set to 1 to print deploy debug details.
-DEPLOY_VERBOSE ?= 0
-## DEPLOY_DRY_RUN: Set to 1 for a structured deploy preview without executing commands.
-DEPLOY_DRY_RUN ?= 0
 ## LOCAL_E2E_PG_IMAGE: Fixed Docker image tag used for local E2E PostgreSQL.
 LOCAL_E2E_PG_IMAGE ?= postgres:16.11-alpine
 ## LOCAL_E2E_PG_CONTAINER: Docker container name used for local E2E PostgreSQL.
 LOCAL_E2E_PG_CONTAINER ?= agent-tunnel-e2e-postgres
-## LOCAL_E2E_PG_VOLUME: Docker volume name used for local E2E PostgreSQL data.
+## LOCAL_E2E_PG_VOLUME: Docker volume name used for local E2E PostgreSQL.
 LOCAL_E2E_PG_VOLUME ?= agent-tunnel-e2e-pgdata
 ## LOCAL_E2E_PG_PORT: Host port bound for local E2E PostgreSQL.
 LOCAL_E2E_PG_PORT ?= 55432
@@ -119,6 +92,6 @@ help: ## Show available targets and configurable variables.
 	@printf "\nVariables:\n"
 	@awk '/^## [A-Z0-9_]+: / {line=$$0; sub(/^## /, "", line); name=line; desc=line; sub(/: .*/, "", name); sub(/^[^:]+: /, "", desc); printf "  %-22s %s\n", name, desc}' $(MAKEFILE_LIST)
 	@printf "\nExamples:\n"
-	@printf "  make build\n"
+	@printf "  make <target>\n"
 	@printf "  make migrate\n"
 	@printf "  make start RELAY_BIN=./bin/relay\n"

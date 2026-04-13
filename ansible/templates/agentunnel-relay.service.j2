@@ -1,0 +1,17 @@
+[Unit]
+Description=Agent Tunnel Relay
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart={{ relay_install_root }}/relay serve --listen-addr {{ relay_listen_addr | default('127.0.0.1:8586') }}
+EnvironmentFile={{ relay_env_file }}
+Restart=always
+RestartSec=5
+LogsDirectory=agentunnel
+LogsDirectoryMode=0750
+
+[Install]
+WantedBy=multi-user.target

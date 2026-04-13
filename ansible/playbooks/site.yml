@@ -1,0 +1,19 @@
+---
+- name: Deploy agentunnel host configuration and artifacts
+  hosts: relay_hosts
+  become: true
+  gather_facts: true
+
+  vars:
+    relay_project_root: "{{ lookup('env', 'ANSIBLE_PROJECT_ROOT') | default(ansible_playbook_dir, true) }}"
+    relay_local_schema_dir: "{{ relay_project_root }}/schema"
+    relay_local_bin_dir: "{{ relay_project_root }}/bin"
+    relay_website_repo_dir: "{{ lookup('env', 'ANSIBLE_WEBSITE_REPO_DIR') | default(relay_project_root + '/../agent-tunnel-website', true) }}"
+
+  roles:
+    - deps
+    - certbot
+    - postgres
+    - nginx
+    - relay
+    - website

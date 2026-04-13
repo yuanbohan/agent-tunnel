@@ -1,8 +1,5 @@
 .PHONY: install install-local install-dev install-prod install-remote
 
-INSTALL_SCRIPT := ./scripts/install.sh
-INSTALL_SCRIPT_FLAGS := $(if $(filter 1 true TRUE yes YES on ON,$(INSTALL_VERBOSE)),--verbose,) $(if $(filter 1 true TRUE yes YES on ON,$(INSTALL_DRY_RUN)),--dry-run,)
-
 install: install-local ## Install `tunnel`, `relay`, and `relay-migrate` into `$(INSTALL_DIR)`.
 
 install-local: build ## Install `tunnel`, `relay`, and `relay-migrate` into `$(INSTALL_DIR)`.
@@ -12,24 +9,24 @@ install-local: build ## Install `tunnel`, `relay`, and `relay-migrate` into `$(I
 	cp -f "$(TUNNEL_BIN)" "$(RELAY_BUILD_BIN)" "$(MIGRATOR_BUILD_BIN)" "$(INSTALL_DIR)/"; \
 	echo "installed tunnel, relay, and relay-migrate to $(INSTALL_DIR)"
 
-install-dev: ## Bootstrap the dev VPS: install nginx/postgresql if missing, serve the website at `/`, proxy relay routes, and restart nginx.
-	@$(MAKE) install-remote INSTALL_ENV=dev ENV_FILE=.env.dev
+ANSIBLE_OPTS := -i "$(ANSIBLE_INVENTORY)"
+ANSIBLE_OPTS += -e "project_root=$(ANSIBLE_PROJECT_ROOT)"
+ANSIBLE_OPTS += -e "website_repo_dir=$(ANSIBLE_WEBSITE_REPO_DIR)"
+ANSIBLE_OPTS += -e "website_release_root=$(DEPLOY_WEBSITE_ROOT)"
+ANSIBLE_OPTS += -e "website_tmp_dir=$(DEPLOY_WEBSITE_TMP_DIR)"
+ANSIBLE_OPTS += -e "website_build_dir=$(WEBSITE_BUILD_DIR)"
 
-install-prod: ## Bootstrap prod: dev bootstrap plus certbot issuance/renewal wiring and the HTTPS nginx site that serves the website at `/`. Requires a certbot email and prompts if omitted.
-	@$(MAKE) install-remote INSTALL_ENV=prod ENV_FILE=.env.prod
+ANSIBLE_OPTS += $(if $(strip $(ANSIBLE_LIMIT)),--limit "$(ANSIBLE_LIMIT)",)
+ANSIBLE_OPTS += $(if $(strip $(ANSIBLE_EXTRA_VARS_FILE)), -e "@$(ANSIBLE_EXTRA_VARS_FILE)",)
+ANSIBLE_OPTS += $(if $(strip $(ANSIBLE_TAGS)), --tags "$(ANSIBLE_TAGS)",)
+ANSIBLE_OPTS += $(if $(filter 1 true TRUE yes YES on ON,$(ANSIBLE_DRY_RUN)),--check,)
+
+install-dev: ## Bootstrap the dev host (dependencies + nginx + website + relay proxy).
+	@$(MAKE) install-remote ANSIBLE_INVENTORY=ansible/inventories/dev.yml ANSIBLE_TAGS="deps,nginx"
+
+install-prod: ## Bootstrap the prod host (dependencies + nginx + certbot/tls + website + relay proxy).
+	@$(MAKE) install-remote ANSIBLE_INVENTORY=ansible/inventories/prod.yml ANSIBLE_TAGS="deps,certbot,nginx"
 
 install-remote:
-	@ENV_FILE="$(ENV_FILE)" \
-	DEPLOY_HOST="$(DEPLOY_HOST)" \
-	INSTALL_HOST="$(INSTALL_HOST)" \
-	INSTALL_NGINX_SITE_NAME="$(INSTALL_NGINX_SITE_NAME)" \
-	INSTALL_NGINX_UPSTREAM_ADDR="$(INSTALL_NGINX_UPSTREAM_ADDR)" \
-	INSTALL_DEV_SERVER_NAMES="$(INSTALL_DEV_SERVER_NAMES)" \
-	INSTALL_PROD_SERVER_NAMES="$(INSTALL_PROD_SERVER_NAMES)" \
-	INSTALL_PROD_PRIMARY_DOMAIN="$(INSTALL_PROD_PRIMARY_DOMAIN)" \
-	INSTALL_CERTBOT_EMAIL="$(INSTALL_CERTBOT_EMAIL)" \
-	INSTALL_CERTBOT_WEBROOT="$(INSTALL_CERTBOT_WEBROOT)" \
-	INSTALL_WEBSITE_ROOT="$(INSTALL_WEBSITE_ROOT)" \
-	INSTALL_VERBOSE="$(INSTALL_VERBOSE)" \
-	INSTALL_DRY_RUN="$(INSTALL_DRY_RUN)" \
-	$(INSTALL_SCRIPT) "$(INSTALL_ENV)" $(INSTALL_SCRIPT_FLAGS)
+	@echo "ANSIBLE [$(strip $(ANSIBLE_TAGS))] inventory=$(strip $(ANSIBLE_INVENTORY))"
+	@$(ANSIBLE) $(ANSIBLE_OPTS) $(ANSIBLE_PLAYBOOK)

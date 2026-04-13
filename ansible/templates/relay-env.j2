@@ -1,0 +1,5 @@
+RELAY_DATABASE_URL=postgres://{{ relay_database_user }}:{{ relay_database_password }}@{{ relay_database_host }}:{{ relay_database_port }}/{{ relay_database_name }}?sslmode=disable
+RELAY_APP_SECRET={{ relay_app_secret }}
+RELAY_OPERATOR_TOKEN={{ relay_operator_token }}
+RELAY_LISTEN_ADDR={{ relay_listen_addr | default('127.0.0.1:8586') }}
+RELAY_LOG_FILE={{ relay_log_file | default('/var/log/agentunnel/relay.log') }}

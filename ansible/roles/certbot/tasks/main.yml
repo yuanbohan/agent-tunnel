@@ -1,0 +1,88 @@
+- name: Install certbot package
+  ansible.builtin.apt:
+    name: certbot
+    state: present
+  when:
+    - relay_enable_certbot | default(false) | bool
+    - ansible_facts['os_family'] == 'Debian'
+  tags:
+    - certbot
+
+- name: Ensure certbot webroot exists
+  ansible.builtin.file:
+    path: "{{ relay_certbot_webroot }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: relay_enable_certbot | default(false) | bool
+  tags:
+    - certbot
+
+- name: Ensure certbot deploy hook directory exists
+  ansible.builtin.file:
+    path: /etc/letsencrypt/renewal-hooks/deploy
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: relay_enable_certbot | default(false) | bool
+  tags:
+    - certbot
+
+- name: Ensure certbot deploy hook is present
+  ansible.builtin.template:
+    src: certbot-reload-nginx.sh.j2
+    dest: /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
+    mode: "0755"
+    owner: root
+    group: root
+  when: relay_enable_certbot | default(false) | bool
+  tags:
+    - certbot
+
+- name: Verify certbot email
+  ansible.builtin.assert:
+    that:
+      - relay_certbot_email is string
+      - relay_certbot_email | length > 0
+      - relay_certbot_email is regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$")
+    fail_msg: "relay_certbot_email must be set before certbot role can run"
+  when: relay_enable_certbot | default(false) | bool
+  tags:
+    - certbot
+
+- name: Prepare certbot domain arguments
+  ansible.builtin.set_fact:
+    relay_certbot_domain_args: "{{ relay_certbot_domains | map('regex_replace', '^(.*)$', '-d \\1') | join(' ') }}"
+  when:
+    - relay_enable_certbot | default(false) | bool
+    - relay_certbot_domains is defined
+  tags:
+    - certbot
+
+- name: Ensure certbot certificate exists
+  ansible.builtin.command:
+    cmd: >-
+      certbot certonly --webroot -w {{ relay_certbot_webroot }} --non-interactive --agree-tos
+      --keep-until-expiring -m {{ relay_certbot_email }}
+      --deploy-hook /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
+      {{ relay_certbot_domain_args }}
+  args:
+    creates: "/etc/letsencrypt/live/{{ relay_primary_domain }}/fullchain.pem"
+  when:
+    - relay_enable_certbot | default(false) | bool
+    - relay_certbot_domain_args is defined
+    - relay_certbot_domain_args | length > 0
+    - relay_primary_domain is defined
+  tags:
+    - certbot
+
+- name: Enable certbot timer for renewal
+  ansible.builtin.systemd:
+    name: certbot.timer
+    state: started
+    enabled: true
+  when: relay_enable_certbot | default(false) | bool
+  tags:
+    - certbot

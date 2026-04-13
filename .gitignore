@@ -46,3 +46,6 @@ bin/
 /logs
 .superpowers
 .worktrees
+
+# Ansible secrets
+ansible/group_vars/all/relay-secrets.yml
