@@ -6,7 +6,7 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 
 ## Start Here
 
-- The main product is the `tunnel` CLI with relay-first startup semantics and background reconnect after local session start.
+- The main product is the `tunnel` CLI with strict relay startup requirement and automatic reconnect with backoff after startup.
 - `cmd/tunnel` builds the `tunnel` CLI. It launches a PATH-resolved CLI command, keeps the local terminal interactive, and maintains the authoritative headless terminal mirror for the current PTY session.
 - `cmd/relay` is the standalone relay server. It exposes authenticated HTTP and WebSocket APIs for external clients, authenticates app clients with bearer app sessions, authenticates agents with user-owned bearer agent tokens, keeps operator maintenance routes local-only outside the public `/api/` namespace, persists accounts and auth state in PostgreSQL, and maintains a live in-memory session registry with session-scoped attach routing. It does not retain transcript history. It starts via explicit subcommands such as `serve`, `invite create`, `invite disable`, and `user delete`.
 - `cmd/migrate` builds the standalone relay schema migrator used for explicit PostgreSQL schema changes.
@@ -32,8 +32,8 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 - `session_id` identifies one running `tunnel` process. Relay reconnects for that same process keep the same `session_id`. A fresh agent launch gets a new `session_id`.
 - `tunnel` is the PTY owner. It has no localhost HTTP server; all remote client access goes through the relay.
 - `tunnel` uses `--base-url` (or `TUNNEL_BASE_URL`) and `TUNNEL_AUTH_TOKEN` to start. `TUNNEL_BASE_URL` is optional and defaults to `https://diaro.me`.
-- On launch, `tunnel` gives relay registration a bounded first chance to succeed. If that startup window expires, the local terminal session still starts and the relay reconnect loop continues in the background.
-- After the local terminal session has begun, relay unavailability must not interrupt local terminal work; it only affects remote visibility and interaction until reconnect succeeds.
+- On launch, `tunnel` must complete relay registration within the startup wait window. If registration does not succeed, startup fails and the local terminal session does not start.
+- After startup, relay unavailability must not interrupt local terminal work. The connector keeps retrying relay registration with backoff, and local sessions continue running unchanged while remote visibility and input are unavailable.
 - The agent is the authority for current terminal state. It maintains the headless terminal mirror and produces attach snapshots from that mirror.
 - Remote viewing is session-scoped: clients discover sessions with `GET /api/sessions` and attach with `GET /api/sessions/:id/attach/ws`.
 - Browser attach clients must be same-origin with the relay host; native clients that omit `Origin` remain supported.
