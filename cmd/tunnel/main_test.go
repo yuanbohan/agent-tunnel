@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,6 +20,7 @@ type fakeRelayConnector struct {
 	waitConnected bool
 	state         connector.State
 	runCalledCh   chan struct{}
+	runCalledOnce sync.Once
 	boundHub      *session.Hub
 	initialCols   int
 	initialRows   int
@@ -41,11 +43,9 @@ func (f *fakeRelayConnector) BindHub(hub *session.Hub) {
 
 func (f *fakeRelayConnector) Run(context.Context) {
 	if f.runCalledCh != nil {
-		select {
-		case <-f.runCalledCh:
-		default:
+		f.runCalledOnce.Do(func() {
 			close(f.runCalledCh)
-		}
+		})
 	}
 }
 
@@ -458,7 +458,7 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
 	}
 	select {
 	case <-fakeConnector.runCalledCh:
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(500 * time.Millisecond):
 		t.Fatal("connector Run was not called")
 	}
 	if fakeConnector.connectTTL != startupRelayWait {
