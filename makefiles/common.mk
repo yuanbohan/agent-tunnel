@@ -31,6 +31,8 @@ INSTALL_PROD_PRIMARY_DOMAIN ?= diaro.me
 INSTALL_CERTBOT_EMAIL ?=
 ## INSTALL_CERTBOT_WEBROOT: Webroot served for ACME HTTP-01 challenges.
 INSTALL_CERTBOT_WEBROOT ?= /var/www/certbot
+## INSTALL_WEBSITE_ROOT: Remote website release root; nginx serves `$(INSTALL_WEBSITE_ROOT)/current`.
+INSTALL_WEBSITE_ROOT ?= /var/www/agentunnel-website
 ## INSTALL_VERBOSE: Set to 1 to print remote install debug details.
 INSTALL_VERBOSE ?= 0
 ## INSTALL_DRY_RUN: Set to 1 for a structured remote install preview without executing changes.
@@ -59,6 +61,16 @@ DEPLOY_ENV_FILE ?= /etc/agentunnel/relay.env
 DEPLOY_RELAY_LOG_FILE ?= /var/log/agentunnel/relay.log
 ## DEPLOY_SCHEMA_DIR: Remote directory containing relay schema SQL files.
 DEPLOY_SCHEMA_DIR ?= /etc/agentunnel/schema
+## WEBSITE_REPO_DIR: Local checkout used to build the deployable website bundle.
+WEBSITE_REPO_DIR ?= ../agent-tunnel-website
+## WEBSITE_BUILD_DIR: Build output directory inside `$(WEBSITE_REPO_DIR)`.
+WEBSITE_BUILD_DIR ?= dist
+## DEPLOY_WEBSITE_HOST: SSH host for website deploy targets. Defaults to `DEPLOY_HOST`.
+DEPLOY_WEBSITE_HOST ?= $(DEPLOY_HOST)
+## DEPLOY_WEBSITE_ROOT: Remote website release root used by deploy-website targets.
+DEPLOY_WEBSITE_ROOT ?= $(INSTALL_WEBSITE_ROOT)
+## DEPLOY_WEBSITE_TMP_DIR: Remote temporary directory used while uploading website release archives.
+DEPLOY_WEBSITE_TMP_DIR ?= /tmp/agentunnel-website
 ## MIGRATOR_ARGS: Extra arguments passed to the remote migrator, for example `--baseline 0002_operator_audit.sql`.
 MIGRATOR_ARGS ?=
 ## DEPLOY_VERBOSE: Set to 1 to print deploy debug details.

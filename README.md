@@ -200,17 +200,19 @@ make install-dev                                          # dev: nginx + Postgre
 Deploy:
 
 ```bash
-make deploy-prod    # prod
-make deploy-dev     # dev
+make deploy-prod            # prod relay
+make deploy-dev             # dev relay
+make deploy-website-prod    # prod website bundle from ../agent-tunnel-website
+make deploy-website-dev     # dev website bundle from ../agent-tunnel-website
 ```
 
-`make install-prod` always requires a certbot email before it does anything else. If `INSTALL_CERTBOT_EMAIL` is missing, it stops and prompts in the terminal until you enter one. Then it installs `certbot`, issues or refreshes the TLS certificate with a webroot challenge, enables `certbot.timer`, and installs a renewal hook that reloads nginx after renewal. `make install-dev` skips `certbot` entirely and keeps the dev relay on plain HTTP port 80. `make install` remains the local binary install alias.
+`make install-prod` always requires a certbot email before it does anything else. If `INSTALL_CERTBOT_EMAIL` is missing, it stops and prompts in the terminal until you enter one. Then it installs `certbot`, issues or refreshes the TLS certificate with a webroot challenge, enables `certbot.timer`, and installs a renewal hook that reloads nginx after renewal. `make install-dev` skips `certbot` entirely and keeps the dev relay on plain HTTP port 80. Both install targets now render nginx so `/` serves the static website from `INSTALL_WEBSITE_ROOT/current` and `/api/` plus `/agent/ws` still proxy the relay. If a host was bootstrapped before this website-serving nginx change, rerun `make install-dev` or `make install-prod` once before the first `make deploy-website-*`. `make install` remains the local binary install alias.
 
-Every deploy syncs `schema/` to the remote host and reruns the migrator before the new relay binary and env file are activated. That is safe to repeat: the migrator records applied versions in `schema_migrations`, holds a PostgreSQL advisory lock while it runs, and applies each migration in its own transaction. `make deploy-install` skips binary installs when the remote copy already has the same sha256, so re-running a deploy on an unchanged build is still cheap. `make deploy` defaults to `ENV_FILE=.env.prod`; override with `make deploy ENV_FILE=.env.dev` or with individual flags when needed.
+Every relay deploy syncs `schema/` to the remote host and reruns the migrator before the new relay binary and env file are activated. That is safe to repeat: the migrator records applied versions in `schema_migrations`, holds a PostgreSQL advisory lock while it runs, and applies each migration in its own transaction. `make deploy-install` skips binary installs when the remote copy already has the same sha256, so re-running a deploy on an unchanged build is still cheap. `make deploy` defaults to `ENV_FILE=.env.prod`; override with `make deploy ENV_FILE=.env.dev` or with individual flags when needed. Website deploy is separate: `make deploy-website-*` runs `npm ci`, builds `../agent-tunnel-website`, rejects bundle symlinks, uploads a release under `DEPLOY_WEBSITE_ROOT/releases`, and atomically repoints `DEPLOY_WEBSITE_ROOT/current`.
 
-Deploy is intentionally narrower than install: it does not install or reconfigure `nginx`, `certbot`, or `postgresql`, and it does not rewrite those host-level config files. Those changes stay in the install phase so later manual host edits are not overwritten by routine relay deploys.
+Deploy is intentionally narrower than install: it does not install or reconfigure `nginx`, `certbot`, or `postgresql`, and it does not rewrite those host-level config files. Those changes stay in the install phase so later manual host edits are not overwritten by routine relay or website deploys.
 
-For install output, `make install-dev INSTALL_DRY_RUN=1` gives a structured preview and `make install-dev INSTALL_VERBOSE=1` prints debug details. Deploy output follows the same pattern with `DEPLOY_DRY_RUN=1` and `DEPLOY_VERBOSE=1`.
+For install output, `make install-dev INSTALL_DRY_RUN=1` gives a structured preview and `make install-dev INSTALL_VERBOSE=1` prints debug details. Relay deploy and website deploy follow the same pattern with `DEPLOY_DRY_RUN=1` and `DEPLOY_VERBOSE=1`.
 
 ## Launchers
 
@@ -222,7 +224,9 @@ For install output, `make install-dev INSTALL_DRY_RUN=1` gives a structured prev
 make build             # builds bin/tunnel, bin/relay, and bin/relay-migrate
 make install           # installs tunnel, relay, and relay-migrate to ~/.local/bin
 make install-dev       # installs nginx + PostgreSQL on the dev VPS if needed and syncs the HTTP nginx site
-make install-prod    # prompts for certbot email, then installs prod nginx + PostgreSQL + certbot and syncs the TLS nginx site
+make install-prod      # prompts for certbot email, then installs prod nginx + PostgreSQL + certbot and syncs the TLS nginx site
+make deploy-website-dev   # build ../agent-tunnel-website and publish it to the dev host
+make deploy-website-prod  # build ../agent-tunnel-website and publish it to the prod host
 make test              # go test ./...
 make test-relay        # focused relay/protocol contract tests
 make local-e2e-db-up   # start fixed-version Docker PostgreSQL for local E2E

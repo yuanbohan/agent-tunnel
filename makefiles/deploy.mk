@@ -1,6 +1,7 @@
-.PHONY: deploy-install deploy-install-relay deploy-install-migrator deploy-schema deploy-env deploy-migrate deploy-schema-migrate deploy-restart deploy deploy-dev deploy-prod
+.PHONY: deploy-install deploy-install-relay deploy-install-migrator deploy-schema deploy-env deploy-migrate deploy-schema-migrate deploy-restart deploy deploy-dev deploy-prod deploy-website deploy-website-dev deploy-website-prod
 
 DEPLOY_SCRIPT := ./scripts/deploy.sh
+DEPLOY_WEBSITE_SCRIPT := ./scripts/deploy-website.sh
 DEPLOY_SCRIPT_FLAGS := $(if $(filter 1 true TRUE yes YES on ON,$(DEPLOY_VERBOSE)),--verbose,) $(if $(filter 1 true TRUE yes YES on ON,$(DEPLOY_DRY_RUN)),--dry-run,)
 
 deploy-install-migrator: ## Build, upload, and install the relay migrator on the remote host when it changes. Does not install or reconfigure host infrastructure.
@@ -34,3 +35,12 @@ deploy-dev: ## Convenience: `make deploy` using `.env.dev`.
 
 deploy-prod: ## Convenience: `make deploy` using `.env.prod`.
 	@$(MAKE) deploy ENV_FILE=.env.prod
+
+deploy-website: ## Build the website from `$(WEBSITE_REPO_DIR)` and publish it as an atomic remote release. Does not install or reconfigure nginx/certbot/postgresql.
+	@$(DEPLOY_WEBSITE_SCRIPT) deploy $(DEPLOY_SCRIPT_FLAGS)
+
+deploy-website-dev: ## Convenience: `make deploy-website` using `.env.dev`.
+	@$(MAKE) deploy-website ENV_FILE=.env.dev
+
+deploy-website-prod: ## Convenience: `make deploy-website` using `.env.prod`.
+	@$(MAKE) deploy-website ENV_FILE=.env.prod

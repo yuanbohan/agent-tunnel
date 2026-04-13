@@ -1,8 +1,8 @@
 # Relay Deployment & Operations
 
-This guide covers one-time host bootstrap on an Ubuntu VPS, automated relay deploys and schema migrations from a dev machine, and day-to-day operations.
+This guide covers one-time host bootstrap on an Ubuntu VPS, automated relay deploys and schema migrations from a dev machine, static website deploys from the sibling website checkout, and day-to-day operations.
 
-The repo now owns the relay-facing host setup as well as the binary deploy. `make install-dev` bootstraps `nginx` and PostgreSQL for the dev VPS, syncs the repo-controlled HTTP nginx site, and restarts nginx. `make install-prod` does the same for production, plus `certbot`, certificate issuance, a renewal hook, and the repo-controlled TLS nginx site. Schema migrations remain wired into `make deploy`, so every normal deploy keeps the database in sync.
+The repo now owns the relay-facing host setup as well as the binary deploy. `make install-dev` bootstraps `nginx` and PostgreSQL for the dev VPS, syncs the repo-controlled HTTP nginx site, and restarts nginx. `make install-prod` does the same for production, plus `certbot`, certificate issuance, a renewal hook, and the repo-controlled TLS nginx site. Those nginx templates now serve the public website at `/` and keep `/api/` plus `/agent/ws` pointed at the relay. Schema migrations remain wired into `make deploy`, so every normal relay deploy keeps the database in sync. Website bundle deploys stay separate under `make deploy-website-dev` and `make deploy-website-prod`.
 
 For the relay CLI command reference itself, see [operation.md](./operation.md).
 
@@ -21,6 +21,7 @@ For any cloud or VPS-hosted relay, multi-tenant session isolation is non-negotia
 - Ubuntu VPS with a public IP (port 80 open for dev; ports 80/443 open for production TLS)
 - SSH access from dev machine, with passwordless `sudo` on the VPS because the install script uses `sudo -n`
 - Go toolchain on dev machine (for cross-compilation)
+- Node.js and npm on the dev machine when you run `make deploy-website-dev` or `make deploy-website-prod`
 - A PostgreSQL role and database that match the DSN in your env file (for example role `relay_user`, database `agent_tunnel`). The `postgresql` package itself can be installed by `make install-dev` or `make install-prod`.
 
 ## Server Layout
@@ -35,6 +36,8 @@ For any cloud or VPS-hosted relay, multi-tenant session isolation is non-negotia
 /etc/systemd/system/nginx.service.d/agentunnel-restart.conf # nginx auto-restart override
 /etc/nginx/sites-available/<domain>          # nginx site config
 /etc/nginx/conf.d/websocket_map.conf         # shared WebSocket header map
+/var/www/agentunnel-website/current          # nginx docroot symlink served at /
+/var/www/agentunnel-website/releases/        # versioned website releases
 /var/www/certbot/                            # ACME HTTP-01 webroot used by certbot
 /etc/letsencrypt/live/<domain>/              # TLS cert (managed by certbot)
 /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh # reload nginx after cert renewal
@@ -58,13 +61,16 @@ Useful overrides:
 - `INSTALL_DEV_SERVER_NAMES="dev.example.com www.dev.example.com"` to replace the dev default `server_name`
 - `INSTALL_PROD_SERVER_NAMES="example.com www.example.com"` and `INSTALL_PROD_PRIMARY_DOMAIN=example.com` to point production at a different domain set
 - `INSTALL_NGINX_SITE_NAME=my-site` if you do not want the default site filename (`agentunnel-dev` on dev, the primary prod domain on prod)
+- `INSTALL_WEBSITE_ROOT=/var/www/custom-site` to serve the public website from a different release root
 - `INSTALL_CERTBOT_EMAIL=ops@example.com` to provide the required certbot email non-interactively
 - `INSTALL_DRY_RUN=1` or `INSTALL_VERBOSE=1` for preview/debug output
 
 What the install targets do:
 
-- `make install-dev` installs `nginx` and PostgreSQL if they are missing, syncs `deploy/nginx/websocket_map.conf`, renders `deploy/nginx/agentunnel-http.conf.template`, installs `deploy/systemd/nginx-restart.conf`, enables PostgreSQL, and restarts nginx.
-- `make install-prod` first requires a certbot email. If `INSTALL_CERTBOT_EMAIL` is missing, it stops and prompts on stdin until you enter one. Then it performs the same base work, installs `certbot`, issues or refreshes the certificate with `certbot certonly --webroot`, installs `deploy/certbot/reload-nginx.sh`, enables `certbot.timer`, renders `deploy/nginx/agentunnel-tls.conf.template`, and restarts nginx again with TLS enabled.
+- `make install-dev` installs `nginx` and PostgreSQL if they are missing, syncs `deploy/nginx/websocket_map.conf`, renders `deploy/nginx/agentunnel-http.conf.template`, installs `deploy/systemd/nginx-restart.conf`, enables PostgreSQL, and restarts nginx. The rendered site serves `INSTALL_WEBSITE_ROOT/current` at `/` and proxies `/api/` and `/agent/ws` to the relay.
+- `make install-prod` first requires a certbot email. If `INSTALL_CERTBOT_EMAIL` is missing, it stops and prompts on stdin until you enter one. Then it performs the same base work, installs `certbot`, issues or refreshes the certificate with `certbot certonly --webroot`, installs `deploy/certbot/reload-nginx.sh`, enables `certbot.timer`, renders `deploy/nginx/agentunnel-tls.conf.template`, and restarts nginx again with TLS enabled. The TLS site serves `INSTALL_WEBSITE_ROOT/current` at `/` and keeps the relay proxy routes intact.
+
+If a host was already bootstrapped before these nginx template changes landed, rerun `make install-dev` or `make install-prod` once so nginx starts serving the website root before you rely on `make deploy-website-dev` or `make deploy-website-prod`.
 
 ### 2. Build and upload the relay artifacts
 
@@ -173,7 +179,7 @@ Important defaults:
 
 - Dev uses `server_name _;` unless `INSTALL_DEV_SERVER_NAMES` overrides it. If the SSH host resolves to an IPv4 address, the script also adds that IP to the dev `server_name` list.
 - Prod defaults to `INSTALL_PROD_SERVER_NAMES="diaro.me www.diaro.me"` and `INSTALL_PROD_PRIMARY_DOMAIN=diaro.me`.
-- The nginx site proxies only `/api/` and `/agent/ws`. Operator control routes stay host-local.
+- The nginx site serves the static website from `INSTALL_WEBSITE_ROOT/current` at `/` and proxies `/api/` plus `/agent/ws`. Operator control routes stay host-local.
 - `proxy_read_timeout` and `proxy_send_timeout` are pinned to `86400s` for long-lived WebSocket sessions.
 
 For a manual production certificate bootstrap, the repo now uses a webroot flow instead of the nginx plugin so the tracked nginx templates stay authoritative:
@@ -244,20 +250,21 @@ The Makefile keeps the common path simple and supports a prod env and a dev env 
 
 `make deploy` now always reruns the migrator before it installs the new relay binary and env file. That is the safer default for this repo: the migrator records applied versions in `schema_migrations`, takes a PostgreSQL advisory lock to avoid concurrent runners, and executes each migration inside its own transaction. If the database is already current, rerunning the migrator is a no-op.
 
-Deploy is intentionally limited in scope. It manages relay artifacts only:
+Relay deploy is intentionally limited in scope. It manages relay artifacts only:
 
 - `relay` and `relay-migrate` binaries
 - `schema/` synced to `/etc/agentunnel/schema`
 - `/etc/agentunnel/relay.env`
 - restart of `agentunnel-relay`
 
-Deploy does not install or reconfigure `nginx`, `certbot`, or `postgresql`, and it does not rewrite those host-level config files. Keep those changes in `make install-dev`, `make install-prod`, or manual host administration.
+Relay deploy does not install or reconfigure `nginx`, `certbot`, or `postgresql`, and it does not rewrite those host-level config files. Keep those changes in `make install-dev`, `make install-prod`, or manual host administration.
 
 Core targets:
 
 - `make install-dev` installs `nginx` and PostgreSQL if they are missing, syncs the HTTP nginx site for the dev VPS, and restarts nginx.
 - `make install-prod` does the same for production, plus `certbot`, certificate issuance/refresh, the renewal hook, and the final TLS nginx site.
 - `make deploy` builds, syncs schema, safely reruns migrations, installs the selected relay binary and env file, and restarts the relay. `ENV_FILE` defaults to `.env.prod`.
+- `make deploy-website` runs `npm ci`, builds `../agent-tunnel-website`, rejects bundle symlinks, uploads a release under `DEPLOY_WEBSITE_ROOT/releases`, and atomically repoints `DEPLOY_WEBSITE_ROOT/current`. `DEPLOY_WEBSITE_HOST` defaults to `DEPLOY_HOST`.
 - `make deploy-install` only uploads and installs binaries whose sha256 differs from the copy already at the installed path on the remote, so repeat runs on unchanged builds are cheap no-ops.
 - `make deploy-env` uploads the selected local env file to `/etc/agentunnel/relay.env` and pins `RELAY_LOG_FILE=/var/log/agentunnel/relay.log`.
 - `make deploy-schema` mirrors the local `schema/` directory to `/etc/agentunnel/schema` on the remote host so removed SQL files do not linger forever.
@@ -269,6 +276,8 @@ Convenience targets:
 
 - `make deploy-dev` → `make deploy ENV_FILE=.env.dev`
 - `make deploy-prod` → `make deploy ENV_FILE=.env.prod`
+- `make deploy-website-dev` → `make deploy-website ENV_FILE=.env.dev`
+- `make deploy-website-prod` → `make deploy-website ENV_FILE=.env.prod`
 
 Typical flows:
 
@@ -278,8 +287,11 @@ make install-prod INSTALL_CERTBOT_EMAIL=ops@example.com   # same bootstrap with 
 make install-dev                                          # one-time dev bootstrap
 make deploy-prod        # prod deploy
 make deploy-dev         # dev deploy
+make deploy-website-prod # prod website deploy
+make deploy-website-dev  # dev website deploy
 make install-dev INSTALL_DRY_RUN=1   # preview dev bootstrap without changing the VPS
 make deploy-dev DEPLOY_DRY_RUN=1    # structured preview without making changes
+make deploy-website-dev DEPLOY_DRY_RUN=1  # preview website deploy without making changes
 make deploy-dev DEPLOY_VERBOSE=1    # include deploy debug details
 make deploy-install     # just refresh relay + migrator binaries if needed
 ```
@@ -289,8 +301,8 @@ Notes:
 - `make install-prod` always requires a certbot email before it continues. Pass `INSTALL_CERTBOT_EMAIL=<ops@example.com>` to avoid the interactive prompt.
 - For a readable preview of host bootstrap, prefer `make install-dev INSTALL_DRY_RUN=1` or `make install-prod INSTALL_DRY_RUN=1`.
 - `make -n deploy-dev` is still a Make-level dry-run, but it now only prints the deploy script entrypoint.
-- For a readable preview of the actual deploy plan, prefer `make deploy-dev DEPLOY_DRY_RUN=1` or `make deploy-prod DEPLOY_DRY_RUN=1`.
-- GNU Make does not support a custom `--verbose` flag for project-defined behavior. For verbose deploy logs, use `DEPLOY_VERBOSE=1` on the same `make deploy-dev` or `make deploy-prod` command you would normally run.
+- For a readable preview of the actual relay or website deploy plan, prefer `make deploy-dev DEPLOY_DRY_RUN=1`, `make deploy-prod DEPLOY_DRY_RUN=1`, or `make deploy-website-dev DEPLOY_DRY_RUN=1`.
+- GNU Make does not support a custom `--verbose` flag for project-defined behavior. For verbose deploy logs, use `DEPLOY_VERBOSE=1` on the same `make deploy-dev`, `make deploy-prod`, or `make deploy-website-dev` command you would normally run.
 
 You can still override individual variables or run steps one at a time:
 
@@ -348,7 +360,7 @@ sudo systemctl reload nginx
 ### Security
 
 - **The relay listens on `127.0.0.1` only.** All external access goes through nginx. Do not change this to `0.0.0.0` unless you have a specific reason and a firewall in place.
-- **Keep operator routes off the public proxy surface.** nginx should proxy only `/api/` and `/agent/ws`. The operator control paths stay outside `/api/`, and relay also rejects proxied operator requests.
+- **Keep operator routes off the public proxy surface.** nginx should serve the website on `/`, proxy only `/api/` and `/agent/ws` into the relay, and leave the operator control paths outside the public proxy surface.
 - **Use a strong app secret.** `RELAY_APP_SECRET` should be a long random string in production.
 - **Use a strong operator token.** `RELAY_OPERATOR_TOKEN` protects the local-only operator control path that `relay invite ...` and `relay user delete` call.
 - **Agent tokens are user-owned.** Users create long-lived agent tokens through the app APIs; operators do not preload one shared relay-wide token anymore.
