@@ -1,3 +1,12 @@
+- name: Validate certbot host OS support
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] == 'Debian'
+    fail_msg: "relay_enable_certbot=true is currently supported only on Debian-family hosts"
+  when: relay_enable_certbot | default(false) | bool
+  tags:
+    - certbot
+
 - name: Install certbot package
   ansible.builtin.apt:
     name: certbot
@@ -52,12 +61,26 @@
   tags:
     - certbot
 
+- name: Validate certbot domain configuration
+  ansible.builtin.assert:
+    that:
+      - relay_certbot_domains is defined
+      - relay_certbot_domains is sequence
+      - relay_certbot_domains is not string
+      - relay_certbot_domains | length > 0
+      - relay_primary_domain is string
+      - relay_primary_domain | length > 0
+      - relay_primary_domain in relay_certbot_domains
+    fail_msg: "Set relay_certbot_domains to a non-empty list and keep relay_primary_domain in that list before enabling certbot"
+  when: relay_enable_certbot | default(false) | bool
+  tags:
+    - certbot
+
 - name: Prepare certbot domain arguments
   ansible.builtin.set_fact:
     relay_certbot_domain_args: "{{ relay_certbot_domains | map('regex_replace', '^(.*)$', '-d \\1') | join(' ') }}"
   when:
     - relay_enable_certbot | default(false) | bool
-    - relay_certbot_domains is defined
   tags:
     - certbot
 
