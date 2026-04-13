@@ -111,7 +111,12 @@ func runWithArgs(args []string, stdout, stderr io.Writer) error {
 	relay := newConnector(relayURL, parsed.AuthToken, info)
 	relay.SetInitialConnectTimeout(startupRelayWait)
 	go relay.Run(ctx)
-	_ = relay.WaitUntilConnected(ctx, startupRelayWait)
+	if !relay.WaitUntilConnected(ctx, startupRelayWait) {
+		if ctx.Err() != nil {
+			return nil
+		}
+		return fmt.Errorf("failed to connect to relay websocket at %s", relayURL)
+	}
 	if ctx.Err() != nil {
 		return nil
 	}
@@ -139,19 +144,7 @@ func runWithArgs(args []string, stdout, stderr io.Writer) error {
 
 	relay.BindHub(running.Hub)
 
-	statusLine := session.NewStatusLine(stderr)
-	if cols, rows, sizeErr := local.CurrentSize(); sizeErr == nil {
-		statusLine.SetSize(cols, rows)
-		running.Hub.AddResizeListener("status-line", func(cols, rows int) {
-			statusLine.SetSize(cols, rows)
-		})
-	}
-
 	fmt.Fprint(stderr, startupBanner(command.Name, sessionID, parsed.BaseURL, relay.CurrentState()))
-
-	stateCh, cancelStates := relay.SubscribeStateChanges()
-	defer cancelStates()
-	go followRelayState(ctx, statusLine, stateCh)
 
 	done := startLocalTerminal(ctx, local, running.Hub)
 
@@ -186,27 +179,4 @@ func startupBanner(launcherName, sessionID, relayAddr string, state connector.St
 		color = startupBannerRed
 	}
 	return fmt.Sprintf("%s%s▶ tunnel %s — session %s; relay %s (%s)%s\r", startupBannerClear, color, launcherName, sessionID, status, relayAddr, startupBannerReset)
-}
-
-func followRelayState(ctx context.Context, statusLine *session.StatusLine, stateCh <-chan connector.State) {
-	for {
-		select {
-		case <-ctx.Done():
-			statusLine.Clear()
-			return
-		case state, ok := <-stateCh:
-			if !ok {
-				statusLine.Clear()
-				return
-			}
-			switch state {
-			case connector.StateConnected:
-				statusLine.Clear()
-			case connector.StateConnecting, connector.StateReconnecting:
-				statusLine.Show("relay reconnecting; local session continues")
-			case connector.StateDisconnected:
-				statusLine.Clear()
-			}
-		}
-	}
 }

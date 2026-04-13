@@ -528,9 +528,6 @@ func TestStartupBannerUsesRelayState(t *testing.T) {
 	if got := startupBanner("codex", "sess-123", "127.0.0.1:8586", connector.StateConnected); got != "\r\x1b[2K\x1b[92m▶ tunnel codex — session sess-123; relay connected (127.0.0.1:8586)\x1b[0m\r" {
 		t.Fatalf("connected banner = %q", got)
 	}
-	if got := startupBanner("codex", "sess-456", "127.0.0.1:8586", connector.StateReconnecting); got != "\r\x1b[2K\x1b[31m▶ tunnel codex — session sess-456; relay reconnecting (127.0.0.1:8586)\x1b[0m\r" {
-		t.Fatalf("reconnecting banner = %q", got)
-	}
 }
 
 func TestRunWithArgsPrintsStartupBannerOnExit(t *testing.T) {
@@ -586,7 +583,7 @@ func TestRunWithArgsPrintsStartupBannerOnExit(t *testing.T) {
 	}
 }
 
-func TestRunWithArgsPrintsReconnectingBannerAfterStartupWait(t *testing.T) {
+func TestRunWithArgsFailsStartupWhenRelayCannotConnect(t *testing.T) {
 	setTestEnv(t)
 
 	oldResolve := resolveLauncher
@@ -608,11 +605,15 @@ func TestRunWithArgsPrintsReconnectingBannerAfterStartupWait(t *testing.T) {
 		return launcher.Command{Name: name, Path: "/bin/sh", Args: []string{"-c", "exit 0"}}, nil
 	}
 
+	prepareCalled := false
 	prepareLocalTerminal = func() (*session.LocalTerminal, error) {
+		prepareCalled = true
 		return &session.LocalTerminal{}, nil
 	}
 
+	startCalled := false
 	startSession = func(ctx context.Context, path string, args []string, sinks map[string]session.OutputSink) (*session.Running, error) {
+		startCalled = true
 		return session.StartCommandWithInitialSinks(ctx, path, args, sinks)
 	}
 
@@ -622,19 +623,27 @@ func TestRunWithArgsPrintsReconnectingBannerAfterStartupWait(t *testing.T) {
 		return done
 	}
 
-	var sessionID string
 	newConnector = func(url, token string, info protocol.SessionInfo) relayConnector {
-		sessionID = info.SessionID
 		return &fakeRelayConnector{waitConnected: false, state: connector.StateReconnecting}
 	}
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	if err := runWithArgs([]string{"tunnel", "codex"}, &stdout, &stderr); err != nil {
-		t.Fatalf("runWithArgs error = %v", err)
+	err := runWithArgs([]string{"tunnel", "codex"}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("runWithArgs error = nil, want startup connection failure")
+	}
+	if !strings.Contains(err.Error(), "failed to connect to relay websocket") {
+		t.Fatalf("runWithArgs error = %v, want failed relay connect error", err)
+	}
+	if prepareCalled {
+		t.Fatal("runWithArgs called prepareLocalTerminal despite startup relay failure")
+	}
+	if startCalled {
+		t.Fatal("runWithArgs started child despite startup relay failure")
 	}
 
-	if got := stderr.String(); got != startupBanner("codex", sessionID, "http://127.0.0.1:8586", connector.StateReconnecting) {
+	if got := stderr.String(); got != "" {
 		t.Fatalf("stderr = %q", got)
 	}
 }

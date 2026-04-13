@@ -16,10 +16,10 @@ Protocol-facing timestamps such as `started_at` are Unix timestamps encoded as J
 
 The local terminal is still the primary and most complete view of the PTY session. Remote access is session-scoped: a client attaches to one session, receives a fresh terminal-state snapshot that may include bounded agent-local normal-buffer scrollback, and then receives subsequent live PTY bytes on that same attach.
 
-`tunnel` treats relay availability in two phases:
+`tunnel` enforces strict startup gating and runtime reconnect:
 
-- startup gating: it gives relay registration a bounded first chance before entering the local terminal session
-- post-startup continuity: once the local session has begun, relay outages only affect remote visibility and control; local terminal work continues while the connector retries in the background
+- startup gating: relay registration must succeed during the startup wait window
+- runtime behavior: if relay outages occur, local terminal work continues; the connector retries registration with backoff
 
 ```text
 local machine
@@ -189,19 +189,18 @@ Remote clients follow the PTY size. They do not compete to become size authority
 
 ## Startup And Relay Continuity
 
-Relay availability has a bounded effect on startup, but not on the already-running local terminal session.
+Relay registration is a startup gate for local session launch; if it fails, launch fails.
 
 ```text
 tunnel launch
 → connector starts trying /agent/ws
 → if registration succeeds during the startup wait window:
      local session starts in connected mode
-→ if the startup wait window expires first:
-     local session still starts
-     connector keeps retrying in the background
+→ if registration fails during startup:
+     launch fails and no local session starts
 → if a later relay disconnect happens:
      local PTY session continues uninterrupted
-     connector retries with backoff until connected again
+     connector retries with backoff until registration recovers
 ```
 
 ## Reconnect Lifecycle
@@ -212,7 +211,7 @@ The session lifecycle is centered on one running agent process.
 2. Clients may attach only while the session is online.
 3. If the agent websocket drops, the relay closes active attaches and removes the session from `GET /api/sessions` immediately.
 4. While the agent is offline, attaches and remote input are unavailable because the session is no longer discoverable.
-5. If the same running agent reconnects with the same `session_id`, it re-registers and the session becomes discoverable again.
+5. If the same running agent reconnects after a relay drop, it re-registers with the same `session_id`.
 
 Closing the agent process ends the session. A later agent launch starts a different session with a different `session_id`.
 

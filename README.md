@@ -6,7 +6,9 @@ The remote contract is attach-only: clients discover live sessions with `GET /ap
 
 `tunnel` starts a real CLI command such as `claude`, `codex`, `gemini`, `qwen`, or `aider`, keeps the launching terminal interactive, and registers the session with a relay server. The relay is API-only: it authenticates app clients with user-scoped bearer tokens, authenticates agents with user-owned long-lived agent tokens, lists live sessions, brokers session-scoped attaches, and forwards structured input. Operator maintenance routes stay host-local outside the public `/api/` namespace. It does not retain transcript history and it does not emulate the terminal.
 
-On startup, `tunnel` gives relay registration a short first chance to succeed. If that startup window expires, local terminal work still begins and `tunnel` continues reconnecting to the relay in the background. Runtime relay outages do not interrupt the local terminal session.
+On startup, `tunnel` must establish relay registration during the startup wait window. If registration does not succeed, startup exits with a relay connection error and does not launch the local terminal session.
+
+After startup, if the relay socket drops, `tunnel` keeps retrying with backoff (3s → 5m, with pauses between attempts), while local terminal work continues unchanged.
 
 The local terminal remains the primary view of the PTY session. Remote clients are intentionally narrower:
 
@@ -110,17 +112,8 @@ Expected stderr output when relay is available during startup:
 ▶ tunnel claude — session <session-id>; relay connected (http://127.0.0.1:8586)
 ```
 
-If relay startup registration does not succeed within the startup wait window, `tunnel` still enters the local terminal session and shows:
-
-```text
-▶ tunnel claude — session <session-id>; relay reconnecting (http://127.0.0.1:8586)
-```
-
-While reconnecting, `tunnel` keeps retrying in the background and shows a compact terminal status that local work continues.
-
 Startup banners are rendered inline without consuming an extra terminal row.
-
-Healthy startup banners are printed in bright green. Degraded startup banners, such as relay reconnecting, are printed in red.
+Healthy startup banners are printed in bright green.
 
 ### 3. Connect a client
 

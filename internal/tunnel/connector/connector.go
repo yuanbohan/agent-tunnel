@@ -61,6 +61,7 @@ type Connector struct {
 	outbound    chan outboundFrame
 	ephemeral   chan outboundFrame
 	dialer      *websocket.Dialer
+	reconnect   bool
 	hubMu       sync.RWMutex
 	hub         *session.Hub
 	pendingIn   []protocol.AgentFrame
@@ -105,6 +106,7 @@ func New(url, token string, info protocol.SessionInfo) *Connector {
 		dialer:       websocket.DefaultDialer,
 		state:        StateDisconnected,
 		subscribers:  make(map[chan State]struct{}),
+		reconnect:    true,
 		retryBackoff: append([]time.Duration(nil), defaultReconnectBackoff...),
 		mirror:       session.NewTerminalMirror(0, 0),
 		attached:     make(map[string]struct{}),
@@ -154,6 +156,10 @@ func (c *Connector) SetInitialSize(cols, rows int) {
 
 func (c *Connector) SetInitialConnectTimeout(timeout time.Duration) {
 	c.connectTTL = timeout
+}
+
+func (c *Connector) SetReconnectEnabled(enabled bool) {
+	c.reconnect = enabled
 }
 
 func (c *Connector) CurrentState() State {
@@ -256,6 +262,11 @@ func (c *Connector) Run(ctx context.Context) {
 
 		if connected {
 			attempt = 0
+		}
+
+		if !c.reconnect {
+			c.setState(StateDisconnected)
+			return
 		}
 
 		c.setState(StateReconnecting)
