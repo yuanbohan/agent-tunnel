@@ -144,7 +144,7 @@ func runWithArgs(args []string, stdout, stderr io.Writer) error {
 
 	relay.BindHub(running.Hub)
 
-	fmt.Fprint(stderr, startupBanner(command.Name, sessionID, parsed.BaseURL, relay.CurrentState()))
+	fmt.Fprint(stderr, startupBanner(command.Name, sessionID, parsed.BaseURL))
 
 	done := startLocalTerminal(ctx, local, running.Hub)
 
@@ -169,14 +169,14 @@ func waitForProcessOrShutdown(ctx context.Context, localDone <-chan struct{}, wa
 	}
 }
 
-func startupBanner(launcherName, sessionID, relayAddr string, state connector.State) string {
-	status := "connected"
-	if state != connector.StateConnected {
-		status = "reconnecting"
-	}
-	color := startupBannerGreen
-	if state != connector.StateConnected {
-		color = startupBannerRed
-	}
-	return fmt.Sprintf("%s%s▶ tunnel %s — session %s; relay %s (%s)%s\r", startupBannerClear, color, launcherName, sessionID, status, relayAddr, startupBannerReset)
+func startupBanner(launcherName, sessionID, relayAddr string) string {
+	return fmt.Sprintf(
+		"%s%s▶ tunnel %s — session %s; relay connected (%s)%s\r",
+		startupBannerClear,
+		startupBannerGreen,
+		launcherName,
+		sessionID,
+		relayAddr,
+		startupBannerReset,
+	)
 }

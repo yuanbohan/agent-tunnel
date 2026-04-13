@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -61,7 +62,7 @@ type Connector struct {
 	outbound    chan outboundFrame
 	ephemeral   chan outboundFrame
 	dialer      *websocket.Dialer
-	reconnect   bool
+	reconnect   atomic.Bool
 	hubMu       sync.RWMutex
 	hub         *session.Hub
 	pendingIn   []protocol.AgentFrame
@@ -97,7 +98,7 @@ type connectionCloser interface {
 }
 
 func New(url, token string, info protocol.SessionInfo) *Connector {
-	return &Connector{
+	c := &Connector{
 		url:          url,
 		token:        token,
 		info:         info,
@@ -106,7 +107,6 @@ func New(url, token string, info protocol.SessionInfo) *Connector {
 		dialer:       websocket.DefaultDialer,
 		state:        StateDisconnected,
 		subscribers:  make(map[chan State]struct{}),
-		reconnect:    true,
 		retryBackoff: append([]time.Duration(nil), defaultReconnectBackoff...),
 		mirror:       session.NewTerminalMirror(0, 0),
 		attached:     make(map[string]struct{}),
@@ -123,6 +123,8 @@ func New(url, token string, info protocol.SessionInfo) *Connector {
 			}
 		},
 	}
+	c.reconnect.Store(true)
+	return c
 }
 
 func (c *Connector) BindHub(hub *session.Hub) {
@@ -159,7 +161,7 @@ func (c *Connector) SetInitialConnectTimeout(timeout time.Duration) {
 }
 
 func (c *Connector) SetReconnectEnabled(enabled bool) {
-	c.reconnect = enabled
+	c.reconnect.Store(enabled)
 }
 
 func (c *Connector) CurrentState() State {
@@ -264,7 +266,7 @@ func (c *Connector) Run(ctx context.Context) {
 			attempt = 0
 		}
 
-		if !c.reconnect {
+		if !c.reconnect.Load() {
 			c.setState(StateDisconnected)
 			return
 		}

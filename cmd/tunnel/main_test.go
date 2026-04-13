@@ -525,7 +525,7 @@ func TestRunWithArgsUsesUserProvidedCommandForPreview(t *testing.T) {
 }
 
 func TestStartupBannerUsesRelayState(t *testing.T) {
-	if got := startupBanner("codex", "sess-123", "127.0.0.1:8586", connector.StateConnected); got != "\r\x1b[2K\x1b[92m▶ tunnel codex — session sess-123; relay connected (127.0.0.1:8586)\x1b[0m\r" {
+	if got := startupBanner("codex", "sess-123", "127.0.0.1:8586"); got != "\r\x1b[2K\x1b[92m▶ tunnel codex — session sess-123; relay connected (127.0.0.1:8586)\x1b[0m\r" {
 		t.Fatalf("connected banner = %q", got)
 	}
 }
@@ -578,7 +578,7 @@ func TestRunWithArgsPrintsStartupBannerOnExit(t *testing.T) {
 		t.Fatalf("runWithArgs error = %v", err)
 	}
 
-	if got := stderr.String(); got != startupBanner("codex", sessionID, "http://127.0.0.1:8586", connector.StateConnected) {
+	if got := stderr.String(); got != startupBanner("codex", sessionID, "http://127.0.0.1:8586") {
 		t.Fatalf("stderr = %q", got)
 	}
 }
