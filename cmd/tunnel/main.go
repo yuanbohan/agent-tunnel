@@ -115,7 +115,7 @@ func runWithArgs(args []string, stdout, stderr io.Writer) error {
 		if ctx.Err() != nil {
 			return nil
 		}
-		return fmt.Errorf("failed to connect to relay websocket at %s", relayURL)
+		return fmt.Errorf("failed to connect to the relay server")
 	}
 	if ctx.Err() != nil {
 		return nil
@@ -144,7 +144,7 @@ func runWithArgs(args []string, stdout, stderr io.Writer) error {
 
 	relay.BindHub(running.Hub)
 
-	fmt.Fprint(stderr, startupBanner(command.Name, sessionID, parsed.BaseURL))
+	fmt.Fprint(stderr, startupBanner(command.Name, sessionID))
 
 	done := startLocalTerminal(ctx, local, running.Hub)
 
@@ -169,14 +169,13 @@ func waitForProcessOrShutdown(ctx context.Context, localDone <-chan struct{}, wa
 	}
 }
 
-func startupBanner(launcherName, sessionID, relayAddr string) string {
+func startupBanner(launcherName, sessionID string) string {
 	return fmt.Sprintf(
-		"%s%s▶ tunnel %s — session %s; relay connected (%s)%s\r",
+		"%s%s▶ tunnel %s — session %s; relay server connected%s\r",
 		startupBannerClear,
 		startupBannerGreen,
 		launcherName,
 		sessionID,
-		relayAddr,
 		startupBannerReset,
 	)
 }
