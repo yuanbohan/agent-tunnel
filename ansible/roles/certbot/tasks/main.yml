@@ -75,10 +75,9 @@
     cmd: >-
       certbot certonly --webroot -w {{ relay_certbot_webroot }} --non-interactive --agree-tos
       --keep-until-expiring -m {{ relay_certbot_email }}
+      --cert-name {{ relay_primary_domain }}
       --deploy-hook /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
       {{ relay_certbot_domain_args }}
-  args:
-    creates: "/etc/letsencrypt/live/{{ relay_primary_domain }}/fullchain.pem"
   when:
     - relay_enable_certbot | default(false) | bool
     - relay_certbot_domain_args is defined

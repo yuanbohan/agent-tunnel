@@ -1,7 +1,12 @@
 ---
-- name: Resolve nginx defaults
+- name: Resolve relay nginx site name
   ansible.builtin.set_fact:
     relay_nginx_site_name: "{{ relay_nginx_site_name | default('agentunnel-relay') }}"
+  tags:
+    - nginx
+
+- name: Resolve relay nginx site path
+  ansible.builtin.set_fact:
     relay_nginx_site_path: "{{ relay_nginx_site_path | default('/etc/nginx/sites-available/' + relay_nginx_site_name) }}"
   tags:
     - nginx

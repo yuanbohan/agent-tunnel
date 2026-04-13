@@ -20,9 +20,14 @@
 
 - name: Ensure relay database user exists
   ansible.builtin.command:
-    cmd: >
-      psql -c "CREATE USER \"{{ relay_database_user | replace('"', '""') }}\" WITH
-      PASSWORD '{{ relay_database_password | replace("'", "''") }}'"
+    argv:
+      - psql
+      - --dbname=postgres
+      - --no-psqlrc
+      - -v
+      - ON_ERROR_STOP=1
+    stdin: |
+      CREATE USER "{{ relay_database_user | replace('"', '""') }}" WITH PASSWORD '{{ relay_database_password | replace("'", "''") }}';
   become_user: postgres
   no_log: true
   when: relay_pg_user_exists.stdout.strip() != '1'
@@ -31,9 +36,14 @@
 
 - name: Ensure relay database user has expected password
   ansible.builtin.command:
-    cmd: >
-      psql -c "ALTER USER \"{{ relay_database_user | replace('"', '""') }}\"
-      WITH PASSWORD '{{ relay_database_password | replace("'", "''") }}'"
+    argv:
+      - psql
+      - --dbname=postgres
+      - --no-psqlrc
+      - -v
+      - ON_ERROR_STOP=1
+    stdin: |
+      ALTER USER "{{ relay_database_user | replace('"', '""') }}" WITH PASSWORD '{{ relay_database_password | replace("'", "''") }}';
   become_user: postgres
   no_log: true
   when: relay_pg_user_exists.stdout.strip() == '1'
@@ -53,9 +63,14 @@
 
 - name: Ensure relay database exists
   ansible.builtin.command:
-    cmd: >
-      psql -c "CREATE DATABASE \"{{ relay_database_name | replace('"', '""') }}\"
-      OWNER \"{{ relay_database_user | replace('"', '""') }}\""
+    argv:
+      - psql
+      - --dbname=postgres
+      - --no-psqlrc
+      - -v
+      - ON_ERROR_STOP=1
+    stdin: |
+      CREATE DATABASE "{{ relay_database_name | replace('"', '""') }}" OWNER "{{ relay_database_user | replace('"', '""') }}";
   become_user: postgres
   when: relay_pg_db_exists.stdout.strip() != '1'
   tags:
