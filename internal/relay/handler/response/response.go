@@ -158,5 +158,5 @@ func codeAndMessageFromReason(reason string) (int, string) {
 	if detail, ok := reasonMap[reason]; ok {
 		return detail.Code, detail.Message
 	}
-	return CodeInternalError, reason
+	return CodeInternalError, reasonMap["internal_error"].Message
 }

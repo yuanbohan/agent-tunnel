@@ -32,38 +32,38 @@ func WriteOperatorError(w http.ResponseWriter, err error) {
 }
 
 func isRegisterFailure(err error) bool {
-	_, _, ok := registerFailureDetailsFromError(err)
+	_, ok := registerFailureDetailsFromError(err)
 	return ok
 }
 
 func registerFailureReasonFromError(err error) string {
-	reason, _, ok := registerFailureDetailsFromError(err)
+	reason, ok := registerFailureDetailsFromError(err)
 	if !ok {
 		return ""
 	}
 	return reason
 }
 
-func registerFailureDetailsFromError(err error) (string, string, bool) {
+func registerFailureDetailsFromError(err error) (string, bool) {
 	switch {
 	case errors.Is(err, auth.ErrUsernameTaken):
-		return "username_taken", "", true
+		return "username_taken", true
 	case errors.Is(err, auth.ErrInvalidPassword):
-		return "password_too_short", "", true
+		return "password_too_short", true
 	case errors.Is(err, auth.ErrInvalidInviteCode):
-		return "invalid_access_code", "", true
+		return "invalid_access_code", true
 	case errors.Is(err, auth.ErrInviteCodeNotFound):
-		return "invite_code_not_found", "", true
+		return "invite_code_not_found", true
 	case errors.Is(err, auth.ErrInviteCodeExpired):
-		return "invite_code_expired", "", true
+		return "invite_code_expired", true
 	case errors.Is(err, auth.ErrInviteCodeDisabled):
-		return "invite_code_disabled", "", true
+		return "invite_code_disabled", true
 	case errors.Is(err, auth.ErrInviteCodeConsumed):
-		return "invite_code_consumed", "", true
+		return "invite_code_consumed", true
 	case errors.Is(err, auth.ErrInvalidUsername):
-		return "invalid_username", "", true
+		return "invalid_username", true
 	}
-	return "", "", false
+	return "", false
 }
 
 func isRefreshFailure(err error) bool {

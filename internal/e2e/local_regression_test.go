@@ -162,6 +162,9 @@ func assertDurableState(t *testing.T, ctx context.Context, h *Harness, username 
 	if !invite.ConsumedByUserID.Valid || invite.ConsumedByUserID.Int64 != user.ID {
 		t.Fatalf("invite consumed_by_user_id = %#v, want %d", invite.ConsumedByUserID, user.ID)
 	}
+	if invite.ConsumedByUsername != user.Username {
+		t.Fatalf("invite consumed_by_username = %q, want %q", invite.ConsumedByUsername, user.Username)
+	}
 
 	appSessions, err := loadAppSessionsForUser(ctx, h.db, user.ID)
 	if err != nil {

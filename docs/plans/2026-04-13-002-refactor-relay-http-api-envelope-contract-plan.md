@@ -46,14 +46,14 @@ This creates drift between implementation and validation layers and makes future
 ## Implementation units (ordered)
 
 ### Unit 1: 统一解析入口
-1. 文件: `/Users/yuanbo/workspace/github.com/agent-tunnel/.worktrees/feat/invite-code-worktree/internal/relay/handler/test_helpers_test.go`
+1. 文件: `internal/relay/handler/test_helpers_test.go`
 2. 内容:
    1. 增加 `decodeAPIEnvelopeBody(t, resp *httptest.ResponseRecorder, target any, expectCode ...int)`。
    2. 校验 `content-type`（可选）与 JSON 解码边界，返回 `code/message/body`。
    3. 提供 `requireEnvelopeOK(...)` 助手供后续测试复用。
 
 ### Unit 2: 重写 REST handler 测试
-1. 文件: `/Users/yuanbo/workspace/github.com/agent-tunnel/.worktrees/feat/invite-code-worktree/internal/relay/handler/rest_api_test.go`
+1. 文件: `internal/relay/handler/rest_api_test.go`
 2. 内容:
    1. 用 `decodeAPIEnvelopeBody` 替换所有裸 JSON 反序列化断言。
    2. 将登录/刷新/会话列表/创建会话等成功断言改为 envelope.body 断言。
@@ -61,14 +61,14 @@ This creates drift between implementation and validation layers and makes future
    4. 失败路径断言 `code/message`，并保留 `http` 状态码的现有覆盖。
 
 ### Unit 3: 重写 WS 相关 handler 测试
-1. 文件: `/Users/yuanbo/workspace/github.com/agent-tunnel/.worktrees/feat/invite-code-worktree/internal/relay/handler/ws_api_test.go`
+1. 文件: `internal/relay/handler/ws_api_test.go`
 2. 内容:
    1. 同步采用 envelope 解包路径。
    2. 修正 relogin/attach-sessions 等返回结构在 `code/body` 下的断言。
    3. 同步处理 200 响应语义迁移。
 
 ### Unit 4: 重写 e2e 客户端解码
-1. 文件: `/Users/yuanbo/workspace/github.com/agent-tunnel/.worktrees/feat/invite-code-worktree/internal/e2e/client.go`
+1. 文件: `internal/e2e/client.go`
 2. 内容:
    1. `doJSON` 改为先 decode envelope。
    2. 新增 `apiResponse` 内部结构复用，支持 `body == null`。
@@ -77,9 +77,9 @@ This creates drift between implementation and validation layers and makes future
 
 ### Unit 5: 执行一致性检查
 1. 文件/目录:
-   1. `/Users/yuanbo/workspace/github.com/agent-tunnel/.worktrees/feat/invite-code-worktree/internal/relay/handler/rest_api_test.go`
-   2. `/Users/yuanbo/workspace/github.com/agent-tunnel/.worktrees/feat/invite-code-worktree/internal/relay/handler/ws_api_test.go`
-   3. `/Users/yuanbo/workspace/github.com/agent-tunnel/.worktrees/feat/invite-code-worktree/internal/e2e/client.go`
+   1. `internal/relay/handler/rest_api_test.go`
+   2. `internal/relay/handler/ws_api_test.go`
+   3. `internal/e2e/client.go`
 2. 验证项:
    1. 成功响应全部可被 envelope 统一解码。
    2. `code==0` 与 `body` 解码一致。

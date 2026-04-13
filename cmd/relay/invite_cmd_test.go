@@ -95,7 +95,13 @@ func TestRunInviteListPrintsStatusAndOwner(t *testing.T) {
 	if got == "" {
 		t.Fatal("runInviteList output is empty")
 	}
-	if !strings.Contains(got, "AB2C3D") || !strings.Contains(got, "alice") || !strings.Contains(got, "operator") {
-		t.Fatalf("runInviteList output = %q, want codes and owners", got)
+	if !strings.Contains(got, "AB2C3D") || !strings.Contains(got, "available") {
+		t.Fatalf("runInviteList output = %q, want available invite AB2C3D", got)
+	}
+	if !strings.Contains(got, "EF4G5H") || !strings.Contains(got, "consumed") || !strings.Contains(got, "alice") {
+		t.Fatalf("runInviteList output = %q, want consumed invite EF4G5H owned by alice", got)
+	}
+	if !strings.Contains(got, "JK7M8N") || !strings.Contains(got, "disabled") || !strings.Contains(got, "operator") {
+		t.Fatalf("runInviteList output = %q, want disabled invite JK7M8N by operator", got)
 	}
 }

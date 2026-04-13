@@ -290,7 +290,7 @@ Error responses:
 | Status | Body | Meaning |
 |--------|------|---------|
 | `400` | `{"code":1001,"message":"The request is invalid.","body":null}` | malformed JSON or request shape |
-| `401` | `{"code":1012,"message":"The session is invalid.","body":null}` | refresh token is unknown, expired, revoked, or the session has reached its 90 day absolute lifetime |
+| `401` | `{"code":1012,"message":"The session is invalid.","body":null}` | refresh token is unknown, expired, revoked, or the session has reached its 90-day absolute lifetime |
 | `500` | `{"code":2002,"message":"An unexpected internal error occurred.","body":null}` | unexpected server failure |
 | `503` | `{"code":2001,"message":"The service is temporarily unavailable.","body":null}` | auth service unavailable |
 
