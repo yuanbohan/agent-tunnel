@@ -4,7 +4,7 @@ This guide covers the day-to-day relay CLI commands introduced for PostgreSQL-ba
 
 The commands here use the `relay` and `relay-migrate` binaries from this repository.
 `relay-migrate` requires an explicit `--schema-dir` so it never guesses where SQL files live.
-Remote install and deploy now run through Ansible inventories under `ansible/inventories/` plus secrets in `ansible/group_vars/all/relay-secrets.yml`. Local commands such as `make migrate` and `make start` read the current shell environment only.
+Remote install and deploy now run through Ansible inventories under `ansible/inventories/` plus per-environment secrets in `ansible/host_vars/dev/relay-secrets.yml` and `ansible/host_vars/prod/relay-secrets.yml`. Local commands such as `make migrate` and `make start` read the current shell environment only.
 
 ## Environment Variables
 
@@ -24,7 +24,7 @@ Notes:
 - nginx should serve the public website on `/`, proxy `/api/` and `/agent/ws`, and keep the operator routes off the public surface.
 - Operator commands call the running relay. That means `relay serve` must already be running when you execute `relay invite ...` or `relay user delete`.
 - `RELAY_LISTEN_ADDR` is shared by `relay serve` and the operator commands. If you start the relay on a different local address, set the same value before running invite or user commands.
-- On a systemd-managed host, the usual source of truth is `/etc/agentunnel/relay.env`. `make deploy-env` renders that file from the selected inventory plus `ansible/group_vars/all/relay-secrets.yml`. You can source that file before running relay commands, or pass it directly to `relay-migrate --env-file /etc/agentunnel/relay.env`.
+- On a systemd-managed host, the usual source of truth is `/etc/agentunnel/relay.env`. `make deploy-env` renders that file from the selected inventory plus the matching host secret file. You can source that file before running relay commands, or pass it directly to `relay-migrate --env-file /etc/agentunnel/relay.env`.
 
 ## Command Summary
 
@@ -51,7 +51,7 @@ Ansible controls:
 
 - `ANSIBLE_DRY_RUN=1` runs playbooks in check mode.
 - `ANSIBLE_EXTRA_VARS_FILE=<path>` layers an additional vars file on top of the selected inventory.
-- `make install-prod` requires `relay_certbot_email` to be set in `ansible/group_vars/all/relay-secrets.yml`.
+- `make install-prod` requires `relay_certbot_email` to be set in `ansible/host_vars/prod/relay-secrets.yml`.
 - Relay deploy manages relay artifacts only: binaries, schema files, `/etc/agentunnel/relay.env`, the systemd unit, and the `agentunnel-relay` service restart.
 - Website deploy manages the static website bundle only: it runs `npm ci`, builds `../agent-tunnel-website`, rejects bundle symlinks, uploads a release under `/var/www/agentunnel-website/releases`, and atomically repoints `/var/www/agentunnel-website/current`.
 - Package installation, cert issuance, nginx config, PostgreSQL config, relay deploy, and website deploy can all be run independently through dedicated targets.

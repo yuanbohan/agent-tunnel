@@ -48,4 +48,5 @@ bin/
 .worktrees
 
 # Ansible secrets
-ansible/group_vars/all/relay-secrets.yml
+ansible/host_vars/dev/relay-secrets.yml
+ansible/host_vars/prod/relay-secrets.yml

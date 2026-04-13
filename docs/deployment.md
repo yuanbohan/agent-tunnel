@@ -5,7 +5,8 @@ The source of truth is:
 
 - `ansible/inventories/dev.yml`
 - `ansible/inventories/prod.yml`
-- `ansible/group_vars/all/relay-secrets.yml`
+- `ansible/host_vars/dev/relay-secrets.yml`
+- `ansible/host_vars/prod/relay-secrets.yml`
 
 The old `.env.dev` / `.env.prod` deploy flow is gone.
 
@@ -21,7 +22,8 @@ The old `.env.dev` / `.env.prod` deploy flow is gone.
 Create the shared secrets file once:
 
 ```bash
-cp ansible/group_vars/all/relay-secrets.example.yml ansible/group_vars/all/relay-secrets.yml
+cp ansible/host_vars/dev/relay-secrets.example.yml ansible/host_vars/dev/relay-secrets.yml
+cp ansible/host_vars/prod/relay-secrets.example.yml ansible/host_vars/prod/relay-secrets.yml
 ```
 
 Set at least:
@@ -29,7 +31,7 @@ Set at least:
 - `relay_database_password`
 - `relay_app_secret`
 - `relay_operator_token`
-- `relay_certbot_email` for production TLS
+- `relay_certbot_email` in the prod secret file for production TLS
 
 ## Inventories
 
@@ -42,7 +44,7 @@ Set at least:
 - relay install paths
 - website release paths
 
-Per-environment differences belong in inventory. Shared secrets belong in `group_vars`.
+Per-environment differences belong in inventory. Per-environment secrets belong in `host_vars/<host>/relay-secrets.yml`.
 
 ## Server Layout
 
@@ -185,4 +187,4 @@ sudo systemctl list-timers | grep certbot
 - Keep the relay listening on `127.0.0.1`; nginx is the public entrypoint.
 - Keep operator routes off the public nginx surface.
 - Put inventory-specific behavior in inventory, not in Make variables.
-- Put long-lived secrets in `ansible/group_vars/all/relay-secrets.yml`, not in ad hoc local env files.
+- Put long-lived secrets in `ansible/host_vars/dev/relay-secrets.yml` and `ansible/host_vars/prod/relay-secrets.yml`, not in ad hoc local env files.
