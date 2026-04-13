@@ -25,7 +25,6 @@ all:
         relay_certbot_webroot: /var/www/certbot
         relay_enable_tls: true
         relay_enable_certbot: true
-        relay_certbot_email: ""
         relay_database_host: 127.0.0.1
         relay_database_port: 5432
         relay_database_name: agent_tunnel

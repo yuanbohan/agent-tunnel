@@ -94,16 +94,15 @@
     - website
 
 - name: Publish website release atomically
-  ansible.builtin.command:
-    cmd: |
-      set -eu
-      rm -rf "{{ relay_website_release_dir }}" "{{ relay_website_current_tmp_link }}"
-      mkdir -p "{{ relay_website_release_root }}/releases"
-      mkdir -p "{{ relay_website_release_dir }}"
-      tar -xzf "{{ relay_website_tmp_archive }}" -C "{{ relay_website_release_dir }}"
-      ln -sfn "{{ relay_website_release_dir }}" "{{ relay_website_current_tmp_link }}"
-      mv -Tf "{{ relay_website_current_tmp_link }}" "{{ relay_website_release_root }}/current"
-      rm -f "{{ relay_website_tmp_archive }}"
+  ansible.builtin.shell: |
+    set -eu
+    rm -rf "{{ relay_website_release_dir }}" "{{ relay_website_current_tmp_link }}"
+    mkdir -p "{{ relay_website_release_root }}/releases"
+    mkdir -p "{{ relay_website_release_dir }}"
+    tar -xzf "{{ relay_website_tmp_archive }}" -C "{{ relay_website_release_dir }}"
+    ln -sfn "{{ relay_website_release_dir }}" "{{ relay_website_current_tmp_link }}"
+    mv -Tf "{{ relay_website_current_tmp_link }}" "{{ relay_website_release_root }}/current"
+    rm -f "{{ relay_website_tmp_archive }}"
   args:
     executable: /bin/sh
   tags:
