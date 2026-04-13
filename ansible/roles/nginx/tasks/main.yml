@@ -1,0 +1,114 @@
+---
+- name: Resolve relay nginx site name
+  ansible.builtin.set_fact:
+    relay_nginx_site_name: "{{ relay_nginx_site_name | default('agentunnel-relay') }}"
+  tags:
+    - nginx
+
+- name: Resolve relay nginx site path
+  ansible.builtin.set_fact:
+    relay_nginx_site_path: "{{ relay_nginx_site_path | default('/etc/nginx/sites-available/' + relay_nginx_site_name) }}"
+  tags:
+    - nginx
+
+- name: Ensure nginx config directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /etc/systemd/system/nginx.service.d
+    - /etc/nginx/sites-available
+    - /etc/nginx/sites-enabled
+  tags:
+    - nginx
+
+- name: Check whether TLS certificate files exist
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "/etc/letsencrypt/live/{{ relay_primary_domain }}/fullchain.pem"
+    - "/etc/letsencrypt/live/{{ relay_primary_domain }}/privkey.pem"
+  register: relay_tls_certificate_files
+  when:
+    - relay_enable_tls | default(false) | bool
+    - relay_primary_domain is defined
+  tags:
+    - nginx
+
+- name: Resolve nginx TLS readiness
+  ansible.builtin.set_fact:
+    relay_tls_certificate_ready: "{{ relay_tls_certificate_files.results | default([]) | selectattr('stat.exists') | list | length == 2 }}"
+  when: relay_enable_tls | default(false) | bool
+  tags:
+    - nginx
+
+- name: Install nginx restart override
+  ansible.builtin.template:
+    src: "{{ relay_template_dir }}/nginx-restart.conf.j2"
+    dest: /etc/systemd/system/nginx.service.d/agentunnel-restart.conf
+    mode: "0644"
+  notify: Reload systemd
+  tags:
+    - nginx
+
+- name: Install websocket connection map
+  ansible.builtin.template:
+    src: "{{ relay_template_dir }}/websocket_map.conf.j2"
+    dest: /etc/nginx/conf.d/websocket_map.conf
+    mode: "0644"
+  tags:
+    - nginx
+
+- name: Render HTTP relay nginx site configuration
+  ansible.builtin.template:
+    src: "{{ relay_template_dir }}/nginx-site-http.conf.j2"
+    dest: "{{ relay_nginx_site_path }}"
+    mode: "0644"
+  when: not (relay_enable_tls | default(false) | bool and relay_tls_certificate_ready | default(false) | bool)
+  tags:
+    - nginx
+
+- name: Render TLS relay nginx site configuration
+  ansible.builtin.template:
+    src: "{{ relay_template_dir }}/nginx-site-tls.conf.j2"
+    dest: "{{ relay_nginx_site_path }}"
+    mode: "0644"
+  when:
+    - relay_enable_tls | default(false) | bool
+    - relay_tls_certificate_ready | default(false) | bool
+  tags:
+    - nginx
+
+- name: Enable relay nginx site
+  ansible.builtin.file:
+    src: "{{ relay_nginx_site_path }}"
+    dest: "/etc/nginx/sites-enabled/{{ relay_nginx_site_name }}"
+    state: link
+    force: true
+  tags:
+    - nginx
+
+- name: Remove default nginx site
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+  tags:
+    - nginx
+
+- name: Validate nginx configuration
+  ansible.builtin.command: nginx -t
+  changed_when: false
+  tags:
+    - nginx
+
+- name: Enable and restart nginx
+  ansible.builtin.systemd:
+    name: nginx
+    state: restarted
+    enabled: true
+    daemon_reload: true
+  tags:
+    - nginx

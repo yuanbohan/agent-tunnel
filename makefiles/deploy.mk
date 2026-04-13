@@ -1,46 +1,132 @@
-.PHONY: deploy-install deploy-install-relay deploy-install-migrator deploy-schema deploy-env deploy-migrate deploy-schema-migrate deploy-restart deploy deploy-dev deploy-prod deploy-website deploy-website-dev deploy-website-prod
+.PHONY: _deploy-built _deploy-ansible _deploy-website \
+	deploy-dev deploy-prod \
+	deploy-website-dev deploy-website-prod \
+	deps-dev deps-prod \
+	postgres-dev postgres-prod \
+	nginx-dev nginx-prod \
+	certbot-dev certbot-prod \
+	schema-dev schema-prod \
+	migrator-dev migrator-prod \
+	relay-bin-dev relay-bin-prod \
+	env-dev env-prod \
+	migrate-dev migrate-prod \
+	restart-dev restart-prod \
+	relay-dev relay-prod
 
-DEPLOY_SCRIPT := ./scripts/deploy.sh
-DEPLOY_WEBSITE_SCRIPT := ./scripts/deploy-website.sh
-DEPLOY_SCRIPT_FLAGS := $(if $(filter 1 true TRUE yes YES on ON,$(DEPLOY_VERBOSE)),--verbose,) $(if $(filter 1 true TRUE yes YES on ON,$(DEPLOY_DRY_RUN)),--dry-run,)
+DEPLOY_DEFAULT_TAGS := schema,relay-migrator,migrate,relay-binary,relay-env,relay-service,relay-restart
+DEPLOY_MIGRATOR_TAGS := relay-migrator
+DEPLOY_RELAY_BINARY_TAGS := relay-binary
+DEPLOY_RELAY_TAGS := relay-env,relay-service,relay-restart
+DEPLOY_MIGRATE_TAGS := schema,migrate
 
-deploy-install-migrator: ## Build, upload, and install the relay migrator on the remote host when it changes. Does not install or reconfigure host infrastructure.
-	@$(DEPLOY_SCRIPT) install-migrator $(DEPLOY_SCRIPT_FLAGS)
+_deploy-built:
+	@$(MAKE) build-linux
+	@$(MAKE) _deploy-ansible ANSIBLE_TAGS="$(strip $(ANSIBLE_TAGS))"
 
-deploy-install-relay: ## Build, upload, and install the relay binary on the remote host when it changes. Does not install or reconfigure host infrastructure.
-	@$(DEPLOY_SCRIPT) install-relay $(DEPLOY_SCRIPT_FLAGS)
+_deploy-ansible:
+	@$(MAKE) ansible-run
 
-deploy-install: ## Build, upload, and install the relay and migrator binaries on the remote host when they change. Does not install or reconfigure host infrastructure.
-	@$(DEPLOY_SCRIPT) install $(DEPLOY_SCRIPT_FLAGS)
+deps-dev: ## Install remote OS packages (`nginx`, `postgresql`, `certbot`). Use on first machine bootstrap or when package requirements change.
+	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/dev.yml ANSIBLE_TAGS=deps
 
-deploy-schema: ## Sync relay schema SQL files to the remote host. Does not touch nginx/certbot/postgresql packages or configs.
-	@$(DEPLOY_SCRIPT) sync-schema $(DEPLOY_SCRIPT_FLAGS)
+deps-prod: ## Install remote OS packages (`nginx`, `postgresql`, `certbot`). Use on first machine bootstrap or when package requirements change.
+	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/prod.yml ANSIBLE_TAGS=deps
 
-deploy-env: ## Install local `$(ENV_FILE)` on the remote host as `$(DEPLOY_ENV_FILE)`. Does not touch nginx/certbot/postgresql packages or configs.
-	@$(DEPLOY_SCRIPT) install-env $(DEPLOY_SCRIPT_FLAGS)
+postgres-dev: ## Ensure PostgreSQL user/database/password state. Updates the remote Postgres role state only; use for first DB bootstrap or credential changes.
+	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/dev.yml ANSIBLE_TAGS=postgres
 
-deploy-migrate: ## Run relay schema migrations on the remote host using the selected local env file. Does not touch nginx/certbot/postgresql packages or configs.
-	@$(DEPLOY_SCRIPT) migrate $(DEPLOY_SCRIPT_FLAGS)
+postgres-prod: ## Ensure PostgreSQL user/database/password state. Updates the remote Postgres role state only; use for first DB bootstrap or credential changes.
+	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/prod.yml ANSIBLE_TAGS=postgres
 
-deploy-schema-migrate: deploy-migrate ## Alias for schema sync + migrate using the selected local env file.
+nginx-dev: ## Render `/etc/nginx/...` config, site files, websocket map, and restart nginx. Use after domain/upstream/reverse-proxy changes.
+	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/dev.yml ANSIBLE_TAGS=nginx
 
-deploy-restart: ## Restart the relay systemd service on the remote host. Does not touch nginx/certbot/postgresql packages or configs.
-	@$(DEPLOY_SCRIPT) restart $(DEPLOY_SCRIPT_FLAGS)
+nginx-prod: ## Render `/etc/nginx/...` config, site files, websocket map, and restart nginx. Use after domain/upstream/reverse-proxy changes.
+	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/prod.yml ANSIBLE_TAGS=nginx
 
-deploy: ## Build, safely rerun migrations, install the relay, sync env, and restart the relay on the remote host. Does not install or reconfigure nginx/certbot/postgresql.
-	@$(DEPLOY_SCRIPT) deploy $(DEPLOY_SCRIPT_FLAGS)
+certbot-dev: ## Manage `/etc/letsencrypt/...` certificate issuance, renewal hook, and timer. Use for first TLS setup or domain/email/cert renewal changes.
+	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/dev.yml ANSIBLE_TAGS=certbot
 
-deploy-dev: ## Convenience: `make deploy` using `.env.dev`.
-	@$(MAKE) deploy ENV_FILE=.env.dev
+certbot-prod: ## Manage `/etc/letsencrypt/...` certificate issuance, renewal hook, and timer. Use for first TLS setup or domain/email/cert renewal changes.
+	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/prod.yml ANSIBLE_TAGS=certbot
 
-deploy-prod: ## Convenience: `make deploy` using `.env.prod`.
-	@$(MAKE) deploy ENV_FILE=.env.prod
+schema-dev: ## Sync local `schema/` files to the remote schema dir (default `/etc/agentunnel/schema`). Use after SQL migration files change.
+	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/dev.yml ANSIBLE_TAGS=schema
 
-deploy-website: ## Build the website from `$(WEBSITE_REPO_DIR)` and publish it as an atomic remote release. Does not install or reconfigure nginx/certbot/postgresql.
-	@$(DEPLOY_WEBSITE_SCRIPT) deploy $(DEPLOY_SCRIPT_FLAGS)
+schema-prod: ## Sync local `schema/` files to the remote schema dir (default `/etc/agentunnel/schema`). Use after SQL migration files change.
+	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/prod.yml ANSIBLE_TAGS=schema
 
-deploy-website-dev: ## Convenience: `make deploy-website` using `.env.dev`.
-	@$(MAKE) deploy-website ENV_FILE=.env.dev
+migrator-dev: ## Build `relay-migrate` locally and install it on the dev host. Use after migrator code changes or when the remote migrator binary is missing.
+	@$(MAKE) _deploy-built ANSIBLE_INVENTORY=ansible/inventories/dev.yml ANSIBLE_TAGS="$(DEPLOY_MIGRATOR_TAGS)"
 
-deploy-website-prod: ## Convenience: `make deploy-website` using `.env.prod`.
-	@$(MAKE) deploy-website ENV_FILE=.env.prod
+migrator-prod: ## Build `relay-migrate` locally and install it on the prod host. Use after migrator code changes or when the remote migrator binary is missing.
+	@$(MAKE) _deploy-built ANSIBLE_INVENTORY=ansible/inventories/prod.yml ANSIBLE_TAGS="$(DEPLOY_MIGRATOR_TAGS)"
+
+relay-bin-dev: ## Build `relay` locally and install it on the dev host. Use after relay code changes or when the remote relay binary is missing.
+	@set -e; \
+	attempt=1; \
+	while [ "$$attempt" -le "$(DEPLOY_RETRY_COUNT)" ]; do \
+		echo "relay-bin-dev attempt $$attempt/$(DEPLOY_RETRY_COUNT)"; \
+		if $(MAKE) _deploy-built ANSIBLE_INVENTORY=ansible/inventories/dev.yml ANSIBLE_TAGS="$(DEPLOY_RELAY_BINARY_TAGS)"; then \
+			exit 0; \
+		fi; \
+		if [ "$$attempt" -eq "$(DEPLOY_RETRY_COUNT)" ]; then \
+			exit 1; \
+		fi; \
+		attempt=$$((attempt + 1)); \
+		sleep "$(DEPLOY_RETRY_DELAY)"; \
+	done
+
+relay-bin-prod: ## Build `relay` locally and install it on the prod host. Use after relay code changes or when the remote relay binary is missing.
+	@set -e; \
+	attempt=1; \
+	while [ "$$attempt" -le "$(DEPLOY_RETRY_COUNT)" ]; do \
+		echo "relay-bin-prod attempt $$attempt/$(DEPLOY_RETRY_COUNT)"; \
+		if $(MAKE) _deploy-built ANSIBLE_INVENTORY=ansible/inventories/prod.yml ANSIBLE_TAGS="$(DEPLOY_RELAY_BINARY_TAGS)"; then \
+			exit 0; \
+		fi; \
+		if [ "$$attempt" -eq "$(DEPLOY_RETRY_COUNT)" ]; then \
+			exit 1; \
+		fi; \
+		attempt=$$((attempt + 1)); \
+		sleep "$(DEPLOY_RETRY_DELAY)"; \
+	done
+
+env-dev: ## Render the remote relay env file (default `/etc/agentunnel/relay.env`). Use after relay config or secret changes.
+	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/dev.yml ANSIBLE_TAGS=relay-env
+
+env-prod: ## Render the remote relay env file (default `/etc/agentunnel/relay.env`). Use after relay config or secret changes.
+	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/prod.yml ANSIBLE_TAGS=relay-env
+
+migrate-dev: ## Sync `schema/` and run DB migrations on the dev host. Use after SQL changes once the remote `relay-migrate` binary is already in place.
+	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/dev.yml ANSIBLE_TAGS="$(DEPLOY_MIGRATE_TAGS)"
+
+migrate-prod: ## Sync `schema/` and run DB migrations on the prod host. Use after SQL changes once the remote `relay-migrate` binary is already in place.
+	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/prod.yml ANSIBLE_TAGS="$(DEPLOY_MIGRATE_TAGS)"
+
+restart-dev: ## Restart only the remote `agentunnel-relay` systemd service. Use after manual config fixes or to bounce the process without redeploying binaries.
+	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/dev.yml ANSIBLE_TAGS=relay-restart
+
+restart-prod: ## Restart only the remote `agentunnel-relay` systemd service. Use after manual config fixes or to bounce the process without redeploying binaries.
+	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/prod.yml ANSIBLE_TAGS=relay-restart
+
+relay-dev: ## Render relay env and systemd config on the dev host, then restart the relay service. Use after config changes once the remote relay binary is already in place.
+	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/dev.yml ANSIBLE_TAGS="$(DEPLOY_RELAY_TAGS)"
+
+relay-prod: ## Render relay env and systemd config on the prod host, then restart the relay service. Use after config changes once the remote relay binary is already in place.
+	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/prod.yml ANSIBLE_TAGS="$(DEPLOY_RELAY_TAGS)"
+
+deploy-dev: ## Full relay deploy: build Linux binaries, install `relay-migrate`, sync schema, run migrations, install relay, render env/systemd, and restart relay.
+	@$(MAKE) _deploy-built ANSIBLE_INVENTORY=ansible/inventories/dev.yml ANSIBLE_TAGS="$(DEPLOY_DEFAULT_TAGS)"
+
+deploy-prod: ## Full relay deploy: build Linux binaries, install `relay-migrate`, sync schema, run migrations, install relay, render env/systemd, and restart relay.
+	@$(MAKE) _deploy-built ANSIBLE_INVENTORY=ansible/inventories/prod.yml ANSIBLE_TAGS="$(DEPLOY_DEFAULT_TAGS)"
+
+_deploy-website:
+	@$(MAKE) ansible-run ANSIBLE_TAGS="$(if $(strip $(ANSIBLE_TAGS)),$(strip $(ANSIBLE_TAGS)),website)"
+
+deploy-website-dev: ## Build the website locally, upload it to dev, switch `/var/www/agentunnel-website/current`, and reload nginx. Use after website frontend changes.
+	@$(MAKE) _deploy-website ANSIBLE_INVENTORY=ansible/inventories/dev.yml
+
+deploy-website-prod: ## Build the website locally, upload it to prod, switch `/var/www/agentunnel-website/current`, and reload nginx. Use after website frontend changes.
+	@$(MAKE) _deploy-website ANSIBLE_INVENTORY=ansible/inventories/prod.yml

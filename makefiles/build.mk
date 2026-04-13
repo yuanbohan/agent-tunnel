@@ -16,7 +16,7 @@ build-linux: ## Build Linux amd64 `tunnel`, `relay`, and `relay-migrate` binarie
 	@GOOS=linux GOARCH=amd64 $(GO) build -ldflags="-s -w" -o "$(MIGRATOR_BUILD_BIN)" $(MIGRATOR_PKG)
 	@printf '✅ Linux binaries are ready in %s\n' "$(BIN_DIR)"
 
-migrate: ## Run relay schema migrations locally using `$(ENV_FILE)` (default `.env.prod`) or the shell environment.
+migrate: ## Run relay schema migrations locally using the current shell environment.
 	$(GO) run $(MIGRATOR_PKG) --schema-dir ./schema $(MIGRATOR_ARGS)
 
 clean: ## Remove built binaries from `$(BIN_DIR)`.

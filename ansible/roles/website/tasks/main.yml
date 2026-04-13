@@ -1,0 +1,128 @@
+---
+- name: Resolve website release id
+  ansible.builtin.set_fact:
+    relay_website_release_id: "{{ lookup('pipe', 'date +%Y%m%d%H%M%S') }}"
+  tags:
+    - website
+
+- name: Resolve website paths
+  ansible.builtin.set_fact:
+    relay_website_release_root: "{{ relay_website_root }}"
+    relay_website_build_dir: "{{ website_build_dir | default('dist') }}"
+    relay_website_local_tmp_dir: "{{ lookup('env', 'TMPDIR') | default('/tmp', true) }}/agentunnel-website"
+    relay_website_release_dir: "{{ relay_website_release_root }}/releases/{{ relay_website_release_id }}"
+    relay_website_tmp_archive: "{{ relay_website_tmp_dir }}/{{ relay_website_release_id }}.tar.gz"
+    relay_website_local_tmp_archive: "{{ relay_website_local_tmp_dir }}/{{ relay_website_release_id }}.tar.gz"
+    relay_website_current_tmp_link: "{{ relay_website_release_root }}/current.{{ relay_website_release_id }}.tmp"
+  tags:
+    - website
+
+- name: Ensure local website temp directory exists
+  ansible.builtin.file:
+    path: "{{ relay_website_local_tmp_dir }}"
+    state: directory
+    mode: "0755"
+  delegate_to: localhost
+  become: false
+  tags:
+    - website
+
+- name: Build website dependencies
+  ansible.builtin.command:
+    cmd: npm ci
+  args:
+    chdir: "{{ relay_website_repo_dir }}"
+  delegate_to: localhost
+  become: false
+  tags:
+    - website
+
+- name: Build website bundle
+  ansible.builtin.command:
+    cmd: npm run build
+  args:
+    chdir: "{{ relay_website_repo_dir }}"
+  delegate_to: localhost
+  become: false
+  tags:
+    - website
+
+- name: Ensure no symlinks in website bundle
+  ansible.builtin.command:
+    cmd: >
+      find "{{ relay_website_repo_dir }}/{{ relay_website_build_dir }}"
+      -type l -print
+  delegate_to: localhost
+  become: false
+  register: relay_website_symlinks
+  changed_when: false
+  tags:
+    - website
+
+- name: Reject website symlinks
+  ansible.builtin.fail:
+    msg: "website build output contains symlinks; refusing to deploy"
+  when: relay_website_symlinks.stdout | trim | length > 0
+  tags:
+    - website
+
+- name: Package website archive
+  ansible.builtin.command:
+    cmd: >
+      tar -czf "{{ relay_website_local_tmp_archive }}"
+      -C "{{ relay_website_repo_dir }}/{{ relay_website_build_dir }}" .
+  delegate_to: localhost
+  become: false
+  tags:
+    - website
+
+- name: Prepare remote release directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ relay_website_release_root }}"
+    - "{{ relay_website_release_root }}/releases"
+    - "{{ relay_website_tmp_dir }}"
+  tags:
+    - website
+
+- name: Upload website release archive
+  ansible.builtin.copy:
+    src: "{{ relay_website_local_tmp_archive }}"
+    dest: "{{ relay_website_tmp_archive }}"
+    mode: "0644"
+  tags:
+    - website
+
+- name: Publish website release atomically
+  ansible.builtin.shell: |
+    set -eu
+    rm -rf "{{ relay_website_release_dir }}" "{{ relay_website_current_tmp_link }}"
+    mkdir -p "{{ relay_website_release_root }}/releases"
+    mkdir -p "{{ relay_website_release_dir }}"
+    tar -xzf "{{ relay_website_tmp_archive }}" -C "{{ relay_website_release_dir }}"
+    ln -sfn "{{ relay_website_release_dir }}" "{{ relay_website_current_tmp_link }}"
+    mv -Tf "{{ relay_website_current_tmp_link }}" "{{ relay_website_release_root }}/current"
+    rm -f "{{ relay_website_tmp_archive }}"
+  args:
+    executable: /bin/sh
+  tags:
+    - website
+
+- name: Clean up local website archive
+  ansible.builtin.file:
+    path: "{{ relay_website_local_tmp_archive }}"
+    state: absent
+  delegate_to: localhost
+  become: false
+  tags:
+    - website
+
+- name: Reload nginx for website switch
+  ansible.builtin.systemd:
+    name: nginx
+    state: reloaded
+  tags:
+    - website

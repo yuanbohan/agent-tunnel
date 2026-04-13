@@ -1,10 +1,13 @@
 # Relay Operations
 
+This guide is for commands run on the VPS after SSH login.
+For deploys started from your local checkout with `make` plus Ansible, use [deploy.md](./deploy.md).
+
 This guide covers the day-to-day relay CLI commands introduced for PostgreSQL-backed auth, invite-code management, operator maintenance, and explicit schema migrations.
 
 The commands here use the `relay` and `relay-migrate` binaries from this repository.
 `relay-migrate` requires an explicit `--schema-dir` so it never guesses where SQL files live.
-Runtime relay values are now sourced from current shell environment for local commands, and from `ansible/inventories/dev.yml` or `ansible/inventories/prod.yml` for remote deploy flows via `relay_env_vars`.
+Remote install and deploy now run through Ansible inventories under `ansible/inventories/` plus per-environment secrets in `ansible/host_vars/dev/relay-secrets.yml` and `ansible/host_vars/prod/relay-secrets.yml`. Local commands such as `make migrate` and `make start` read the current shell environment only.
 
 ## Environment Variables
 
@@ -24,7 +27,7 @@ Notes:
 - nginx should serve the public website on `/`, proxy `/api/` and `/agent/ws`, and keep the operator routes off the public surface.
 - Operator commands call the running relay. That means `relay serve` must already be running when you execute `relay invite ...` or `relay user delete`.
 - `RELAY_LISTEN_ADDR` is shared by `relay serve` and the operator commands. If you start the relay on a different local address, set the same value before running invite or user commands.
-- On a systemd-managed host, the usual source of truth is `/etc/agentunnel/relay.env`. `make deploy-env` pins `RELAY_LOG_FILE=/var/log/agentunnel/relay.log` there. You can source that file before running relay commands, or pass it directly to `relay-migrate --env-file /etc/agentunnel/relay.env`.
+- On a systemd-managed host, the usual source of truth is `/etc/agentunnel/relay.env`. `make env-dev` or `make env-prod` renders that file from the selected inventory plus the matching host secret file. You can source that file before running relay commands, or pass it directly to `relay-migrate --env-file /etc/agentunnel/relay.env`.
 
 ## Command Summary
 
@@ -39,26 +42,26 @@ Notes:
 | `relay invite list` | List all invite codes with status and current binding |
 | `relay user delete` | Delete a user account and free the username |
 | `make install` / `make install-local` | Install the local `tunnel`, `relay`, and `relay-migrate` binaries into `$(INSTALL_DIR)` |
-| `make install-dev` | Install `nginx` and PostgreSQL on the dev VPS if missing, sync the HTTP nginx site that serves the website plus relay proxy routes, and restart nginx |
-| `make install-prod` | Dev bootstrap plus `certbot`, certificate issuance/renewal wiring, and the HTTPS nginx site for prod |
-| `make migrate` | Apply local schema migrations from shell env (`RELAY_DATABASE_URL`) |
-| `make deploy-env` | Generate `/etc/agentunnel/relay.env` on remote using the active Ansible inventory `relay_env_vars` |
-| `make deploy-dev` / `make deploy-prod` | One-shot relay deploy against the dev/prod inventory with schema sync + env + restart |
+| `make install-dev` | Install base packages on the dev host and sync the HTTP nginx site that fronts the relay |
+| `make install-prod` | Install base packages on the prod host plus `certbot`, certificate issuance/renewal wiring, and the HTTPS nginx site |
+| `make migrate` | Apply local schema migrations using the current shell environment |
+| `make migrator-dev` / `make migrator-prod` | Build `relay-migrate` locally and install it on the target host |
+| `make relay-bin-dev` / `make relay-bin-prod` | Build `relay` locally and install it on the target host |
+| `make env-dev` / `make env-prod` | Render `/etc/agentunnel/relay.env` from the selected inventory and Ansible secrets |
+| `make deploy-dev` / `make deploy-prod` | Build Linux binaries, sync schema, rerun migrations, update relay env and systemd, then restart the relay |
 | `make deploy-website-dev` / `make deploy-website-prod` | Build `../agent-tunnel-website` and publish an atomic website release on the remote host |
+| `make deps-dev` / `make deps-prod` / `make certbot-dev` / `make certbot-prod` / `make nginx-dev` / `make nginx-prod` / `make postgres-dev` / `make postgres-prod` / `make relay-dev` / `make relay-prod` | Run one isolated Ansible slice for lower-risk operational changes |
 
-Install output controls:
+Ansible controls:
 
-- `INSTALL_DRY_RUN=1` prints the remote install plan in a structured way without changing the remote host.
-- `INSTALL_VERBOSE=1` includes remote install debug details.
-- `make install-prod` needs a certbot email. Pass `INSTALL_CERTBOT_EMAIL=<ops@example.com>` up front, or set `certbot_email` in `ansible/inventories/prod.yml`.
-
-Deploy output controls:
-
-- `DEPLOY_DRY_RUN=1` prints the deploy plan in a structured way without changing the remote host.
-- `DEPLOY_VERBOSE=1` includes deploy debug details.
-- Relay deploy manages relay artifacts only: binaries, schema files, `/etc/agentunnel/relay.env`, and the `agentunnel-relay` service restart.
-- Website deploy manages the static website bundle only: it runs `npm ci`, builds `../agent-tunnel-website`, rejects bundle symlinks, uploads a release under `DEPLOY_WEBSITE_ROOT/releases`, and atomically repoints `DEPLOY_WEBSITE_ROOT/current`.
-- Neither deploy path installs or reconfigures `nginx`, `certbot`, or `postgresql`, and neither rewrites those host-level config files.
+- `ANSIBLE_DRY_RUN=1` runs playbooks in check mode.
+- `ANSIBLE_EXTRA_VARS_FILE=<path>` layers an additional vars file on top of the selected inventory.
+- `make install-prod` requires `relay_certbot_email` to be set in `ansible/host_vars/prod/relay-secrets.yml`.
+- Relay deploy manages relay artifacts only: binaries, schema files, `/etc/agentunnel/relay.env`, the systemd unit, and the `agentunnel-relay` service restart.
+- `make migrate-dev` and `make migrate-prod` no longer install `relay-migrate`; they assume the remote migrator binary already exists. Run `make migrator-dev` or `make migrator-prod` first when you change migrator code or bootstrap a fresh host.
+- `make relay-dev` and `make relay-prod` no longer install `relay`; they assume the remote relay binary already exists. Run `make relay-bin-dev` or `make relay-bin-prod` first when you change relay code or bootstrap a fresh host.
+- Website deploy manages the static website bundle only: it runs `npm ci`, builds `../agent-tunnel-website`, rejects bundle symlinks, uploads a release under `/var/www/agentunnel-website/releases`, and atomically repoints `/var/www/agentunnel-website/current`.
+- Package installation, cert issuance, nginx config, PostgreSQL config, relay deploy, and website deploy can all be run independently through dedicated targets.
 
 ## Start the Relay
 

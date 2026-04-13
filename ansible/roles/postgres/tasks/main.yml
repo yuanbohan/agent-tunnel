@@ -1,0 +1,77 @@
+---
+- name: Ensure PostgreSQL service is enabled
+  ansible.builtin.systemd:
+    name: postgresql
+    enabled: true
+    state: started
+  tags:
+    - postgres
+
+- name: Check relay database user
+  ansible.builtin.command:
+    cmd: >
+      psql -tAc "SELECT 1 FROM pg_catalog.pg_roles WHERE rolname='{{ relay_database_user | replace("'", "''") }}'"
+  become_user: postgres
+  register: relay_pg_user_exists
+  changed_when: false
+  failed_when: false
+  tags:
+    - postgres
+
+- name: Ensure relay database user exists
+  ansible.builtin.command:
+    argv:
+      - psql
+      - --dbname=postgres
+      - --no-psqlrc
+      - -v
+      - ON_ERROR_STOP=1
+    stdin: |
+      CREATE USER "{{ relay_database_user | replace('"', '""') }}" WITH PASSWORD '{{ relay_database_password | replace("'", "''") }}';
+  become_user: postgres
+  no_log: true
+  when: relay_pg_user_exists.stdout.strip() != '1'
+  tags:
+    - postgres
+
+- name: Ensure relay database user has expected password
+  ansible.builtin.command:
+    argv:
+      - psql
+      - --dbname=postgres
+      - --no-psqlrc
+      - -v
+      - ON_ERROR_STOP=1
+    stdin: |
+      ALTER USER "{{ relay_database_user | replace('"', '""') }}" WITH PASSWORD '{{ relay_database_password | replace("'", "''") }}';
+  become_user: postgres
+  no_log: true
+  when: relay_pg_user_exists.stdout.strip() == '1'
+  tags:
+    - postgres
+
+- name: Check relay database
+  ansible.builtin.command:
+    cmd: >
+      psql -tAc "SELECT 1 FROM pg_database WHERE datname='{{ relay_database_name | replace("'", "''") }}'"
+  become_user: postgres
+  register: relay_pg_db_exists
+  changed_when: false
+  failed_when: false
+  tags:
+    - postgres
+
+- name: Ensure relay database exists
+  ansible.builtin.command:
+    argv:
+      - psql
+      - --dbname=postgres
+      - --no-psqlrc
+      - -v
+      - ON_ERROR_STOP=1
+    stdin: |
+      CREATE DATABASE "{{ relay_database_name | replace('"', '""') }}" OWNER "{{ relay_database_user | replace('"', '""') }}";
+  become_user: postgres
+  when: relay_pg_db_exists.stdout.strip() != '1'
+  tags:
+    - postgres

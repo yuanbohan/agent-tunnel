@@ -187,14 +187,18 @@ export TUNNEL_AUTH_TOKEN=<user-owned-agent-token>
 ./bin/tunnel --label "feature-branch" claude
 ```
 
-Keep two gitignored env files at the repo root: `.env.prod` for production and `.env.dev` for the dev VPS. Each file carries its own `DEPLOY_HOST`, and the remote install targets default `INSTALL_HOST` to that same value.
+Keep deployment config in Ansible:
+
+- `ansible/inventories/dev.yml` and `ansible/inventories/prod.yml` define hosts, domains, and non-secret defaults
+- `ansible/host_vars/dev/relay-secrets.yml` and `ansible/host_vars/prod/relay-secrets.yml` hold per-environment secrets
 
 Bootstrap each host once:
 
 ```bash
-make install-prod                                          # prod: prompts for certbot email, then installs nginx + PostgreSQL + certbot + TLS nginx site
-make install-prod INSTALL_CERTBOT_EMAIL=ops@example.com   # prod: same flow, with the email provided up front
-make install-dev                                          # dev: nginx + PostgreSQL + HTTP nginx site
+cp ansible/host_vars/dev/relay-secrets.example.yml ansible/host_vars/dev/relay-secrets.yml
+cp ansible/host_vars/prod/relay-secrets.example.yml ansible/host_vars/prod/relay-secrets.yml
+make install-dev       # dev: install packages and sync HTTP nginx config
+make install-prod      # prod: install packages, certbot, and TLS nginx config
 ```
 
 Deploy:
@@ -206,13 +210,15 @@ make deploy-website-prod    # prod website bundle from ../agent-tunnel-website
 make deploy-website-dev     # dev website bundle from ../agent-tunnel-website
 ```
 
-`make install-prod` always requires a certbot email before it does anything else. If `INSTALL_CERTBOT_EMAIL` is missing, it stops and prompts in the terminal until you enter one. Then it installs `certbot`, issues or refreshes the TLS certificate with a webroot challenge, enables `certbot.timer`, and installs a renewal hook that reloads nginx after renewal. `make install-dev` skips `certbot` entirely and keeps the dev relay on plain HTTP port 80. Both install targets now render nginx so `/` serves the static website from `INSTALL_WEBSITE_ROOT/current` and `/api/` plus `/agent/ws` still proxy the relay. If a host was bootstrapped before this website-serving nginx change, rerun `make install-dev` or `make install-prod` once before the first `make deploy-website-*`. `make install` remains the local binary install alias.
+`make install-prod` reads `relay_certbot_email` from `ansible/host_vars/prod/relay-secrets.yml`. `make install-dev` skips `certbot` and keeps the dev relay on plain HTTP port 80. Both install targets render nginx so `/` serves the static website from `/var/www/agentunnel-website/current` and `/api/` plus `/agent/ws` proxy to the relay. They do not build or publish the website bundle. `make install` remains the local binary install alias.
 
-Every relay deploy syncs `schema/` to the remote host and reruns the migrator before the new relay binary and env file are activated. That is safe to repeat: the migrator records applied versions in `schema_migrations`, holds a PostgreSQL advisory lock while it runs, and applies each migration in its own transaction. `make deploy-install` skips binary installs when the remote copy already has the same sha256, so re-running a deploy on an unchanged build is still cheap. `make deploy` defaults to `ENV_FILE=.env.prod`; override with `make deploy ENV_FILE=.env.dev` or with individual flags when needed. Website deploy is separate: `make deploy-website-*` runs `npm ci`, builds `../agent-tunnel-website`, rejects bundle symlinks, uploads a release under `DEPLOY_WEBSITE_ROOT/releases`, and atomically repoints `DEPLOY_WEBSITE_ROOT/current`.
+Every relay deploy builds Linux binaries, syncs `schema/`, reruns the migrator, renders `/etc/agentunnel/relay.env` from Ansible variables, updates the systemd unit, and restarts the relay. Website deploy stays separate: `make deploy-website-*` runs `npm ci`, builds `../agent-tunnel-website`, rejects bundle symlinks, uploads a release under `/var/www/agentunnel-website/releases`, and atomically repoints `/var/www/agentunnel-website/current`.
 
-Deploy is intentionally narrower than install: it does not install or reconfigure `nginx`, `certbot`, or `postgresql`, and it does not rewrite those host-level config files. Those changes stay in the install phase so later manual host edits are not overwritten by routine relay or website deploys.
+For targeted relay maintenance, use the sliced deploy targets: `make migrator-dev` / `make migrator-prod` install only `relay-migrate`, `make relay-bin-dev` / `make relay-bin-prod` install only `relay`, `make migrate-dev` / `make migrate-prod` sync `schema/` and run migrations using the already-installed remote migrator, and `make relay-dev` / `make relay-prod` render relay env and systemd config, then restart the service using the already-installed remote relay binary.
 
-For install output, `make install-dev INSTALL_DRY_RUN=1` gives a structured preview and `make install-dev INSTALL_VERBOSE=1` prints debug details. Relay deploy and website deploy follow the same pattern with `DEPLOY_DRY_RUN=1` and `DEPLOY_VERBOSE=1`.
+Deploy is intentionally narrower than install: it does not install packages, request certificates, or change PostgreSQL users and databases unless you run the dedicated Ansible-tagged targets for those steps.
+
+Use `ANSIBLE_DRY_RUN=1` for a check-mode preview and `ANSIBLE_EXTRA_VARS_FILE=<path>` if you want to layer extra vars on top of the checked-in inventories.
 
 ## Launchers
 
@@ -223,8 +229,8 @@ For install output, `make install-dev INSTALL_DRY_RUN=1` gives a structured prev
 ```bash
 make build             # builds bin/tunnel, bin/relay, and bin/relay-migrate
 make install           # installs tunnel, relay, and relay-migrate to ~/.local/bin
-make install-dev       # installs nginx + PostgreSQL on the dev VPS if needed and syncs the HTTP nginx site
-make install-prod      # prompts for certbot email, then installs prod nginx + PostgreSQL + certbot and syncs the TLS nginx site
+make install-dev       # installs packages and syncs the dev nginx config
+make install-prod      # installs packages, certbot, and syncs the prod nginx config
 make deploy-website-dev   # build ../agent-tunnel-website and publish it to the dev host
 make deploy-website-prod  # build ../agent-tunnel-website and publish it to the prod host
 make test              # go test ./...
@@ -235,7 +241,7 @@ make test-local-e2e-docker # start fixed-version Docker PostgreSQL and run local
 make test-local-e2e-clean  # reset DB, run local E2E, save output to tmp/local-e2e/latest.log, and fail on test or cleanup errors
 make tunnel LAUNCHER=claude       # run tunnel directly
 go run ./cmd/relay serve          # run relay server
-make migrate           # run relay schema migrations using $(ENV_FILE) (default .env.prod) or the shell environment
+make migrate           # run relay schema migrations using the current shell environment
 ```
 
 See [docs/local-e2e.md](docs/local-e2e.md) for the Docker-backed local E2E workflow, manual acceptance checklist, and database inspection queries.

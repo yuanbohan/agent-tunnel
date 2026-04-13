@@ -1,0 +1,36 @@
+all:
+  children:
+    relay_hosts:
+      hosts:
+        dev:
+          ansible_host: 1.12.249.160
+          ansible_user: ubuntu
+          ansible_python_interpreter: /usr/bin/python3
+      vars:
+        agentunnel_environment: dev
+        relay_base_packages:
+          - nginx
+          - postgresql
+        relay_upstream_addr: 127.0.0.1:8586
+        relay_site_server_names:
+          - _
+        relay_nginx_site_name: agentunnel-dev
+        relay_nginx_site_path: /etc/nginx/sites-available/agentunnel-dev
+        relay_certbot_domains: []
+        relay_primary_domain: ""
+        relay_certbot_webroot: /var/www/certbot
+        relay_enable_tls: false
+        relay_enable_certbot: false
+        relay_certbot_email: ""
+        relay_database_host: 127.0.0.1
+        relay_database_port: 5432
+        relay_database_name: agent_tunnel
+        relay_database_user: relay_user
+        relay_schema_dir: /etc/agentunnel/schema
+        relay_env_file: /etc/agentunnel/relay.env
+        relay_install_root: /usr/local/bin
+        relay_service_name: agentunnel-relay
+        relay_website_root: /var/www/agentunnel-website
+        relay_website_tmp_dir: /tmp/agentunnel-website
+        relay_log_file: /var/log/agentunnel/relay.log
+        relay_listen_addr: 127.0.0.1:8586
