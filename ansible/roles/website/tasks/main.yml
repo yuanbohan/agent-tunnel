@@ -7,13 +7,13 @@
 
 - name: Resolve website paths
   ansible.builtin.set_fact:
-    relay_website_release_root: "{{ relay_website_root }}"
     relay_website_build_dir: "{{ website_build_dir | default('dist') }}"
+    relay_website_release_root: "{{ relay_website_root }}"
     relay_website_local_tmp_dir: "{{ lookup('env', 'TMPDIR') | default('/tmp', true) }}/agentunnel-website"
-    relay_website_release_dir: "{{ relay_website_release_root }}/releases/{{ relay_website_release_id }}"
+    relay_website_release_dir: "{{ relay_website_root }}/releases/{{ relay_website_release_id }}"
     relay_website_tmp_archive: "{{ relay_website_tmp_dir }}/{{ relay_website_release_id }}.tar.gz"
-    relay_website_local_tmp_archive: "{{ relay_website_local_tmp_dir }}/{{ relay_website_release_id }}.tar.gz"
-    relay_website_current_tmp_link: "{{ relay_website_release_root }}/current.{{ relay_website_release_id }}.tmp"
+    relay_website_local_tmp_archive: "{{ lookup('env', 'TMPDIR') | default('/tmp', true) }}/agentunnel-website/{{ relay_website_release_id }}.tar.gz"
+    relay_website_current_tmp_link: "{{ relay_website_root }}/current.{{ relay_website_release_id }}.tmp"
   tags:
     - website
 
@@ -34,6 +34,7 @@
     chdir: "{{ relay_website_repo_dir }}"
   delegate_to: localhost
   become: false
+  when: not ansible_check_mode
   tags:
     - website
 
@@ -44,6 +45,7 @@
     chdir: "{{ relay_website_repo_dir }}"
   delegate_to: localhost
   become: false
+  when: not ansible_check_mode
   tags:
     - website
 
@@ -56,13 +58,14 @@
   become: false
   register: relay_website_symlinks
   changed_when: false
+  when: not ansible_check_mode
   tags:
     - website
 
 - name: Reject website symlinks
   ansible.builtin.fail:
     msg: "website build output contains symlinks; refusing to deploy"
-  when: relay_website_symlinks.stdout | trim | length > 0
+  when: not ansible_check_mode and relay_website_symlinks.stdout | trim | length > 0
   tags:
     - website
 
@@ -73,6 +76,7 @@
       -C "{{ relay_website_repo_dir }}/{{ relay_website_build_dir }}" .
   delegate_to: localhost
   become: false
+  when: not ansible_check_mode
   tags:
     - website
 
@@ -93,6 +97,7 @@
     src: "{{ relay_website_local_tmp_archive }}"
     dest: "{{ relay_website_tmp_archive }}"
     mode: "0644"
+  when: not ansible_check_mode
   tags:
     - website
 
@@ -108,6 +113,7 @@
     rm -f "{{ relay_website_tmp_archive }}"
   args:
     executable: /bin/sh
+  when: not ansible_check_mode
   tags:
     - website
 
@@ -117,6 +123,7 @@
     state: absent
   delegate_to: localhost
   become: false
+  when: not ansible_check_mode
   tags:
     - website
 
@@ -124,5 +131,6 @@
   ansible.builtin.systemd:
     name: nginx
     state: reloaded
+  when: not ansible_check_mode
   tags:
     - website
