@@ -144,7 +144,9 @@ func runWithArgs(args []string, stdout, stderr io.Writer) error {
 
 	relay.BindHub(running.Hub)
 
-	fmt.Fprint(stderr, startupBanner(command.Name, sessionID))
+	if parsed.Verbose {
+		fmt.Fprint(stderr, startupBanner(command.Name, sessionID))
+	}
 
 	done := startLocalTerminal(ctx, local, running.Hub)
 

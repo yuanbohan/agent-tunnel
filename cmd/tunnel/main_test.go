@@ -574,12 +574,58 @@ func TestRunWithArgsPrintsStartupBannerOnExit(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	if err := runWithArgs([]string{"tunnel", "codex"}, &stdout, &stderr); err != nil {
+	if err := runWithArgs([]string{"tunnel", "--verbose", "codex"}, &stdout, &stderr); err != nil {
 		t.Fatalf("runWithArgs error = %v", err)
 	}
 
 	if got := stderr.String(); got != startupBanner("codex", sessionID) {
 		t.Fatalf("stderr = %q", got)
+	}
+}
+
+func TestRunWithArgsSuppressesStartupBannerByDefault(t *testing.T) {
+	setTestEnv(t)
+
+	oldResolve := resolveLauncher
+	oldPrepare := prepareLocalTerminal
+	oldStartSession := startSession
+	oldStartLocalTerminal := startLocalTerminal
+	oldWaitForExit := waitForExit
+	oldNewConnector := newConnector
+	t.Cleanup(func() {
+		resolveLauncher = oldResolve
+		prepareLocalTerminal = oldPrepare
+		startSession = oldStartSession
+		startLocalTerminal = oldStartLocalTerminal
+		waitForExit = oldWaitForExit
+		newConnector = oldNewConnector
+	})
+
+	resolveLauncher = func(name string, args []string) (launcher.Command, error) {
+		return launcher.Command{Name: name, Path: "/bin/sh", Args: []string{"-c", "exit 0"}}, nil
+	}
+	prepareLocalTerminal = func() (*session.LocalTerminal, error) {
+		return &session.LocalTerminal{}, nil
+	}
+	startSession = func(ctx context.Context, path string, args []string, sinks map[string]session.OutputSink) (*session.Running, error) {
+		return session.StartCommandWithInitialSinks(ctx, path, args, sinks)
+	}
+	done := make(chan struct{})
+	startLocalTerminal = func(context.Context, *session.LocalTerminal, *session.Hub) <-chan struct{} {
+		close(done)
+		return done
+	}
+	newConnector = func(url, token string, info protocol.SessionInfo) relayConnector {
+		return &fakeRelayConnector{waitConnected: true, state: connector.StateConnected}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := runWithArgs([]string{"tunnel", "codex"}, &stdout, &stderr); err != nil {
+		t.Fatalf("runWithArgs error = %v", err)
+	}
+	if got := stderr.String(); got != "" {
+		t.Fatalf("stderr = %q, want empty without --verbose", got)
 	}
 }
 

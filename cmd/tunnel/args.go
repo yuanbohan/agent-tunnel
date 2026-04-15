@@ -20,6 +20,7 @@ const (
 type runArgs struct {
 	ShowHelp     bool
 	ShowVersion  bool
+	Verbose      bool
 	Label        string
 	BaseURL      string
 	AuthToken    string
@@ -48,6 +49,7 @@ func tunnelHelpText() string {
 Flags:
   -h, --help   Show this help message and exit
   --version    Print tunnel version and exit
+  --verbose    Print relay connection status on successful startup
   --label      Optional session label for relay clients
   --base-url   Relay base URL (fallback: %s, default: %s)
 
@@ -67,6 +69,7 @@ func parseRunArgs(argv []string) (runArgs, error) {
 
 	var cfg runArgs
 	fs.BoolVar(&cfg.ShowVersion, "version", false, "print tunnel version and exit")
+	fs.BoolVar(&cfg.Verbose, "verbose", false, "print relay connection status on successful startup")
 	fs.StringVar(&cfg.Label, "label", "", "optional session label for relay clients")
 	fs.StringVar(&cfg.BaseURL, "base-url", "", "relay base URL (fallback: TUNNEL_BASE_URL, default: https://diaro.me)")
 
