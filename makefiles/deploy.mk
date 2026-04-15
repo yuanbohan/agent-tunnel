@@ -1,4 +1,5 @@
 .PHONY: _deploy-built _deploy-ansible _deploy-website \
+	init-dev init-prod \
 	deploy-dev deploy-prod \
 	deploy-website-dev deploy-website-prod \
 	deps-dev deps-prod \
@@ -18,6 +19,15 @@ DEPLOY_MIGRATOR_TAGS := relay-migrator
 DEPLOY_RELAY_BINARY_TAGS := relay-binary
 DEPLOY_RELAY_TAGS := relay-env,relay-service,relay-restart
 DEPLOY_MIGRATE_TAGS := schema,migrate
+INIT_DEV_TAGS := deps,postgres,nginx
+INIT_PROD_TAGS := deps,postgres,nginx,certbot
+
+init-dev: ## Bootstrap the dev host: install nginx and postgresql, create the relay DB user/database, and render the HTTP nginx site. Use on first machine bootstrap.
+	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/dev.yml ANSIBLE_TAGS="$(INIT_DEV_TAGS)"
+
+init-prod: ## Bootstrap the prod host: install nginx/postgresql/certbot, create the relay DB user/database, render the HTTP nginx site, issue the Let's Encrypt cert via webroot, then re-render nginx with the TLS site. Use on first machine bootstrap.
+	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/prod.yml ANSIBLE_TAGS="$(INIT_PROD_TAGS)"
+	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/prod.yml ANSIBLE_TAGS=nginx
 
 _deploy-built:
 	@$(MAKE) build-linux
