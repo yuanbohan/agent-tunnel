@@ -190,9 +190,11 @@ Bootstrap each host once:
 ```bash
 cp ansible/host_vars/dev/relay-secrets.example.yml ansible/host_vars/dev/relay-secrets.yml
 cp ansible/host_vars/prod/relay-secrets.example.yml ansible/host_vars/prod/relay-secrets.yml
-make install-dev       # dev: install packages and sync HTTP nginx config
-make install-prod      # prod: install packages, certbot, and TLS nginx config
+make init-dev          # dev: install nginx+postgresql, create relay DB, render HTTP nginx
+make init-prod         # prod: install nginx+postgresql+certbot, create relay DB, render HTTP nginx, issue TLS cert, switch nginx to TLS
 ```
+
+Before running `make init-prod`, point the prod DNS records at the target host and set `relay_certbot_email` and `relay_database_password` in `ansible/host_vars/prod/relay-secrets.yml`; Let's Encrypt validates over HTTP-01 against the new host.
 
 Deploy:
 
@@ -203,7 +205,7 @@ make deploy-website-prod    # prod website bundle from ../agent-tunnel-website
 make deploy-website-dev     # dev website bundle from ../agent-tunnel-website
 ```
 
-`make install-prod` reads `relay_certbot_email` from `ansible/host_vars/prod/relay-secrets.yml`. `make install-dev` skips `certbot` and keeps the dev relay on plain HTTP port 80. Both install targets render nginx so `/` serves the static website from `/var/www/agentunnel-website/current` and `/api/` plus `/agent/ws` proxy to the relay. They do not build or publish the website bundle. `make install` remains the local binary install alias.
+`make init-prod` and `make install-prod` both read `relay_certbot_email` from `ansible/host_vars/prod/relay-secrets.yml`. `make init-dev` and `make install-dev` skip `certbot` and keep the dev relay on plain HTTP port 80. The nginx config they render serves `/` from the static website at `/var/www/agentunnel-website/current` and proxies `/api/` plus `/agent/ws` to the relay. None of them build or publish the website bundle. `make init-*` is the idempotent bootstrap target used on a fresh host: it installs packages, creates the relay PostgreSQL user and database, and (on prod) runs the nginx render both before and after certificate issuance so nginx ends up on TLS. `make install-*` is the narrower slice that only covers package installation, certbot wiring, and nginx rendering. `make install` remains the local binary install alias.
 
 Every relay deploy builds Linux binaries, syncs `schema/`, reruns the migrator, renders `/etc/agentunnel/relay.env` from Ansible variables, updates the systemd unit, and restarts the relay. Website deploy stays separate: `make deploy-website-*` runs `npm ci`, builds `../agent-tunnel-website`, rejects bundle symlinks, uploads a release under `/var/www/agentunnel-website/releases`, and atomically repoints `/var/www/agentunnel-website/current`.
 

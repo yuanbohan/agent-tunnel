@@ -42,8 +42,9 @@ Notes:
 | `relay invite list` | List all invite codes with status and current binding |
 | `relay user delete` | Delete a user account and free the username |
 | `make install` / `make install-local` | Install the local `tunnel`, `relay`, and `relay-migrate` binaries into `$(INSTALL_DIR)` |
+| `make init-dev` / `make init-prod` | Fresh-host bootstrap: install base packages, create the relay PostgreSQL user and database, render nginx, and (prod only) issue the Let's Encrypt cert and switch nginx to TLS |
 | `make install-dev` | Install base packages on the dev host and sync the HTTP nginx site that fronts the relay |
-| `make install-prod` | Install base packages on the prod host plus `certbot`, certificate issuance/renewal wiring, and the HTTPS nginx site |
+| `make install-prod` | Install base packages on the prod host plus `certbot`, certificate issuance/renewal wiring, and the HTTPS nginx site (assumes the cert already exists) |
 | `make migrate` | Apply local schema migrations using the current shell environment |
 | `make migrator-dev` / `make migrator-prod` | Build `relay-migrate` locally and install it on the target host |
 | `make relay-bin-dev` / `make relay-bin-prod` | Build `relay` locally and install it on the target host |

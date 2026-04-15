@@ -14,8 +14,10 @@ For commands run after SSHing into the VPS, use [operation.md](./operation.md).
 
 | Command | What it does |
 | --- | --- |
-| `make install-dev` | Bootstrap the dev host: packages and nginx |
-| `make install-prod` | Bootstrap the prod host: packages, certbot, and nginx |
+| `make init-dev` | Bootstrap the dev host: nginx, postgresql, relay DB user/database, HTTP nginx site |
+| `make init-prod` | Bootstrap the prod host: nginx, postgresql, certbot, relay DB user/database, HTTP nginx site, issue Let's Encrypt cert, then switch nginx to TLS site |
+| `make install-dev` | Install only OS packages and render the dev HTTP nginx site |
+| `make install-prod` | Install only OS packages, certbot wiring, and the prod HTTPS nginx site (assumes cert already exists) |
 | `make postgres-dev` | Ensure the dev PostgreSQL user and database exist |
 | `make postgres-prod` | Ensure the prod PostgreSQL user and database exist |
 | `make migrator-dev` | Build and install `relay-migrate` on dev |
@@ -36,8 +38,7 @@ For commands run after SSHing into the VPS, use [operation.md](./operation.md).
 ### First Dev Bootstrap
 
 ```bash
-make install-dev
-make postgres-dev
+make init-dev
 make migrator-dev
 make relay-bin-dev
 make migrate-dev
@@ -46,14 +47,17 @@ make relay-dev
 
 ### First Prod Bootstrap
 
+Requires `relay_certbot_email` and `relay_database_password` set in `ansible/host_vars/prod/relay-secrets.yml`, and the prod DNS records pointing at the target host before `make init-prod` runs (Let's Encrypt issues the cert over HTTP-01).
+
 ```bash
-make install-prod
-make postgres-prod
+make init-prod
 make migrator-prod
 make relay-bin-prod
 make migrate-prod
 make relay-prod
 ```
+
+`make init-prod` runs the ansible playbook twice: the first pass installs packages, creates the PostgreSQL user and database, renders the HTTP nginx site, and issues the Let's Encrypt cert over the webroot challenge; the second pass re-renders nginx with the TLS site now that the cert exists and reloads the service.
 
 ### Schema Change
 
