@@ -1,10 +1,15 @@
 # agent-tunnel
 
-Launch a terminal agent locally and expose the running PTY through a relay-backed session attach API.
+Launch a terminal agent locally and expose the running PTY through relay-backed session attach and device-launch APIs.
 
-The remote contract is attach-only: clients discover live sessions with `GET /api/sessions`, then attach to one session with `GET /api/sessions/:id/attach/ws`. On attach, the owning `tunnel` process sends a fresh terminal-state snapshot, which may include bounded agent-local normal-buffer scrollback, and then continues streaming live PTY bytes on that same websocket.
+The remote contract now has two live-only surfaces:
 
-`tunnel` starts a real CLI command such as `claude`, `codex`, `gemini`, `qwen`, or `aider`, keeps the launching terminal interactive, and registers the session with a relay server. The relay is API-only: it authenticates app clients with user-scoped bearer tokens, authenticates agents with user-owned long-lived agent tokens, lists live sessions, brokers session-scoped attaches, and forwards structured input. Operator maintenance routes stay host-local outside the public `/api/` namespace. It does not retain transcript history and it does not emulate the terminal.
+- session attach: clients discover live sessions with `GET /api/sessions`, then attach to one session with `GET /api/sessions/:id/attach/ws`
+- device launch: clients discover currently online devices with `GET /api/devices`, then ask one device daemon to open a new terminal window running `tunnel run <command>`
+
+On attach, the owning `tunnel` process sends a fresh terminal-state snapshot, which may include bounded agent-local normal-buffer scrollback, and then continues streaming live PTY bytes on that same websocket.
+
+`tunnel` starts a real CLI command such as `claude`, `codex`, `gemini`, `qwen`, or `aider`, keeps the launching terminal interactive, and registers the session with a relay server. The relay is API-only: it authenticates app clients with user-scoped bearer tokens, authenticates agents with user-owned long-lived agent tokens, lists live sessions, lists currently online daemons, brokers session-scoped attaches, forwards structured input, and forwards device launch requests. Operator maintenance routes stay host-local outside the public `/api/` namespace. It does not retain transcript history and it does not emulate the terminal.
 
 On startup, `tunnel` must establish relay registration during the startup wait window. If registration does not succeed, startup exits with a relay connection error and does not launch the local terminal session.
 
@@ -123,7 +128,20 @@ Expected stderr output when relay is available during startup:
 Startup banners are rendered inline without consuming an extra terminal row.
 Healthy startup banners are printed in bright green.
 
-### 4. Connect a client
+### 2b. Start the device daemon
+
+If you want mobile clients to create new sessions remotely on this machine, start the daemon explicitly:
+
+```bash
+./bin/tunnel auth login --base-url http://127.0.0.1:8586
+./bin/tunnel daemon start
+./bin/tunnel daemon status
+./bin/tunnel daemon doctor
+```
+
+`tunnel daemon start` uses the same auth precedence as `tunnel run`: `TUNNEL_AUTH_TOKEN` first, then the saved local login in `~/.tunnel/auth.json`.
+
+### 3. Connect a client
 
 App clients authenticate with bearer tokens returned by `POST /api/auth/login` and use the relay APIs:
 
@@ -133,6 +151,8 @@ App clients authenticate with bearer tokens returned by `POST /api/auth/login` a
 See [docs/api.md](docs/api.md) for the current public app-facing endpoint inventory, auth requirements, request and response examples, and error contracts.
 
 Browser attach clients must be same-origin with the relay. Native clients that do not send an `Origin` header remain supported.
+
+Device daemons connect separately on `/device/ws`. Reverse proxies for hosted relay deployments must forward that path alongside `/api/` and `/agent/ws`.
 
 The attach websocket is session-scoped:
 
@@ -158,6 +178,26 @@ The current remote model is:
 - if the terminal is currently on the alternate screen, the snapshot restores that current alt-screen state; any preserved history comes from the underlying normal buffer, not from alt-screen replay
 
 Stronger delivery guarantees, transcript history, and remote-driven PTY sizing are out of scope for this protocol revision.
+
+## Device Launch Model
+
+Remote launch is explicit and desktop-only:
+
+- users opt in per machine with `tunnel daemon start`
+- the daemon stays online until `tunnel daemon stop`
+- mobile clients use `GET /api/devices` to discover only currently connected devices
+- `POST /api/devices/:deviceID/launch` returns a structured launch result and does not auto-attach to the new session
+- a successful launch opens a new visible terminal window and runs `tunnel run <command>` there
+- when that launched `tunnel run <command>` exits, the window stays open and returns to an interactive shell prompt
+- the daemon owns local launch state such as allowlist, busy/not-busy, launcher recipe, doctor output, and last failure
+- the relay only keeps transient online routing for connected daemons; if a daemon disconnects, it disappears from `GET /api/devices` immediately
+
+Current scope boundaries:
+
+- only macOS and Linux desktop GUI environments are supported
+- headless/server-only machines are out of scope for remote launch
+- command authorization is a first-token allowlist read from the daemon config
+- device identity is stable per machine-local daemon state, while display metadata such as device name and platform are refreshed whenever the daemon registers with the relay
 
 ## VPS Deployment
 
@@ -213,7 +253,7 @@ make deploy-website-prod    # prod website bundle from ../agent-tunnel-website
 make deploy-website-dev     # dev website bundle from ../agent-tunnel-website
 ```
 
-`make init-prod` and `make install-prod` both read `relay_certbot_email` from `ansible/host_vars/prod/relay-secrets.yml`. `make init-dev` and `make install-dev` skip `certbot` and keep the dev relay on plain HTTP port 80. The nginx config they render serves `/` from the static website at `/var/www/agentunnel-website/current` and proxies `/api/` plus `/agent/ws` to the relay. None of them build or publish the website bundle. `make init-*` is the idempotent bootstrap target used on a fresh host: it installs packages, creates the relay PostgreSQL user and database, and (on prod) runs the nginx render both before and after certificate issuance so nginx ends up on TLS. `make install-*` is the narrower slice that only covers package installation, certbot wiring, and nginx rendering. `make install` remains the local binary install alias.
+`make init-prod` and `make install-prod` both read `relay_certbot_email` from `ansible/host_vars/prod/relay-secrets.yml`. `make init-dev` and `make install-dev` skip `certbot` and keep the dev relay on plain HTTP port 80. The nginx config they render serves `/` from the static website at `/var/www/agentunnel-website/current` and proxies `/api/`, `/agent/ws`, and `/device/ws` to the relay. None of them build or publish the website bundle. `make init-*` is the idempotent bootstrap target used on a fresh host: it installs packages, creates the relay PostgreSQL user and database, and (on prod) runs the nginx render both before and after certificate issuance so nginx ends up on TLS. `make install-*` is the narrower slice that only covers package installation, certbot wiring, and nginx rendering. `make install` remains the local binary install alias.
 
 Every relay deploy builds Linux binaries, syncs `schema/`, reruns the migrator, renders `/etc/agentunnel/relay.env` from Ansible variables, updates the systemd unit, and restarts the relay. Website deploy stays separate: `make deploy-website-*` runs `npm ci`, builds `../agent-tunnel-website`, rejects bundle symlinks, uploads a release under `/var/www/agentunnel-website/releases`, and atomically repoints `/var/www/agentunnel-website/current`.
 

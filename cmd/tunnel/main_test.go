@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"strings"
 	"sync"
@@ -12,6 +13,7 @@ import (
 
 	"yuanbohan/tunnel/internal/protocol"
 	"yuanbohan/tunnel/internal/tunnel/connector"
+	"yuanbohan/tunnel/internal/tunnel/daemon"
 	"yuanbohan/tunnel/internal/tunnel/launcher"
 	"yuanbohan/tunnel/internal/tunnel/session"
 )
@@ -91,8 +93,10 @@ func assertHelpText(t *testing.T, text string) {
 	for _, fragment := range []string{
 		"Usage:\n  tunnel run [options] <command> [args...]",
 		"tunnel auth <command>",
+		"tunnel daemon <start|status|stop|doctor>",
 		"Commands:\n  run",
 		"auth",
+		"daemon",
 		"-h, --help",
 		"--version",
 		"TUNNEL_BASE_URL",
@@ -100,6 +104,7 @@ func assertHelpText(t *testing.T, text string) {
 		defaultTunnelBaseURL,
 		"tunnel auth login",
 		"tunnel auth status",
+		"tunnel daemon start",
 		"tunnel run claude",
 		"tunnel run -l api-fix codex --profile prod",
 	} {
@@ -491,6 +496,147 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
 	}
 	if got := stderr.String(); got != "" {
 		t.Fatalf("stderr = %q, want no startup banner when session start fails", got)
+	}
+}
+
+func TestRunDaemonStartUsesStoredAuthFallback(t *testing.T) {
+	store := &fakeStore{
+		authPath: "/tmp/.tunnel/auth.json",
+		record:   newStoredAuth("alice", "stored-token", "tok_123", "file-token", 1_700_000_000, time.Unix(1_700_000_100, 0)),
+	}
+	oldNewStore := newAuthStore
+	oldResolvePaths := resolveDaemonPaths
+	oldStartDaemon := startDaemon
+	t.Cleanup(func() {
+		newAuthStore = oldNewStore
+		resolveDaemonPaths = oldResolvePaths
+		startDaemon = oldStartDaemon
+	})
+	newAuthStore = func() authStore { return store }
+	resolveDaemonPaths = func() (daemon.Paths, error) {
+		return daemon.Paths{}, nil
+	}
+	var got daemon.StartOptions
+	startDaemon = func(ctx context.Context, options daemon.StartOptions) (daemon.StartResult, error) {
+		got = options
+		return daemon.StartResult{Status: daemon.StatusInfo{PID: 123, DeviceID: "dev_123"}}, nil
+	}
+	oldEnv, existed := os.LookupEnv(tunnelAuthTokenEnv)
+	os.Unsetenv(tunnelAuthTokenEnv)
+	t.Cleanup(func() {
+		if existed {
+			os.Setenv(tunnelAuthTokenEnv, oldEnv)
+		} else {
+			os.Unsetenv(tunnelAuthTokenEnv)
+		}
+	})
+
+	var stdout bytes.Buffer
+	if err := runDaemonStart(context.Background(), "http://127.0.0.1:8586", &stdout, io.Discard); err != nil {
+		t.Fatalf("runDaemonStart returned error: %v", err)
+	}
+	if got.AuthToken != "file-token" {
+		t.Fatalf("AuthToken = %q, want file-token", got.AuthToken)
+	}
+}
+
+func TestRunDaemonStartPrefersEnvAuthOverride(t *testing.T) {
+	store := &fakeStore{
+		authPath: "/tmp/.tunnel/auth.json",
+		record:   newStoredAuth("alice", "stored-token", "tok_123", "file-token", 1_700_000_000, time.Unix(1_700_000_100, 0)),
+	}
+	oldNewStore := newAuthStore
+	oldResolvePaths := resolveDaemonPaths
+	oldStartDaemon := startDaemon
+	t.Cleanup(func() {
+		newAuthStore = oldNewStore
+		resolveDaemonPaths = oldResolvePaths
+		startDaemon = oldStartDaemon
+	})
+	newAuthStore = func() authStore { return store }
+	resolveDaemonPaths = func() (daemon.Paths, error) {
+		return daemon.Paths{}, nil
+	}
+	var got daemon.StartOptions
+	startDaemon = func(ctx context.Context, options daemon.StartOptions) (daemon.StartResult, error) {
+		got = options
+		return daemon.StartResult{Status: daemon.StatusInfo{PID: 123, DeviceID: "dev_123"}}, nil
+	}
+	oldEnv, existed := os.LookupEnv(tunnelAuthTokenEnv)
+	os.Setenv(tunnelAuthTokenEnv, "env-token")
+	t.Cleanup(func() {
+		if existed {
+			os.Setenv(tunnelAuthTokenEnv, oldEnv)
+		} else {
+			os.Unsetenv(tunnelAuthTokenEnv)
+		}
+	})
+
+	var stdout bytes.Buffer
+	if err := runDaemonStart(context.Background(), "http://127.0.0.1:8586", &stdout, io.Discard); err != nil {
+		t.Fatalf("runDaemonStart returned error: %v", err)
+	}
+	if got.AuthToken != "env-token" {
+		t.Fatalf("AuthToken = %q, want env-token", got.AuthToken)
+	}
+}
+
+func TestRunDaemonStartReturnsExistingDaemonWithoutResolvingAuth(t *testing.T) {
+	oldResolvePaths := resolveDaemonPaths
+	oldDaemonStatus := daemonStatus
+	oldNewStore := newAuthStore
+	oldStartDaemon := startDaemon
+	t.Cleanup(func() {
+		resolveDaemonPaths = oldResolvePaths
+		daemonStatus = oldDaemonStatus
+		newAuthStore = oldNewStore
+		startDaemon = oldStartDaemon
+	})
+
+	resolveDaemonPaths = func() (daemon.Paths, error) {
+		return daemon.Paths{}, nil
+	}
+	daemonStatus = func(ctx context.Context, paths daemon.Paths) (daemon.StatusInfo, error) {
+		return daemon.StatusInfo{Running: true, PID: 42, DeviceID: "dev_existing"}, nil
+	}
+	newAuthStore = func() authStore {
+		return &fakeStore{loadErr: errStoredAuthNotFound}
+	}
+	startDaemon = func(ctx context.Context, options daemon.StartOptions) (daemon.StartResult, error) {
+		t.Fatal("startDaemon should not be called when daemon is already running")
+		return daemon.StartResult{}, nil
+	}
+
+	var stdout bytes.Buffer
+	if err := runDaemonStart(context.Background(), "http://127.0.0.1:8586", &stdout, io.Discard); err != nil {
+		t.Fatalf("runDaemonStart returned error: %v", err)
+	}
+	if got := stdout.String(); got != "daemon already running (pid=42 device_id=dev_existing)\n" {
+		t.Fatalf("stdout = %q, want already-running message", got)
+	}
+}
+
+func TestRunWithArgsPrintsDaemonHelp(t *testing.T) {
+	setTestEnv(t)
+
+	var stdout bytes.Buffer
+	if err := runWithArgs([]string{"tunnel", "daemon", "--help"}, &stdout, io.Discard); err != nil {
+		t.Fatalf("runWithArgs error = %v", err)
+	}
+	if got := stdout.String(); got != daemonHelpText() {
+		t.Fatalf("stdout = %q, want daemonHelpText()", got)
+	}
+}
+
+func TestRunWithArgsPrintsDaemonStartHelp(t *testing.T) {
+	setTestEnv(t)
+
+	var stdout bytes.Buffer
+	if err := runWithArgs([]string{"tunnel", "daemon", "start", "--help"}, &stdout, io.Discard); err != nil {
+		t.Fatalf("runWithArgs error = %v", err)
+	}
+	if got := stdout.String(); got != daemonStartHelpText() {
+		t.Fatalf("stdout = %q, want daemonStartHelpText()", got)
 	}
 }
 

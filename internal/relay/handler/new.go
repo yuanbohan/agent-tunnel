@@ -6,9 +6,11 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"yuanbohan/tunnel/internal/relay/auth"
+	"yuanbohan/tunnel/internal/relay/device"
 	"yuanbohan/tunnel/internal/relay/handler/agent"
 	"yuanbohan/tunnel/internal/relay/handler/api"
 	"yuanbohan/tunnel/internal/relay/handler/attach"
+	devicehandler "yuanbohan/tunnel/internal/relay/handler/device"
 	"yuanbohan/tunnel/internal/relay/handler/middleware"
 	"yuanbohan/tunnel/internal/relay/handler/response"
 	"yuanbohan/tunnel/internal/relay/handler/types"
@@ -18,15 +20,17 @@ import (
 
 func New(
 	registry *session.Registry,
+	deviceRegistry *device.Registry,
 	appAuth *auth.AppAuthService,
 	agentTokens *auth.AgentTokenService,
 	operatorSvc *operator.OperatorService,
 ) http.Handler {
-	return newRouter(registry, appAuth, agentTokens, operatorSvc, api.NewRegisterThrottle(5, 10*time.Minute))
+	return newRouter(registry, deviceRegistry, appAuth, agentTokens, operatorSvc, api.NewRegisterThrottle(5, 10*time.Minute))
 }
 
 func newRouter(
 	registry *session.Registry,
+	deviceRegistry *device.Registry,
 	appAuth *auth.AppAuthService,
 	agentTokens *auth.AgentTokenService,
 	operatorSvc *operator.OperatorService,
@@ -36,6 +40,9 @@ func newRouter(
 
 	if registry == nil {
 		registry = session.NewRegistry()
+	}
+	if deviceRegistry == nil {
+		deviceRegistry = device.NewRegistry()
 	}
 	if throttle == nil {
 		throttle = api.NewRegisterThrottle(5, 10*time.Minute)
@@ -74,11 +81,14 @@ func newRouter(
 	appRoutes.POST("/api/auth/password/change", api.ChangePassword(appAuth, registry, attachSessions))
 	appRoutes.GET("/api/agent-tokens", api.ListAgentTokens(agentTokens))
 	appRoutes.POST("/api/agent-tokens", api.CreateAgentToken(agentTokens))
-	appRoutes.DELETE("/api/agent-tokens/:tokenID", api.RevokeAgentToken(agentTokens, registry))
+	appRoutes.DELETE("/api/agent-tokens/:tokenID", api.RevokeAgentToken(agentTokens, registry, deviceRegistry))
+	appRoutes.GET("/api/devices", api.ListDevices(deviceRegistry))
+	appRoutes.POST("/api/devices/:deviceID/launch", api.LaunchDevice(deviceRegistry))
 	appRoutes.GET("/api/sessions", api.ListSessions(registry))
 	appRoutes.GET("/api/sessions/:sessionID/attach/ws", attach.Handle(registry, attachSessions))
 
 	router.GET("/agent/ws", middleware.AgentAuth(agentTokens), agent.Handle(registry))
+	router.GET("/device/ws", middleware.AgentAuth(agentTokens), devicehandler.Handle(deviceRegistry))
 
 	return router
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"yuanbohan/tunnel/internal/protocol"
 	relayauth "yuanbohan/tunnel/internal/relay/auth"
+	relaydevice "yuanbohan/tunnel/internal/relay/device"
 	handlerresponse "yuanbohan/tunnel/internal/relay/handler/response"
 	handlertypes "yuanbohan/tunnel/internal/relay/handler/types"
 )
@@ -31,6 +32,131 @@ func TestHandlerRejectsSessionsWithoutBearerAuth(t *testing.T) {
 		t.Fatalf("WWW-Authenticate = %q, want bearer challenge", got)
 	}
 	decodeAPIErrorEnvelopeFromRecorder(t, rec, http.StatusUnauthorized, handlerresponse.CodeUnauthorized, "The request is unauthorized.")
+}
+
+func TestHandlerListsDevicesForAuthenticatedUser(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	issued := env.login(t, "alice", "password123")
+
+	env.deviceRegistry.RegisterOwned(protocol.DeviceInfo{
+		DeviceID:       "dev-1",
+		DisplayName:    "Yuanbo's MacBook Pro",
+		PlatformFamily: "macos",
+		PlatformID:     "macos",
+	}, relaydevice.DeviceOwner{UserID: user.ID}, &fakeDevicePeerForHandler{})
+	env.deviceRegistry.RegisterOwned(protocol.DeviceInfo{
+		DeviceID:       "dev-2",
+		DisplayName:    "Ubuntu Box",
+		PlatformFamily: "linux",
+		PlatformID:     "ubuntu",
+	}, relaydevice.DeviceOwner{UserID: user.ID + 1}, &fakeDevicePeerForHandler{})
+
+	handler := env.handler(nil)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/devices", nil)
+	req.Header.Set("Authorization", bearerAuth(issued.AccessToken))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var devices []protocol.DeviceInfo
+	decodeAPIEnvelopeFromRecorder(t, rec, http.StatusOK, &devices)
+	if len(devices) != 1 || devices[0].DeviceID != "dev-1" {
+		t.Fatalf("devices = %#v, want only dev-1", devices)
+	}
+}
+
+func TestHandlerLaunchDeviceForwardsStructuredDeviceResult(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	issued := env.login(t, "alice", "password123")
+	peer := &blockingDevicePeer{sent: make(chan protocol.DeviceFrame, 1)}
+	env.deviceRegistry.RegisterOwned(protocol.DeviceInfo{
+		DeviceID:       "dev-1",
+		DisplayName:    "Test Mac",
+		PlatformFamily: "macos",
+		PlatformID:     "macos",
+	}, relaydevice.DeviceOwner{UserID: user.ID}, peer)
+
+	handler := env.handler(nil)
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		frame := <-peer.sent
+		env.deviceRegistry.ResolveLaunchIfOwner("dev-1", peer, frame.RequestID, false, "busy")
+		close(done)
+	}()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/devices/dev-1/launch", strings.NewReader(`{"command":"claude"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", bearerAuth(issued.AccessToken))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var response handlertypes.DeviceLaunchResponse
+	decodeAPIEnvelopeFromRecorder(t, rec, http.StatusOK, &response)
+	if response.Accepted || response.Reason != "busy" {
+		t.Fatalf("response = %#v, want forwarded busy result", response)
+	}
+	<-done
+}
+
+func TestHandlerRevokingAgentTokenCompletesInFlightLaunch(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	issued := env.login(t, "alice", "password123")
+	created := env.createAgentToken(t, user.ID, "Laptop")
+	peer := &blockingDevicePeer{sent: make(chan protocol.DeviceFrame, 1)}
+	env.deviceRegistry.RegisterOwned(protocol.DeviceInfo{
+		DeviceID:       "dev-1",
+		DisplayName:    "Test Mac",
+		PlatformFamily: "macos",
+		PlatformID:     "macos",
+	}, relaydevice.DeviceOwner{UserID: user.ID, AgentTokenID: created.Record.ID}, peer)
+
+	handler := env.handler(nil)
+	launchRec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		req := httptest.NewRequest(http.MethodPost, "/api/devices/dev-1/launch", strings.NewReader(`{"command":"claude"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", bearerAuth(issued.AccessToken))
+		handler.ServeHTTP(launchRec, req)
+	}()
+
+	select {
+	case <-peer.sent:
+	case <-time.After(2 * time.Second):
+		t.Fatal("launch request was not forwarded before revoke")
+	}
+
+	revokeRec := httptest.NewRecorder()
+	revokeReq := httptest.NewRequest(http.MethodDelete, "/api/agent-tokens/"+created.Record.ID, nil)
+	revokeReq.Header.Set("Authorization", bearerAuth(issued.AccessToken))
+	handler.ServeHTTP(revokeRec, revokeReq)
+	if revokeRec.Code != http.StatusOK {
+		t.Fatalf("revoke status = %d, want 200", revokeRec.Code)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("launch request did not resolve after token revoke")
+	}
+
+	var response handlertypes.DeviceLaunchResponse
+	decodeAPIEnvelopeFromRecorder(t, launchRec, http.StatusOK, &response)
+	if response.Accepted || response.Reason != "device_offline" {
+		t.Fatalf("response = %#v, want device_offline", response)
+	}
 }
 
 func TestHandlerNoRouteReturnsEnvelope(t *testing.T) {
@@ -417,6 +543,35 @@ func TestHandlerAgentTokenDeleteDisconnectsLiveSessionImmediately(t *testing.T) 
 	}
 	if reasons := attachPeer.CloseReasons(); len(reasons) != 1 || reasons[0] != "agent_token_revoked" {
 		t.Fatalf("close reasons = %#v, want [agent_token_revoked]", reasons)
+	}
+}
+
+func TestHandlerAgentTokenDeleteDisconnectsLiveDevicesImmediately(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	issued := env.login(t, "alice", "password123")
+	created := env.createAgentToken(t, user.ID, "Laptop")
+
+	env.deviceRegistry.RegisterOwned(protocol.DeviceInfo{
+		DeviceID:       "dev-1",
+		DisplayName:    "Laptop",
+		PlatformFamily: "macos",
+		PlatformID:     "macos",
+	}, relaydevice.DeviceOwner{UserID: user.ID, AgentTokenID: created.Record.ID}, &fakeDevicePeerForHandler{})
+
+	handler := env.handler(nil)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/agent-tokens/"+created.Record.ID, nil)
+	req.Header.Set("Authorization", bearerAuth(issued.AccessToken))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	decodeAPIEnvelopeFromRecorder(t, rec, http.StatusOK, nil)
+	if devices := env.deviceRegistry.ListForUser(user.ID); len(devices) != 0 {
+		t.Fatalf("devices = %#v, want empty after token revoke", devices)
 	}
 }
 

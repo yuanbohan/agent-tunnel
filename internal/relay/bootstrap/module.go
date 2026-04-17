@@ -7,6 +7,7 @@ import (
 
 	"yuanbohan/tunnel/internal/config"
 	"yuanbohan/tunnel/internal/relay/auth"
+	"yuanbohan/tunnel/internal/relay/device"
 	"yuanbohan/tunnel/internal/relay/handler"
 	"yuanbohan/tunnel/internal/relay/operator"
 	"yuanbohan/tunnel/internal/relay/session"
@@ -25,10 +26,11 @@ func NewServeHandler(db *sql.DB) (http.Handler, error) {
 
 	store := postgres.NewPostgresStore(db)
 	registry := session.NewRegistry()
+	deviceRegistry := device.NewRegistry()
 	appAuth := auth.NewAppAuthService(store, digester, auth.DefaultPasswordHasher())
 	agentTokens := auth.NewAgentTokenService(store, digester)
 	operatorService := operator.NewOperatorService(store)
-	serveHandler := handler.New(registry, appAuth, agentTokens, operatorService)
+	serveHandler := handler.New(registry, deviceRegistry, appAuth, agentTokens, operatorService)
 
 	return serveHandler, nil
 }

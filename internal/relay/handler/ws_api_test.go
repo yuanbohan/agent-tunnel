@@ -10,7 +10,167 @@ import (
 	"github.com/gorilla/websocket"
 	"yuanbohan/tunnel/internal/protocol"
 	handlerresponse "yuanbohan/tunnel/internal/relay/handler/response"
+	handlertypes "yuanbohan/tunnel/internal/relay/handler/types"
 )
+
+func TestDeviceWebSocketRegistersAndListsDeviceForOwner(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	issued := env.login(t, "alice", "password123")
+	agentToken := env.createAgentToken(t, user.ID, "Laptop")
+
+	server := httptest.NewServer(env.handler(nil))
+	defer server.Close()
+
+	deviceConn := dialAndRegisterDevice(t, server.URL, agentToken.Plaintext, protocol.DeviceInfo{
+		DeviceID:       "dev-1",
+		DisplayName:    "Yuanbo's MacBook Pro",
+		PlatformFamily: "macos",
+		PlatformID:     "macos",
+	})
+	defer deviceConn.Close()
+
+	resp := doBearerGET(t, server.URL+"/api/devices", issued.AccessToken)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var devices []protocol.DeviceInfo
+	decodeAPIEnvelopeFromResponse(t, resp, http.StatusOK, &devices)
+	if len(devices) != 1 || devices[0].DeviceID != "dev-1" {
+		t.Fatalf("devices = %#v, want registered device", devices)
+	}
+}
+
+func TestDeviceWebSocketRejectsEmptyDeviceID(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	issued := env.login(t, "alice", "password123")
+	agentToken := env.createAgentToken(t, user.ID, "Laptop")
+
+	server := httptest.NewServer(env.handler(nil))
+	defer server.Close()
+
+	deviceConn := dialAndRegisterDevice(t, server.URL, agentToken.Plaintext, protocol.DeviceInfo{
+		DeviceID:       "   ",
+		DisplayName:    "Broken Device",
+		PlatformFamily: "macos",
+		PlatformID:     "macos",
+	})
+	defer deviceConn.Close()
+
+	resp := doBearerGET(t, server.URL+"/api/devices", issued.AccessToken)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var devices []protocol.DeviceInfo
+	decodeAPIEnvelopeFromResponse(t, resp, http.StatusOK, &devices)
+	if len(devices) != 0 {
+		t.Fatalf("devices = %#v, want no registered devices for empty device_id", devices)
+	}
+}
+
+func TestDeviceWebSocketLaunchRequestRoundTrip(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	issued := env.login(t, "alice", "password123")
+	agentToken := env.createAgentToken(t, user.ID, "Laptop")
+
+	server := httptest.NewServer(env.handler(nil))
+	defer server.Close()
+
+	deviceConn := dialAndRegisterDevice(t, server.URL, agentToken.Plaintext, protocol.DeviceInfo{
+		DeviceID:       "dev-1",
+		DisplayName:    "Test Mac",
+		PlatformFamily: "macos",
+		PlatformID:     "macos",
+	})
+	defer deviceConn.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var frame protocol.DeviceFrame
+		if err := deviceConn.ReadJSON(&frame); err != nil {
+			t.Errorf("ReadJSON returned error: %v", err)
+			return
+		}
+		if frame.Type != "launch_request" || frame.Command != "codex" {
+			t.Errorf("frame = %#v, want launch_request codex", frame)
+			return
+		}
+		if err := deviceConn.WriteJSON(protocol.DeviceLaunchResultFrame(frame.RequestID, true, "")); err != nil {
+			t.Errorf("WriteJSON returned error: %v", err)
+		}
+	}()
+
+	resp := doBearerPOST(t, server.URL+"/api/devices/dev-1/launch", issued.AccessToken, `{"command":"codex"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var launch handlertypes.DeviceLaunchResponse
+	decodeAPIEnvelopeFromResponse(t, resp, http.StatusOK, &launch)
+	if !launch.Accepted || launch.Reason != "" {
+		t.Fatalf("launch = %#v, want accepted", launch)
+	}
+	<-done
+}
+
+func TestDeviceWebSocketPendingPeerCannotRegisterAfterTokenRevoke(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	issued := env.login(t, "alice", "password123")
+	agentToken := env.createAgentToken(t, user.ID, "Laptop")
+
+	server := httptest.NewServer(env.handler(nil))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/device/ws"
+	headers := http.Header{}
+	headers.Set("Authorization", bearerAuth(agentToken.Plaintext))
+	deviceConn, _, err := websocket.DefaultDialer.Dial(wsURL, headers)
+	if err != nil {
+		t.Fatalf("Dial device websocket returned error: %v", err)
+	}
+	defer deviceConn.Close()
+
+	revokeResp := doBearerDELETE(t, server.URL+"/api/agent-tokens/"+agentToken.Record.ID, issued.AccessToken)
+	defer revokeResp.Body.Close()
+	if revokeResp.StatusCode != http.StatusOK {
+		t.Fatalf("revoke status = %d, want 200", revokeResp.StatusCode)
+	}
+
+	err = deviceConn.WriteJSON(protocol.DeviceRegisterFrame(protocol.DeviceInfo{
+		DeviceID:       "dev-1",
+		DisplayName:    "Revoked Device",
+		PlatformFamily: "macos",
+		PlatformID:     "macos",
+	}))
+	if err == nil {
+		_ = deviceConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_, _, err = deviceConn.ReadMessage()
+	}
+	if err == nil {
+		t.Fatal("device websocket stayed usable after token revoke")
+	}
+
+	resp := doBearerGET(t, server.URL+"/api/devices", issued.AccessToken)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var devices []protocol.DeviceInfo
+	decodeAPIEnvelopeFromResponse(t, resp, http.StatusOK, &devices)
+	if len(devices) != 0 {
+		t.Fatalf("devices = %#v, want no devices after revoke", devices)
+	}
+}
 
 func TestAttachWebSocketRejectsCrossOriginBrowserDial(t *testing.T) {
 	env := newHandlerTestEnv(t)

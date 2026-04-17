@@ -145,6 +145,22 @@ func TestParseRunArgsTreatsHelpAfterLauncherAsLauncherArg(t *testing.T) {
 	}
 }
 
+func TestParseRunArgsAllowsDaemonLauncherViaDoubleDash(t *testing.T) {
+	setEnv(t, "TUNNEL_BASE_URL", "http://127.0.0.1:8586")
+	setEnv(t, "TUNNEL_AUTH_TOKEN", "secret")
+
+	cfg, err := parseRunArgsForTest([]string{"run", "daemon", "--flag"})
+	if err != nil {
+		t.Fatalf("parseRunArgsForTest returned error: %v", err)
+	}
+	if cfg.Launcher != "daemon" {
+		t.Fatalf("Launcher = %q, want daemon", cfg.Launcher)
+	}
+	if len(cfg.LauncherArgs) != 1 || cfg.LauncherArgs[0] != "--flag" {
+		t.Fatalf("LauncherArgs = %#v, want [--flag]", cfg.LauncherArgs)
+	}
+}
+
 func TestParseRunArgsHelpWinsBeforeBaseURLValidation(t *testing.T) {
 	setEnv(t, "TUNNEL_BASE_URL", "ws://127.0.0.1:8586")
 	setEnv(t, "TUNNEL_AUTH_TOKEN", "")

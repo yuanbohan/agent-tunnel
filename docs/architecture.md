@@ -6,7 +6,9 @@ This document describes the current system shape for the attach-based protocol.
 
 `tunnel` owns the real local agent process, its PTY, and the authoritative current terminal state for that session. Built-in CLI commands own the top-level namespace, and local command launch happens only through `tunnel run <command>`. Every PATH-resolved launcher command follows the same path: one local PTY child, one session hub, one headless terminal mirror, one outbound relay connector, and no launcher-specific sidecar.
 
-The relay exposes authenticated APIs so external clients can register accounts, log in, manage agent tokens, discover live sessions, attach to one online session, and send structured input. Operator maintenance routes stay outside the public `/api/` namespace and are intended for host-local use only. PostgreSQL is the durable source of truth for users, invite codes, app sessions, agent tokens, and operator audit records. App auth uses opaque bearer access tokens with a nominal 24 hour lifetime, rotating refresh tokens with a 30 day sliding lifetime, and a 90 day absolute session lifetime anchored at the original login. The relay is not the terminal-state authority and it does not retain transcript history.
+Separately, `tunnel daemon` owns one explicit background device-launch runtime on a desktop machine. That daemon has its own local control socket, its own live relay connector on `/device/ws`, and its own launcher recipe used to open new visible terminal windows running future `tunnel run <command>` sessions. The daemon is the state authority for device launch behavior; the relay only brokers currently online daemon connections.
+
+The relay exposes authenticated APIs so external clients can register accounts, log in, manage agent tokens, discover live sessions, discover live devices, attach to one online session, and request that one online device daemon create a new session. Operator maintenance routes stay outside the public `/api/` namespace and are intended for host-local use only. PostgreSQL is the durable source of truth for users, invite codes, app sessions, agent tokens, and operator audit records. App auth uses opaque bearer access tokens with a nominal 24 hour lifetime, rotating refresh tokens with a 30 day sliding lifetime, and a 90 day absolute session lifetime anchored at the original login. The relay is not the terminal-state authority and it does not retain transcript history.
 
 For hosted deployments, the security invariant is strict user scoping: the user who owns the agent token also owns the live session, `GET /api/sessions` returns only that user's sessions, and cross-user attach attempts resolve as not found.
 
@@ -50,9 +52,10 @@ local machine
                     │           relay server            │
                     │  - auth                           │
                     │  - live session registry          │
-                    │  - online session registry        │
+                    │  - live device routing            │
                     │  - session attach websocket       │
-                    │  - agent/client routing           │
+                    │  - device launch websocket        │
+                    │  - agent/client/device routing    │
                     └────────────────┬──────────────────┘
                                      │
                    ┌─────────────────┴─────────────────┐
@@ -71,6 +74,7 @@ It owns:
 - the top-level CLI contract, including `tunnel run` and `tunnel auth`
 - terminal-native login that exchanges relay username/password for one locally saved agent token in `~/.tunnel/auth.json`
 - runtime auth precedence for `tunnel run`: `TUNNEL_AUTH_TOKEN` first, then `~/.tunnel/auth.json`
+- runtime auth precedence for `tunnel daemon start`: `TUNNEL_AUTH_TOKEN` first, then `~/.tunnel/auth.json`
 - launcher resolution
 - PTY lifecycle and local terminal raw mode
 - startup relay wait and background reconnect policy
@@ -99,6 +103,7 @@ It owns:
 - closing active attaches promptly when the owning agent disappears
 - synchronously evicting live sessions when a user is deleted or an agent token is revoked
 - closing affected app-side attaches when an app session logs out or a password change revokes app sessions, without disconnecting the owning agent
+- tracking only currently online `/device/ws` connections and the transient request/reply routing needed for one launch request
 
 The relay does not own:
 
@@ -109,6 +114,9 @@ The relay does not own:
 - preview rendering
 - content interpretation of terminal output
 - end-to-end guarantees that a remote client observed every PTY byte
+- terminal-window creation on device daemons
+- offline device inventory
+- daemon health, last launch failure, or launcher-recipe state
 
 ### Client
 
@@ -218,9 +226,22 @@ The session lifecycle is centered on one running agent process.
 
 Closing the agent process ends the session. A later agent launch starts a different session with a different `session_id`.
 
+## Device Launch Lifecycle
+
+The device-launch lifecycle is separate from session attach:
+
+1. `tunnel daemon start` creates a background runtime on one desktop machine.
+2. That runtime infers one launcher recipe, persists a stable `device_id`, and connects to `/device/ws`.
+3. `GET /api/devices` lists only currently connected devices for the owning user.
+4. `POST /api/devices/:id/launch` routes one request to that live device daemon.
+5. The daemon decides locally whether the request is allowed, whether it is already busy, and whether the local terminal launch succeeded.
+6. If the daemon accepts the terminal-window launch locally, the later `tunnel run <command>` process registers a normal session on `/agent/ws`.
+7. Session discovery and attach then proceed through the unchanged session APIs.
+
 ## Package Map
 
 - `cmd/tunnel`: local `tunnel` entrypoint
+- `internal/tunnel/daemon/`: local daemon control socket, persisted device identity, launcher recipe inference, doctor/status reporting, and relay device connector
 - `internal/tunnel/session/`: PTY ownership, local terminal handling, hub fanout, resize state, and terminal mirror
 - `internal/tunnel/connector/`: outbound relay connection, session registration, attach routing, and resize signaling
 - `cmd/relay`: relay entrypoint
@@ -228,11 +249,12 @@ Closing the agent process ends the session. A later agent launch starts a differ
 - `internal/logx/`: global structured logging setup and helpers
 - `internal/relay/auth/`: invite code rules, username/password normalization, app-session flows, and agent-token flows
 - `internal/relay/operator/`: operator invite and user-maintenance services
+- `internal/relay/device/`: transient online-device routing, owner metadata, and launch-request coordination
 - `internal/relay/session/`: live session registry, owner metadata, and attach-session indexing
-- `internal/relay/handler/`: Gin router assembly plus subpackages for middleware, REST API, agent WebSocket flows, attach WebSocket flows, shared request helpers, and HTTP DTOs
+- `internal/relay/handler/`: Gin router assembly plus subpackages for middleware, REST API, agent WebSocket flows, device WebSocket flows, attach WebSocket flows, shared request helpers, and HTTP DTOs
 - `internal/migration/`: relay schema migration runner and `schema_migrations` tracking
 - `internal/relay/store/postgres/`: PostgreSQL-backed auth and operator persistence
-- `internal/protocol/`: shared attach-oriented wire types
+- `internal/protocol/`: shared session-attach and device-launch wire types
 
 ## Related Documents
 

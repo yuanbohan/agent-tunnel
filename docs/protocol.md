@@ -11,7 +11,9 @@ For endpoint-level request and response examples, auth requirements, and error c
 The current protocol is built around these boundaries:
 
 - `session_id` identifies one running `tunnel` process. Relay reconnects for that process keep the same `session_id`. A fresh agent launch gets a fresh `session_id`.
+- `device_id` identifies one machine-local daemon identity. Device reconnects and daemon restarts keep the same `device_id` for that machine-local daemon state.
 - The owning agent is the authority for the current terminal state of that session.
+- The owning device daemon is the authority for whether that machine is currently launchable and for how a new terminal window is opened.
 - The relay is a discovery, auth, and routing layer. It does not retain transcript history and does not emulate the terminal.
 - Hosted relay deployments rely on strict multi-tenant isolation: sessions are owned by the user behind the authenticating agent token, and other users must not discover or attach to them.
 - Sessions are discoverable only while the owning agent websocket is connected. If the agent disconnects, the session disappears from discovery immediately and reappears when the agent re-registers with the same `session_id`.
@@ -26,9 +28,12 @@ All protocol timestamps are Unix timestamps represented as JSON integers in seco
 | Endpoint | Role | Auth | Kind | Purpose |
 |----------|------|------|------|---------|
 | `GET /healthz` | Host-local | None | HTTP | Health check for direct relay access; production nginx can keep this off the public surface |
+| `GET /api/devices` | Client | Bearer | HTTP | Current live device snapshot for the authenticated user |
+| `POST /api/devices/:deviceID/launch` | Client | Bearer | HTTP | Ask one currently online device daemon to open a new terminal window running `tunnel run <command>` |
 | `GET /api/sessions` | Client | Bearer | HTTP | Current live session snapshot for the authenticated user |
 | `GET /api/sessions/:id/attach/ws` | Client | Bearer | WebSocket | Attach to one live session owned by the authenticated user for snapshot, live bytes, resize events, and session-scoped structured input |
 | `GET /agent/ws` | Agent | Bearer | WebSocket | Agent registration, attach control, resize metadata, structured input forwarding, and client-routed terminal byte delivery |
+| `GET /device/ws` | Device daemon | Bearer | WebSocket | Device registration plus launch request/result routing for one online machine |
 
 Removed from the product contract:
 
@@ -76,6 +81,29 @@ Notes:
 - `label` may be omitted when empty
 - `started_at` is a Unix timestamp in seconds
 - every returned session currently has an owning agent websocket and is attachable
+
+`GET /api/devices` returns the standard API envelope whose `body` is an array of `DeviceInfo` objects:
+
+```json
+{
+  "code": 0,
+  "message": "success",
+  "body": [
+    {
+      "device_id": "dev_abcd1234",
+      "display_name": "Yuanbo's MacBook Pro",
+      "platform_family": "macos",
+      "platform_id": "macos"
+    }
+  ]
+}
+```
+
+Notes:
+
+- `platform_family` is the stable coarse UI fallback field, currently `macos` or `linux`
+- `platform_id` is a best-effort specific identifier for exact icon mapping
+- device presence is live-only; if the device daemon disconnects, the device disappears from discovery immediately
 
 ## Attach Lifecycle
 
@@ -276,6 +304,52 @@ Status behavior for `GET /api/sessions/:id/attach/ws` before websocket upgrade:
 
 - `404 Not Found` with `{"reason":"session_not_found"}` when the session is unknown, belongs to another user, or is currently offline
 - `401 Unauthorized` when bearer auth is missing or invalid
+
+## Device WebSocket
+
+`/device/ws` is a bidirectional websocket between the relay and one running `tunnel daemon` process.
+
+The first frame must be:
+
+```json
+{
+  "type": "register",
+  "device": {
+    "device_id": "dev_abcd1234",
+    "display_name": "Yuanbo's MacBook Pro",
+    "platform_family": "macos",
+    "platform_id": "macos"
+  }
+}
+```
+
+Launch request relay-to-device:
+
+```json
+{
+  "type": "launch_request",
+  "request_id": "dev_abcd1234-150405.000000000",
+  "command": "codex --profile prod"
+}
+```
+
+Launch result device-to-relay:
+
+```json
+{
+  "type": "launch_result",
+  "request_id": "dev_abcd1234-150405.000000000",
+  "accepted": false,
+  "reason": "busy"
+}
+```
+
+Notes:
+
+- `accepted: true` means the local terminal-window launch was accepted on the device
+- it does not mean the later session is already visible in `GET /api/sessions`
+- `request_id` is relay-scoped and correlates one launch request with one result
+- the relay keeps only transient online-device routing state; device health, last failure, and launcher details remain local to the daemon
 
 ## Agent WebSocket
 
