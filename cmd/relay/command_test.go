@@ -134,6 +134,27 @@ func TestRunWithHandlersHelpExplainsServerAndLocalOperatorRequirements(t *testin
 	if strings.Contains(stdout.String(), "completion") {
 		t.Fatalf("help output = %q, want completion command to be hidden", stdout.String())
 	}
+
+	for _, args := range [][]string{
+		{"invite", "--help"},
+		{"invite", "create", "--help"},
+		{"invite", "disable", "--help"},
+		{"invite", "list", "--help"},
+		{"user", "--help"},
+		{"user", "delete", "--help"},
+	} {
+		stdout.Reset()
+		err := runWithHandlers(args, runtimeEnv{stdout: &stdout}, commandHandlers{})
+		if err != nil {
+			t.Fatalf("args %v: runWithHandlers returned error: %v", args, err)
+		}
+		if strings.Contains(stdout.String(), "--relay-addr") {
+			t.Fatalf("args %v: help output = %q, want relay-addr flag to stay hidden", args, stdout.String())
+		}
+		if strings.Contains(stdout.String(), "completion") {
+			t.Fatalf("args %v: help output = %q, want completion command to be hidden", args, stdout.String())
+		}
+	}
 }
 
 func TestRunWithHandlersDispatchesInviteSubcommands(t *testing.T) {

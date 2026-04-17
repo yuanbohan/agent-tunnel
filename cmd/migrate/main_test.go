@@ -140,6 +140,9 @@ func TestRunHelpExplainsRequiredInputs(t *testing.T) {
 			t.Fatalf("help output = %q, want fragment %q", stdout.String(), fragment)
 		}
 	}
+	if strings.Contains(stdout.String(), "completion") {
+		t.Fatalf("help output = %q, want completion command to be hidden", stdout.String())
+	}
 }
 
 func TestUsagefReturnsUsageError(t *testing.T) {

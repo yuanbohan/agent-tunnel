@@ -96,6 +96,9 @@ keys.`,
 		Example: `  relay-migrate --schema-dir ./schema
   relay-migrate --env-file /etc/agentunnel/relay.env --schema-dir /etc/agentunnel/schema
   relay-migrate --schema-dir ./schema --baseline 0002_operator_audit.sql`,
+		CompletionOptions: cobra.CompletionOptions{
+			DisableDefaultCmd: true,
+		},
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.NoArgs,
