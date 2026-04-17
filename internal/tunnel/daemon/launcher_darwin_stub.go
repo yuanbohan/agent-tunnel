@@ -2,8 +2,11 @@
 
 package daemon
 
-import "fmt"
+import (
+	"fmt"
+	"runtime"
+)
 
 func inferDarwinRecipe() (LauncherRecipe, error) {
-	return LauncherRecipe{}, fmt.Errorf("unsupported platform: darwin")
+	return LauncherRecipe{}, fmt.Errorf("inferDarwinRecipe is only supported on darwin (current: %s)", runtime.GOOS)
 }

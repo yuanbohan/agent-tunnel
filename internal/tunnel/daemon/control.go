@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net"
 	"os"
-	"strings"
 	"time"
 )
 
@@ -48,7 +47,16 @@ type Server struct {
 }
 
 func NewServer(socketPath string, handler func(context.Context, Request) Response) (*Server, error) {
-	if err := os.Remove(socketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+	info, err := os.Lstat(socketPath)
+	switch {
+	case err == nil:
+		if info.Mode()&os.ModeSocket == 0 {
+			return nil, errors.New("socket path exists and is not a unix socket")
+		}
+		if err := os.Remove(socketPath); err != nil {
+			return nil, err
+		}
+	case !errors.Is(err, os.ErrNotExist):
 		return nil, err
 	}
 	listener, err := net.Listen("unix", socketPath)
@@ -79,7 +87,7 @@ func (s *Server) Serve(ctx context.Context) error {
 			case <-ctx.Done():
 				return nil
 			default:
-				if strings.Contains(err.Error(), "closed network connection") {
+				if errors.Is(err, net.ErrClosed) {
 					return nil
 				}
 				return err

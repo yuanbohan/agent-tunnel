@@ -122,7 +122,7 @@ Examples:
 }
 
 func daemonHelpText() string {
-	return fmt.Sprintf(`Usage:
+	return `Usage:
   tunnel daemon <command>
   tunnel daemon --help
 
@@ -143,7 +143,7 @@ Examples:
   tunnel daemon status
   tunnel daemon stop
   tunnel daemon doctor
-`)
+`
 }
 
 func daemonStartHelpText() string {

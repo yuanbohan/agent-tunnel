@@ -39,7 +39,13 @@ func (p *fakeDevicePeer) sentCount() int {
 func (p *fakeDevicePeer) sentFrame(index int) protocol.DeviceFrame {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	frame, _ := p.sent[index].(protocol.DeviceFrame)
+	if index < 0 || index >= len(p.sent) {
+		panic("sentFrame: index out of range")
+	}
+	frame, ok := p.sent[index].(protocol.DeviceFrame)
+	if !ok {
+		panic("sentFrame: unexpected frame type")
+	}
 	return frame
 }
 
@@ -72,9 +78,15 @@ func TestRegistryLaunchRejectsConcurrentRequestsImmediately(t *testing.T) {
 		firstCh <- registry.Launch(ctx, "dev-1", 1, "codex")
 	}()
 
-	deadline := time.Now().Add(time.Second)
-	for peer.sentCount() < 1 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
+	deadline := time.After(time.Second)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for peer.sentCount() < 1 {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for forwarded launch request")
+		case <-ticker.C:
+		}
 	}
 	if peer.sentCount() != 1 {
 		t.Fatalf("sent count = %d, want one forwarded launch request", peer.sentCount())
@@ -87,7 +99,12 @@ func TestRegistryLaunchRejectsConcurrentRequestsImmediately(t *testing.T) {
 
 	frame := peer.sentFrame(0)
 	registry.ResolveLaunchIfOwner("dev-1", peer, frame.RequestID, false, "busy")
-	first := <-firstCh
+	var first LaunchResult
+	select {
+	case first = <-firstCh:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first launch result")
+	}
 	if first.Accepted || first.Reason != "busy" {
 		t.Fatalf("first result = %#v, want forwarded busy result", first)
 	}

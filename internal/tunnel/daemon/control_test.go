@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -53,5 +55,31 @@ func TestStatusFallsBackToPersistedStateWhenSocketUnavailable(t *testing.T) {
 	}
 	if got.DeviceID != "dev_321" || got.LaunchHealth != LaunchHealthDegraded {
 		t.Fatalf("status = %#v, want persisted fields preserved", got)
+	}
+}
+
+func TestNewServerRejectsNonSocketPath(t *testing.T) {
+	paths := testPaths(t)
+	if err := EnsureRuntimeDirs(paths); err != nil {
+		t.Fatalf("EnsureRuntimeDirs returned error: %v", err)
+	}
+	if err := os.WriteFile(paths.SocketPath, []byte("not-a-socket"), 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	_, err := NewServer(paths.SocketPath, nil)
+	if err == nil {
+		t.Fatal("NewServer error = nil, want non-socket path failure")
+	}
+	if !strings.Contains(err.Error(), "not a unix socket") {
+		t.Fatalf("error = %q, want non-socket path guidance", err)
+	}
+
+	payload, readErr := os.ReadFile(paths.SocketPath)
+	if readErr != nil {
+		t.Fatalf("ReadFile returned error: %v", readErr)
+	}
+	if string(payload) != "not-a-socket" {
+		t.Fatalf("payload = %q, want original file preserved", string(payload))
 	}
 }
