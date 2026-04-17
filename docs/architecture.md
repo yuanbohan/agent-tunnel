@@ -4,7 +4,7 @@ This document describes the current system shape for the attach-based protocol.
 
 ## System Shape
 
-`tunnel` owns the real local agent process, its PTY, and the authoritative current terminal state for that session. Every PATH-resolved launcher command follows the same path: one local PTY child, one session hub, one headless terminal mirror, one outbound relay connector, and no launcher-specific sidecar.
+`tunnel` owns the real local agent process, its PTY, and the authoritative current terminal state for that session. Built-in CLI commands own the top-level namespace, and local command launch happens only through `tunnel run <command>`. Every PATH-resolved launcher command follows the same path: one local PTY child, one session hub, one headless terminal mirror, one outbound relay connector, and no launcher-specific sidecar.
 
 The relay exposes authenticated APIs so external clients can register accounts, log in, manage agent tokens, discover live sessions, attach to one online session, and send structured input. Operator maintenance routes stay outside the public `/api/` namespace and are intended for host-local use only. PostgreSQL is the durable source of truth for users, invite codes, app sessions, agent tokens, and operator audit records. App auth uses opaque bearer access tokens with a nominal 24 hour lifetime, rotating refresh tokens with a 30 day sliding lifetime, and a 90 day absolute session lifetime anchored at the original login. The relay is not the terminal-state authority and it does not retain transcript history.
 
@@ -68,6 +68,9 @@ local machine
 
 It owns:
 
+- the top-level CLI contract, including `tunnel run` and `tunnel auth`
+- terminal-native login that exchanges relay username/password for one locally saved agent token in `~/.tunnel/auth.json`
+- runtime auth precedence for `tunnel run`: `TUNNEL_AUTH_TOKEN` first, then `~/.tunnel/auth.json`
 - launcher resolution
 - PTY lifecycle and local terminal raw mode
 - startup relay wait and background reconnect policy

@@ -17,13 +17,14 @@ type runArgs struct {
 	Verbose      bool
 	Label        string
 	BaseURL      string
-	AuthToken    string
 	Launcher     string
 	LauncherArgs []string
 }
 
 type usageError struct {
-	msg string
+	msg    string
+	detail string
+	help   string
 }
 
 func (e usageError) Error() string {
@@ -34,11 +35,49 @@ func usagef(format string, args ...any) error {
 	return usageError{msg: fmt.Sprintf(format, args...)}
 }
 
-func tunnelHelpText() string {
+func usageWithHelp(helpText, format string, args ...any) error {
+	return usageError{
+		msg:  fmt.Sprintf(format, args...),
+		help: helpText,
+	}
+}
+
+func guidancef(detail string) error {
+	return usageError{msg: detail, detail: detail, help: rootHelpText()}
+}
+
+func rootHelpText() string {
 	return fmt.Sprintf(`Usage:
-  tunnel [-l label] [--base-url url] <command> [args...]
+  tunnel run [options] <command> [args...]
+  tunnel auth <command>
   tunnel --help
   tunnel --version
+
+Commands:
+  run         Launch a local command and connect it to the relay
+  auth        Manage local tunnel authentication
+  help        Show help for a command
+
+Flags:
+  -h, --help       Show this help message and exit
+      --version    Print tunnel version and exit
+
+Environment:
+  %s  Higher-priority auth token override for tunnel run
+  %s    Optional relay base URL (default: %s)
+
+Examples:
+  tunnel auth login
+  tunnel auth status
+  tunnel run claude
+  tunnel run -l api-fix codex --profile prod
+`, tunnelAuthTokenEnv, tunnelBaseURLEnv, defaultTunnelBaseURL)
+}
+
+func runHelpText() string {
+	return fmt.Sprintf(`Usage:
+  tunnel run [-l label] [--base-url url] <command> [args...]
+  tunnel run --help
 
 Arguments:
   <command>  Launcher command resolved from PATH. Any remaining args are passed
@@ -46,19 +85,66 @@ Arguments:
 
 Flags:
   -h, --help       Show this help message and exit
-      --version    Print tunnel version and exit
   -v, --verbose    Print relay connection status on successful startup
   -l, --label      Optional session label for relay clients
       --base-url   Relay base URL (fallback: %s, default: %s)
 
 Environment:
-  %s  Required agent token for normal execution
+  %s  Higher-priority auth token override for tunnel run
   %s    Optional relay base URL (default: %s)
 
 Examples:
-  tunnel claude
-  tunnel -l api-fix codex --profile prod
+  tunnel run claude
+  tunnel run -l api-fix codex --profile prod
 `, tunnelBaseURLEnv, defaultTunnelBaseURL, tunnelAuthTokenEnv, tunnelBaseURLEnv, defaultTunnelBaseURL)
+}
+
+func authHelpText() string {
+	return `Usage:
+  tunnel auth login [--base-url url]
+  tunnel auth logout
+  tunnel auth status
+  tunnel auth --help
+
+Commands:
+  login       Sign in and save one local agent token
+  logout      Remove the local saved login
+  status      Show local auth source status as JSON
+
+Examples:
+  tunnel auth login
+  tunnel auth logout
+  tunnel auth status
+`
+}
+
+func authLoginHelpText() string {
+	return fmt.Sprintf(`Usage:
+  tunnel auth login [--base-url url]
+  tunnel auth login --help
+
+Flags:
+  -h, --help       Show this help message and exit
+      --base-url   Relay base URL (fallback: %s, default: %s)
+
+Environment:
+  %s  Optional relay base URL (default: %s)
+
+Examples:
+  tunnel auth login
+  tunnel auth login --base-url http://127.0.0.1:8586
+`, tunnelBaseURLEnv, defaultTunnelBaseURL, tunnelBaseURLEnv, defaultTunnelBaseURL)
+}
+
+func resolveBaseURL(explicit string, getenv func(string) string) (string, error) {
+	resolved := strings.TrimSpace(explicit)
+	if resolved == "" && getenv != nil {
+		resolved = strings.TrimSpace(getenv(tunnelBaseURLEnv))
+	}
+	if resolved == "" {
+		resolved = defaultTunnelBaseURL
+	}
+	return validateBaseURL(resolved)
 }
 
 func validateBaseURL(raw string) (string, error) {

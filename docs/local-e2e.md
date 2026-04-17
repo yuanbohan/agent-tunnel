@@ -8,6 +8,7 @@ This document explains the local end-to-end regression path for the real relay s
 - real operator invite creation
 - real register/login/password-change APIs
 - real agent token issuance
+- real `tunnel auth login`
 - real `tunnel` startup
 - real attach over HTTP discovery plus WebSocket attach
 
@@ -22,7 +23,7 @@ The recommended local database for this workflow is a Dockerized `postgres:16.11
 1. operator creates an invite
 2. user registers with that invite
 3. user logs in and gets an app session
-4. user creates an agent token
+4. user creates an agent token, either directly over HTTP or through `tunnel auth login`
 5. a real `tunnel` process connects to the local relay
 6. the app discovers the session over HTTP
 7. the app attaches over WebSocket
@@ -207,17 +208,12 @@ The test implementation lives in `internal/e2e/`. At a high level it runs these 
 
 8. Start a real `tunnel` process
 
-   The tunnel is started against the local relay, not a hosted relay. The harness injects both:
+   The tunnel is started against the local relay, not a hosted relay. The regression package now covers both auth entrypoints:
 
-   - `TUNNEL_BASE_URL`
-   - `TUNNEL_AUTH_TOKEN`
+   - direct env override with `TUNNEL_AUTH_TOKEN`
+   - `tunnel auth login`, which writes `~/.tunnel/auth.json`, followed by `tunnel run` without `TUNNEL_AUTH_TOKEN`
 
-   and the legacy fallback env vars:
-
-   - `AGENTUNNEL_BASE_URL`
-   - `AGENTUNNEL_AUTH_TOKEN`
-
-   The tunnel launches a deterministic helper program named `e2e-launcher`.
+   In both cases the tunnel launches a deterministic helper program named `e2e-launcher`.
 
 9. Wait for session discovery over HTTP
 

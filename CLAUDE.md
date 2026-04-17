@@ -31,7 +31,7 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 
 - `session_id` identifies one running `tunnel` process. Relay reconnects for that same process keep the same `session_id`. A fresh agent launch gets a new `session_id`.
 - `tunnel` is the PTY owner. It has no localhost HTTP server; all remote client access goes through the relay.
-- `tunnel` uses `--base-url` (or `TUNNEL_BASE_URL`) and `TUNNEL_AUTH_TOKEN` to start. `TUNNEL_BASE_URL` is optional and defaults to `https://diaro.me`.
+- `tunnel run` uses `--base-url` (or `TUNNEL_BASE_URL`) plus runtime auth resolved as `TUNNEL_AUTH_TOKEN` first and `~/.tunnel/auth.json` second. `TUNNEL_BASE_URL` is optional and defaults to `https://diaro.me`.
 - On launch, `tunnel` must complete relay registration within the startup wait window. If registration does not succeed, startup fails and the local terminal session does not start.
 - After startup, relay unavailability must not interrupt local terminal work. The connector keeps retrying relay registration with backoff, and local sessions continue running unchanged while remote visibility and input are unavailable.
 - The agent is the authority for current terminal state. It maintains the headless terminal mirror and produces attach snapshots from that mirror.

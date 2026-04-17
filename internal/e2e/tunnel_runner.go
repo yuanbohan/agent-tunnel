@@ -20,6 +20,8 @@ type TunnelConfig struct {
 	LauncherName string
 	LauncherPath string
 	Label        string
+	HomeDir      string
+	ExtraEnv     []string
 }
 
 type TunnelProcess struct {
@@ -35,15 +37,17 @@ type TunnelProcess struct {
 }
 
 func startTunnelProcess(binary string, cfg TunnelConfig) (*TunnelProcess, error) {
-	cmd := exec.Command(binary, "--label", cfg.Label, cfg.LauncherName)
+	cmd := exec.Command(binary, "run", "--label", cfg.Label, cfg.LauncherName)
 	cmd.Env = append([]string(nil), os.Environ()...)
-	cmd.Env = append(cmd.Env,
-		"TUNNEL_BASE_URL="+cfg.BaseURL,
-		"TUNNEL_AUTH_TOKEN="+cfg.AgentToken,
-		"AGENTUNNEL_BASE_URL="+cfg.BaseURL,
-		"AGENTUNNEL_AUTH_TOKEN="+cfg.AgentToken,
-		"PATH="+prependPath(cfg.LauncherPath),
-	)
+	cmd.Env = append(cmd.Env, "TUNNEL_BASE_URL="+cfg.BaseURL)
+	if strings.TrimSpace(cfg.AgentToken) != "" {
+		cmd.Env = append(cmd.Env, "TUNNEL_AUTH_TOKEN="+cfg.AgentToken)
+	}
+	if strings.TrimSpace(cfg.HomeDir) != "" {
+		cmd.Env = append(cmd.Env, "HOME="+cfg.HomeDir)
+	}
+	cmd.Env = append(cmd.Env, "PATH="+prependPath(cfg.LauncherPath))
+	cmd.Env = append(cmd.Env, cfg.ExtraEnv...)
 
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{
 		Cols: 100,

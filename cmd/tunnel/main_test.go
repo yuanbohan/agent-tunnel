@@ -89,25 +89,25 @@ func setTestEnv(t *testing.T) {
 func assertHelpText(t *testing.T, text string) {
 	t.Helper()
 	for _, fragment := range []string{
-		"Usage:\n  tunnel [-l label] [--base-url url] <command> [args...]",
-		"Arguments:\n  <command>  Launcher command resolved from PATH.",
+		"Usage:\n  tunnel run [options] <command> [args...]",
+		"tunnel auth <command>",
+		"Commands:\n  run",
+		"auth",
 		"-h, --help",
 		"--version",
-		"-v, --verbose",
-		"-l, --label",
-		"--label",
-		"--base-url",
 		"TUNNEL_BASE_URL",
 		"TUNNEL_AUTH_TOKEN",
 		defaultTunnelBaseURL,
-		"tunnel claude",
-		"tunnel -l api-fix codex --profile prod",
+		"tunnel auth login",
+		"tunnel auth status",
+		"tunnel run claude",
+		"tunnel run -l api-fix codex --profile prod",
 	} {
 		if !strings.Contains(text, fragment) {
 			t.Fatalf("help text = %q, want fragment %q", text, fragment)
 		}
 	}
-	const wantEnvBlock = "Environment:\n  TUNNEL_AUTH_TOKEN  Required agent token for normal execution\n  TUNNEL_BASE_URL    Optional relay base URL (default: https://diaro.me)"
+	const wantEnvBlock = "Environment:\n  TUNNEL_AUTH_TOKEN  Higher-priority auth token override for tunnel run\n  TUNNEL_BASE_URL    Optional relay base URL (default: https://diaro.me)"
 	if !strings.Contains(text, wantEnvBlock) {
 		t.Fatalf("help text = %q, want aligned environment block %q", text, wantEnvBlock)
 	}
@@ -152,7 +152,7 @@ func TestRunWithArgsStopsBeforeStartingSessionWhenLocalTerminalPreparationFails(
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	err := runWithArgs([]string{"tunnel", "codex", "--profile", "prod"}, &stdout, &stderr)
+	err := runWithArgs([]string{"tunnel", "run", "codex", "--profile", "prod"}, &stdout, &stderr)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("runWithArgs error = %v, want %v", err, wantErr)
 	}
@@ -304,7 +304,7 @@ func TestRunWithArgsPrintsShortHelpWithoutStartingSession(t *testing.T) {
 	}
 }
 
-func TestRunWithArgsPrintsUsageHelpForMissingLauncher(t *testing.T) {
+func TestRunWithArgsGuidesLegacyLauncherInvocation(t *testing.T) {
 	setTestEnv(t)
 
 	oldResolve := resolveLauncher
@@ -344,7 +344,7 @@ func TestRunWithArgsPrintsUsageHelpForMissingLauncher(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	err := runWithArgs([]string{"tunnel"}, &stdout, &stderr)
+	err := runWithArgs([]string{"tunnel", "claude"}, &stdout, &stderr)
 	if err == nil {
 		t.Fatal("runWithArgs error = nil, want usage error")
 	}
@@ -357,11 +357,33 @@ func TestRunWithArgsPrintsUsageHelpForMissingLauncher(t *testing.T) {
 		t.Fatalf("stdout = %q, want empty", got)
 	}
 	assertHelpText(t, stderr.String())
-	if strings.Contains(stderr.String(), "missing launcher command") {
-		t.Fatalf("stderr = %q, want clean help text without extra error line", stderr.String())
+	if !strings.Contains(stderr.String(), "tunnel run claude") {
+		t.Fatalf("stderr = %q, want migration guidance for tunnel run claude", stderr.String())
 	}
 	if resolveCalled || prepareCalled || startCalled || connectorCalled {
-		t.Fatalf("missing-launcher path unexpectedly touched runtime: resolve=%v prepare=%v start=%v connector=%v", resolveCalled, prepareCalled, startCalled, connectorCalled)
+		t.Fatalf("legacy-launcher path unexpectedly touched runtime: resolve=%v prepare=%v start=%v connector=%v", resolveCalled, prepareCalled, startCalled, connectorCalled)
+	}
+}
+
+func TestRunWithArgsPrintsRunHelpForMissingRunLauncher(t *testing.T) {
+	setTestEnv(t)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err := runWithArgs([]string{"tunnel", "run"}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("runWithArgs error = nil, want usage error")
+	}
+
+	var usageErr usageError
+	if !errors.As(err, &usageErr) {
+		t.Fatalf("error = %#v, want usageError", err)
+	}
+	if got := stdout.String(); got != "" {
+		t.Fatalf("stdout = %q, want empty", got)
+	}
+	if got := stderr.String(); got != runHelpText() {
+		t.Fatalf("stderr = %q, want runHelpText()", got)
 	}
 }
 
@@ -419,7 +441,7 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	err := runWithArgs([]string{"tunnel", "--label", "api-fix", "codex", "--profile", "prod"}, &stdout, &stderr)
+	err := runWithArgs([]string{"tunnel", "run", "--label", "api-fix", "codex", "--profile", "prod"}, &stdout, &stderr)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("runWithArgs error = %v, want %v", err, wantErr)
 	}
@@ -515,7 +537,7 @@ func TestRunWithArgsUsesUserProvidedCommandForPreview(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	err := runWithArgs([]string{"tunnel", "/opt/bin/custom-agent", "--mode", "fast"}, &stdout, &stderr)
+	err := runWithArgs([]string{"tunnel", "run", "/opt/bin/custom-agent", "--mode", "fast"}, &stdout, &stderr)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("runWithArgs error = %v, want %v", err, wantErr)
 	}
@@ -577,7 +599,7 @@ func TestRunWithArgsPrintsStartupBannerOnExit(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	if err := runWithArgs([]string{"tunnel", "--verbose", "codex"}, &stdout, &stderr); err != nil {
+	if err := runWithArgs([]string{"tunnel", "run", "--verbose", "codex"}, &stdout, &stderr); err != nil {
 		t.Fatalf("runWithArgs error = %v", err)
 	}
 
@@ -624,7 +646,7 @@ func TestRunWithArgsSuppressesStartupBannerByDefault(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	if err := runWithArgs([]string{"tunnel", "codex"}, &stdout, &stderr); err != nil {
+	if err := runWithArgs([]string{"tunnel", "run", "codex"}, &stdout, &stderr); err != nil {
 		t.Fatalf("runWithArgs error = %v", err)
 	}
 	if got := stderr.String(); got != "" {
@@ -678,7 +700,7 @@ func TestRunWithArgsFailsStartupWhenRelayCannotConnect(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	err := runWithArgs([]string{"tunnel", "codex"}, &stdout, &stderr)
+	err := runWithArgs([]string{"tunnel", "run", "codex"}, &stdout, &stderr)
 	if err == nil {
 		t.Fatal("runWithArgs error = nil, want startup connection failure")
 	}
