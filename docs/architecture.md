@@ -237,8 +237,9 @@ The device-launch lifecycle is separate from session attach:
 5. The daemon decides locally whether the request is allowed, whether it is already busy, whether the requested `cwd` is valid, and whether the local terminal launch succeeded.
 6. If the daemon accepts the terminal-window launch locally, it starts a new terminal window running `tunnel run <command>` with the requested cwd and optional label, and it passes the launch correlation forward.
 7. The later `tunnel run <command>` process registers a normal session on `/agent/ws` and includes that launch correlation.
-8. The relay completes the pending mobile launch request as `session_ready` when it sees the matching session registration, or returns a structured timeout failure if that registration does not arrive in time.
-9. Session discovery and attach then proceed through the unchanged session APIs.
+8. During rollout, the relay also accepts the legacy daemon fallback `accepted: true|false` and normalizes it to the same status-based launch flow.
+9. The relay completes the pending mobile launch request as `session_ready` when it sees the matching session registration, or returns a structured timeout failure if that registration does not arrive in time.
+10. Session discovery and attach then proceed through the unchanged session APIs.
 
 ## Package Map
 

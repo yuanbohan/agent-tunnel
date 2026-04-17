@@ -364,6 +364,7 @@ or
 Notes:
 
 - `request_id` is relay-scoped and correlates one launch request with one result
+- during rollout, older daemons may still send `accepted: true|false` instead of `status`; the relay normalizes that legacy fallback to `status: "accepted"` or `status: "failed"` while preserving the same `request_id`
 - `status: "accepted"` means the daemon validated the request and successfully handed it off to a local terminal launcher
 - `status: "accepted"` still does not complete the client-visible launch flow; the relay waits for a later `/agent/ws` registration carrying the same launch request correlation
 - the relay keeps only transient online-device routing state; device health, last failure, and launcher details remain local to the daemon

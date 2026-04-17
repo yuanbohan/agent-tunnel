@@ -186,7 +186,7 @@ Remote launch is explicit and desktop-only:
 - users opt in per machine with `tunnel daemon start`
 - the daemon stays online until `tunnel daemon stop`
 - mobile clients use `GET /api/devices` to discover only currently connected devices
-- `POST /api/devices/:deviceID/launch` returns `session_ready + session_id` on success, returns a structured failure on validation or timeout, and does not auto-attach to the new session
+- `POST /api/devices/:deviceID/launch` always returns a `request_id`; success is `status: "session_ready"` plus `session_id`, and failure is `status: "failed"` plus a structured `reason` such as `command_not_allowed`, `device_offline`, `busy`, `path_not_found`, or `launch_timeout`
 - a successful launch opens a new visible terminal window and runs `tunnel run <command>` there
 - when that launched `tunnel run <command>` exits, the window stays open and returns to an interactive shell prompt
 - the daemon owns local launch state such as allowlist, busy/not-busy, launcher recipe, doctor output, and last failure

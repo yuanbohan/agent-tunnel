@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -177,7 +178,13 @@ func (h *launchHandler) handle(requestID, command, cwd, label string) launchResu
 		return launchResult{Status: "failed", Reason: "command_not_allowed"}
 	}
 
-	info, err := os.Stat(cwd)
+	resolvedCWD, err := resolveLaunchCWD(cwd)
+	if err != nil {
+		h.state.setLastFailure("path_not_found", false)
+		return launchResult{Status: "failed", Reason: "path_not_found"}
+	}
+
+	info, err := os.Stat(resolvedCWD)
 	if err != nil || !info.IsDir() {
 		h.state.setLastFailure("path_not_found", false)
 		return launchResult{Status: "failed", Reason: "path_not_found"}
@@ -188,7 +195,7 @@ func (h *launchHandler) handle(requestID, command, cwd, label string) launchResu
 		return launchResult{Status: "failed", Reason: "tunnel_not_found"}
 	}
 
-	wrapper := buildShellWrapper(h.baseURL, h.authToken, requestID, cwd, label, args)
+	wrapper := buildShellWrapper(h.baseURL, h.authToken, requestID, resolvedCWD, label, args)
 	if err := launchWithRecipe(h.recipe, wrapper); err != nil {
 		h.state.setLastFailure("terminal_launch_failed", true)
 		return launchResult{Status: "failed", Reason: "terminal_launch_failed"}
@@ -196,6 +203,14 @@ func (h *launchHandler) handle(requestID, command, cwd, label string) launchResu
 
 	h.state.clearLastFailure()
 	return launchResult{Status: "accepted"}
+}
+
+func resolveLaunchCWD(cwd string) (string, error) {
+	cwd = strings.TrimSpace(cwd)
+	if cwd == "" {
+		return "", os.ErrNotExist
+	}
+	return filepath.Abs(cwd)
 }
 
 func buildShellWrapper(baseURL, authToken, launchRequestID, cwd, label string, args []string) string {

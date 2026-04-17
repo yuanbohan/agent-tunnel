@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -271,10 +272,14 @@ func (r *Registry) ResolveLaunchIfOwner(deviceID string, owner DevicePeer, reque
 		r.mu.Unlock()
 		return true
 	case LaunchStatusFailed:
+		failureReason := strings.TrimSpace(reason)
+		if failureReason == "" {
+			failureReason = "unknown_reason"
+		}
 		r.completeRequestLocked(requestID, LaunchResult{
 			RequestID: requestID,
 			Status:    LaunchStatusFailed,
-			Reason:    reason,
+			Reason:    failureReason,
 		})
 		r.mu.Unlock()
 		return true
@@ -286,8 +291,9 @@ func (r *Registry) ResolveLaunchIfOwner(deviceID string, owner DevicePeer, reque
 
 func (r *Registry) CompleteLaunchIfOwner(requestID string, owner DeviceOwner, sessionID string) bool {
 	r.mu.Lock()
+	sessionID = strings.TrimSpace(sessionID)
 	request, ok := r.requests[requestID]
-	if !ok || request.owner != owner {
+	if !ok || request.owner != owner || sessionID == "" {
 		r.mu.Unlock()
 		return false
 	}

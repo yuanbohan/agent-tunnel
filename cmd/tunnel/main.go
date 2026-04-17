@@ -142,7 +142,7 @@ func runTunnelSession(ctx context.Context, parsed runArgs, stdout, stderr io.Wri
 	}
 
 	relay := newConnector(relayURL, resolvedAuth.Token, info)
-	relay.SetLaunchRequestID(strings.TrimSpace(os.Getenv(tunnelLaunchRequestIDEnv)))
+	relay.SetLaunchRequestID(strings.TrimSpace(osEnv(tunnelLaunchRequestIDEnv)))
 	relay.SetInitialConnectTimeout(startupRelayWait)
 	go relay.Run(ctx)
 	if !relay.WaitUntilConnected(ctx, startupRelayWait) {

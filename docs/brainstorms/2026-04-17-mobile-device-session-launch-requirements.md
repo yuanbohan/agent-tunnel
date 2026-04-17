@@ -172,11 +172,11 @@ flowchart TB
 
 ### Deferred to Planning
 
-- [Affects R1-R16][Technical] What exact public API shape should carry per-launch command, required cwd, optional label, and the final `session_ready` response without conflating device discovery with live session discovery?
-- [Affects R17-R38][Needs research] What is the narrowest implementation shape for the `tunnel daemon` CLI and background process across macOS and the Linux desktop environments the project intends to support first?
-- [Affects R24-R38][Needs research] What launcher-recipe inference and persistence model is stable enough for v1 across supported desktop environments?
-- [Affects R39-R44][Technical] What config file path and format best fit the existing `tunnel` product surface while staying portable across macOS and Linux?
-- [Affects R50-R56][Technical] What request correlation mechanism, timeout handling, timeout reason contract, and relay/session registration hooks should complete one pending launch with `session_ready` plus `session_id`?
+- [Affects R1-R16] (Technical) What exact public API shape should carry per-launch command, required cwd, optional label, and the final `session_ready` response without conflating device discovery with live session discovery?
+- [Affects R17-R38] (Needs research) What is the narrowest implementation shape for the `tunnel daemon` CLI and background process across macOS and the Linux desktop environments the project intends to support first?
+- [Affects R24-R38] (Needs research) What launcher-recipe inference and persistence model is stable enough for v1 across supported desktop environments?
+- [Affects R39-R44] (Technical) What config file path and format best fit the existing `tunnel` product surface while staying portable across macOS and Linux?
+- [Affects R50-R56] (Technical) What request correlation mechanism, timeout handling, timeout reason contract, and relay/session registration hooks should complete one pending launch with `session_ready` plus `session_id`?
 
 ## Next Steps
 

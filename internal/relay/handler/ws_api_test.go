@@ -93,6 +93,7 @@ func TestDeviceWebSocketLaunchRequestRoundTrip(t *testing.T) {
 
 	done := make(chan struct{})
 	requestIDCh := make(chan string, 1)
+	agentConnCh := make(chan *websocket.Conn, 1)
 	go func() {
 		defer close(done)
 		var frame protocol.DeviceFrame
@@ -110,10 +111,7 @@ func TestDeviceWebSocketLaunchRequestRoundTrip(t *testing.T) {
 			return
 		}
 
-		agentConn := dialAndRegisterAgentWithLaunchRequest(t, server.URL, agentToken.Plaintext, "sess-1", frame.RequestID)
-		if err := agentConn.Close(); err != nil {
-			t.Errorf("Close returned error: %v", err)
-		}
+		agentConnCh <- dialAndRegisterAgentWithLaunchRequest(t, server.URL, agentToken.Plaintext, "sess-1", frame.RequestID)
 	}()
 
 	resp := doBearerPOST(t, server.URL+"/api/devices/dev-1/launch", issued.AccessToken, `{"command":"codex","cwd":"/repo","label":"api-fix"}`)
@@ -126,6 +124,10 @@ func TestDeviceWebSocketLaunchRequestRoundTrip(t *testing.T) {
 	requestID := <-requestIDCh
 	if launch.Status != "session_ready" || launch.SessionID != "sess-1" || launch.Reason != "" || launch.RequestID != requestID {
 		t.Fatalf("launch = %#v, want session_ready sess-1", launch)
+	}
+	agentConn := <-agentConnCh
+	if err := agentConn.Close(); err != nil {
+		t.Errorf("Close returned error: %v", err)
 	}
 	<-done
 }
@@ -149,6 +151,7 @@ func TestDeviceWebSocketLaunchAcceptsLegacyAcceptedResultFrame(t *testing.T) {
 	defer deviceConn.Close()
 
 	done := make(chan struct{})
+	agentConnCh := make(chan *websocket.Conn, 1)
 	go func() {
 		defer close(done)
 		var frame protocol.DeviceFrame
@@ -165,10 +168,7 @@ func TestDeviceWebSocketLaunchAcceptsLegacyAcceptedResultFrame(t *testing.T) {
 			return
 		}
 
-		agentConn := dialAndRegisterAgentWithLaunchRequest(t, server.URL, agentToken.Plaintext, "sess-legacy", frame.RequestID)
-		if err := agentConn.Close(); err != nil {
-			t.Errorf("Close returned error: %v", err)
-		}
+		agentConnCh <- dialAndRegisterAgentWithLaunchRequest(t, server.URL, agentToken.Plaintext, "sess-legacy", frame.RequestID)
 	}()
 
 	resp := doBearerPOST(t, server.URL+"/api/devices/dev-1/launch", issued.AccessToken, `{"command":"codex","cwd":"/repo"}`)
@@ -180,6 +180,10 @@ func TestDeviceWebSocketLaunchAcceptsLegacyAcceptedResultFrame(t *testing.T) {
 	decodeAPIEnvelopeFromResponse(t, resp, http.StatusOK, &launch)
 	if launch.Status != "session_ready" || launch.SessionID != "sess-legacy" || launch.RequestID == "" {
 		t.Fatalf("launch = %#v, want session_ready sess-legacy", launch)
+	}
+	agentConn := <-agentConnCh
+	if err := agentConn.Close(); err != nil {
+		t.Errorf("Close returned error: %v", err)
 	}
 	<-done
 }

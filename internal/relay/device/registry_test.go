@@ -164,6 +164,88 @@ func TestRegistryLaunchWaitsForSessionReadyAfterAccepted(t *testing.T) {
 	}
 }
 
+func TestRegistryResolveLaunchIfOwnerDefaultsMissingFailureReason(t *testing.T) {
+	registry := NewRegistry()
+	peer := &fakeDevicePeer{}
+	registry.RegisterOwned(protocol.DeviceInfo{DeviceID: "dev-1"}, DeviceOwner{UserID: 1}, peer)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	resultCh := make(chan LaunchResult, 1)
+	go func() {
+		resultCh <- registry.Launch(ctx, "dev-1", 1, "codex", "/repo", "")
+	}()
+
+	deadline := time.After(time.Second)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for peer.sentCount() < 1 {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for forwarded launch request")
+		case <-ticker.C:
+		}
+	}
+
+	frame := peer.sentFrame(0)
+	if !registry.ResolveLaunchIfOwner("dev-1", peer, frame.RequestID, LaunchStatusFailed, "   ") {
+		t.Fatal("ResolveLaunchIfOwner returned false for failed result")
+	}
+
+	select {
+	case result := <-resultCh:
+		if result.Status != LaunchStatusFailed || result.Reason != "unknown_reason" || result.RequestID != frame.RequestID {
+			t.Fatalf("result = %#v, want unknown_reason", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for launch result")
+	}
+}
+
+func TestRegistryCompleteLaunchIfOwnerRejectsBlankSessionID(t *testing.T) {
+	registry := NewRegistry()
+	peer := &fakeDevicePeer{}
+	owner := DeviceOwner{UserID: 1, AgentTokenID: "agt-1"}
+	registry.RegisterOwned(protocol.DeviceInfo{DeviceID: "dev-1"}, owner, peer)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	resultCh := make(chan LaunchResult, 1)
+	go func() {
+		resultCh <- registry.Launch(ctx, "dev-1", 1, "codex", "/repo", "")
+	}()
+
+	deadline := time.After(time.Second)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for peer.sentCount() < 1 {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for forwarded launch request")
+		case <-ticker.C:
+		}
+	}
+
+	frame := peer.sentFrame(0)
+	if !registry.ResolveLaunchIfOwner("dev-1", peer, frame.RequestID, LaunchStatusAccepted, "") {
+		t.Fatal("ResolveLaunchIfOwner returned false for accepted result")
+	}
+	if registry.CompleteLaunchIfOwner(frame.RequestID, owner, "   ") {
+		t.Fatal("CompleteLaunchIfOwner returned true for blank session id")
+	}
+
+	select {
+	case result := <-resultCh:
+		if result.Status != LaunchStatusFailed || result.Reason != "launch_timeout" {
+			t.Fatalf("result = %#v, want launch_timeout after blank session id", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for launch timeout")
+	}
+}
+
 func TestRegistryLaunchStaysPendingAfterAcceptedDeviceDisconnect(t *testing.T) {
 	registry := NewRegistry()
 	peer := &fakeDevicePeer{}
