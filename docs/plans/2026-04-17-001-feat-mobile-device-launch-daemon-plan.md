@@ -16,7 +16,7 @@ This section supersedes the more relay-heavy draft below. For implementation, fo
 
 ### Revised Goal
 
-Let a mobile client ask one online desktop machine to open a new terminal window running `tunnel run <command>`, while keeping device state owned by the machine-local daemon rather than by the relay.
+Let a mobile client ask one online desktop machine to open a new terminal window running `tunnel run <command>` in a caller-supplied working directory, optionally assign a session label, and receive success only when the created session becomes `session_ready` with a concrete `session_id`.
 
 ### Core Simplification
 
@@ -25,6 +25,7 @@ Let a mobile client ask one online desktop machine to open a new terminal window
 - If a daemon disconnects, its entry disappears immediately.
 - The relay does not keep offline-device state in memory, PostgreSQL, Redis, or any other store.
 - The relay does not own device health, last failure, launcher recipe, or busy state as product concepts.
+- The relay may keep one short-lived in-memory correlation record per in-flight launch so an eventual session registration can complete the caller's launch request.
 
 ### Revised Relay Responsibilities
 
@@ -33,7 +34,8 @@ The relay keeps only the minimum transient routing state needed to service live 
 - authenticated `/device/ws` connections
 - `user_id -> device_id -> websocket` lookup for online daemons
 - the latest registration payload for each currently connected daemon
-- in-flight `request_id -> waiting HTTP response` linkage for one request/reply round-trip
+- in-flight `request_id -> waiting launch response` linkage until `session_ready` or timeout
+- `request_id -> session_ready` completion when a later `/agent/ws` register frame carries the matching `launch_request_id`
 
 When the websocket closes, the relay removes that daemon immediately. Nothing survives disconnect.
 
@@ -51,13 +53,16 @@ The daemon owns and persists machine-local state:
 - local `last_failure`
 - local `status` / `doctor`
 
-The daemon decides whether a launch request succeeds or fails and returns structured reasons such as:
+The daemon decides whether a launch request can proceed locally, validates per-launch metadata, launches the terminal, and returns immediate accepted/failed daemon-side status with structured reasons such as:
 
 - `busy`
 - `command_not_allowed`
 - `desktop_unavailable`
 - `tunnel_not_found`
 - `terminal_launch_failed`
+- `path_not_found`
+
+If the daemon accepts the launch locally, it must also pass the relay-generated launch correlation forward into the new `tunnel run` process so the later `/agent/ws` registration can complete the mobile caller's request as `session_ready`.
 
 ### Revised API Contract
 
@@ -77,8 +82,11 @@ Do not include relay-owned `launch_health`, `last_failure`, or other derived dae
 #### `POST /api/devices/:deviceID/launch`
 
 - If no online websocket exists for that `device_id`, return `device_offline`.
-- Otherwise relay forwards `launch_request` to the daemon and waits for `launch_result`.
-- The daemon's result is returned to the mobile client without relay-side reinterpretation beyond normal envelope handling.
+- Otherwise relay forwards `launch_request { request_id, command, cwd, label? }` to the daemon.
+- If the daemon returns immediate failure, the relay returns `{ request_id, status: "failed", reason }` to the mobile client.
+- If the daemon returns immediate acceptance, the relay keeps the HTTP request open for a bounded wait window and completes it only when a later `/agent/ws` register frame with the same `launch_request_id` arrives.
+- Final success is `{ request_id, status: "session_ready", session_id }`.
+- If no matching session registers before the wait window expires, return `{ request_id, status: "failed", reason: "launch_timeout" }`.
 
 ### Revised Message Flow
 
@@ -90,11 +98,15 @@ Do not include relay-owned `launch_health`, `last_failure`, or other derived dae
    - `platform_family`
    - `platform_id`
 4. Mobile calls `GET /api/devices` and sees only currently online daemons.
-5. Mobile calls `POST /api/devices/:id/launch`.
-6. Relay forwards the request to the matching websocket.
-7. Daemon decides success/failure locally and returns `launch_result`.
-8. Relay returns that result to the mobile client.
-9. If the daemon websocket disconnects at any point, the daemon disappears from `GET /api/devices`.
+5. Mobile calls `POST /api/devices/:id/launch { command, cwd, label? }`.
+6. Relay allocates a `request_id`, stores one pending launch record, and forwards the request to the matching websocket.
+7. Daemon validates allowlist, busy state, launcher health, and cwd.
+8. If validation fails, daemon returns `launch_result { request_id, status: "failed", reason }` and relay returns that failure to the mobile client.
+9. If validation succeeds, daemon opens a new terminal window running `tunnel run` with the requested cwd and optional label, passes through the launch correlation, and returns `launch_result { request_id, status: "accepted" }`.
+10. The launched `tunnel run` process later connects to `/agent/ws` and registers its live session with `launch_request_id`.
+11. Relay matches that registration to the pending launch and returns `session_ready + session_id` to the mobile client.
+12. If the matching registration never arrives before timeout, relay returns `launch_timeout`.
+13. If the daemon websocket disconnects at any point, the daemon disappears from `GET /api/devices`.
 
 ### Revised Scope Boundaries
 
@@ -103,6 +115,7 @@ Do not include relay-owned `launch_health`, `last_failure`, or other derived dae
 - No relay-owned long-lived `busy` or failure state.
 - No database or Redis changes for daemon presence.
 - No auto-attach after launch.
+- No streaming post-create lifecycle subscription in the mobile creation flow after the initial `session_ready` or failure response.
 - No Windows support.
 - No headless/server launch mode.
 
@@ -115,20 +128,21 @@ Do not include relay-owned `launch_health`, `last_failure`, or other derived dae
 
 - **Unit B: Thin relay broker**
   - Keep `/device/ws`
-  - Keep only online websocket lookup and request/reply routing
+  - Keep only online websocket lookup and bounded launch correlation until `session_ready` or timeout
   - Drop relay-side device-health and device-state-management ambitions
 
 - **Unit C: Thin mobile-facing device APIs**
   - `GET /api/devices` lists online daemons only
-  - `POST /api/devices/:deviceID/launch` forwards one launch request and returns one result
+  - `POST /api/devices/:deviceID/launch` accepts `command`, required `cwd`, optional `label`, and returns `session_ready + session_id` or a structured failure
 
 - **Unit D: Desktop launch execution**
-  - Daemon validates allowlist and prerequisites locally
-  - Daemon opens a new terminal window and runs `tunnel run <command>`
-  - Daemon returns structured launch failure reasons
+  - Daemon validates allowlist, cwd, and prerequisites locally
+  - Daemon opens a new terminal window and runs `tunnel run <command>` in the requested cwd and with the optional label
+  - Daemon passes launch correlation through to the new `tunnel` process so later session registration can complete the pending launch
+  - Daemon returns structured launch failure reasons immediately when launch cannot proceed locally
 
 - **Unit E: Docs**
-  - Rewrite API and architecture docs to describe relay as a live broker, not a device state manager
+  - Rewrite API, protocol, architecture, and operator-facing docs to describe `session_ready`, per-launch cwd/label, and request correlation explicitly
 
 ### Revised Security Boundary
 
@@ -154,11 +168,12 @@ The plan must preserve three non-negotiable boundaries from the origin document:
 
 ## Requirements Trace
 
-- R1-R10. Add a new online-device model, user-scoped device listing, and mobile launch flow that is distinct from session attach.
-- R11-R23. Add a `tunnel daemon` CLI surface, local daemon lifecycle, read-only `status`, and light-probe `doctor` semantics.
-- R24-R32. Infer and persist a launcher recipe, keep it stable for one daemon lifetime, degrade instead of auto-healing, and standardize launches on a new visible terminal window that returns to a shell prompt after `tunnel run <command>` exits.
-- R33-R41. Enforce first-token allowlisting, preserve existing auth boundaries, and expose structured launch failures plus single-flight launch behavior.
-- R42-R48 and success criteria. Keep support limited to macOS and Linux desktop GUI sessions, leave Windows and headless servers out of scope, and document the resulting public and operator-facing contracts.
+- R1-R10. Add a new online-device model, user-scoped device listing, and a mobile launch flow that remains distinct from session attach while still ending in `session_ready`.
+- R11-R16. Carry required per-launch `cwd` and optional `label` through the mobile API, daemon validation path, and later session metadata.
+- R17-R29. Add a `tunnel daemon` CLI surface, local daemon lifecycle, read-only `status`, and light-probe `doctor` semantics.
+- R30-R38. Infer and persist a launcher recipe, keep it stable for one daemon lifetime, degrade instead of auto-healing, and standardize launches on a new visible terminal window that returns to a shell prompt after `tunnel run <command>` exits.
+- R39-R47. Enforce first-token allowlisting, preserve existing auth boundaries, and keep devices distinct from sessions.
+- R48-R58 and success criteria. Add single-flight launch behavior, request correlation, bounded `session_ready` waiting, structured timeout/cwd failures, and the documented public contracts for macOS/Linux desktop scope.
 
 ## Scope Boundaries
 
@@ -203,9 +218,11 @@ The plan must preserve three non-negotiable boundaries from the origin document:
 - **Adopt a per-user local control plane for `tunnel daemon`**: Manage the background daemon with a local Unix socket plus state metadata under user-scoped config/runtime directories instead of job-control semantics. Rationale: `start`, `status`, `stop`, and `doctor` need stable IPC even after the launching shell exits, and macOS/Linux both support Unix sockets.
 - **Store daemon config, runtime IPC, and persisted state in distinct user-scoped locations**: Use `os.UserConfigDir()` for the editable allowlist config, a short user-scoped runtime directory (for example `XDG_RUNTIME_DIR` on Linux or an app-owned temp/runtime directory on macOS) for the control socket, and a user state/cache directory for PID, recipe, and last-failure metadata. Rationale: sockets need a short, ephemeral path, while config and health metadata should survive across shell exits without inventing ad hoc locations.
 - **Persist a local stable `device_id` alongside daemon state**: Generate one device identifier per machine-local daemon state directory and reuse it on reconnect so relay presence, busy state, and mobile targeting stay stable across websocket reconnects and daemon restarts. Rationale: hostnames are display labels, not durable identifiers, and relay request routing should not depend on ephemeral connection IDs.
-- **Refresh display metadata separately from stable identity**: Persist only the stable `device_id`, but collect and re-register current device metadata such as a human-friendly display name, `platform_family`, `platform_id`, hostname, and launch health whenever the daemon starts or reconnects to the relay. Rationale: users need fresh device labels in mobile UI, while relay routing, ownership checks, and platform-specific icons need structured metadata rather than a durable identity string that drifts over time.
+- **Refresh display metadata separately from stable identity**: Persist only the stable `device_id`, but collect and re-register current device metadata such as a human-friendly display name, `platform_family`, `platform_id`, and hostname whenever the daemon starts or reconnects to the relay. Rationale: users need fresh device labels in mobile UI, while relay routing, ownership checks, and platform-specific icons need structured metadata rather than a durable identity string that drifts over time.
 - **Split platform metadata into family plus specific ID**: Device registration should always include a stable `platform_family` for coarse UI fallback (`macos`, `linux`) and should include a more specific `platform_id` when detectable (`macos`, `ubuntu`, `arch`, `debian`, `fedora`, or `unknown`). Rationale: mobile clients can map exact icons when they know the distribution, but still fall back safely to a generic family icon when they do not.
-- **Model launch success as “terminal window launch accepted locally,” not “new session already registered”**: The relay returns success once the daemon has validated allowlist/launcher prerequisites and successfully handed the command to the terminal launcher. Rationale: mobile launch and session attach are intentionally separate, and waiting for later `tunnel` session registration would create brittle cross-process coupling and longer timeouts.
+- **Model launch success as `session_ready`, not terminal launch acceptance**: The relay returns success only after the launched `tunnel` process has actually registered a live session and the relay can return its `session_id`. Rationale: the mobile creation flow needs a decisive result that corresponds to a real attachable session, not merely a local GUI event.
+- **Carry launch correlation through `/agent/ws` registration**: The relay should generate one `request_id` per launch, the daemon should pass it into the launched `tunnel` process, and the later agent register frame should include `launch_request_id`. Rationale: this keeps the relay content-opaque while still giving it one explicit join key between the launch request and the eventual session registration.
+- **Keep per-launch execution context on the launch request**: required `cwd` and optional `label` belong to each launch request rather than to long-lived daemon startup state. Rationale: the caller's target repository and UI label vary per launch, while daemon startup should remain stable machine-local setup.
 - **Keep launcher recipes sticky and health-tracked**: `tunnel daemon start` infers a recipe once, persists it, and reports degraded health on later failures until the user explicitly restarts the daemon. Rationale: this preserves the explicit, low-magic product posture from the origin doc.
 - **Standardize v1 desktop launches on new windows**: Even when a terminal supports tabs, the daemon opens a new window and uses a command wrapper that returns to an interactive shell prompt after `tunnel run <command>` exits. Rationale: users can find new windows more reliably than tabs in an arbitrary existing window, and this keeps launch semantics uniform across macOS and Linux GUI desktops.
 
@@ -217,7 +234,8 @@ The plan must preserve three non-negotiable boundaries from the origin document:
 - **Should the relay persist devices?** No. Devices stay live-only and in-memory, parallel to session presence.
 - **What local persistence model should back `start/status/stop/doctor`?** A per-user local control socket plus config/state files, not shell/session binding.
 - **What device information is durable versus dynamic?** Only `device_id` is durable; display name, `platform_family`, `platform_id`, hostname, and health are refreshed whenever the daemon registers with the relay.
-- **How should the mobile launch API report success?** As a synchronous request/reply over relay-to-device transport with structured success/failure, but without waiting for later session discovery.
+- **How should the mobile launch API report success?** As a bounded wait for `session_ready`, returning `request_id + session_id` on success and a structured failure such as `launch_timeout` when the session never registers.
+- **How should launch correlation be represented?** Use a relay-generated `request_id` in `/device/ws` launch requests and an optional `launch_request_id` on the later `/agent/ws` register frame.
 - **What is the default terminal presentation?** Always a new terminal window that stays open and returns to a shell prompt after the launched session exits.
 
 ### Deferred to Implementation
@@ -243,16 +261,15 @@ sequenceDiagram
     CLI->>D: start background daemon + persist recipe/state
     D->>R: connect /device/ws and register DeviceInfo
     M->>R: GET /api/devices
-    R-->>M: online devices + metadata + health
-    M->>R: POST /api/devices/:id/launch {command}
-    R->>D: launch_request
-    D->>D: allowlist + recipe + single-flight checks
-    D->>T: open new window running tunnel run <command>
-    D-->>R: launch_result(success or structured failure)
-    R-->>M: envelope success/failure
-    T->>S: execute tunnel run <command>
-    S->>R: connect /agent/ws and register SessionInfo
-    M->>R: later GET /api/sessions
+    R-->>M: online devices + metadata
+    M->>R: POST /api/devices/:id/launch {command,cwd,label}
+    R->>D: launch_request {request_id,...}
+    D->>D: allowlist + cwd + recipe + single-flight checks
+    D->>T: open new window running tunnel run
+    D-->>R: launch_result {status: accepted|failed}
+    T->>S: execute tunnel run with launch_request_id
+    S->>R: connect /agent/ws and register SessionInfo + launch_request_id
+    R-->>M: session_ready + session_id or structured failure
 ```
 
 ## Alternative Approaches Considered
@@ -279,7 +296,7 @@ flowchart TB
 
 **Goal:** Introduce `tunnel daemon start|status|stop|doctor` as explicit subcommands, create the background-runtime process model, and provide a stable local IPC layer that survives the launching shell.
 
-**Requirements:** R2, R11-R18, R39-R41
+**Requirements:** R2, R17-R24, R45-R47
 
 **Dependencies:** None
 
@@ -321,7 +338,7 @@ flowchart TB
 
 **Goal:** Add the user-editable allowlist config, infer and persist launcher recipes at start time, surface degraded health, and implement the `doctor` contract as a light active-probe checklist.
 
-**Requirements:** R16-R38, success criteria for degraded devices and `doctor`
+**Requirements:** R23-R44, R56-R58, success criteria for degraded devices and `doctor`
 
 **Dependencies:** Unit 1
 
@@ -364,18 +381,21 @@ flowchart TB
 
 **Goal:** Introduce a dedicated live-only device transport and user-scoped device APIs without disturbing the existing session attach protocol.
 
-**Requirements:** R1-R10, R39-R46
+**Requirements:** R1-R16, R45-R56
 
 **Dependencies:** Unit 1 only for local CLI naming alignment; otherwise independent
 
 **Files:**
 - Create: `internal/protocol/device.go`
 - Create: `internal/protocol/device_test.go`
+- Modify: `internal/protocol/message.go`
+- Modify: `internal/protocol/message_test.go`
 - Create: `internal/relay/device/registry.go`
 - Create: `internal/relay/device/registry_test.go`
 - Create: `internal/relay/handler/api/devices.go`
 - Create: `internal/relay/handler/device/ws.go`
 - Create: `internal/relay/handler/types/device.go`
+- Modify: `internal/relay/handler/agent/ws.go`
 - Modify: `internal/relay/handler/new.go`
 - Modify: `internal/relay/bootstrap/module.go`
 - Modify: `internal/relay/handler/response/response.go`
@@ -383,11 +403,12 @@ flowchart TB
 - Test: `internal/relay/handler/ws_api_test.go`
 
 **Approach:**
-- Add a dedicated device protocol contract parallel to session protocol types: `DeviceInfo`, device register/update frames, launch request frames, and launch result frames.
-- Create a live-only device registry keyed by a daemon-persisted stable device ID, storing owner metadata, current display metadata, current health, and at-most-one in-flight launch state per device.
-- Add `GET /api/devices` for online device listing and `POST /api/devices/:deviceID/launch` for mobile-triggered launches. These routes should reuse the existing app bearer auth model and envelope response style.
+- Add a dedicated device protocol contract parallel to session protocol types: `DeviceInfo`, launch request frames carrying `request_id + command + cwd + label?`, and daemon launch result frames carrying `status + reason`.
+- Extend the agent register protocol with optional `launch_request_id` so a later session registration can complete one pending device launch.
+- Create a live-only device registry keyed by a daemon-persisted stable device ID, storing owner metadata, current display metadata, and at-most-one in-flight launch state plus one pending `request_id -> waiter` entry per launch.
+- Add `GET /api/devices` for online device listing and `POST /api/devices/:deviceID/launch` for mobile-triggered launches. These routes should reuse the existing app bearer auth model and envelope response style, but the launch route must now wait for `session_ready` or timeout before returning.
 - Add a dedicated `/device/ws` websocket authenticated with agent tokens, analogous to `/agent/ws` but device-oriented rather than session-oriented.
-- Keep single-flight launch orchestration inside the device registry so “busy” is authoritative at the relay layer rather than being reconstructed ad hoc in handlers.
+- Keep single-flight launch orchestration and pending-launch timeout cleanup inside the device registry so `busy`, disconnect cleanup, and `launch_timeout` are authoritative at the relay layer rather than being reconstructed ad hoc in handlers.
 
 **Execution note:** Start with handler- and registry-level contract tests for device listing, cross-user visibility, and busy/offline launch failure behavior before filling in the websocket transport details.
 
@@ -397,13 +418,14 @@ flowchart TB
 - `internal/relay/handler/rest_api_test.go` and `internal/relay/handler/ws_api_test.go` for envelope and websocket contract coverage
 
 **Test scenarios:**
-- Happy path: a device connected over `/device/ws` appears in `GET /api/devices` only for the owning user and exposes health/degraded fields.
+- Happy path: a device connected over `/device/ws` appears in `GET /api/devices` only for the owning user.
 - Happy path: device-list responses always include `platform_family`, and include a best-effort `platform_id`, so mobile clients can prefer exact icon mapping and fall back to family-level icons without string guessing.
-- Edge case: an online but degraded device is listed as online yet not launchable, and the app API surface reflects that state consistently.
+- Happy path: `POST /api/devices/:id/launch` with `command`, `cwd`, and `label` waits until a later agent register with matching `launch_request_id` and then returns `session_ready + session_id`.
 - Error path: a cross-user `POST /api/devices/:id/launch` request behaves as not found/inaccessible rather than leaking another user’s online device presence.
 - Error path: a second launch request to the same device while one request is in flight returns structured `busy` without queueing.
+- Error path: if no matching agent registration arrives before the wait window expires, the pending launch resolves as `launch_timeout`.
 - Integration: reconnecting the same daemon with the same persisted `device_id` replaces the prior live entry instead of creating duplicate devices in `GET /api/devices`.
-- Integration: if a device websocket disconnects during an in-flight launch request, the waiting app request resolves with a structured offline/service-unavailable result and the in-flight slot is cleared.
+- Integration: if a device websocket disconnects during an in-flight launch request, the waiting app request resolves with a structured offline result and the in-flight slot is cleared.
 
 **Verification:**
 - The relay can track online devices separately from sessions, list them safely per user, and broker one structured launch request at a time through a dedicated websocket path.
@@ -412,13 +434,17 @@ flowchart TB
 
 **Goal:** Make the background daemon register with `/device/ws`, answer launch requests, validate allowlist and prerequisites, open a new terminal window, and return structured launch results.
 
-**Requirements:** R6-R10, R24-R32, R39-R46
+**Requirements:** R6-R16, R30-R56
 
 **Dependencies:** Units 2 and 3
 
 **Files:**
 - Create: `internal/tunnel/daemon/connector.go`
 - Create: `internal/tunnel/daemon/connector_test.go`
+- Modify: `cmd/tunnel/main.go`
+- Modify: `cmd/tunnel/main_test.go`
+- Modify: `internal/tunnel/connector/connector.go`
+- Modify: `internal/tunnel/connector/connector_test.go`
 - Modify: `internal/tunnel/daemon/runtime.go`
 - Modify: `internal/tunnel/daemon/control.go`
 - Test: `internal/tunnel/daemon/runtime_test.go`
@@ -426,12 +452,13 @@ flowchart TB
 - Test: `internal/tunnel/daemon/launcher_linux_test.go`
 
 **Approach:**
-- Add a daemon-side relay connector separate from `internal/tunnel/connector/connector.go` because the transport shape is request/reply device control, not session attach and PTY bytes.
-- Register device metadata that includes the stable `device_id` plus refreshed display fields for mobile UI, including a human-friendly device name, `platform_family`, `platform_id`, hostname, launcher health, and enough diagnostic context for local `status`.
-- On each launch request, enforce one in-flight operation locally, re-check recipe health, read allowlist config, preflight the `tunnel` executable, and then invoke the remembered launcher recipe to open a new terminal window with a wrapper that returns to an interactive shell prompt after the launched `tunnel run ...` process exits.
+- Add a daemon-side relay connector separate from `internal/tunnel/connector/connector.go` because the transport shape is device control plus deferred session correlation, not session attach and PTY bytes.
+- Register device metadata that includes the stable `device_id` plus refreshed display fields for mobile UI, including a human-friendly device name, `platform_family`, `platform_id`, and hostname, while keeping launcher health and richer diagnostics local to `status`/`doctor`.
+- On each launch request, enforce one in-flight operation locally, re-check recipe health, read allowlist config, validate `cwd`, preflight the `tunnel` executable, and then invoke the remembered launcher recipe to open a new terminal window with a wrapper that returns to an interactive shell prompt after the launched `tunnel run ...` process exits.
+- Pass optional label through the existing `tunnel run --label` surface and pass the relay-generated launch correlation through an environment variable or equivalent runtime input that the later `/agent/ws` register path can surface as `launch_request_id`.
 - Build launch commands from a parsed argv model and escape only at the final launcher boundary so relay/device plumbing never concatenates untrusted raw shell fragments into an intermediate command string.
-- Return structured launch results to the relay with explicit failure reasons (`busy`, `command_not_allowed`, `desktop_unavailable`, `terminal_launch_failed`, `tunnel_not_found`) and persist the latest failure for later `status`/`doctor` output.
-- Keep success/failure boundaries consistent with the plan’s earlier decision: success means the terminal window launch was accepted locally, not that the later `tunnel` session already appeared in `GET /api/sessions`.
+- Return structured daemon-side launch results to the relay with explicit failure reasons (`busy`, `command_not_allowed`, `desktop_unavailable`, `terminal_launch_failed`, `tunnel_not_found`, `path_not_found`) and persist the latest failure for later `status`/`doctor` output.
+- Keep success/failure boundaries consistent with the revised contract: daemon-side `accepted` only means the local launch was handed off successfully; the mobile-visible success still arrives later as `session_ready`.
 
 **Patterns to follow:**
 - `internal/tunnel/connector/connector.go` for websocket lifecycle management and injected test seams
@@ -439,22 +466,25 @@ flowchart TB
 - `internal/tunnel/session/process.go` for process lifecycle expectations once a launched `tunnel` session actually starts
 
 **Test scenarios:**
-- Happy path: a healthy daemon connects to `/device/ws`, receives a launch request, launches a new terminal window command, and returns a structured success result.
-- Happy path: after a successful launch acceptance, a later `tunnel` process started from that new window still registers a normal session through the unchanged `/agent/ws` path.
+- Happy path: a healthy daemon connects to `/device/ws`, receives a launch request with `cwd` and optional `label`, launches a new terminal window command, and returns immediate `accepted`.
+- Happy path: after a successful daemon-side acceptance, a later `tunnel` process started from that new window registers a normal session through the unchanged `/agent/ws` path and includes the propagated `launch_request_id`.
 - Edge case: a launch request for a command with an allowed first token and extra arguments passes the full argument tail through unchanged.
+- Edge case: a launch request with a valid cwd starts `tunnel run` in that directory, and the resulting session metadata reports the same cwd.
+- Edge case: a launch request with a label results in the later session exposing that label.
 - Edge case: arguments containing spaces or shell-sensitive characters survive wrapper construction without being split, dropped, or reinterpreted before `tunnel` receives them.
 - Error path: the daemon rejects disallowed first tokens with `command_not_allowed` without attempting terminal launch.
+- Error path: the daemon rejects a missing cwd with `path_not_found` without attempting terminal launch.
 - Error path: missing GUI session, missing `tunnel` binary, unsupported launcher environment, or launcher invocation failure each map to their own structured failure reason and update daemon health/failure state.
 - Error path: if the daemon loses relay connectivity mid-request, it clears local single-flight state and does not remain permanently “busy.”
 
 **Verification:**
-- A running daemon can round-trip a launch request from relay to local desktop launch and back to a structured result without changing the existing direct `tunnel` session path.
+- A running daemon can round-trip a launch request from relay to local desktop launch, preserve cwd/label/correlation, and feed the later `session_ready` completion without changing the existing direct `tunnel` session path.
 
 - [ ] **Unit 5: Add non-GUI integration coverage with a fake launcher seam**
 
 **Goal:** Prove the end-to-end launch workflow across app API, device websocket, daemon runtime, and later session registration without depending on a real desktop GUI in test environments.
 
-**Requirements:** R3-R10, R17-R23, R42-R46, success criteria for busy/degraded behavior
+**Requirements:** R3-R16, R17-R29, R48-R58, success criteria for busy/degraded behavior
 
 **Dependencies:** Units 3 and 4
 
@@ -467,8 +497,8 @@ flowchart TB
 
 **Approach:**
 - Introduce an injectable fake-launcher seam in daemon runtime so tests can simulate “new terminal window launched” without needing a real GUI session in CI or local headless runs.
-- Extend the existing E2E app client utilities with device-list and device-launch helpers so the same test harness can cover login, device listing, launch request submission, and later session discovery.
-- Use the existing deterministic `cmd/e2e-launcher` program as the launched `tunnel run <command>` target so the new regression coverage can assert that a launched session later appears and remains attachable after the launch API succeeded.
+- Extend the existing E2E app client utilities with device-list and device-launch helpers so the same test harness can cover login, device listing, launch request submission, `session_ready` response handling, and later session discovery.
+- Use the existing deterministic `cmd/e2e-launcher` program as the launched `tunnel run <command>` target so the new regression coverage can assert that a launched session later appears, returns `session_ready`, and remains attachable after the launch API succeeded.
 - Keep GUI-specific behavior itself covered at unit seams via recipe and launcher tests; do not make CI depend on a real desktop session.
 
 **Patterns to follow:**
@@ -477,9 +507,10 @@ flowchart TB
 - `cmd/e2e-launcher/main.go` for deterministic launched-session behavior
 
 **Test scenarios:**
-- Happy path: login -> list devices -> launch allowed command -> later list sessions shows the new session -> attach still works on that session.
-- Edge case: a degraded device still appears in `GET /api/devices` but its launch request returns the stored structured failure state.
+- Happy path: login -> list devices -> launch allowed command with cwd/label -> launch API returns `session_ready + session_id` -> attach still works on that exact session.
 - Error path: launching a disallowed command returns `command_not_allowed` and does not create a session.
+- Error path: launching with an invalid cwd returns `path_not_found` and does not create a session.
+- Error path: a launch that opens a terminal but never registers a session resolves as `launch_timeout`.
 - Error path: issuing two launch requests concurrently against the same device yields one success path and one `busy` path.
 - Integration: stopping the daemon removes the device from `GET /api/devices` while leaving already launched sessions to follow the unchanged session lifecycle.
 
@@ -490,7 +521,7 @@ flowchart TB
 
 **Goal:** Re-document the product and operational contract so CLI users, mobile clients, and future implementers all see the same device-launch model.
 
-**Requirements:** R12-R23, R42-R48 and the documentation expectations in `AGENTS.md`
+**Requirements:** R11-R29, R48-R58 and the documentation expectations in `AGENTS.md`
 
 **Dependencies:** Units 1-5
 
@@ -504,8 +535,8 @@ flowchart TB
 - Modify: `AGENTS.md`
 
 **Approach:**
-- Document the new `tunnel daemon` subcommands, the explicit user-managed daemon model, config-file expectations, desktop-only scope, and new app-facing device endpoints.
-- Extend protocol and architecture docs so device presence, `/device/ws`, launch request/result semantics, degraded state, and unchanged session attach invariants are all described together.
+- Document the new `tunnel daemon` subcommands, the explicit user-managed daemon model, config-file expectations, desktop-only scope, per-launch cwd/label inputs, and new app-facing device endpoints.
+- Extend protocol and architecture docs so device presence, `/device/ws`, `request_id`, `launch_request_id`, `session_ready`, timeout semantics, and unchanged session attach invariants are all described together.
 - Keep the docs explicit that v1 is GUI-only, opens new windows rather than tabs, and does not auto-attach from mobile after launch.
 
 **Patterns to follow:**
@@ -526,7 +557,7 @@ flowchart TB
 - **Error propagation:** Launch failures now have two audiences: local CLI (`status`/`doctor`) and mobile app launch requests. The plan keeps one structured reason vocabulary so daemon, relay, docs, and app API stay aligned.
 - **State lifecycle risks:** There are three distinct live states to keep coherent: daemon local runtime state, relay live device presence, and later launched session presence. The plan explicitly keeps them separate so a degraded device does not masquerade as an offline one and a launched session does not depend on daemon lifetime after it starts.
 - **API surface parity:** New device APIs and websocket transport must preserve the same user-scoping guarantees already enforced for sessions; adding devices must not weaken the existing `GET /api/sessions` and attach isolation model.
-- **Integration coverage:** Cross-layer confidence depends on request/response timeouts, single-flight cleanup, and “launch accepted locally” semantics; unit tests alone will not prove those boundaries, which is why Unit 5 adds a fake-launcher regression seam.
+- **Integration coverage:** Cross-layer confidence depends on launch/request correlation, timeout cleanup, and `session_ready` semantics; unit tests alone will not prove those boundaries, which is why Unit 5 adds a fake-launcher regression seam.
 - **Unchanged invariants:** `tunnel run <command>` behavior, `/agent/ws` session registration, `GET /api/sessions`, `/api/sessions/:id/attach/ws`, attach control messages, and relay content opacity remain structurally unchanged. The new feature is additive and must not reframe the relay as terminal-state authority.
 
 ## Risks & Dependencies
@@ -536,7 +567,8 @@ flowchart TB
 | Local daemon state becomes stale or orphaned after crashes | Use an explicit ready handshake, stale-socket/PID cleanup on `start`, and a per-user control socket instead of shell-bound jobs. |
 | Cross-user device discovery or launch leaks device presence | Mirror session auth patterns: user-scoped registry ownership, not-found behavior for foreign resources, and handler tests for cross-user cases. |
 | Desktop launcher behavior varies too widely across Linux environments | Treat Linux launcher inference as a strategy chain with `xdg-terminal-exec` as the first choice, fail fast on unsupported environments, and expose degraded health plus `doctor` diagnostics. |
-| Mobile launch success is mistaken for guaranteed session creation | Keep launch success narrowly defined as local launch acceptance, separate it from later session discovery, and document that boundary explicitly. |
+| Session-ready correlation leaks or misroutes the wrong session to the wrong launch request | Use one relay-generated `request_id`, carry it explicitly as `launch_request_id`, clear pending launch state on every exit path, and add cross-user/cross-request tests around correlation. |
+| Mobile launch hangs after the terminal opened but no session ever registered | Use a bounded wait window with explicit `launch_timeout`, and test the path where daemon-side acceptance never becomes `session_ready`. |
 | Single-flight launch state can deadlock on disconnects or timeouts | Keep one authoritative in-flight slot in the relay device registry, add bounded request timeouts, and clear both relay and local busy state on all exit paths. |
 
 ## Documentation / Operational Notes

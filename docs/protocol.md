@@ -29,7 +29,7 @@ All protocol timestamps are Unix timestamps represented as JSON integers in seco
 |----------|------|------|------|---------|
 | `GET /healthz` | Host-local | None | HTTP | Health check for direct relay access; production nginx can keep this off the public surface |
 | `GET /api/devices` | Client | Bearer | HTTP | Current live device snapshot for the authenticated user |
-| `POST /api/devices/:deviceID/launch` | Client | Bearer | HTTP | Ask one currently online device daemon to open a new terminal window running `tunnel run <command>` |
+| `POST /api/devices/:deviceID/launch` | Client | Bearer | HTTP | Ask one currently online device daemon to launch `tunnel run <command>` and wait for the resulting session to become `session_ready` |
 | `GET /api/sessions` | Client | Bearer | HTTP | Current live session snapshot for the authenticated user |
 | `GET /api/sessions/:id/attach/ws` | Client | Bearer | WebSocket | Attach to one live session owned by the authenticated user for snapshot, live bytes, resize events, and session-scoped structured input |
 | `GET /agent/ws` | Agent | Bearer | WebSocket | Agent registration, attach control, resize metadata, structured input forwarding, and client-routed terminal byte delivery |
@@ -329,26 +329,43 @@ Launch request relay-to-device:
 {
   "type": "launch_request",
   "request_id": "dev_abcd1234-150405.000000000",
-  "command": "codex --profile prod"
-}
-```
-
-Launch result device-to-relay:
-
-```json
-{
-  "type": "launch_result",
-  "request_id": "dev_abcd1234-150405.000000000",
-  "accepted": false,
-  "reason": "busy"
+  "command": "codex --profile prod",
+  "cwd": "/repo",
+  "label": "api-fix"
 }
 ```
 
 Notes:
 
-- `accepted: true` means the local terminal-window launch was accepted on the device
-- it does not mean the later session is already visible in `GET /api/sessions`
+- `cwd` is required on every launch request
+- `label` is optional
+
+Launch result device-to-relay after immediate daemon-side validation:
+
+```json
+{
+  "type": "launch_result",
+  "request_id": "dev_abcd1234-150405.000000000",
+  "status": "failed",
+  "reason": "busy"
+}
+```
+
+or
+
+```json
+{
+  "type": "launch_result",
+  "request_id": "dev_abcd1234-150405.000000000",
+  "status": "accepted"
+}
+```
+
+Notes:
+
 - `request_id` is relay-scoped and correlates one launch request with one result
+- `status: "accepted"` means the daemon validated the request and successfully handed it off to a local terminal launcher
+- `status: "accepted"` still does not complete the client-visible launch flow; the relay waits for a later `/agent/ws` registration carrying the same launch request correlation
 - the relay keeps only transient online-device routing state; device health, last failure, and launcher details remain local to the daemon
 
 ## Agent WebSocket
@@ -367,9 +384,11 @@ It is a mixed websocket:
 ```json
 {
   "type": "register",
+  "launch_request_id": "dev_abcd1234-150405.000000000",
   "session": {
     "session_id": "sess-1",
     "launcher": "codex",
+    "label": "api-fix",
     "cwd": "/repo",
     "command_preview": "codex --profile prod",
     "started_at": 1775376000
@@ -381,6 +400,8 @@ Notes:
 
 - `register` must be the first agent control frame on the websocket
 - the relay treats that websocket as the owner of the live session
+- `launch_request_id` is optional; it is present only when this session was created from `POST /api/devices/:deviceID/launch`
+- when `launch_request_id` is present, the relay may use it to complete one pending launch request as `session_ready` with the new `session_id`
 
 ### `resize`
 

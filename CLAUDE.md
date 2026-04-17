@@ -39,11 +39,11 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 - After startup, relay unavailability must not interrupt local terminal work. The connector keeps retrying relay registration with backoff, and local sessions continue running unchanged while remote visibility and input are unavailable.
 - The agent is the authority for current terminal state. It maintains the headless terminal mirror and produces attach snapshots from that mirror.
 - Remote viewing is session-scoped: clients discover sessions with `GET /api/sessions` and attach with `GET /api/sessions/:id/attach/ws`.
-- Remote launch is device-scoped: clients discover devices with `GET /api/devices` and request new session creation with `POST /api/devices/:id/launch`.
+- Remote launch is device-scoped: clients discover devices with `GET /api/devices` and request new session creation with `POST /api/devices/:id/launch`, which requires per-launch `cwd`, may include optional `label`, and succeeds only when the new session becomes `session_ready`.
 - Browser attach clients must be same-origin with the relay host; native clients that omit `Origin` remain supported.
 - Remote recovery in this revision is fresh snapshot recovery of the current terminal state, including bounded agent-local normal-buffer scrollback when available. There is no transcript replay API and no global live-output websocket contract.
 - The relay stores live session metadata, owner connection state, and active attach routing state. It must not be described as retaining transcript history or terminal state.
-- The relay only keeps transient routing state for currently connected `/device/ws` daemons and the in-flight request/reply correlation needed for one launch request. Device health, launcher details, and last failure remain daemon-local.
+- The relay only keeps transient routing state for currently connected `/device/ws` daemons and the in-flight correlation needed to turn one launch request into one `session_ready` result or timeout. Device health, launcher details, and last failure remain daemon-local.
 - The agent-side mirror may retain bounded in-memory normal-buffer scrollback for attach snapshots. That is agent-local state, not relay-owned or durable history.
 - The local terminal remains the most complete source of truth for session output in the current product revision.
 - A successful attach yields `attached`, snapshot bytes, `snapshot_done`, then live PTY bytes on the same websocket.

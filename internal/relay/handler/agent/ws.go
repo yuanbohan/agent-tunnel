@@ -10,6 +10,7 @@ import (
 	"yuanbohan/tunnel/internal/config"
 	"yuanbohan/tunnel/internal/logx"
 	"yuanbohan/tunnel/internal/protocol"
+	relaydevice "yuanbohan/tunnel/internal/relay/device"
 	"yuanbohan/tunnel/internal/relay/handler/httpx"
 	"yuanbohan/tunnel/internal/relay/handler/middleware"
 	handlerws "yuanbohan/tunnel/internal/relay/handler/ws"
@@ -25,7 +26,7 @@ type errString string
 
 func (e errString) Error() string { return string(e) }
 
-func Handle(registry *session.Registry) gin.HandlerFunc {
+func Handle(registry *session.Registry, deviceRegistry *relaydevice.Registry) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authenticated := middleware.AuthenticatedAgent(c)
 
@@ -78,6 +79,12 @@ func Handle(registry *session.Registry) gin.HandlerFunc {
 			UserID:       authenticated.User.ID,
 			AgentTokenID: authenticated.Token.ID,
 		}, peer)
+		if deviceRegistry != nil && register.LaunchRequestID != "" {
+			deviceRegistry.CompleteLaunchIfOwner(register.LaunchRequestID, relaydevice.DeviceOwner{
+				UserID:       authenticated.User.ID,
+				AgentTokenID: authenticated.Token.ID,
+			}, register.Session.SessionID)
+		}
 		defer registry.DisconnectIfOwner(register.Session.SessionID, peer)
 
 		tracker.SetSessionID(register.Session.SessionID)
@@ -86,6 +93,7 @@ func Handle(registry *session.Registry) gin.HandlerFunc {
 			logx.String("launcher", register.Session.Launcher),
 			logx.String("label", register.Session.Label),
 			logx.String("cwd", register.Session.CWD),
+			logx.String("launch_request_id", register.LaunchRequestID),
 			logx.Int64("user_id", authenticated.User.ID),
 			logx.String("agent_token_id", authenticated.Token.ID),
 		}

@@ -8,14 +8,14 @@ import (
 
 func TestRegisterFrameRoundTrip(t *testing.T) {
 	started := 1775131200
-	frame := RegisterFrame(SessionInfo{
+	frame := RegisterFrameWithLaunchRequest(SessionInfo{
 		SessionID:      "sess-123",
 		Launcher:       "codex",
 		Label:          "api-fix",
 		CWD:            "/tmp/project",
 		CommandPreview: "codex --profile prod",
 		StartedAt:      started,
-	})
+	}, "req-123")
 
 	raw, err := json.Marshal(frame)
 	if err != nil {
@@ -38,6 +38,9 @@ func TestRegisterFrameRoundTrip(t *testing.T) {
 	}
 	if decoded.Session.StartedAt != started {
 		t.Fatalf("StartedAt = %v, want %v", decoded.Session.StartedAt, started)
+	}
+	if decoded.LaunchRequestID != "req-123" {
+		t.Fatalf("LaunchRequestID = %q, want req-123", decoded.LaunchRequestID)
 	}
 }
 

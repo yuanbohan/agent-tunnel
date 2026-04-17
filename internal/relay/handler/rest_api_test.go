@@ -69,7 +69,7 @@ func TestHandlerListsDevicesForAuthenticatedUser(t *testing.T) {
 	}
 }
 
-func TestHandlerLaunchDeviceForwardsStructuredDeviceResult(t *testing.T) {
+func TestHandlerLaunchDeviceWaitsForSessionReady(t *testing.T) {
 	env := newHandlerTestEnv(t)
 	env.addInvite(t, "AB2C3D")
 	user := env.registerUser(t, "alice", "password123", "AB2C3D")
@@ -85,13 +85,16 @@ func TestHandlerLaunchDeviceForwardsStructuredDeviceResult(t *testing.T) {
 	handler := env.handler(nil)
 	rec := httptest.NewRecorder()
 	done := make(chan struct{})
+	requestIDCh := make(chan string, 1)
 	go func() {
 		frame := <-peer.sent
-		env.deviceRegistry.ResolveLaunchIfOwner("dev-1", peer, frame.RequestID, false, "busy")
+		requestIDCh <- frame.RequestID
+		env.deviceRegistry.ResolveLaunchIfOwner("dev-1", peer, frame.RequestID, relaydevice.LaunchStatusAccepted, "")
+		env.deviceRegistry.CompleteLaunchIfOwner(frame.RequestID, relaydevice.DeviceOwner{UserID: user.ID}, "sess-1")
 		close(done)
 	}()
 
-	req := httptest.NewRequest(http.MethodPost, "/api/devices/dev-1/launch", strings.NewReader(`{"command":"claude"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/devices/dev-1/launch", strings.NewReader(`{"command":"claude","cwd":"/repo","label":"api-fix"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", bearerAuth(issued.AccessToken))
 	handler.ServeHTTP(rec, req)
@@ -101,8 +104,9 @@ func TestHandlerLaunchDeviceForwardsStructuredDeviceResult(t *testing.T) {
 	}
 	var response handlertypes.DeviceLaunchResponse
 	decodeAPIEnvelopeFromRecorder(t, rec, http.StatusOK, &response)
-	if response.Accepted || response.Reason != "busy" {
-		t.Fatalf("response = %#v, want forwarded busy result", response)
+	requestID := <-requestIDCh
+	if response.Status != relaydevice.LaunchStatusSessionReady || response.SessionID != "sess-1" || response.RequestID != requestID || response.Reason != "" {
+		t.Fatalf("response = %#v, want session_ready sess-1", response)
 	}
 	<-done
 }
@@ -126,7 +130,7 @@ func TestHandlerRevokingAgentTokenCompletesInFlightLaunch(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		req := httptest.NewRequest(http.MethodPost, "/api/devices/dev-1/launch", strings.NewReader(`{"command":"claude"}`))
+		req := httptest.NewRequest(http.MethodPost, "/api/devices/dev-1/launch", strings.NewReader(`{"command":"claude","cwd":"/repo"}`))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", bearerAuth(issued.AccessToken))
 		handler.ServeHTTP(launchRec, req)
@@ -154,7 +158,7 @@ func TestHandlerRevokingAgentTokenCompletesInFlightLaunch(t *testing.T) {
 
 	var response handlertypes.DeviceLaunchResponse
 	decodeAPIEnvelopeFromRecorder(t, launchRec, http.StatusOK, &response)
-	if response.Accepted || response.Reason != "device_offline" {
+	if response.Status != relaydevice.LaunchStatusFailed || response.Reason != "device_offline" || response.RequestID == "" {
 		t.Fatalf("response = %#v, want device_offline", response)
 	}
 }

@@ -35,6 +35,7 @@ type relayConnector interface {
 	session.OutputSink
 	SetInitialSize(cols, rows int)
 	SetInitialConnectTimeout(timeout time.Duration)
+	SetLaunchRequestID(launchRequestID string)
 	BindHub(hub *session.Hub)
 	Run(ctx context.Context)
 	WaitUntilConnected(ctx context.Context, timeout time.Duration) bool
@@ -141,6 +142,7 @@ func runTunnelSession(ctx context.Context, parsed runArgs, stdout, stderr io.Wri
 	}
 
 	relay := newConnector(relayURL, resolvedAuth.Token, info)
+	relay.SetLaunchRequestID(strings.TrimSpace(osEnv(tunnelLaunchRequestIDEnv)))
 	relay.SetInitialConnectTimeout(startupRelayWait)
 	go relay.Run(ctx)
 	if !relay.WaitUntilConnected(ctx, startupRelayWait) {

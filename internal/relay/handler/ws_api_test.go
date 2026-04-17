@@ -92,6 +92,8 @@ func TestDeviceWebSocketLaunchRequestRoundTrip(t *testing.T) {
 	defer deviceConn.Close()
 
 	done := make(chan struct{})
+	requestIDCh := make(chan string, 1)
+	agentConnCh := make(chan *websocket.Conn, 1)
 	go func() {
 		defer close(done)
 		var frame protocol.DeviceFrame
@@ -99,24 +101,33 @@ func TestDeviceWebSocketLaunchRequestRoundTrip(t *testing.T) {
 			t.Errorf("ReadJSON returned error: %v", err)
 			return
 		}
-		if frame.Type != "launch_request" || frame.Command != "codex" {
-			t.Errorf("frame = %#v, want launch_request codex", frame)
+		requestIDCh <- frame.RequestID
+		if frame.Type != "launch_request" || frame.Command != "codex" || frame.CWD != "/repo" || frame.Label != "api-fix" {
+			t.Errorf("frame = %#v, want launch_request codex /repo api-fix", frame)
 			return
 		}
-		if err := deviceConn.WriteJSON(protocol.DeviceLaunchResultFrame(frame.RequestID, true, "")); err != nil {
+		if err := deviceConn.WriteJSON(protocol.DeviceLaunchResultFrame(frame.RequestID, "accepted", "")); err != nil {
 			t.Errorf("WriteJSON returned error: %v", err)
+			return
 		}
+
+		agentConnCh <- dialAndRegisterAgentWithLaunchRequest(t, server.URL, agentToken.Plaintext, "sess-1", frame.RequestID)
 	}()
 
-	resp := doBearerPOST(t, server.URL+"/api/devices/dev-1/launch", issued.AccessToken, `{"command":"codex"}`)
+	resp := doBearerPOST(t, server.URL+"/api/devices/dev-1/launch", issued.AccessToken, `{"command":"codex","cwd":"/repo","label":"api-fix"}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 	var launch handlertypes.DeviceLaunchResponse
 	decodeAPIEnvelopeFromResponse(t, resp, http.StatusOK, &launch)
-	if !launch.Accepted || launch.Reason != "" {
-		t.Fatalf("launch = %#v, want accepted", launch)
+	requestID := <-requestIDCh
+	if launch.Status != "session_ready" || launch.SessionID != "sess-1" || launch.Reason != "" || launch.RequestID != requestID {
+		t.Fatalf("launch = %#v, want session_ready sess-1", launch)
+	}
+	agentConn := <-agentConnCh
+	if err := agentConn.Close(); err != nil {
+		t.Errorf("Close returned error: %v", err)
 	}
 	<-done
 }

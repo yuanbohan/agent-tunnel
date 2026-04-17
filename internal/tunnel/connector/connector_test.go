@@ -85,6 +85,45 @@ func TestConnectorSendsRegisterBeforeStreamingOutput(t *testing.T) {
 	}
 }
 
+func TestConnectorIncludesLaunchRequestIDInRegisterFrame(t *testing.T) {
+	received := make(chan protocol.AgentFrame, 1)
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("Upgrade returned error: %v", err)
+		}
+		defer conn.Close()
+
+		var frame protocol.AgentFrame
+		if err := conn.ReadJSON(&frame); err != nil {
+			t.Fatalf("ReadJSON returned error: %v", err)
+		}
+		received <- frame
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	c := New(wsURL, "token", protocol.SessionInfo{
+		SessionID: "sess-1",
+		Launcher:  "codex",
+	})
+	c.SetLaunchRequestID("req-123")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Run(ctx)
+
+	select {
+	case frame := <-received:
+		if frame.LaunchRequestID != "req-123" {
+			t.Fatalf("LaunchRequestID = %q, want req-123", frame.LaunchRequestID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for register frame")
+	}
+}
+
 func TestConnectorRoutesInputFrameIntoHub(t *testing.T) {
 	inputCh := make(chan string, 1)
 	hub := session.NewHub(func(data []byte) error {

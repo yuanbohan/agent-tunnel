@@ -718,6 +718,11 @@ func readAttachBinary(t *testing.T, conn *websocket.Conn) []byte {
 
 func dialAndRegisterAgent(t *testing.T, serverURL, agentToken, sessionID string) *websocket.Conn {
 	t.Helper()
+	return dialAndRegisterAgentWithLaunchRequest(t, serverURL, agentToken, sessionID, "")
+}
+
+func dialAndRegisterAgentWithLaunchRequest(t *testing.T, serverURL, agentToken, sessionID, launchRequestID string) *websocket.Conn {
+	t.Helper()
 	wsURL := "ws" + strings.TrimPrefix(serverURL, "http") + "/agent/ws"
 	headers := http.Header{}
 	headers.Set("Authorization", bearerAuth(agentToken))
@@ -727,13 +732,13 @@ func dialAndRegisterAgent(t *testing.T, serverURL, agentToken, sessionID string)
 		t.Fatalf("Dial returned error: %v", err)
 	}
 
-	if err := conn.WriteJSON(protocol.RegisterFrame(protocol.SessionInfo{
+	if err := conn.WriteJSON(protocol.RegisterFrameWithLaunchRequest(protocol.SessionInfo{
 		SessionID:      sessionID,
 		Launcher:       "codex",
 		CWD:            "/tmp/project",
 		CommandPreview: "codex",
 		StartedAt:      10,
-	})); err != nil {
+	}, launchRequestID)); err != nil {
 		t.Fatalf("WriteJSON register returned error: %v", err)
 	}
 

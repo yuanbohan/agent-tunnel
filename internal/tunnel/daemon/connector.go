@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -32,8 +34,8 @@ type launchHandler struct {
 }
 
 type launchResult struct {
-	Accepted bool
-	Reason   string
+	Status string
+	Reason string
 }
 
 func newDeviceConnector(baseURL, token string, state *runtimeState, recipe LauncherRecipe) *deviceConnector {
@@ -104,8 +106,8 @@ func (c *deviceConnector) serveOnce(ctx context.Context, handler *launchHandler)
 		if frame.Type != "launch_request" || frame.RequestID == "" {
 			continue
 		}
-		result := handler.Handle(frame.Command)
-		if err := conn.WriteJSON(protocol.DeviceLaunchResultFrame(frame.RequestID, result.Accepted, result.Reason)); err != nil {
+		result := handler.Handle(frame.RequestID, frame.Command, frame.CWD, frame.Label)
+		if err := conn.WriteJSON(protocol.DeviceLaunchResultFrame(frame.RequestID, result.Status, result.Reason)); err != nil {
 			return err
 		}
 	}
@@ -138,15 +140,15 @@ func newLaunchHandler(baseURL, authToken string, paths Paths, state *runtimeStat
 	}
 }
 
-func (h *launchHandler) Handle(command string) launchResult {
-	return h.handle(command)
+func (h *launchHandler) Handle(requestID, command, cwd, label string) launchResult {
+	return h.handle(requestID, command, cwd, label)
 }
 
-func (h *launchHandler) handle(command string) launchResult {
+func (h *launchHandler) handle(requestID, command, cwd, label string) launchResult {
 	h.state.mu.Lock()
 	if h.inFlight {
 		h.state.mu.Unlock()
-		return launchResult{Accepted: false, Reason: "busy"}
+		return launchResult{Status: "failed", Reason: "busy"}
 	}
 	h.inFlight = true
 	h.state.mu.Unlock()
@@ -158,52 +160,84 @@ func (h *launchHandler) handle(command string) launchResult {
 
 	if !hasDesktopSession() {
 		h.state.setLastFailure("desktop_unavailable", false)
-		return launchResult{Accepted: false, Reason: "desktop_unavailable"}
+		return launchResult{Status: "failed", Reason: "desktop_unavailable"}
 	}
 
 	args, err := shellquote.Split(command)
 	if err != nil || len(args) == 0 {
 		h.state.setLastFailure("command_not_allowed", false)
-		return launchResult{Accepted: false, Reason: "command_not_allowed"}
+		return launchResult{Status: "failed", Reason: "command_not_allowed"}
 	}
 	config, err := LoadConfig(h.paths)
 	if err != nil {
 		h.state.setLastFailure("command_not_allowed", false)
-		return launchResult{Accepted: false, Reason: "command_not_allowed"}
+		return launchResult{Status: "failed", Reason: "command_not_allowed"}
 	}
 	if !config.Allows(args[0]) {
 		h.state.setLastFailure("command_not_allowed", false)
-		return launchResult{Accepted: false, Reason: "command_not_allowed"}
+		return launchResult{Status: "failed", Reason: "command_not_allowed"}
+	}
+
+	resolvedCWD, err := resolveLaunchCWD(cwd)
+	if err != nil {
+		h.state.setLastFailure("path_not_found", false)
+		return launchResult{Status: "failed", Reason: "path_not_found"}
+	}
+
+	info, err := os.Stat(resolvedCWD)
+	if err != nil || !info.IsDir() {
+		h.state.setLastFailure("path_not_found", false)
+		return launchResult{Status: "failed", Reason: "path_not_found"}
 	}
 
 	if _, err := exec.LookPath("tunnel"); err != nil {
 		h.state.setLastFailure("tunnel_not_found", false)
-		return launchResult{Accepted: false, Reason: "tunnel_not_found"}
+		return launchResult{Status: "failed", Reason: "tunnel_not_found"}
 	}
 
-	wrapper := buildShellWrapper(h.baseURL, h.authToken, args)
+	wrapper := buildShellWrapper(h.baseURL, h.authToken, requestID, resolvedCWD, label, args)
 	if err := launchWithRecipe(h.recipe, wrapper); err != nil {
 		h.state.setLastFailure("terminal_launch_failed", true)
-		return launchResult{Accepted: false, Reason: "terminal_launch_failed"}
+		return launchResult{Status: "failed", Reason: "terminal_launch_failed"}
 	}
 
 	h.state.clearLastFailure()
-	return launchResult{Accepted: true}
+	return launchResult{Status: "accepted"}
 }
 
-func buildShellWrapper(baseURL, authToken string, args []string) string {
+func resolveLaunchCWD(cwd string) (string, error) {
+	cwd = strings.TrimSpace(cwd)
+	if cwd == "" {
+		return "", os.ErrNotExist
+	}
+	return filepath.Abs(cwd)
+}
+
+func buildShellWrapper(baseURL, authToken, launchRequestID, cwd, label string, args []string) string {
 	var parts []string
 	parts = append(parts, `__tunnel_had_auth="${TUNNEL_AUTH_TOKEN+1}"`)
 	parts = append(parts, `__tunnel_prev_auth="$TUNNEL_AUTH_TOKEN"`)
 	parts = append(parts, `__tunnel_had_base="${TUNNEL_BASE_URL+1}"`)
 	parts = append(parts, `__tunnel_prev_base="$TUNNEL_BASE_URL"`)
+	parts = append(parts, `__tunnel_had_launch_request="${TUNNEL_LAUNCH_REQUEST_ID+1}"`)
+	parts = append(parts, `__tunnel_prev_launch_request="$TUNNEL_LAUNCH_REQUEST_ID"`)
+
+	runArgs := []string{"tunnel", "run"}
+	if label != "" {
+		runArgs = append(runArgs, "--label", label)
+	}
+	runArgs = append(runArgs, args...)
+
 	parts = append(parts,
-		"TUNNEL_BASE_URL="+shellquote.Join(baseURL)+
+		"cd "+shellquote.Join(cwd)+
+			" && TUNNEL_BASE_URL="+shellquote.Join(baseURL)+
 			" TUNNEL_AUTH_TOKEN="+shellquote.Join(authToken)+
-			" "+shellquote.Join(append([]string{"tunnel", "run"}, args...)...))
+			" TUNNEL_LAUNCH_REQUEST_ID="+shellquote.Join(launchRequestID)+
+			" "+shellquote.Join(runArgs...))
 	parts = append(parts, `if [ -n "$__tunnel_had_auth" ]; then export TUNNEL_AUTH_TOKEN="$__tunnel_prev_auth"; else unset TUNNEL_AUTH_TOKEN; fi`)
 	parts = append(parts, `if [ -n "$__tunnel_had_base" ]; then export TUNNEL_BASE_URL="$__tunnel_prev_base"; else unset TUNNEL_BASE_URL; fi`)
-	parts = append(parts, `unset __tunnel_had_auth __tunnel_prev_auth __tunnel_had_base __tunnel_prev_base`)
+	parts = append(parts, `if [ -n "$__tunnel_had_launch_request" ]; then export TUNNEL_LAUNCH_REQUEST_ID="$__tunnel_prev_launch_request"; else unset TUNNEL_LAUNCH_REQUEST_ID; fi`)
+	parts = append(parts, `unset __tunnel_had_auth __tunnel_prev_auth __tunnel_had_base __tunnel_prev_base __tunnel_had_launch_request __tunnel_prev_launch_request`)
 	parts = append(parts, `exec "${SHELL:-/bin/sh}" -l`)
 	return strings.Join(parts, "; ")
 }

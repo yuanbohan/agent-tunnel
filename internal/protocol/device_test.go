@@ -15,24 +15,24 @@ func TestDeviceLaunchFrames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Marshal returned error: %v", err)
 	}
-	if strings.Contains(string(registerPayload), `"accepted"`) {
-		t.Fatalf("register payload = %s, want accepted omitted", registerPayload)
+	if strings.Contains(string(registerPayload), `"status"`) {
+		t.Fatalf("register payload = %s, want status omitted", registerPayload)
 	}
 
-	request := DeviceLaunchRequestFrame("req-1", "codex --help")
-	if request.Type != "launch_request" || request.RequestID != "req-1" || request.Command != "codex --help" {
+	request := DeviceLaunchRequestFrame("req-1", "codex --help", "/repo", "api-fix")
+	if request.Type != "launch_request" || request.RequestID != "req-1" || request.Command != "codex --help" || request.CWD != "/repo" || request.Label != "api-fix" {
 		t.Fatalf("request = %#v, want launch_request frame", request)
 	}
 	requestPayload, err := json.Marshal(request)
 	if err != nil {
 		t.Fatalf("Marshal returned error: %v", err)
 	}
-	if strings.Contains(string(requestPayload), `"accepted"`) {
-		t.Fatalf("request payload = %s, want accepted omitted", requestPayload)
+	if !strings.Contains(string(requestPayload), `"cwd":"/repo"`) {
+		t.Fatalf("request payload = %s, want cwd", requestPayload)
 	}
 
-	result := DeviceLaunchResultFrame("req-1", false, "busy")
-	if result.Type != "launch_result" || result.RequestID != "req-1" || result.Accepted || result.Reason != "busy" {
+	result := DeviceLaunchResultFrame("req-1", "failed", "busy")
+	if result.Type != "launch_result" || result.RequestID != "req-1" || result.Status != "failed" || result.Reason != "busy" {
 		t.Fatalf("result = %#v, want launch_result frame", result)
 	}
 
@@ -40,7 +40,7 @@ func TestDeviceLaunchFrames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Marshal returned error: %v", err)
 	}
-	if !strings.Contains(string(payload), `"accepted":false`) {
-		t.Fatalf("payload = %s, want explicit accepted:false", payload)
+	if !strings.Contains(string(payload), `"status":"failed"`) {
+		t.Fatalf("payload = %s, want explicit status", payload)
 	}
 }

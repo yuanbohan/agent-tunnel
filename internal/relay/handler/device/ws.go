@@ -82,7 +82,7 @@ func Handle(registry *relaysession.Registry) gin.HandlerFunc {
 			}
 			switch frame.Type {
 			case "launch_result":
-				registry.ResolveLaunchIfOwner(register.Device.DeviceID, peer, frame.RequestID, frame.Accepted, frame.Reason)
+				registry.ResolveLaunchIfOwner(register.Device.DeviceID, peer, frame.RequestID, frame.Status, frame.Reason)
 			}
 		}
 	}

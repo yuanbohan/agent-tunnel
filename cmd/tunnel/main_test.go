@@ -19,15 +19,16 @@ import (
 )
 
 type fakeRelayConnector struct {
-	waitConnected bool
-	state         connector.State
-	runCalledCh   chan struct{}
-	runCalledOnce sync.Once
-	boundHub      *session.Hub
-	initialCols   int
-	initialRows   int
-	connectTTL    time.Duration
-	stateCh       chan connector.State
+	waitConnected   bool
+	state           connector.State
+	runCalledCh     chan struct{}
+	runCalledOnce   sync.Once
+	boundHub        *session.Hub
+	initialCols     int
+	initialRows     int
+	connectTTL      time.Duration
+	launchRequestID string
+	stateCh         chan connector.State
 }
 
 func (f *fakeRelayConnector) SetInitialSize(cols, rows int) {
@@ -37,6 +38,10 @@ func (f *fakeRelayConnector) SetInitialSize(cols, rows int) {
 
 func (f *fakeRelayConnector) SetInitialConnectTimeout(timeout time.Duration) {
 	f.connectTTL = timeout
+}
+
+func (f *fakeRelayConnector) SetLaunchRequestID(launchRequestID string) {
+	f.launchRequestID = launchRequestID
 }
 
 func (f *fakeRelayConnector) BindHub(hub *session.Hub) {
@@ -75,6 +80,7 @@ func setTestEnv(t *testing.T) {
 	for _, kv := range [][2]string{
 		{"TUNNEL_BASE_URL", "http://127.0.0.1:8586"},
 		{"TUNNEL_AUTH_TOKEN", "test-token"},
+		{"TUNNEL_LAUNCH_REQUEST_ID", ""},
 	} {
 		old, existed := os.LookupEnv(kv[0])
 		os.Setenv(kv[0], kv[1])
@@ -692,6 +698,63 @@ func TestRunWithArgsUsesUserProvidedCommandForPreview(t *testing.T) {
 	}
 	if gotInfo.CommandPreview != "/opt/bin/custom-agent --mode fast" {
 		t.Fatalf("CommandPreview = %q, want /opt/bin/custom-agent --mode fast", gotInfo.CommandPreview)
+	}
+}
+
+func TestRunWithArgsForwardsLaunchRequestIDFromEnv(t *testing.T) {
+	setTestEnv(t)
+
+	oldResolve := resolveLauncher
+	oldPrepare := prepareLocalTerminal
+	oldStartSession := startSession
+	oldStartLocalTerminal := startLocalTerminal
+	oldWaitForExit := waitForExit
+	oldNewConnector := newConnector
+	t.Cleanup(func() {
+		resolveLauncher = oldResolve
+		prepareLocalTerminal = oldPrepare
+		startSession = oldStartSession
+		startLocalTerminal = oldStartLocalTerminal
+		waitForExit = oldWaitForExit
+		newConnector = oldNewConnector
+	})
+
+	oldLaunchRequestID, hadLaunchRequestID := os.LookupEnv(tunnelLaunchRequestIDEnv)
+	os.Setenv(tunnelLaunchRequestIDEnv, "req-123")
+	t.Cleanup(func() {
+		if hadLaunchRequestID {
+			os.Setenv(tunnelLaunchRequestIDEnv, oldLaunchRequestID)
+		} else {
+			os.Unsetenv(tunnelLaunchRequestIDEnv)
+		}
+	})
+
+	resolveLauncher = func(name string, args []string) (launcher.Command, error) {
+		return launcher.Command{Name: name, Path: "/usr/bin/codex", Args: append([]string(nil), args...)}, nil
+	}
+	prepareLocalTerminal = func() (*session.LocalTerminal, error) {
+		return &session.LocalTerminal{}, nil
+	}
+
+	fakeConnector := &fakeRelayConnector{waitConnected: true, state: connector.StateConnected}
+	newConnector = func(url, token string, info protocol.SessionInfo) relayConnector {
+		return fakeConnector
+	}
+
+	wantErr := errors.New("start session failed")
+	startSession = func(_ context.Context, path string, args []string, sinks map[string]session.OutputSink) (*session.Running, error) {
+		return nil, wantErr
+	}
+	waitForExit = func(context.Context, <-chan struct{}, <-chan error) error {
+		return nil
+	}
+
+	err := runWithArgs([]string{"tunnel", "run", "codex"}, io.Discard, io.Discard)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("runWithArgs error = %v, want %v", err, wantErr)
+	}
+	if fakeConnector.launchRequestID != "req-123" {
+		t.Fatalf("launchRequestID = %q, want req-123", fakeConnector.launchRequestID)
 	}
 }
 
