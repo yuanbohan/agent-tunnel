@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLaunchWithRecipeExecTemplatePassesShellCommandWithoutExtraFlag(t *testing.T) {
@@ -36,9 +37,17 @@ func TestLaunchWithRecipeExecTemplatePassesShellCommandWithoutExtraFlag(t *testi
 		t.Fatalf("launchWithRecipe returned error: %v", err)
 	}
 
-	payload, err := os.ReadFile(outputPath)
-	if err != nil {
-		t.Fatalf("ReadFile returned error: %v", err)
+	var payload []byte
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		payload, err = os.ReadFile(outputPath)
+		if err == nil && len(payload) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("ReadFile returned error: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	got := strings.Split(strings.TrimSpace(string(payload)), "\n")
 	want := []string{"sh", "-lc", "echo hello"}

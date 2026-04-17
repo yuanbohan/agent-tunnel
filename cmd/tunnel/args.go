@@ -134,14 +134,16 @@ Commands:
 
 Flags:
   -h, --help       Show this help message and exit
-      --base-url   Relay base URL (fallback: %s, default: %s)
+
+Notes:
+  Use "tunnel daemon start --help" for start-specific flags, including --base-url.
 
 Examples:
   tunnel daemon start
   tunnel daemon status
   tunnel daemon stop
   tunnel daemon doctor
-`, tunnelBaseURLEnv, defaultTunnelBaseURL)
+`)
 }
 
 func daemonStartHelpText() string {

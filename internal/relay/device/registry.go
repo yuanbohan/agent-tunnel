@@ -109,6 +109,10 @@ func (r *Registry) ActivatePending(info protocol.DeviceInfo, owner DeviceOwner, 
 	}
 	delete(r.pending, peer)
 	old := r.devices[info.DeviceID]
+	if old != nil && old.owner.UserID != owner.UserID {
+		r.mu.Unlock()
+		return false
+	}
 	if old != nil && old.peer != peer {
 		deactivateDevicePeer(old.peer)
 		r.completeDeviceRequestsLocked(info.DeviceID, LaunchResult{Accepted: false, Reason: "device_offline"})

@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -244,7 +245,19 @@ func resolveDaemonAuth() (resolvedAuth, error) {
 	return resolveRuntimeAuth(newAuthStore(), osEnv)
 }
 
+func ensureDaemonPlatformSupported() error {
+	switch runtime.GOOS {
+	case "darwin", "linux":
+		return nil
+	default:
+		return fmt.Errorf("daemon unsupported on platform: %s", runtime.GOOS)
+	}
+}
+
 func runDaemonStart(ctx context.Context, rawBaseURL string, stdout, stderr io.Writer) error {
+	if err := ensureDaemonPlatformSupported(); err != nil {
+		return err
+	}
 	baseURL, err := resolveCLIBaseURL(rawBaseURL)
 	if err != nil {
 		return err
@@ -283,6 +296,9 @@ func runDaemonStart(ctx context.Context, rawBaseURL string, stdout, stderr io.Wr
 }
 
 func runDaemonStatus(ctx context.Context, stdout, stderr io.Writer) error {
+	if err := ensureDaemonPlatformSupported(); err != nil {
+		return err
+	}
 	paths, err := resolveDaemonPaths()
 	if err != nil {
 		return err
@@ -306,6 +322,9 @@ func runDaemonStatus(ctx context.Context, stdout, stderr io.Writer) error {
 }
 
 func runDaemonStop(ctx context.Context, stdout, stderr io.Writer) error {
+	if err := ensureDaemonPlatformSupported(); err != nil {
+		return err
+	}
 	paths, err := resolveDaemonPaths()
 	if err != nil {
 		return err
@@ -318,6 +337,9 @@ func runDaemonStop(ctx context.Context, stdout, stderr io.Writer) error {
 }
 
 func runDaemonDoctor(ctx context.Context, stdout, stderr io.Writer) error {
+	if err := ensureDaemonPlatformSupported(); err != nil {
+		return err
+	}
 	paths, err := resolveDaemonPaths()
 	if err != nil {
 		return err
@@ -336,6 +358,9 @@ func runDaemonDoctor(ctx context.Context, stdout, stderr io.Writer) error {
 }
 
 func runDaemonInternal(ctx context.Context, rawBaseURL string, stdout, stderr io.Writer) error {
+	if err := ensureDaemonPlatformSupported(); err != nil {
+		return err
+	}
 	baseURL, err := resolveCLIBaseURL(rawBaseURL)
 	if err != nil {
 		return err
@@ -351,11 +376,16 @@ func runDaemonInternal(ctx context.Context, rawBaseURL string, stdout, stderr io
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	var readyFile *os.File
 	var readyWriter io.Writer
 	if rawFD := strings.TrimSpace(os.Getenv("TUNNEL_DAEMON_READY_FD")); rawFD != "" {
 		if fd, parseErr := strconv.Atoi(rawFD); parseErr == nil {
-			readyWriter = os.NewFile(uintptr(fd), "daemon-ready")
+			readyFile = os.NewFile(uintptr(fd), "daemon-ready")
+			readyWriter = readyFile
 		}
+	}
+	if readyFile != nil {
+		defer readyFile.Close()
 	}
 	if err := runDaemonRuntime(ctx, daemon.RuntimeOptions{
 		Paths:     paths,

@@ -150,12 +150,6 @@ func Doctor(ctx context.Context, paths Paths) (DoctorReport, error) {
 
 	status, _ := LoadStatus(paths)
 	report := BuildDoctorReport(ctx, paths, status)
-	if err != nil {
-		return report, nil
-	}
-	if response.Error != "" {
-		return report, nil
-	}
 	return report, nil
 }
 

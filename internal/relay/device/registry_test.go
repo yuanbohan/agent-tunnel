@@ -174,6 +174,23 @@ func TestRegistryActivatePendingRequiresLivePendingPeer(t *testing.T) {
 	}
 }
 
+func TestRegistryActivatePendingRejectsCrossUserDeviceIDReuse(t *testing.T) {
+	registry := NewRegistry()
+	first := &fakeDevicePeer{}
+	second := &fakeDevicePeer{}
+
+	registry.RegisterOwned(protocol.DeviceInfo{DeviceID: "dev-1"}, DeviceOwner{UserID: 1}, first)
+	owner := DeviceOwner{UserID: 2, AgentTokenID: "agt-2"}
+	registry.RegisterPending(owner, second)
+
+	if registry.ActivatePending(protocol.DeviceInfo{DeviceID: "dev-1"}, owner, second) {
+		t.Fatal("ActivatePending returned true for cross-user device_id reuse")
+	}
+	if first.closeCount() != 0 {
+		t.Fatalf("first close count = %d, want 0", first.closeCount())
+	}
+}
+
 type errDevicePeer struct{ err error }
 
 func (p *errDevicePeer) SendJSON(any) error { return p.err }

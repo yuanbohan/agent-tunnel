@@ -63,7 +63,7 @@ func TestDoctorReturnsHealthyExitCodeWhenChecksAreOK(t *testing.T) {
 	})
 
 	loadRecipeFn = func(Paths) (LauncherRecipe, error) {
-		return LauncherRecipe{Strategy: strategyTerminalApp}, nil
+		return LauncherRecipe{Strategy: "terminal_app"}, nil
 	}
 	loadConfigFn = func(Paths) (Config, error) {
 		return DefaultConfig(), nil

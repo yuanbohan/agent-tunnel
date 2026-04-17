@@ -2,9 +2,12 @@ package daemon
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 const (
@@ -57,10 +60,16 @@ end tell
 }
 
 func runAppleScript(script string) error {
-	cmd := exec.Command("osascript", "-e", script)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "osascript", "-e", script)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("osascript timed out after 10s: %w", err)
+		}
 		if trimmed := strings.TrimSpace(stderr.String()); trimmed != "" {
 			return fmt.Errorf("%w: %s", err, trimmed)
 		}
