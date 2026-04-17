@@ -44,7 +44,6 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 - Remote recovery in this revision is fresh snapshot recovery of the current terminal state, including bounded agent-local normal-buffer scrollback when available. There is no transcript replay API and no global live-output websocket contract.
 - The relay stores live session metadata, owner connection state, and active attach routing state. It must not be described as retaining transcript history or terminal state.
 - The relay only keeps transient routing state for currently connected `/device/ws` daemons and the in-flight correlation needed to turn one launch request into one `session_ready` result or timeout. Device health, launcher details, and last failure remain daemon-local.
-- During rollout, the relay still accepts legacy daemon `launch_result` frames that use boolean `accepted: true|false` and normalizes them to the current status-based contract.
 - The agent-side mirror may retain bounded in-memory normal-buffer scrollback for attach snapshots. That is agent-local state, not relay-owned or durable history.
 - The local terminal remains the most complete source of truth for session output in the current product revision.
 - A successful attach yields `attached`, snapshot bytes, `snapshot_done`, then live PTY bytes on the same websocket.

@@ -14,7 +14,6 @@ type DeviceFrame struct {
 	Command   string      `json:"command,omitempty"`
 	CWD       string      `json:"cwd,omitempty"`
 	Label     string      `json:"label,omitempty"`
-	Accepted  *bool       `json:"accepted,omitempty"`
 	Status    string      `json:"status,omitempty"`
 	Reason    string      `json:"reason,omitempty"`
 }

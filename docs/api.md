@@ -236,7 +236,6 @@ Notes:
 
 - the relay may hold this request open for roughly 20-30 seconds while waiting for the launched session to register
 - `status: "session_ready"` is the only success state in this contract
-- during rollout, the relay still accepts older daemon `launch_result` frames that use boolean `accepted: true|false` and normalizes them to the same status-based flow internally
 - `session_id` from the launch response can be used immediately with the normal session discovery and attach flow
 - the launch flow still does not auto-attach to the new session
 
