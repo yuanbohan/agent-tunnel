@@ -67,21 +67,21 @@ func run() error {
 }
 
 func runWithArgs(args []string, stdout, stderr io.Writer) error {
-	parsed, err := parseRunArgs(args)
-	if err != nil {
+	cmd := newRootCmd(runTunnelSession)
+	cmd.SetOut(stdout)
+	cmd.SetErr(stderr)
+	cmd.SetArgs(args[1:])
+	if err := cmd.Execute(); err != nil {
 		var usageErr usageError
 		if errors.As(err, &usageErr) {
 			_, _ = io.WriteString(stderr, tunnelHelpText())
 		}
 		return err
 	}
-	if parsed.ShowHelp {
-		_, _ = io.WriteString(stdout, tunnelHelpText())
-		return nil
-	}
-	if parsed.ShowVersion {
-		return writeVersion(stdout)
-	}
+	return nil
+}
+
+func runTunnelSession(ctx context.Context, parsed runArgs, stdout, stderr io.Writer) error {
 	relayURL := relayWebSocketBaseURL(parsed.BaseURL)
 
 	command, err := resolveLauncher(parsed.Launcher, parsed.LauncherArgs)
@@ -94,7 +94,7 @@ func runWithArgs(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	commandPreview := strings.TrimSpace(strings.Join(append([]string{command.Name}, command.Args...), " "))

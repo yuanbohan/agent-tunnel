@@ -12,6 +12,7 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/spf13/cobra"
 	relayconfig "yuanbohan/tunnel/internal/config"
 	"yuanbohan/tunnel/internal/logx"
 	"yuanbohan/tunnel/internal/relay/bootstrap"
@@ -59,60 +60,268 @@ func runWithHandlers(args []string, env runtimeEnv, handlers commandHandlers) er
 	if env.getenv == nil {
 		env.getenv = func(string) string { return "" }
 	}
-	if len(args) == 0 {
-		return usagef("%s", rootUsage())
+	stdout := env.stdout
+	if stdout == nil {
+		stdout = io.Discard
 	}
+	stderr := env.stderr
+	if stderr == nil {
+		stderr = io.Discard
+	}
+	root := newRootCmd(env, handlers)
+	root.SetOut(stdout)
+	root.SetErr(stderr)
+	root.SetArgs(args)
+	err := root.Execute()
+	if err != nil && strings.Contains(err.Error(), "unknown command") {
+		return usagef("%v", err)
+	}
+	return err
+}
 
-	switch args[0] {
-	case "version":
-		if len(args) != 1 {
-			return usagef("%s", rootUsage())
-		}
-		return writeVersion(env.stdout)
-	case "serve":
-		cfg, err := loadServeConfig(env.getenv, args[1:])
-		if err != nil {
-			return err
-		}
-		return handlers.serve(context.Background(), cfg)
-	case "invite":
-		if len(args) < 2 {
-			return usagef("%s", inviteUsage())
-		}
-		switch args[1] {
-		case "create":
-			cfg, err := loadInviteCreateConfig(env.getenv, args[2:])
-			if err != nil {
-				return err
-			}
-			return handlers.inviteCreate(context.Background(), cfg)
-		case "disable":
-			cfg, err := loadInviteDisableConfig(env.getenv, args[2:])
-			if err != nil {
-				return err
-			}
-			return handlers.inviteDisable(context.Background(), cfg)
-		case "list":
-			cfg, err := loadInviteListConfig(env.getenv, args[2:])
-			if err != nil {
-				return err
-			}
-			return handlers.inviteList(context.Background(), cfg)
-		default:
-			return usagef("%s", inviteUsage())
-		}
-	case "user":
-		if len(args) < 2 || args[1] != "delete" {
-			return usagef("%s", userUsage())
-		}
-		cfg, err := loadUserDeleteConfig(env.getenv, args[2:])
-		if err != nil {
-			return err
-		}
-		return handlers.userDelete(context.Background(), cfg)
-	default:
-		return usagef("%s", rootUsage())
+func newRootCmd(env runtimeEnv, handlers commandHandlers) *cobra.Command {
+	root := &cobra.Command{
+		Use:   "relay",
+		Short: "Tunnel relay server and operator CLI",
+		Long: `Run the relay server and local-only operator commands.
+
+The public server entrypoint is "relay serve". It requires:
+  - RELAY_DATABASE_URL
+  - RELAY_APP_SECRET
+  - RELAY_OPERATOR_TOKEN
+
+The operator commands under "relay invite" and "relay user" are intentionally
+local-only. Run them on the relay host after "relay serve" is already running.
+They use RELAY_OPERATOR_TOKEN and connect to RELAY_LISTEN_ADDR (default
+127.0.0.1:8586).`,
+		Example: `  relay serve --listen-addr 127.0.0.1:8586
+  relay invite create --count 3 --expires-in 7d
+  relay invite disable --code AB2C3D
+  relay user delete --username alice`,
+		CompletionOptions: cobra.CompletionOptions{
+			DisableDefaultCmd: true,
+		},
+		SilenceUsage:  true,
+		SilenceErrors: true,
 	}
+	wrapFlagErrors(root)
+	root.AddCommand(newVersionCmd())
+	root.AddCommand(newServeCmd(env, handlers))
+	root.AddCommand(newInviteCmd(env, handlers))
+	root.AddCommand(newUserCmd(env, handlers))
+	return root
+}
+
+func wrapFlagErrors(cmd *cobra.Command) {
+	cmd.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
+		return usagef("%v", err)
+	})
+}
+
+func markFlagRequired(cmd *cobra.Command, name string) {
+	if err := cmd.MarkFlagRequired(name); err != nil {
+		panic(err)
+	}
+}
+
+func newVersionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:           "version",
+		Short:         "Print the relay version",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		Args:          cobra.NoArgs,
+		RunE: func(c *cobra.Command, _ []string) error {
+			return writeVersion(c.OutOrStdout())
+		},
+	}
+}
+
+func newServeCmd(env runtimeEnv, handlers commandHandlers) *cobra.Command {
+	var cfg serveConfig
+	cmd := &cobra.Command{
+		Use:   "serve",
+		Short: "Start the relay HTTP and WebSocket service",
+		Long: `Start the relay API and WebSocket service.
+
+Required environment variables:
+  - RELAY_DATABASE_URL
+  - RELAY_APP_SECRET
+  - RELAY_OPERATOR_TOKEN
+
+Optional environment variables:
+  - RELAY_LISTEN_ADDR (default 127.0.0.1:8586)
+  - RELAY_LOG_FILE`,
+		Example: `  relay serve
+  relay serve --listen-addr 127.0.0.1:8586
+  RELAY_LOG_FILE=/var/log/relay.log relay serve`,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		Args:          cobra.NoArgs,
+		RunE: func(c *cobra.Command, _ []string) error {
+			final, err := finalizeServeConfig(cfg, env.getenv)
+			if err != nil {
+				return err
+			}
+			return handlers.serve(c.Context(), final)
+		},
+	}
+	wrapFlagErrors(cmd)
+	applyServeFlags(cmd.Flags(), &cfg)
+	return cmd
+}
+
+func newInviteCmd(env runtimeEnv, handlers commandHandlers) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "invite",
+		Short: "Manage invite codes through the running relay",
+		Long: `Manage invite codes through the relay's local-only operator API.
+
+These commands must run on the relay host after "relay serve" is already
+running. They require RELAY_OPERATOR_TOKEN and use RELAY_LISTEN_ADDR
+(default 127.0.0.1:8586).`,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+	}
+	wrapFlagErrors(cmd)
+	cmd.AddCommand(newInviteCreateCmd(env, handlers))
+	cmd.AddCommand(newInviteDisableCmd(env, handlers))
+	cmd.AddCommand(newInviteListCmd(env, handlers))
+	return cmd
+}
+
+func newInviteCreateCmd(env runtimeEnv, handlers commandHandlers) *cobra.Command {
+	var flags inviteCreateFlags
+	cmd := &cobra.Command{
+		Use:   "create",
+		Short: "Create one or more invite codes",
+		Long: `Create invite codes through the relay's local-only operator API.
+
+Requires:
+  - RELAY_OPERATOR_TOKEN
+
+Uses RELAY_LISTEN_ADDR when set, otherwise defaults to 127.0.0.1:8586.`,
+		Example: `  relay invite create
+  relay invite create --count 3 --expires-in 7d`,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		Args:          cobra.NoArgs,
+		RunE: func(c *cobra.Command, _ []string) error {
+			cfg, err := finalizeInviteCreateConfig(flags, env.getenv)
+			if err != nil {
+				return err
+			}
+			return handlers.inviteCreate(c.Context(), cfg)
+		},
+	}
+	wrapFlagErrors(cmd)
+	applyInviteCreateFlags(cmd.Flags(), &flags)
+	return cmd
+}
+
+func newInviteDisableCmd(env runtimeEnv, handlers commandHandlers) *cobra.Command {
+	var flags inviteDisableFlags
+	cmd := &cobra.Command{
+		Use:   "disable",
+		Short: "Disable an existing invite code",
+		Long: `Disable an invite code through the relay's local-only operator API.
+
+Requires:
+  - RELAY_OPERATOR_TOKEN
+  - --code
+
+Uses RELAY_LISTEN_ADDR when set, otherwise defaults to 127.0.0.1:8586.`,
+		Example:       `  relay invite disable --code AB2C3D`,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		Args:          cobra.NoArgs,
+		RunE: func(c *cobra.Command, _ []string) error {
+			cfg, err := finalizeInviteDisableConfig(flags, env.getenv)
+			if err != nil {
+				return err
+			}
+			return handlers.inviteDisable(c.Context(), cfg)
+		},
+	}
+	wrapFlagErrors(cmd)
+	applyInviteDisableFlags(cmd.Flags(), &flags)
+	markFlagRequired(cmd, "code")
+	return cmd
+}
+
+func newInviteListCmd(env runtimeEnv, handlers commandHandlers) *cobra.Command {
+	var flags inviteListFlags
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List invite codes and their status",
+		Long: `List invite codes through the relay's local-only operator API.
+
+Requires:
+  - RELAY_OPERATOR_TOKEN
+
+Uses RELAY_LISTEN_ADDR when set, otherwise defaults to 127.0.0.1:8586.`,
+		Example:       `  relay invite list`,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		Args:          cobra.NoArgs,
+		RunE: func(c *cobra.Command, _ []string) error {
+			cfg, err := finalizeInviteListConfig(flags, env.getenv)
+			if err != nil {
+				return err
+			}
+			return handlers.inviteList(c.Context(), cfg)
+		},
+	}
+	wrapFlagErrors(cmd)
+	applyInviteListFlags(cmd.Flags(), &flags)
+	return cmd
+}
+
+func newUserCmd(env runtimeEnv, handlers commandHandlers) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "user",
+		Short: "Manage user accounts through the running relay",
+		Long: `Manage user accounts through the relay's local-only operator API.
+
+These commands must run on the relay host after "relay serve" is already
+running. They require RELAY_OPERATOR_TOKEN and use RELAY_LISTEN_ADDR
+(default 127.0.0.1:8586).`,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+	}
+	wrapFlagErrors(cmd)
+	cmd.AddCommand(newUserDeleteCmd(env, handlers))
+	return cmd
+}
+
+func newUserDeleteCmd(env runtimeEnv, handlers commandHandlers) *cobra.Command {
+	var flags userDeleteFlags
+	cmd := &cobra.Command{
+		Use:   "delete",
+		Short: "Delete a user account",
+		Long: `Delete a user account through the relay's local-only operator API.
+
+Requires:
+  - RELAY_OPERATOR_TOKEN
+  - --username
+
+Uses RELAY_LISTEN_ADDR when set, otherwise defaults to 127.0.0.1:8586.`,
+		Example:       `  relay user delete --username alice`,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		Args:          cobra.NoArgs,
+		RunE: func(c *cobra.Command, _ []string) error {
+			cfg, err := finalizeUserDeleteConfig(flags, env.getenv)
+			if err != nil {
+				return err
+			}
+			return handlers.userDelete(c.Context(), cfg)
+		},
+	}
+	wrapFlagErrors(cmd)
+	applyUserDeleteFlags(cmd.Flags(), &flags)
+	markFlagRequired(cmd, "username")
+	return cmd
 }
 
 func newCommandHandlers(env runtimeEnv) commandHandlers {
@@ -170,29 +379,4 @@ func newCommandHandlers(env runtimeEnv) commandHandlers {
 			return runUserDelete(ctx, newHTTPOperatorClient(cfg.RelayAddr, cfg.OperatorToken, env.httpClient), cfg, env.stdout)
 		},
 	}
-}
-
-func rootUsage() string {
-	return strings.TrimSpace(`
-Usage:
-  relay version          Print the relay version
-  relay serve            Start the relay HTTP and WebSocket service
-  relay invite create    Create one or more invite codes through the running relay
-  relay invite disable   Disable an unconsumed invite code through the running relay
-  relay invite list      List invite codes and show whether they can still be used
-  relay user delete      Delete a user account through the running relay
-`)
-}
-
-func inviteUsage() string {
-	return strings.TrimSpace(`
-Usage:
-  relay invite create    Create invite codes with whole-day expiry
-  relay invite disable   Disable an existing invite code
-  relay invite list      List invite codes and show whether they can still be used
-`)
-}
-
-func userUsage() string {
-	return "Usage:\n  relay user delete      Delete a user account"
 }

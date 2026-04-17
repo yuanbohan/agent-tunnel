@@ -89,16 +89,19 @@ func setTestEnv(t *testing.T) {
 func assertHelpText(t *testing.T, text string) {
 	t.Helper()
 	for _, fragment := range []string{
-		"Usage:\n  tunnel [--label label] [--base-url url] <command> [args...]",
+		"Usage:\n  tunnel [-l label] [--base-url url] <command> [args...]",
+		"Arguments:\n  <command>  Launcher command resolved from PATH.",
 		"-h, --help",
 		"--version",
+		"-v, --verbose",
+		"-l, --label",
 		"--label",
 		"--base-url",
 		"TUNNEL_BASE_URL",
 		"TUNNEL_AUTH_TOKEN",
 		defaultTunnelBaseURL,
 		"tunnel claude",
-		"tunnel --label api-fix codex --profile prod",
+		"tunnel -l api-fix codex --profile prod",
 	} {
 		if !strings.Contains(text, fragment) {
 			t.Fatalf("help text = %q, want fragment %q", text, fragment)

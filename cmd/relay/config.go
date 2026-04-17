@@ -1,11 +1,12 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"io"
 	"strconv"
 	"strings"
+
+	"github.com/spf13/pflag"
 
 	relayconfig "yuanbohan/tunnel/internal/config"
 )
@@ -41,6 +42,21 @@ type userDeleteConfig struct {
 	Username      string
 }
 
+type inviteCreateFlags struct {
+	Count     int
+	ExpiresIn string
+}
+
+type inviteDisableFlags struct {
+	Code string
+}
+
+type inviteListFlags struct{}
+
+type userDeleteFlags struct {
+	Username string
+}
+
 type usageError struct {
 	msg string
 }
@@ -53,20 +69,18 @@ func usagef(format string, args ...any) error {
 	return usageError{msg: fmt.Sprintf(format, args...)}
 }
 
-func loadServeConfig(getenv func(string) string, args []string) (serveConfig, error) {
-	cfg := serveConfig{
-		ListenAddr: envOrDefault(getenv, "RELAY_LISTEN_ADDR", defaultRelayListenAddr),
-		LogFile:    envValue(getenv, "RELAY_LOG_FILE"),
-	}
+// applyServeFlags registers serve-subcommand flags on fs.
+func applyServeFlags(fs *pflag.FlagSet, cfg *serveConfig) {
+	fs.StringVarP(&cfg.ListenAddr, "listen-addr", "a", "", "relay listen address (env: RELAY_LISTEN_ADDR)")
+	fs.StringVarP(&cfg.LogFile, "log-file", "L", "", "append structured logs to this file (env: RELAY_LOG_FILE, default: stderr)")
+}
 
-	fs := newFlagSet("serve")
-	fs.StringVar(&cfg.ListenAddr, "listen-addr", cfg.ListenAddr, "relay listen address")
-	fs.StringVar(&cfg.LogFile, "log-file", cfg.LogFile, "append structured logs to this file (default: stderr)")
-	if err := fs.Parse(args); err != nil {
-		return serveConfig{}, usagef("%v", err)
+func finalizeServeConfig(cfg serveConfig, getenv func(string) string) (serveConfig, error) {
+	if cfg.ListenAddr == "" {
+		cfg.ListenAddr = envOrDefault(getenv, "RELAY_LISTEN_ADDR", defaultRelayListenAddr)
 	}
-	if len(fs.Args()) != 0 {
-		return serveConfig{}, usagef("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	if cfg.LogFile == "" {
+		cfg.LogFile = envValue(getenv, "RELAY_LOG_FILE")
 	}
 	if err := relayconfig.SetupRelay(getenv, cfg.ListenAddr); err != nil {
 		return serveConfig{}, usagef("%v", err)
@@ -74,22 +88,30 @@ func loadServeConfig(getenv func(string) string, args []string) (serveConfig, er
 	return serveConfig{ListenAddr: relayconfig.RelayListenAddr(), LogFile: cfg.LogFile}, nil
 }
 
-func loadInviteCreateConfig(getenv func(string) string, args []string) (inviteCreateConfig, error) {
+func loadServeConfig(getenv func(string) string, args []string) (serveConfig, error) {
+	var cfg serveConfig
+	fs := newFlagSet("serve")
+	applyServeFlags(fs, &cfg)
+	if err := fs.Parse(args); err != nil {
+		return serveConfig{}, usagef("%v", err)
+	}
+	if len(fs.Args()) != 0 {
+		return serveConfig{}, usagef("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	return finalizeServeConfig(cfg, getenv)
+}
+
+// applyInviteCreateFlags registers invite-create flags on fs.
+func applyInviteCreateFlags(fs *pflag.FlagSet, flags *inviteCreateFlags) {
+	fs.IntVarP(&flags.Count, "count", "n", 1, "number of invite codes to create")
+	fs.StringVarP(&flags.ExpiresIn, "expires-in", "e", "7d", "invite lifetime in whole days, for example 7d")
+}
+
+func finalizeInviteCreateConfig(flags inviteCreateFlags, getenv func(string) string) (inviteCreateConfig, error) {
 	cfg := inviteCreateConfig{
 		RelayAddr:     envOrDefault(getenv, "RELAY_LISTEN_ADDR", defaultRelayListenAddr),
 		OperatorToken: envValue(getenv, "RELAY_OPERATOR_TOKEN"),
-		Count:         1,
-	}
-	expiresIn := "7d"
-
-	fs := newFlagSet("invite create")
-	fs.IntVar(&cfg.Count, "count", cfg.Count, "number of invite codes to create")
-	fs.StringVar(&expiresIn, "expires-in", expiresIn, "invite lifetime in whole days, for example 7d")
-	if err := fs.Parse(args); err != nil {
-		return inviteCreateConfig{}, usagef("%v", err)
-	}
-	if len(fs.Args()) != 0 {
-		return inviteCreateConfig{}, usagef("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+		Count:         flags.Count,
 	}
 	if cfg.OperatorToken == "" {
 		return inviteCreateConfig{}, usagef("missing RELAY_OPERATOR_TOKEN")
@@ -97,7 +119,7 @@ func loadInviteCreateConfig(getenv func(string) string, args []string) (inviteCr
 	if cfg.Count <= 0 {
 		return inviteCreateConfig{}, usagef("invalid --count: must be greater than 0")
 	}
-	days, err := parseInviteExpiryDays(expiresIn)
+	days, err := parseInviteExpiryDays(flags.ExpiresIn)
 	if err != nil {
 		return inviteCreateConfig{}, err
 	}
@@ -105,81 +127,115 @@ func loadInviteCreateConfig(getenv func(string) string, args []string) (inviteCr
 	return cfg, nil
 }
 
-func loadInviteDisableConfig(getenv func(string) string, args []string) (inviteDisableConfig, error) {
+func loadInviteCreateConfig(getenv func(string) string, args []string) (inviteCreateConfig, error) {
+	var flags inviteCreateFlags
+	fs := newFlagSet("invite create")
+	applyInviteCreateFlags(fs, &flags)
+	if err := fs.Parse(args); err != nil {
+		return inviteCreateConfig{}, usagef("%v", err)
+	}
+	if len(fs.Args()) != 0 {
+		return inviteCreateConfig{}, usagef("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	return finalizeInviteCreateConfig(flags, getenv)
+}
+
+// applyInviteDisableFlags registers invite-disable flags on fs.
+func applyInviteDisableFlags(fs *pflag.FlagSet, flags *inviteDisableFlags) {
+	fs.StringVarP(&flags.Code, "code", "c", "", "invite code to disable (required)")
+}
+
+func finalizeInviteDisableConfig(flags inviteDisableFlags, getenv func(string) string) (inviteDisableConfig, error) {
 	cfg := inviteDisableConfig{
 		RelayAddr:     envOrDefault(getenv, "RELAY_LISTEN_ADDR", defaultRelayListenAddr),
 		OperatorToken: envValue(getenv, "RELAY_OPERATOR_TOKEN"),
+		Code:          flags.Code,
 	}
+	switch {
+	case cfg.OperatorToken == "":
+		return inviteDisableConfig{}, usagef("missing RELAY_OPERATOR_TOKEN")
+	case strings.TrimSpace(cfg.Code) == "":
+		return inviteDisableConfig{}, usagef(`required flag(s) "code" not set`)
+	}
+	return cfg, nil
+}
 
+func loadInviteDisableConfig(getenv func(string) string, args []string) (inviteDisableConfig, error) {
+	var flags inviteDisableFlags
 	fs := newFlagSet("invite disable")
-	fs.StringVar(&cfg.Code, "code", "", "invite code to disable")
+	applyInviteDisableFlags(fs, &flags)
 	if err := fs.Parse(args); err != nil {
 		return inviteDisableConfig{}, usagef("%v", err)
 	}
 	if len(fs.Args()) != 0 {
 		return inviteDisableConfig{}, usagef("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
-	switch {
-	case cfg.OperatorToken == "":
-		return inviteDisableConfig{}, usagef("missing RELAY_OPERATOR_TOKEN")
-	case strings.TrimSpace(cfg.Code) == "":
-		return inviteDisableConfig{}, usagef("missing --code")
-	default:
-		return cfg, nil
-	}
+	return finalizeInviteDisableConfig(flags, getenv)
 }
 
-func loadInviteListConfig(getenv func(string) string, args []string) (inviteListConfig, error) {
+// applyInviteListFlags registers invite-list flags on fs.
+func applyInviteListFlags(fs *pflag.FlagSet, flags *inviteListFlags) {}
+
+func finalizeInviteListConfig(flags inviteListFlags, getenv func(string) string) (inviteListConfig, error) {
 	cfg := inviteListConfig{
 		RelayAddr:     envOrDefault(getenv, "RELAY_LISTEN_ADDR", defaultRelayListenAddr),
 		OperatorToken: envValue(getenv, "RELAY_OPERATOR_TOKEN"),
 	}
+	if cfg.OperatorToken == "" {
+		return inviteListConfig{}, usagef("missing RELAY_OPERATOR_TOKEN")
+	}
+	return cfg, nil
+}
 
+func loadInviteListConfig(getenv func(string) string, args []string) (inviteListConfig, error) {
+	var flags inviteListFlags
 	fs := newFlagSet("invite list")
+	applyInviteListFlags(fs, &flags)
 	if err := fs.Parse(args); err != nil {
 		return inviteListConfig{}, usagef("%v", err)
 	}
 	if len(fs.Args()) != 0 {
 		return inviteListConfig{}, usagef("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
-	switch {
-	case cfg.OperatorToken == "":
-		return inviteListConfig{}, usagef("missing RELAY_OPERATOR_TOKEN")
-	default:
-		return cfg, nil
-	}
+	return finalizeInviteListConfig(flags, getenv)
 }
 
-func loadUserDeleteConfig(getenv func(string) string, args []string) (userDeleteConfig, error) {
+// applyUserDeleteFlags registers user-delete flags on fs.
+func applyUserDeleteFlags(fs *pflag.FlagSet, flags *userDeleteFlags) {
+	fs.StringVarP(&flags.Username, "username", "u", "", "username to delete (required)")
+}
+
+func finalizeUserDeleteConfig(flags userDeleteFlags, getenv func(string) string) (userDeleteConfig, error) {
 	cfg := userDeleteConfig{
 		RelayAddr:     envOrDefault(getenv, "RELAY_LISTEN_ADDR", defaultRelayListenAddr),
 		OperatorToken: envValue(getenv, "RELAY_OPERATOR_TOKEN"),
+		Username:      flags.Username,
 	}
+	switch {
+	case cfg.OperatorToken == "":
+		return userDeleteConfig{}, usagef("missing RELAY_OPERATOR_TOKEN")
+	case strings.TrimSpace(cfg.Username) == "":
+		return userDeleteConfig{}, usagef(`required flag(s) "username" not set`)
+	}
+	return cfg, nil
+}
 
+func loadUserDeleteConfig(getenv func(string) string, args []string) (userDeleteConfig, error) {
+	var flags userDeleteFlags
 	fs := newFlagSet("user delete")
-	fs.StringVar(&cfg.Username, "username", "", "username to delete")
+	applyUserDeleteFlags(fs, &flags)
 	if err := fs.Parse(args); err != nil {
 		return userDeleteConfig{}, usagef("%v", err)
 	}
 	if len(fs.Args()) != 0 {
 		return userDeleteConfig{}, usagef("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
-	switch {
-	case cfg.OperatorToken == "":
-		return userDeleteConfig{}, usagef("missing RELAY_OPERATOR_TOKEN")
-	case strings.TrimSpace(cfg.Username) == "":
-		return userDeleteConfig{}, usagef("missing --username")
-	default:
-		return cfg, nil
-	}
+	return finalizeUserDeleteConfig(flags, getenv)
 }
 
 func parseInviteExpiryDays(raw string) (int, error) {
 	trimmed := strings.ToLower(strings.TrimSpace(raw))
-	if trimmed == "" {
-		return 0, usagef("invalid --expires-in %q: use whole days like 1d or 7d", raw)
-	}
-	if !strings.HasSuffix(trimmed, "d") {
+	if trimmed == "" || !strings.HasSuffix(trimmed, "d") {
 		return 0, usagef("invalid --expires-in %q: use whole days like 1d or 7d", raw)
 	}
 	days, err := strconv.Atoi(strings.TrimSuffix(trimmed, "d"))
@@ -203,8 +259,8 @@ func envValue(getenv func(string) string, key string) string {
 	return strings.TrimSpace(getenv(key))
 }
 
-func newFlagSet(name string) *flag.FlagSet {
-	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+func newFlagSet(name string) *pflag.FlagSet {
+	fs := pflag.NewFlagSet(name, pflag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	return fs
 }

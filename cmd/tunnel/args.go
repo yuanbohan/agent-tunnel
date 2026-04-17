@@ -1,12 +1,8 @@
 package main
 
 import (
-	"errors"
-	"flag"
 	"fmt"
-	"io"
 	"net/url"
-	"os"
 	"strings"
 )
 
@@ -18,8 +14,6 @@ const (
 )
 
 type runArgs struct {
-	ShowHelp     bool
-	ShowVersion  bool
 	Verbose      bool
 	Label        string
 	BaseURL      string
@@ -42,16 +36,20 @@ func usagef(format string, args ...any) error {
 
 func tunnelHelpText() string {
 	return fmt.Sprintf(`Usage:
-  tunnel [--label label] [--base-url url] <command> [args...]
+  tunnel [-l label] [--base-url url] <command> [args...]
   tunnel --help
   tunnel --version
 
+Arguments:
+  <command>  Launcher command resolved from PATH. Any remaining args are passed
+             through to that launcher unchanged.
+
 Flags:
-  -h, --help   Show this help message and exit
-  --version    Print tunnel version and exit
-  --verbose    Print relay connection status on successful startup
-  --label      Optional session label for relay clients
-  --base-url   Relay base URL (fallback: %s, default: %s)
+  -h, --help       Show this help message and exit
+      --version    Print tunnel version and exit
+  -v, --verbose    Print relay connection status on successful startup
+  -l, --label      Optional session label for relay clients
+      --base-url   Relay base URL (fallback: %s, default: %s)
 
 Environment:
   %s  Required agent token for normal execution
@@ -59,58 +57,8 @@ Environment:
 
 Examples:
   tunnel claude
-  tunnel --label api-fix codex --profile prod
+  tunnel -l api-fix codex --profile prod
 `, tunnelBaseURLEnv, defaultTunnelBaseURL, tunnelAuthTokenEnv, tunnelBaseURLEnv, defaultTunnelBaseURL)
-}
-
-func parseRunArgs(argv []string) (runArgs, error) {
-	fs := flag.NewFlagSet("tunnel", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-
-	var cfg runArgs
-	fs.BoolVar(&cfg.ShowVersion, "version", false, "print tunnel version and exit")
-	fs.BoolVar(&cfg.Verbose, "verbose", false, "print relay connection status on successful startup")
-	fs.StringVar(&cfg.Label, "label", "", "optional session label for relay clients")
-	fs.StringVar(&cfg.BaseURL, "base-url", "", "relay base URL (fallback: TUNNEL_BASE_URL, default: https://diaro.me)")
-
-	if err := fs.Parse(argv[1:]); errors.Is(err, flag.ErrHelp) {
-		cfg.ShowHelp = true
-		return cfg, nil
-	} else if err != nil {
-		return runArgs{}, err
-	}
-	if cfg.ShowHelp {
-		return cfg, nil
-	}
-	if cfg.ShowVersion {
-		return cfg, nil
-	}
-
-	if cfg.BaseURL == "" {
-		cfg.BaseURL = strings.TrimSpace(os.Getenv(tunnelBaseURLEnv))
-	}
-	if cfg.BaseURL == "" {
-		cfg.BaseURL = defaultTunnelBaseURL
-	}
-	baseURL, err := validateBaseURL(cfg.BaseURL)
-	if err != nil {
-		return runArgs{}, err
-	}
-	cfg.BaseURL = baseURL
-
-	rest := fs.Args()
-	if len(rest) == 0 {
-		return runArgs{}, usagef("missing launcher command")
-	}
-
-	cfg.AuthToken = strings.TrimSpace(os.Getenv(tunnelAuthTokenEnv))
-	if cfg.AuthToken == "" {
-		return runArgs{}, fmt.Errorf("TUNNEL_AUTH_TOKEN environment variable is required")
-	}
-
-	cfg.Launcher = rest[0]
-	cfg.LauncherArgs = append([]string(nil), rest[1:]...)
-	return cfg, nil
 }
 
 func validateBaseURL(raw string) (string, error) {
