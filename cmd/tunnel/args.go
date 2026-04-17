@@ -9,8 +9,9 @@ import (
 const defaultTunnelBaseURL = "https://diaro.me"
 
 const (
-	tunnelBaseURLEnv   = "TUNNEL_BASE_URL"
-	tunnelAuthTokenEnv = "TUNNEL_AUTH_TOKEN"
+	tunnelBaseURLEnv         = "TUNNEL_BASE_URL"
+	tunnelAuthTokenEnv       = "TUNNEL_AUTH_TOKEN"
+	tunnelLaunchRequestIDEnv = "TUNNEL_LAUNCH_REQUEST_ID"
 )
 
 type runArgs struct {

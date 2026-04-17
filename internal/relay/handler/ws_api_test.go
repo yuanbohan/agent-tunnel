@@ -92,6 +92,7 @@ func TestDeviceWebSocketLaunchRequestRoundTrip(t *testing.T) {
 	defer deviceConn.Close()
 
 	done := make(chan struct{})
+	requestIDCh := make(chan string, 1)
 	go func() {
 		defer close(done)
 		var frame protocol.DeviceFrame
@@ -99,24 +100,86 @@ func TestDeviceWebSocketLaunchRequestRoundTrip(t *testing.T) {
 			t.Errorf("ReadJSON returned error: %v", err)
 			return
 		}
-		if frame.Type != "launch_request" || frame.Command != "codex" {
-			t.Errorf("frame = %#v, want launch_request codex", frame)
+		requestIDCh <- frame.RequestID
+		if frame.Type != "launch_request" || frame.Command != "codex" || frame.CWD != "/repo" || frame.Label != "api-fix" {
+			t.Errorf("frame = %#v, want launch_request codex /repo api-fix", frame)
 			return
 		}
-		if err := deviceConn.WriteJSON(protocol.DeviceLaunchResultFrame(frame.RequestID, true, "")); err != nil {
+		if err := deviceConn.WriteJSON(protocol.DeviceLaunchResultFrame(frame.RequestID, "accepted", "")); err != nil {
 			t.Errorf("WriteJSON returned error: %v", err)
+			return
+		}
+
+		agentConn := dialAndRegisterAgentWithLaunchRequest(t, server.URL, agentToken.Plaintext, "sess-1", frame.RequestID)
+		if err := agentConn.Close(); err != nil {
+			t.Errorf("Close returned error: %v", err)
 		}
 	}()
 
-	resp := doBearerPOST(t, server.URL+"/api/devices/dev-1/launch", issued.AccessToken, `{"command":"codex"}`)
+	resp := doBearerPOST(t, server.URL+"/api/devices/dev-1/launch", issued.AccessToken, `{"command":"codex","cwd":"/repo","label":"api-fix"}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 	var launch handlertypes.DeviceLaunchResponse
 	decodeAPIEnvelopeFromResponse(t, resp, http.StatusOK, &launch)
-	if !launch.Accepted || launch.Reason != "" {
-		t.Fatalf("launch = %#v, want accepted", launch)
+	requestID := <-requestIDCh
+	if launch.Status != "session_ready" || launch.SessionID != "sess-1" || launch.Reason != "" || launch.RequestID != requestID {
+		t.Fatalf("launch = %#v, want session_ready sess-1", launch)
+	}
+	<-done
+}
+
+func TestDeviceWebSocketLaunchAcceptsLegacyAcceptedResultFrame(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	issued := env.login(t, "alice", "password123")
+	agentToken := env.createAgentToken(t, user.ID, "Laptop")
+
+	server := httptest.NewServer(env.handler(nil))
+	defer server.Close()
+
+	deviceConn := dialAndRegisterDevice(t, server.URL, agentToken.Plaintext, protocol.DeviceInfo{
+		DeviceID:       "dev-1",
+		DisplayName:    "Test Mac",
+		PlatformFamily: "macos",
+		PlatformID:     "macos",
+	})
+	defer deviceConn.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var frame protocol.DeviceFrame
+		if err := deviceConn.ReadJSON(&frame); err != nil {
+			t.Errorf("ReadJSON returned error: %v", err)
+			return
+		}
+		if err := deviceConn.WriteJSON(map[string]any{
+			"type":       "launch_result",
+			"request_id": frame.RequestID,
+			"accepted":   true,
+		}); err != nil {
+			t.Errorf("WriteJSON returned error: %v", err)
+			return
+		}
+
+		agentConn := dialAndRegisterAgentWithLaunchRequest(t, server.URL, agentToken.Plaintext, "sess-legacy", frame.RequestID)
+		if err := agentConn.Close(); err != nil {
+			t.Errorf("Close returned error: %v", err)
+		}
+	}()
+
+	resp := doBearerPOST(t, server.URL+"/api/devices/dev-1/launch", issued.AccessToken, `{"command":"codex","cwd":"/repo"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var launch handlertypes.DeviceLaunchResponse
+	decodeAPIEnvelopeFromResponse(t, resp, http.StatusOK, &launch)
+	if launch.Status != "session_ready" || launch.SessionID != "sess-legacy" || launch.RequestID == "" {
+		t.Fatalf("launch = %#v, want session_ready sess-legacy", launch)
 	}
 	<-done
 }

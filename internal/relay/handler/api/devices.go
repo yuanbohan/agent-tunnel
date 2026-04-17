@@ -1,14 +1,18 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"yuanbohan/tunnel/internal/relay/device"
 	"yuanbohan/tunnel/internal/relay/handler/middleware"
 	"yuanbohan/tunnel/internal/relay/handler/types"
 )
+
+const deviceLaunchTimeout = 25 * time.Second
 
 func ListDevices(registry *device.Registry) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -33,16 +37,22 @@ func LaunchDevice(registry *device.Registry) gin.HandlerFunc {
 			return
 		}
 		command := strings.TrimSpace(request.Command)
-		if command == "" {
+		cwd := strings.TrimSpace(request.CWD)
+		if command == "" || cwd == "" {
 			WriteJSONError(c.Writer, http.StatusBadRequest, "invalid_request")
 			return
 		}
 
 		app := middleware.AuthenticatedApp(c)
-		result := registry.Launch(c.Request.Context(), c.Param("deviceID"), app.User.ID, command)
+		ctx, cancel := context.WithTimeout(c.Request.Context(), deviceLaunchTimeout)
+		defer cancel()
+
+		result := registry.Launch(ctx, c.Param("deviceID"), app.User.ID, command, cwd, strings.TrimSpace(request.Label))
 		WriteJSON(c.Writer, http.StatusOK, types.DeviceLaunchResponse{
-			Accepted: result.Accepted,
-			Reason:   result.Reason,
+			RequestID: result.RequestID,
+			Status:    result.Status,
+			SessionID: result.SessionID,
+			Reason:    result.Reason,
 		})
 	}
 }

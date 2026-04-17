@@ -27,9 +27,17 @@ type DeviceOwner struct {
 }
 
 type LaunchResult struct {
-	Accepted bool   `json:"accepted"`
-	Reason   string `json:"reason,omitempty"`
+	RequestID string `json:"request_id"`
+	Status    string `json:"status"`
+	SessionID string `json:"session_id,omitempty"`
+	Reason    string `json:"reason,omitempty"`
 }
+
+const (
+	LaunchStatusAccepted     = "accepted"
+	LaunchStatusFailed       = "failed"
+	LaunchStatusSessionReady = "session_ready"
+)
 
 type Registry struct {
 	mu       sync.RWMutex
@@ -48,10 +56,15 @@ type liveDevice struct {
 }
 
 type launchRequest struct {
-	id       string
-	deviceID string
-	peer     DevicePeer
-	resultCh chan LaunchResult
+	id        string
+	deviceID  string
+	owner     DeviceOwner
+	peer      DevicePeer
+	mu        sync.Mutex
+	accepted  bool
+	completed bool
+	result    LaunchResult
+	done      chan struct{}
 }
 
 func NewRegistry() *Registry {
@@ -68,13 +81,14 @@ func (r *Registry) RegisterOwned(info protocol.DeviceInfo, owner DeviceOwner, pe
 	old := r.devices[info.DeviceID]
 	if old != nil && old.peer != peer {
 		deactivateDevicePeer(old.peer)
-		r.completeDeviceRequestsLocked(info.DeviceID, LaunchResult{Accepted: false, Reason: "device_offline"})
+		r.completeDeviceRequestsLocked(info.DeviceID, LaunchResult{Status: LaunchStatusFailed, Reason: "device_offline"})
 	}
 	r.devices[info.DeviceID] = &liveDevice{
 		info:        info,
 		owner:       owner,
 		peer:        peer,
 		connectedAt: r.now(),
+		inFlight:    r.hasPendingRequestLocked(info.DeviceID),
 	}
 	r.mu.Unlock()
 
@@ -115,13 +129,14 @@ func (r *Registry) ActivatePending(info protocol.DeviceInfo, owner DeviceOwner, 
 	}
 	if old != nil && old.peer != peer {
 		deactivateDevicePeer(old.peer)
-		r.completeDeviceRequestsLocked(info.DeviceID, LaunchResult{Accepted: false, Reason: "device_offline"})
+		r.completeDeviceRequestsLocked(info.DeviceID, LaunchResult{Status: LaunchStatusFailed, Reason: "device_offline"})
 	}
 	r.devices[info.DeviceID] = &liveDevice{
 		info:        info,
 		owner:       owner,
 		peer:        peer,
 		connectedAt: r.now(),
+		inFlight:    r.hasPendingRequestLocked(info.DeviceID),
 	}
 	r.mu.Unlock()
 
@@ -141,7 +156,7 @@ func (r *Registry) DisconnectIfOwner(deviceID string, owner DevicePeer) bool {
 	}
 	delete(r.devices, deviceID)
 	deactivateDevicePeer(owner)
-	r.completeDeviceRequestsLocked(deviceID, LaunchResult{Accepted: false, Reason: "device_offline"})
+	r.completeDeviceRequestsLocked(deviceID, LaunchResult{Status: LaunchStatusFailed, Reason: "device_offline"})
 	_ = owner.Close()
 	return true
 }
@@ -157,7 +172,7 @@ func (r *Registry) DisconnectAgentTokenDevices(agentTokenID string) int {
 		}
 		delete(r.devices, deviceID)
 		deactivateDevicePeer(live.peer)
-		r.completeDeviceRequestsLocked(deviceID, LaunchResult{Accepted: false, Reason: "device_offline"})
+		r.completeDeviceRequestsLocked(deviceID, LaunchResult{Status: LaunchStatusFailed, Reason: "device_offline"})
 		_ = live.peer.Close()
 		disconnected++
 	}
@@ -197,24 +212,26 @@ func (r *Registry) ListForUser(userID int64) []protocol.DeviceInfo {
 	return out
 }
 
-func (r *Registry) Launch(ctx context.Context, deviceID string, userID int64, command string) LaunchResult {
+func (r *Registry) Launch(ctx context.Context, deviceID string, userID int64, command, cwd, label string) LaunchResult {
+	requestID := deviceID + "-" + r.now().Format("150405.000000000")
+
 	r.mu.Lock()
 	live, ok := r.devices[deviceID]
 	if !ok || live.owner.UserID != userID || live.peer == nil {
 		r.mu.Unlock()
-		return LaunchResult{Accepted: false, Reason: "device_offline"}
+		return LaunchResult{RequestID: requestID, Status: LaunchStatusFailed, Reason: "device_offline"}
 	}
 	if live.inFlight {
 		r.mu.Unlock()
-		return LaunchResult{Accepted: false, Reason: "busy"}
+		return LaunchResult{RequestID: requestID, Status: LaunchStatusFailed, Reason: "busy"}
 	}
 
-	requestID := deviceID + "-" + r.now().Format("150405.000000000")
 	request := &launchRequest{
 		id:       requestID,
 		deviceID: deviceID,
+		owner:    live.owner,
 		peer:     live.peer,
-		resultCh: make(chan LaunchResult, 1),
+		done:     make(chan struct{}),
 	}
 	live.inFlight = true
 	r.requests[requestID] = request
@@ -223,51 +240,86 @@ func (r *Registry) Launch(ctx context.Context, deviceID string, userID int64, co
 
 	if err := ctx.Err(); err != nil {
 		r.clearRequest(requestID)
-		return LaunchResult{Accepted: false, Reason: "device_offline"}
+		return LaunchResult{RequestID: requestID, Status: LaunchStatusFailed, Reason: "launch_timeout"}
 	}
 
-	if err := peer.SendJSON(protocol.DeviceLaunchRequestFrame(requestID, command)); err != nil {
+	if err := peer.SendJSON(protocol.DeviceLaunchRequestFrame(requestID, command, cwd, label)); err != nil {
 		r.clearRequest(requestID)
-		return LaunchResult{Accepted: false, Reason: "device_offline"}
+		return LaunchResult{RequestID: requestID, Status: LaunchStatusFailed, Reason: "device_offline"}
 	}
 
 	select {
-	case result := <-request.resultCh:
-		r.clearRequest(requestID)
-		return result
+	case <-request.done:
+		return request.snapshot()
 	case <-ctx.Done():
+		request.complete(LaunchResult{RequestID: requestID, Status: LaunchStatusFailed, Reason: "launch_timeout"})
 		r.clearRequest(requestID)
-		return LaunchResult{Accepted: false, Reason: "device_offline"}
+		return request.snapshot()
 	}
 }
 
-func (r *Registry) ResolveLaunchIfOwner(deviceID string, owner DevicePeer, requestID string, accepted bool, reason string) bool {
-	r.mu.RLock()
+func (r *Registry) ResolveLaunchIfOwner(deviceID string, owner DevicePeer, requestID, status, reason string) bool {
+	r.mu.Lock()
 	request, ok := r.requests[requestID]
 	if !ok || request.deviceID != deviceID || request.peer != owner {
-		r.mu.RUnlock()
+		r.mu.Unlock()
 		return false
 	}
-	resultCh := request.resultCh
-	r.mu.RUnlock()
-
-	select {
-	case resultCh <- LaunchResult{Accepted: accepted, Reason: reason}:
+	switch status {
+	case LaunchStatusAccepted:
+		request.markAccepted()
+		r.mu.Unlock()
+		return true
+	case LaunchStatusFailed:
+		r.completeRequestLocked(requestID, LaunchResult{
+			RequestID: requestID,
+			Status:    LaunchStatusFailed,
+			Reason:    reason,
+		})
+		r.mu.Unlock()
+		return true
 	default:
+		r.mu.Unlock()
+		return false
 	}
+}
+
+func (r *Registry) CompleteLaunchIfOwner(requestID string, owner DeviceOwner, sessionID string) bool {
+	r.mu.Lock()
+	request, ok := r.requests[requestID]
+	if !ok || request.owner != owner {
+		r.mu.Unlock()
+		return false
+	}
+	r.completeRequestLocked(requestID, LaunchResult{
+		RequestID: requestID,
+		Status:    LaunchStatusSessionReady,
+		SessionID: sessionID,
+	})
+	r.mu.Unlock()
 	return true
 }
 
 func (r *Registry) clearRequest(requestID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.clearRequestLocked(requestID)
+}
+
+func (r *Registry) clearRequestLocked(requestID string) *launchRequest {
 	request, ok := r.requests[requestID]
 	if ok {
 		if live := r.devices[request.deviceID]; live != nil {
-			live.inFlight = false
+			live.inFlight = r.hasOtherPendingRequestLocked(request.deviceID, requestID)
 		}
 	}
 	delete(r.requests, requestID)
+	return request
+}
+
+func (r *Registry) completeRequestLocked(requestID string, result LaunchResult) {
+	request := r.clearRequestLocked(requestID)
+	completeLaunchRequest(request, result)
 }
 
 func deactivateDevicePeer(peer DevicePeer) {
@@ -280,10 +332,7 @@ func completeLaunchRequest(request *launchRequest, result LaunchResult) {
 	if request == nil {
 		return
 	}
-	select {
-	case request.resultCh <- result:
-	default:
-	}
+	request.complete(result)
 }
 
 func (r *Registry) completeDeviceRequestsLocked(deviceID string, result LaunchResult) {
@@ -291,10 +340,68 @@ func (r *Registry) completeDeviceRequestsLocked(deviceID string, result LaunchRe
 		if request.deviceID != deviceID {
 			continue
 		}
-		if live := r.devices[deviceID]; live != nil {
-			live.inFlight = false
+		if request.isAccepted() {
+			if live := r.devices[deviceID]; live != nil {
+				live.inFlight = true
+			}
+			continue
 		}
+		result.RequestID = request.id
+		r.clearRequestLocked(requestID)
 		completeLaunchRequest(request, result)
-		delete(r.requests, requestID)
 	}
+}
+
+func (r *Registry) hasPendingRequestLocked(deviceID string) bool {
+	for _, request := range r.requests {
+		if request.deviceID == deviceID {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *Registry) hasOtherPendingRequestLocked(deviceID, skipRequestID string) bool {
+	for requestID, request := range r.requests {
+		if requestID == skipRequestID {
+			continue
+		}
+		if request.deviceID == deviceID {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *launchRequest) markAccepted() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.completed {
+		return
+	}
+	r.accepted = true
+}
+
+func (r *launchRequest) isAccepted() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.accepted && !r.completed
+}
+
+func (r *launchRequest) complete(result LaunchResult) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.completed {
+		return false
+	}
+	r.completed = true
+	r.result = result
+	close(r.done)
+	return true
+}
+
+func (r *launchRequest) snapshot() LaunchResult {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.result
 }

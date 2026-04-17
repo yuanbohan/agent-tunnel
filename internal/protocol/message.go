@@ -21,22 +21,28 @@ type SessionInfo struct {
 
 // AgentFrame is the JSON envelope sent over the agent WebSocket to the relay.
 type AgentFrame struct {
-	Type     string       `json:"type"`
-	Session  *SessionInfo `json:"session,omitempty"`
-	ClientID string       `json:"client_id,omitempty"`
-	Reason   string       `json:"reason,omitempty"`
-	Text     string       `json:"text,omitempty"`
-	Submit   bool         `json:"submit,omitempty"`
-	Key      string       `json:"key,omitempty"`
-	Cols     int          `json:"cols,omitempty"`
-	Rows     int          `json:"rows,omitempty"`
+	Type            string       `json:"type"`
+	Session         *SessionInfo `json:"session,omitempty"`
+	LaunchRequestID string       `json:"launch_request_id,omitempty"`
+	ClientID        string       `json:"client_id,omitempty"`
+	Reason          string       `json:"reason,omitempty"`
+	Text            string       `json:"text,omitempty"`
+	Submit          bool         `json:"submit,omitempty"`
+	Key             string       `json:"key,omitempty"`
+	Cols            int          `json:"cols,omitempty"`
+	Rows            int          `json:"rows,omitempty"`
 }
 
 // RegisterFrame builds an AgentFrame of type "register".
 func RegisterFrame(info SessionInfo) AgentFrame {
+	return RegisterFrameWithLaunchRequest(info, "")
+}
+
+func RegisterFrameWithLaunchRequest(info SessionInfo, launchRequestID string) AgentFrame {
 	return AgentFrame{
-		Type:    "register",
-		Session: &info,
+		Type:            "register",
+		Session:         &info,
+		LaunchRequestID: launchRequestID,
 	}
 }
 

@@ -107,7 +107,7 @@ Code map (excerpt):
 - device discovery is user-scoped, just like session discovery
 - device identity is stable through `device_id`; display metadata such as `display_name`, `platform_family`, and `platform_id` are refreshed when the daemon re-registers
 - device presence is live-only; there is no offline or historical device list in this API revision
-- `POST /api/devices/:deviceID/launch` reports launch acceptance or a structured launch failure and does not auto-attach to the later session
+- `POST /api/devices/:deviceID/launch` reports `session_ready` or a structured launch failure and does not auto-attach to the later session
 
 ## Public HTTP API
 
@@ -169,7 +169,7 @@ Notes:
 
 ### `POST /api/devices/:deviceID/launch`
 
-Ask one currently online device to open a new terminal window and run `tunnel run <command>`.
+Ask one currently online device to create a new session by opening a new terminal window and running `tunnel run <command>`.
 
 Auth: app bearer token
 
@@ -177,19 +177,46 @@ Request:
 
 ```json
 {
-  "command": "codex --profile prod"
+  "command": "codex --profile prod",
+  "cwd": "/repo",
+  "label": "api-fix"
 }
 ```
 
-Success response always uses the standard success envelope. The structured launch result is carried in `body`:
+Request fields:
+
+- `command` is required
+- `cwd` is required and is the working directory used on the target machine before `tunnel run <command>` starts
+- `label` is optional and, when present, is forwarded to the created session's normal session metadata
+
+Success response always uses the standard success envelope. The launch result is carried in `body`.
+
+When the launch completes successfully, success means `session_ready`: the newly started `tunnel` process has registered with the relay and now has a concrete `session_id`.
+
+Successful body:
 
 ```json
 {
   "code": 0,
   "message": "success",
   "body": {
-    "accepted": false,
-    "reason": "busy"
+    "request_id": "dev_abcd1234-150405.000000000",
+    "status": "session_ready",
+    "session_id": "sess-1"
+  }
+}
+```
+
+Failure body:
+
+```json
+{
+  "code": 0,
+  "message": "success",
+  "body": {
+    "request_id": "dev_abcd1234-150405.000000000",
+    "status": "failed",
+    "reason": "launch_timeout"
   }
 }
 ```
@@ -202,11 +229,15 @@ Known `reason` values in this revision:
 - `desktop_unavailable`
 - `terminal_launch_failed`
 - `tunnel_not_found`
+- `path_not_found`
+- `launch_timeout`
 
 Notes:
 
-- `accepted: true` means the device daemon accepted the local terminal-window launch; it does not mean the later session is already visible in `GET /api/sessions`
-- callers should discover the later session through the normal session list flow when they are ready to attach
+- the relay may hold this request open for roughly 20-30 seconds while waiting for the launched session to register
+- `status: "session_ready"` is the only success state in this contract
+- `session_id` from the launch response can be used immediately with the normal session discovery and attach flow
+- the launch flow still does not auto-attach to the new session
 
 ### `POST /api/auth/register`
 

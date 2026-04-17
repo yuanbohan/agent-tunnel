@@ -5,7 +5,7 @@ Launch a terminal agent locally and expose the running PTY through relay-backed 
 The remote contract now has two live-only surfaces:
 
 - session attach: clients discover live sessions with `GET /api/sessions`, then attach to one session with `GET /api/sessions/:id/attach/ws`
-- device launch: clients discover currently online devices with `GET /api/devices`, then ask one device daemon to open a new terminal window running `tunnel run <command>`
+- device launch: clients discover currently online devices with `GET /api/devices`, then ask one device daemon to launch `tunnel run <command>` with required `cwd`, optional `label`, and wait for `session_ready`
 
 On attach, the owning `tunnel` process sends a fresh terminal-state snapshot, which may include bounded agent-local normal-buffer scrollback, and then continues streaming live PTY bytes on that same websocket.
 
@@ -186,7 +186,7 @@ Remote launch is explicit and desktop-only:
 - users opt in per machine with `tunnel daemon start`
 - the daemon stays online until `tunnel daemon stop`
 - mobile clients use `GET /api/devices` to discover only currently connected devices
-- `POST /api/devices/:deviceID/launch` returns a structured launch result and does not auto-attach to the new session
+- `POST /api/devices/:deviceID/launch` returns `session_ready + session_id` on success, returns a structured failure on validation or timeout, and does not auto-attach to the new session
 - a successful launch opens a new visible terminal window and runs `tunnel run <command>` there
 - when that launched `tunnel run <command>` exits, the window stays open and returns to an interactive shell prompt
 - the daemon owns local launch state such as allowlist, busy/not-busy, launcher recipe, doctor output, and last failure

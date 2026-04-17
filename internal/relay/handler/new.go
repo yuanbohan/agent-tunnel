@@ -87,7 +87,7 @@ func newRouter(
 	appRoutes.GET("/api/sessions", api.ListSessions(registry))
 	appRoutes.GET("/api/sessions/:sessionID/attach/ws", attach.Handle(registry, attachSessions))
 
-	router.GET("/agent/ws", middleware.AgentAuth(agentTokens), agent.Handle(registry))
+	router.GET("/agent/ws", middleware.AgentAuth(agentTokens), agent.Handle(registry, deviceRegistry))
 	router.GET("/device/ws", middleware.AgentAuth(agentTokens), devicehandler.Handle(deviceRegistry))
 
 	return router
