@@ -63,18 +63,37 @@ func main() {
 }
 
 func run() error {
-	return runWithArgs(os.Args, os.Stdout, os.Stderr)
+	return runWithIOArgs(os.Args, os.Stdin, os.Stdout, os.Stderr)
 }
 
 func runWithArgs(args []string, stdout, stderr io.Writer) error {
-	cmd := newRootCmd(runTunnelSession)
+	return runWithIOArgs(args, os.Stdin, stdout, stderr)
+}
+
+func runWithIOArgs(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	if legacy := legacyLauncherCommand(args[1:]); legacy != "" {
+		_, _ = io.WriteString(stderr, rootHelpText())
+		return guidancef(fmt.Sprintf("launcher commands now require `tunnel run <command>`; try `tunnel run %s`", legacy))
+	}
+
+	cmd := newRootCmd(defaultCommandHandlers())
+	cmd.SetIn(stdin)
 	cmd.SetOut(stdout)
 	cmd.SetErr(stderr)
 	cmd.SetArgs(args[1:])
 	if err := cmd.Execute(); err != nil {
 		var usageErr usageError
 		if errors.As(err, &usageErr) {
-			_, _ = io.WriteString(stderr, tunnelHelpText())
+			helpText := usageErr.help
+			if strings.TrimSpace(helpText) == "" {
+				helpText = rootHelpText()
+			}
+			_, _ = io.WriteString(stderr, helpText)
+			if usageErr.detail != "" {
+				_, _ = io.WriteString(stderr, "\n")
+				_, _ = io.WriteString(stderr, usageErr.detail)
+				_, _ = io.WriteString(stderr, "\n")
+			}
 		}
 		return err
 	}
@@ -83,6 +102,10 @@ func runWithArgs(args []string, stdout, stderr io.Writer) error {
 
 func runTunnelSession(ctx context.Context, parsed runArgs, stdout, stderr io.Writer) error {
 	relayURL := relayWebSocketBaseURL(parsed.BaseURL)
+	resolvedAuth, err := resolveRuntimeAuth(newAuthStore(), osEnv)
+	if err != nil {
+		return err
+	}
 
 	command, err := resolveLauncher(parsed.Launcher, parsed.LauncherArgs)
 	if err != nil {
@@ -108,7 +131,7 @@ func runTunnelSession(ctx context.Context, parsed runArgs, stdout, stderr io.Wri
 		StartedAt:      protocol.UnixTimestamp(time.Now().UTC()),
 	}
 
-	relay := newConnector(relayURL, parsed.AuthToken, info)
+	relay := newConnector(relayURL, resolvedAuth.Token, info)
 	relay.SetInitialConnectTimeout(startupRelayWait)
 	go relay.Run(ctx)
 	if !relay.WaitUntilConnected(ctx, startupRelayWait) {
@@ -156,6 +179,22 @@ func runTunnelSession(ctx context.Context, parsed runArgs, stdout, stderr io.Wri
 	}()
 
 	return waitForExit(ctx, done, waitErr)
+}
+
+func legacyLauncherCommand(args []string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	first := strings.TrimSpace(args[0])
+	if first == "" || strings.HasPrefix(first, "-") {
+		return ""
+	}
+	switch first {
+	case "run", "auth", "help", "version":
+		return ""
+	default:
+		return first
+	}
 }
 
 func waitForProcessOrShutdown(ctx context.Context, localDone <-chan struct{}, waitErr <-chan error) error {

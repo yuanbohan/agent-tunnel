@@ -65,7 +65,7 @@ Tunnel and Relay are guaranteed compatible within the same compatibility line:
 The `Release Tunnel` workflow enforces that a published `tunnel` version stays within the current repo relay compatibility line. It does not publish `relay` binaries.
 
 Verify the installed version with `tunnel --version`.
-For CLI usage, flags, and examples, run `tunnel --help`. `tunnel` supports `-v` and `-l` as short forms for `--verbose` and `--label`. `--base-url` is long-form only.
+For CLI usage, flags, and examples, run `tunnel --help`. Local command launch now lives under `tunnel run <command>`. `tunnel run` supports `-v` and `-l` as short forms for `--verbose` and `--label`. `--base-url` remains long-form only.
 
 ## Quick Start
 
@@ -87,35 +87,43 @@ Create one or more invite codes on the relay host:
 go run ./cmd/relay invite create --count 3 --expires-in 7d
 ```
 
-### 2. Start tunnel
+### 2. Authenticate tunnel
 
-After a user has registered, logged in, and created an agent token, point `tunnel` at the relay and launch a session:
+After a user has registered, sign `tunnel` in once on that machine:
 
 ```bash
 make build
-export TUNNEL_BASE_URL=http://127.0.0.1:8586
-export TUNNEL_AUTH_TOKEN=<user-owned-agent-token>
-./bin/tunnel claude
+./bin/tunnel auth login --base-url http://127.0.0.1:8586
 ```
 
-If you use the hosted relay at `https://diaro.me`, `TUNNEL_BASE_URL` is optional because that is the default.
+This stores one local fallback token in `~/.tunnel/auth.json`. `TUNNEL_AUTH_TOKEN` still has higher priority when you need to override the saved login for CI, scripts, or one-off operator work.
+
+If you use the hosted relay at `https://diaro.me`, `--base-url` is optional because that is the default.
+
+### 3. Start tunnel
+
+Launch a session with the saved local login:
+
+```bash
+./bin/tunnel run claude
+```
 
 Or with a label:
 
 ```bash
-./bin/tunnel -l api-fix --base-url https://diaro.me codex
+./bin/tunnel run -l api-fix --base-url https://diaro.me codex
 ```
 
 Expected stderr output when relay is available during startup:
 
 ```text
-▶ tunnel claude — session <session-id>; relay connected (http://127.0.0.1:8586)
+▶ tunnel claude — session <session-id>; relay server connected
 ```
 
 Startup banners are rendered inline without consuming an extra terminal row.
 Healthy startup banners are printed in bright green.
 
-### 3. Connect a client
+### 4. Connect a client
 
 App clients authenticate with bearer tokens returned by `POST /api/auth/login` and use the relay APIs:
 
@@ -172,12 +180,12 @@ sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && ./bin/relay
 sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && ./bin/relay invite create --count 3 --expires-in 7d'
 ```
 
-After the user registers in the app and creates an agent token, on each developer machine:
+After the user registers in the app, on each developer machine:
 
 ```bash
 export TUNNEL_BASE_URL=https://diaro.me
-export TUNNEL_AUTH_TOKEN=<user-owned-agent-token>
-./bin/tunnel --label "feature-branch" claude
+./bin/tunnel auth login
+./bin/tunnel run --label "feature-branch" claude
 ```
 
 Keep deployment config in Ansible:
