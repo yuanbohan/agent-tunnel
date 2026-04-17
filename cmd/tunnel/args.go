@@ -50,12 +50,14 @@ func rootHelpText() string {
 	return fmt.Sprintf(`Usage:
   tunnel run [options] <command> [args...]
   tunnel auth <command>
+  tunnel daemon <start|status|stop|doctor>
   tunnel --help
   tunnel --version
 
 Commands:
   run         Launch a local command and connect it to the relay
   auth        Manage local tunnel authentication
+  daemon      Manage the background mobile-launch daemon
   help        Show help for a command
 
 Flags:
@@ -69,6 +71,7 @@ Environment:
 Examples:
   tunnel auth login
   tunnel auth status
+  tunnel daemon start
   tunnel run claude
   tunnel run -l api-fix codex --profile prod
 `, tunnelAuthTokenEnv, tunnelBaseURLEnv, defaultTunnelBaseURL)
@@ -116,6 +119,40 @@ Examples:
   tunnel auth logout
   tunnel auth status
 `
+}
+
+func daemonHelpText() string {
+	return fmt.Sprintf(`Usage:
+  tunnel daemon <command>
+  tunnel daemon --help
+
+Commands:
+  start       Start the background daemon
+  status      Show daemon status
+  stop        Stop the background daemon
+  doctor      Run daemon diagnostics
+
+Flags:
+  -h, --help       Show this help message and exit
+      --base-url   Relay base URL (fallback: %s, default: %s)
+
+Examples:
+  tunnel daemon start
+  tunnel daemon status
+  tunnel daemon stop
+  tunnel daemon doctor
+`, tunnelBaseURLEnv, defaultTunnelBaseURL)
+}
+
+func daemonStartHelpText() string {
+	return fmt.Sprintf(`Usage:
+  tunnel daemon start [--base-url url]
+  tunnel daemon start --help
+
+Flags:
+  -h, --help       Show this help message and exit
+      --base-url   Relay base URL (fallback: %s, default: %s)
+`, tunnelBaseURLEnv, defaultTunnelBaseURL)
 }
 
 func authLoginHelpText() string {

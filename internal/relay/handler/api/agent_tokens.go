@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"yuanbohan/tunnel/internal/relay/auth"
+	"yuanbohan/tunnel/internal/relay/device"
 	"yuanbohan/tunnel/internal/relay/handler/middleware"
 	"yuanbohan/tunnel/internal/relay/handler/types"
 	"yuanbohan/tunnel/internal/relay/session"
@@ -62,9 +63,9 @@ func CreateAgentToken(agentTokens *auth.AgentTokenService) gin.HandlerFunc {
 	}
 }
 
-func RevokeAgentToken(agentTokens *auth.AgentTokenService, registry *session.Registry) gin.HandlerFunc {
+func RevokeAgentToken(agentTokens *auth.AgentTokenService, registry *session.Registry, deviceRegistry *device.Registry) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if agentTokens == nil || registry == nil {
+		if agentTokens == nil || registry == nil || deviceRegistry == nil {
 			WriteJSONError(c.Writer, http.StatusServiceUnavailable, "service_unavailable")
 			return
 		}
@@ -80,6 +81,7 @@ func RevokeAgentToken(agentTokens *auth.AgentTokenService, registry *session.Reg
 			return
 		}
 		registry.DisconnectAgentTokenSessions(tokenID, "agent_token_revoked")
+		deviceRegistry.DisconnectAgentTokenDevices(tokenID)
 		WriteJSON(c.Writer, http.StatusOK, nil)
 	}
 }

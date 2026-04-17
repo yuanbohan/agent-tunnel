@@ -8,12 +8,14 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"yuanbohan/tunnel/internal/protocol"
 	"yuanbohan/tunnel/internal/tunnel/connector"
+	"yuanbohan/tunnel/internal/tunnel/daemon"
 	"yuanbohan/tunnel/internal/tunnel/launcher"
 	"yuanbohan/tunnel/internal/tunnel/session"
 )
@@ -50,6 +52,12 @@ var (
 	newConnector = func(url, token string, info protocol.SessionInfo) relayConnector {
 		return connector.New(url, token, info)
 	}
+	resolveDaemonPaths = daemon.ResolvePaths
+	startDaemon        = daemon.StartBackground
+	runDaemonRuntime   = daemon.Run
+	daemonStatus       = daemon.Status
+	daemonStop         = daemon.Stop
+	daemonDoctor       = daemon.Doctor
 )
 
 func main() {
@@ -190,7 +198,7 @@ func legacyLauncherCommand(args []string) string {
 		return ""
 	}
 	switch first {
-	case "run", "auth", "help", "version":
+	case "run", "auth", "daemon", "help", "version":
 		return ""
 	default:
 		return first
@@ -219,4 +227,145 @@ func startupBanner(launcherName, sessionID string) string {
 		sessionID,
 		startupBannerReset,
 	)
+}
+
+func resolveCLIBaseURL(raw string) (string, error) {
+	resolved := strings.TrimSpace(raw)
+	if resolved == "" {
+		resolved = strings.TrimSpace(os.Getenv(tunnelBaseURLEnv))
+	}
+	if resolved == "" {
+		resolved = defaultTunnelBaseURL
+	}
+	return validateBaseURL(resolved)
+}
+
+func resolveDaemonAuth() (resolvedAuth, error) {
+	return resolveRuntimeAuth(newAuthStore(), osEnv)
+}
+
+func runDaemonStart(ctx context.Context, rawBaseURL string, stdout, stderr io.Writer) error {
+	baseURL, err := resolveCLIBaseURL(rawBaseURL)
+	if err != nil {
+		return err
+	}
+	paths, err := resolveDaemonPaths()
+	if err != nil {
+		return err
+	}
+	if status, err := daemonStatus(ctx, paths); err == nil && status.Running {
+		_, _ = fmt.Fprintf(stdout, "daemon already running (pid=%d device_id=%s)\n", status.PID, status.DeviceID)
+		return nil
+	}
+	auth, err := resolveDaemonAuth()
+	if err != nil {
+		return err
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	result, err := startDaemon(ctx, daemon.StartOptions{
+		Executable: executable,
+		Paths:      paths,
+		BaseURL:    baseURL,
+		AuthToken:  auth.Token,
+	})
+	if err != nil {
+		return err
+	}
+	if result.AlreadyRunning {
+		_, _ = fmt.Fprintf(stdout, "daemon already running (pid=%d device_id=%s)\n", result.Status.PID, result.Status.DeviceID)
+		return nil
+	}
+	_, _ = fmt.Fprintf(stdout, "daemon started (pid=%d device_id=%s)\n", result.Status.PID, result.Status.DeviceID)
+	return nil
+}
+
+func runDaemonStatus(ctx context.Context, stdout, stderr io.Writer) error {
+	paths, err := resolveDaemonPaths()
+	if err != nil {
+		return err
+	}
+	status, err := daemonStatus(ctx, paths)
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(stdout, "running: %t\n", status.Running)
+	_, _ = fmt.Fprintf(stdout, "pid: %d\n", status.PID)
+	_, _ = fmt.Fprintf(stdout, "device_id: %s\n", status.DeviceID)
+	_, _ = fmt.Fprintf(stdout, "display_name: %s\n", status.DisplayName)
+	_, _ = fmt.Fprintf(stdout, "hostname: %s\n", status.Hostname)
+	_, _ = fmt.Fprintf(stdout, "platform_family: %s\n", status.PlatformFamily)
+	_, _ = fmt.Fprintf(stdout, "platform_id: %s\n", status.PlatformID)
+	_, _ = fmt.Fprintf(stdout, "relay_connected: %t\n", status.RelayConnected)
+	_, _ = fmt.Fprintf(stdout, "launch_health: %s\n", status.LaunchHealth)
+	_, _ = fmt.Fprintf(stdout, "launcher_strategy: %s\n", status.LauncherStrategy)
+	_, _ = fmt.Fprintf(stdout, "last_failure: %s\n", status.LastFailure)
+	return nil
+}
+
+func runDaemonStop(ctx context.Context, stdout, stderr io.Writer) error {
+	paths, err := resolveDaemonPaths()
+	if err != nil {
+		return err
+	}
+	if err := daemonStop(ctx, paths); err != nil {
+		return err
+	}
+	_, _ = io.WriteString(stdout, "daemon stopped\n")
+	return nil
+}
+
+func runDaemonDoctor(ctx context.Context, stdout, stderr io.Writer) error {
+	paths, err := resolveDaemonPaths()
+	if err != nil {
+		return err
+	}
+	report, err := daemonDoctor(ctx, paths)
+	if err != nil {
+		return err
+	}
+	for _, check := range report.Checks {
+		_, _ = fmt.Fprintf(stdout, "[%s] %s: %s\n", check.Status, check.Name, check.Detail)
+	}
+	if report.ExitCode() != 0 {
+		return errors.New("daemon doctor reported non-ok checks")
+	}
+	return nil
+}
+
+func runDaemonInternal(ctx context.Context, rawBaseURL string, stdout, stderr io.Writer) error {
+	baseURL, err := resolveCLIBaseURL(rawBaseURL)
+	if err != nil {
+		return err
+	}
+	auth, err := resolveDaemonAuth()
+	if err != nil {
+		return err
+	}
+	paths, err := resolveDaemonPaths()
+	if err != nil {
+		return err
+	}
+	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	var readyWriter io.Writer
+	if rawFD := strings.TrimSpace(os.Getenv("TUNNEL_DAEMON_READY_FD")); rawFD != "" {
+		if fd, parseErr := strconv.Atoi(rawFD); parseErr == nil {
+			readyWriter = os.NewFile(uintptr(fd), "daemon-ready")
+		}
+	}
+	if err := runDaemonRuntime(ctx, daemon.RuntimeOptions{
+		Paths:     paths,
+		BaseURL:   baseURL,
+		AuthToken: auth.Token,
+	}, readyWriter); err != nil {
+		if readyWriter != nil {
+			_, _ = io.WriteString(readyWriter, "error:"+err.Error()+"\n")
+		}
+		return err
+	}
+	return nil
 }

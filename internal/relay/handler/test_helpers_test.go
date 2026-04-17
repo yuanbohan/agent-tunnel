@@ -17,6 +17,7 @@ import (
 	"yuanbohan/tunnel/internal/logx"
 	"yuanbohan/tunnel/internal/protocol"
 	"yuanbohan/tunnel/internal/relay/auth"
+	relaydevice "yuanbohan/tunnel/internal/relay/device"
 	handlerapi "yuanbohan/tunnel/internal/relay/handler/api"
 	handlertypes "yuanbohan/tunnel/internal/relay/handler/types"
 	relayoperator "yuanbohan/tunnel/internal/relay/operator"
@@ -29,6 +30,7 @@ type AppAuthService = auth.AppAuthService
 type AgentTokenService = auth.AgentTokenService
 type OperatorService = relayoperator.OperatorService
 type Registry = relaysession.Registry
+type DeviceRegistry = relaydevice.Registry
 type User = auth.User
 type IssuedAppSession = auth.IssuedAppSession
 type CreatedAgentToken = auth.CreatedAgentToken
@@ -54,6 +56,7 @@ var (
 	NewOperatorService   = relayoperator.NewOperatorService
 	NewRegisterThrottle  = handlerapi.NewRegisterThrottle
 	NewRegistry          = relaysession.NewRegistry
+	NewDeviceRegistry    = relaydevice.NewRegistry
 	ErrAgentTokenRevoked = auth.ErrAgentTokenRevoked
 	errAgentPeerInactive = relaysession.ErrAgentPeerInactive
 )
@@ -411,16 +414,17 @@ func (s *fakeStore) DeleteUser(_ context.Context, usernameNorm string, actor str
 }
 
 type handlerTestEnv struct {
-	t           *testing.T
-	now         time.Time
-	store       *fakeStore
-	digester    *SecretDigester
-	appAuth     *AppAuthService
-	agentTokens *AgentTokenService
-	operator    *OperatorService
-	operatorTok string
-	throttle    *RegisterThrottle
-	registry    *Registry
+	t              *testing.T
+	now            time.Time
+	store          *fakeStore
+	digester       *SecretDigester
+	appAuth        *AppAuthService
+	agentTokens    *AgentTokenService
+	operator       *OperatorService
+	operatorTok    string
+	throttle       *RegisterThrottle
+	registry       *Registry
+	deviceRegistry *DeviceRegistry
 }
 
 func newHandlerTestEnv(t *testing.T) *handlerTestEnv {
@@ -446,16 +450,17 @@ func newHandlerTestEnv(t *testing.T) *handlerTestEnv {
 	throttle.SetNowFunc(func() time.Time { return now })
 
 	env := &handlerTestEnv{
-		t:           t,
-		now:         now,
-		store:       store,
-		digester:    digester,
-		appAuth:     appAuth,
-		agentTokens: agentTokens,
-		operator:    operator,
-		operatorTok: "operator-secret",
-		throttle:    throttle,
-		registry:    NewRegistry(),
+		t:              t,
+		now:            now,
+		store:          store,
+		digester:       digester,
+		appAuth:        appAuth,
+		agentTokens:    agentTokens,
+		operator:       operator,
+		operatorTok:    "operator-secret",
+		throttle:       throttle,
+		registry:       NewRegistry(),
+		deviceRegistry: NewDeviceRegistry(),
 	}
 	env.appAuth.SetNowFunc(func() time.Time { return env.now })
 	env.throttle.SetNowFunc(func() time.Time { return env.now })
@@ -476,7 +481,7 @@ func (e *handlerTestEnv) handler(logWriter io.Writer) http.Handler {
 	})
 	e.t.Cleanup(restoreConfig)
 
-	return newRouter(e.registry, e.appAuth, e.agentTokens, e.operator, e.throttle)
+	return newRouter(e.registry, e.deviceRegistry, e.appAuth, e.agentTokens, e.operator, e.throttle)
 }
 
 func (e *handlerTestEnv) addInvite(t *testing.T, code string) {
@@ -640,6 +645,20 @@ func doBearerPOST(t *testing.T, target, accessToken, body string) *http.Response
 	return resp
 }
 
+func doBearerDELETE(t *testing.T, target, accessToken string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodDelete, target, nil)
+	if err != nil {
+		t.Fatalf("NewRequest returned error: %v", err)
+	}
+	req.Header.Set("Authorization", bearerAuth(accessToken))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do returned error: %v", err)
+	}
+	return resp
+}
+
 func doJSONPOST(t *testing.T, target, body string) *http.Response {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodPost, target, strings.NewReader(body))
@@ -720,6 +739,38 @@ func dialAndRegisterAgent(t *testing.T, serverURL, agentToken, sessionID string)
 
 	return conn
 }
+
+func dialAndRegisterDevice(t *testing.T, serverURL, agentToken string, info protocol.DeviceInfo) *websocket.Conn {
+	t.Helper()
+	wsURL := "ws" + strings.TrimPrefix(serverURL, "http") + "/device/ws"
+	headers := http.Header{}
+	headers.Set("Authorization", bearerAuth(agentToken))
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, headers)
+	if err != nil {
+		t.Fatalf("Dial device websocket returned error: %v", err)
+	}
+	if err := conn.WriteJSON(protocol.DeviceRegisterFrame(info)); err != nil {
+		t.Fatalf("WriteJSON device register returned error: %v", err)
+	}
+	return conn
+}
+
+type fakeDevicePeerForHandler struct{}
+
+func (fakeDevicePeerForHandler) SendJSON(any) error { return nil }
+func (fakeDevicePeerForHandler) Close() error       { return nil }
+
+type blockingDevicePeer struct {
+	sent chan protocol.DeviceFrame
+}
+
+func (p *blockingDevicePeer) SendJSON(v any) error {
+	frame, _ := v.(protocol.DeviceFrame)
+	p.sent <- frame
+	return nil
+}
+
+func (p *blockingDevicePeer) Close() error { return nil }
 
 func waitForOwnedSession(t *testing.T, registry *Registry, sessionID string, userID int64) {
 	t.Helper()

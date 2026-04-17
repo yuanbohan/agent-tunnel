@@ -11,7 +11,7 @@ This file covers:
 
 For lower-level wire details such as the binary attach packet format, also see [docs/protocol.md](./protocol.md).
 
-This document intentionally does not cover operator-only routes or the `tunnel`-owned agent socket at `/agent/ws`.
+This document intentionally does not cover operator-only routes or the `tunnel`-owned agent sockets at `/agent/ws` and `/device/ws`.
 
 ## Conventions
 
@@ -101,6 +101,14 @@ Code map (excerpt):
 - a missing session can mean "offline now", not just "never existed"
 - a session can disappear and later reappear with the same `session_id` if the same running `tunnel` process reconnects
 
+### Device Model
+
+- `GET /api/devices` returns only currently connected devices whose owning device daemon socket is online now
+- device discovery is user-scoped, just like session discovery
+- device identity is stable through `device_id`; display metadata such as `display_name`, `platform_family`, and `platform_id` are refreshed when the daemon re-registers
+- device presence is live-only; there is no offline or historical device list in this API revision
+- `POST /api/devices/:deviceID/launch` reports launch acceptance or a structured launch failure and does not auto-attach to the later session
+
 ## Public HTTP API
 
 ### `GET /healthz`
@@ -125,6 +133,80 @@ Example:
   }
 }
 ```
+
+### `GET /api/devices`
+
+List currently online devices for the authenticated user.
+
+Auth: app bearer token
+
+Success:
+
+- `200 OK`
+
+Response:
+
+```json
+{
+  "code": 0,
+  "message": "success",
+  "body": [
+    {
+      "device_id": "dev_abcd1234",
+      "display_name": "Yuanbo's MacBook Pro",
+      "platform_family": "macos",
+      "platform_id": "macos"
+    }
+  ]
+}
+```
+
+Notes:
+
+- `platform_family` is the stable UI fallback field for device-class icons, currently `macos` or `linux`
+- `platform_id` is the best-effort specific platform identifier for more exact icon selection, for example `macos`, `ubuntu`, `arch`, `debian`, `fedora`, or `unknown`
+- the relay returns only devices whose `/device/ws` connection is online right now
+
+### `POST /api/devices/:deviceID/launch`
+
+Ask one currently online device to open a new terminal window and run `tunnel run <command>`.
+
+Auth: app bearer token
+
+Request:
+
+```json
+{
+  "command": "codex --profile prod"
+}
+```
+
+Success response always uses the standard success envelope. The structured launch result is carried in `body`:
+
+```json
+{
+  "code": 0,
+  "message": "success",
+  "body": {
+    "accepted": false,
+    "reason": "busy"
+  }
+}
+```
+
+Known `reason` values in this revision:
+
+- `device_offline`
+- `busy`
+- `command_not_allowed`
+- `desktop_unavailable`
+- `terminal_launch_failed`
+- `tunnel_not_found`
+
+Notes:
+
+- `accepted: true` means the device daemon accepted the local terminal-window launch; it does not mean the later session is already visible in `GET /api/sessions`
+- callers should discover the later session through the normal session list flow when they are ready to attach
 
 ### `POST /api/auth/register`
 
