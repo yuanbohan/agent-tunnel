@@ -65,7 +65,7 @@ Tunnel and Relay are guaranteed compatible within the same compatibility line:
 The `Release Tunnel` workflow enforces that a published `tunnel` version stays within the current repo relay compatibility line. It does not publish `relay` binaries.
 
 Verify the installed version with `tunnel --version`.
-For CLI usage, flags, and examples, run `tunnel --help`.
+For CLI usage, flags, and examples, run `tunnel --help`. `tunnel` supports `-v` and `-l` as short forms for `--verbose` and `--label`. `--base-url` is long-form only.
 
 ## Quick Start
 
@@ -103,7 +103,7 @@ If you use the hosted relay at `https://diaro.me`, `TUNNEL_BASE_URL` is optional
 Or with a label:
 
 ```bash
-./bin/tunnel --label api-fix --base-url https://diaro.me codex
+./bin/tunnel -l api-fix --base-url https://diaro.me codex
 ```
 
 Expected stderr output when relay is available during startup:

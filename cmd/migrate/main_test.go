@@ -51,8 +51,8 @@ func TestLoadConfigRequiresSchemaDir(t *testing.T) {
 	_, err := loadConfig(testEnv(map[string]string{
 		"RELAY_DATABASE_URL": "postgres://relay",
 	}), nil)
-	if err == nil || !strings.Contains(err.Error(), "missing --schema-dir") {
-		t.Fatalf("loadConfig error = %v, want missing --schema-dir", err)
+	if err == nil || !strings.Contains(err.Error(), `required flag(s) "schema-dir" not set`) {
+		t.Fatalf("loadConfig error = %v, want required schema-dir", err)
 	}
 }
 
@@ -105,6 +105,40 @@ func TestRunPrintsBaselineMessage(t *testing.T) {
 	}
 	if openCalls != 1 {
 		t.Fatalf("openCalls = %d, want 1", openCalls)
+	}
+}
+
+func TestRunRequiresSchemaDir(t *testing.T) {
+	err := run(nil, runtimeEnv{
+		getenv: testEnv(map[string]string{
+			"RELAY_DATABASE_URL": "postgres://relay",
+		}),
+	})
+	if err == nil {
+		t.Fatal("expected missing schema-dir to fail")
+	}
+	if !strings.Contains(err.Error(), `required flag(s) "schema-dir" not set`) {
+		t.Fatalf("run error = %v, want required schema-dir", err)
+	}
+}
+
+func TestRunHelpExplainsRequiredInputs(t *testing.T) {
+	var stdout bytes.Buffer
+	err := run([]string{"--help"}, runtimeEnv{stdout: &stdout})
+	if err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+	for _, fragment := range []string{
+		`Apply or baseline relay schema migrations in PostgreSQL.`,
+		`RELAY_DATABASE_URL`,
+		`--schema-dir`,
+		`required`,
+		`env file takes precedence`,
+		`relay-migrate --schema-dir ./schema`,
+	} {
+		if !strings.Contains(stdout.String(), fragment) {
+			t.Fatalf("help output = %q, want fragment %q", stdout.String(), fragment)
+		}
 	}
 }
 

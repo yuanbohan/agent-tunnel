@@ -6,7 +6,7 @@ For deploys started from your local checkout with `make` plus Ansible, use [depl
 This guide covers the day-to-day relay CLI commands introduced for PostgreSQL-backed auth, invite-code management, operator maintenance, and explicit schema migrations.
 
 The commands here use the `relay` and `relay-migrate` binaries from this repository.
-`relay-migrate` requires an explicit `--schema-dir` so it never guesses where SQL files live.
+`relay-migrate` requires an explicit `--schema-dir` so it never guesses where SQL files live, and cobra enforces that requirement before execution.
 Remote install and deploy now run through Ansible inventories under `ansible/inventories/` plus per-environment secrets in `ansible/host_vars/dev/relay-secrets.yml` and `ansible/host_vars/prod/relay-secrets.yml`. Local commands such as `make migrate` and `make start` read the current shell environment only.
 
 ## Environment Variables
@@ -27,6 +27,7 @@ Notes:
 - nginx should serve the public website on `/`, proxy `/api/` and `/agent/ws`, and keep the operator routes off the public surface.
 - Operator commands call the running relay. That means `relay serve` must already be running when you execute `relay invite ...` or `relay user delete`.
 - `RELAY_LISTEN_ADDR` is shared by `relay serve` and the operator commands. If you start the relay on a different local address, set the same value before running invite or user commands.
+- Operator commands are intentionally local-only. They do not accept a relay-address flag. `relay invite disable` requires `--code`, and `relay user delete` requires `--username`.
 - On a systemd-managed host, the usual source of truth is `/etc/agentunnel/relay.env`. `make env-dev` or `make env-prod` renders that file from the selected inventory plus the matching host secret file. You can source that file before running relay commands, or pass it directly to `relay-migrate --env-file /etc/agentunnel/relay.env`.
 
 ## Command Summary
@@ -38,9 +39,9 @@ Notes:
 | `relay-migrate --env-file <path> --schema-dir <dir> --baseline <version>` | Mark migrations through a known version as already applied |
 | `relay serve` | Start the relay HTTP and WebSocket service |
 | `relay invite create` | Create one or more invite codes |
-| `relay invite disable` | Disable an existing invite code |
+| `relay invite disable --code <code>` | Disable an existing invite code |
 | `relay invite list` | List all invite codes with status and current binding |
-| `relay user delete` | Delete a user account and free the username |
+| `relay user delete --username <name>` | Delete a user account and free the username |
 | `make install` / `make install-local` | Install the local `tunnel`, `relay`, and `relay-migrate` binaries into `$(INSTALL_DIR)` |
 | `make init-dev` / `make init-prod` | Fresh-host bootstrap: install base packages, create the relay PostgreSQL user and database, render nginx, and (prod only) issue the Let's Encrypt cert and switch nginx to TLS |
 | `make install-dev` | Install base packages on the dev host and sync the HTTP nginx site that fronts the relay |

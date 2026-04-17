@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -42,8 +43,61 @@ func TestRunWithHandlersRejectsUnknownCommand(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected unknown command to fail")
 	}
-	if !strings.Contains(err.Error(), "relay serve") {
-		t.Fatalf("error = %q, want root usage", err.Error())
+	var usageErr usageError
+	if !errors.As(err, &usageErr) {
+		t.Fatalf("error = %#v, want usageError", err)
+	}
+	if !strings.Contains(err.Error(), "unknown command") {
+		t.Fatalf("error = %q, want unknown-command message", err.Error())
+	}
+}
+
+func TestRunWithHandlersInviteDisableRequiresCode(t *testing.T) {
+	err := runWithHandlers([]string{"invite", "disable"}, runtimeEnv{
+		getenv: testEnv(map[string]string{
+			"RELAY_OPERATOR_TOKEN": "operator-secret",
+		}),
+	}, commandHandlers{})
+	if err == nil {
+		t.Fatal("expected missing code to fail")
+	}
+	if !strings.Contains(err.Error(), `required flag(s) "code" not set`) {
+		t.Fatalf("error = %q, want required code message", err.Error())
+	}
+}
+
+func TestRunWithHandlersUserDeleteRequiresUsername(t *testing.T) {
+	err := runWithHandlers([]string{"user", "delete"}, runtimeEnv{
+		getenv: testEnv(map[string]string{
+			"RELAY_OPERATOR_TOKEN": "operator-secret",
+		}),
+	}, commandHandlers{})
+	if err == nil {
+		t.Fatal("expected missing username to fail")
+	}
+	if !strings.Contains(err.Error(), `required flag(s) "username" not set`) {
+		t.Fatalf("error = %q, want required username message", err.Error())
+	}
+}
+
+func TestRunWithHandlersRejectsRelayAddrFlagOnOperatorSubcommands(t *testing.T) {
+	for _, args := range [][]string{
+		{"invite", "create", "--relay-addr", "127.0.0.1:9999"},
+		{"invite", "disable", "--relay-addr", "127.0.0.1:9999", "--code", "AB2C3D"},
+		{"invite", "list", "--relay-addr", "127.0.0.1:9999"},
+		{"user", "delete", "--relay-addr", "127.0.0.1:9999", "--username", "alice"},
+	} {
+		err := runWithHandlers(args, runtimeEnv{
+			getenv: testEnv(map[string]string{
+				"RELAY_OPERATOR_TOKEN": "operator-secret",
+			}),
+		}, commandHandlers{})
+		if err == nil {
+			t.Fatalf("args %v: expected unknown flag error", args)
+		}
+		if !strings.Contains(err.Error(), "unknown flag: --relay-addr") {
+			t.Fatalf("args %v: error = %q, want unknown relay-addr flag", args, err.Error())
+		}
 	}
 }
 
@@ -55,6 +109,30 @@ func TestRunWithHandlersPrintsVersion(t *testing.T) {
 	}
 	if got := stdout.String(); got != "relay v0.1.0-dev\n" {
 		t.Fatalf("stdout = %q, want relay v0.1.0-dev", got)
+	}
+}
+
+func TestRunWithHandlersHelpExplainsServerAndLocalOperatorRequirements(t *testing.T) {
+	var stdout bytes.Buffer
+	err := runWithHandlers([]string{"--help"}, runtimeEnv{stdout: &stdout}, commandHandlers{})
+	if err != nil {
+		t.Fatalf("runWithHandlers returned error: %v", err)
+	}
+	for _, fragment := range []string{
+		`Run the relay server and local-only operator commands.`,
+		`RELAY_DATABASE_URL`,
+		`RELAY_APP_SECRET`,
+		`RELAY_OPERATOR_TOKEN`,
+		`local-only`,
+		`RELAY_LISTEN_ADDR`,
+		`relay invite disable --code AB2C3D`,
+	} {
+		if !strings.Contains(stdout.String(), fragment) {
+			t.Fatalf("help output = %q, want fragment %q", stdout.String(), fragment)
+		}
+	}
+	if strings.Contains(stdout.String(), "completion") {
+		t.Fatalf("help output = %q, want completion command to be hidden", stdout.String())
 	}
 }
 
