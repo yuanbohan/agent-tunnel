@@ -24,7 +24,7 @@ These are the relay-side environment variables that matter now:
 Notes:
 
 - Operator commands call the running relay over a local-only operator API outside `/api/`. They must run on the relay host, or through an SSH tunnel that lands on the relay host loopback interface.
-- nginx should serve the public website on `/`, proxy `/api/`, `/agent/ws`, and `/device/ws`, and keep the operator routes off the public surface.
+- nginx should serve the public website on `/`, proxy `/api/`, `/agent/ws`, `/device/ws`, and `/healthz`, and keep the operator routes off the public surface.
 - Operator commands call the running relay. That means `relay serve` must already be running when you execute `relay invite ...` or `relay user delete`.
 - `RELAY_LISTEN_ADDR` is shared by `relay serve` and the operator commands. If you start the relay on a different local address, set the same value before running invite or user commands.
 - Operator commands are intentionally local-only. They do not accept a relay-address flag. `relay invite disable` requires `--code`, and `relay user delete` requires `--username`.
