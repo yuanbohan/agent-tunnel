@@ -61,7 +61,7 @@ This continues the direction already established in the origin requirements docu
 
 - `internal/protocol/message.go` defines `protocol.SessionInfo`, which is shared by `/agent/ws` registration and `GET /api/sessions`.
 - `cmd/tunnel/main.go` builds the `SessionInfo` for every `tunnel run` session before the connector registers it with the relay.
-- `internal/tunnel/daemon/recipe.go` already exposes `CollectDeviceMetadata()`, returning `DisplayName`, `Hostname`, `PlatformFamily`, and `PlatformID`.
+- `internal/tunnel/daemon/recipe.go` now exposes `CollectSessionMetadata()` for session registration, returning `DisplayName`, `Hostname`, `PlatformFamily`, and `PlatformID`.
 - `internal/relay/handler/agent/ws.go` registers the incoming `SessionInfo` without projecting it into a second DTO and uses the same registration hook to complete pending launches as `session_ready`.
 - `internal/relay/session/registry.go` stores the full `SessionInfo` and returns it unchanged from `ListForUser`.
 - `internal/relay/handler/api/sessions.go` already serves `registry.ListForUser(...)` directly, so this contract expansion should stay pass-through rather than introducing relay-side enrichment.
@@ -81,7 +81,7 @@ This continues the direction already established in the origin requirements docu
 
 - **Extend the shared `protocol.SessionInfo` contract directly.** The same struct already spans `/agent/ws` registration and `GET /api/sessions`, so adding the new fields there keeps one source of truth instead of creating API-only projection code.
 - **Populate metadata in `tunnel run`, not in relay.** Machine identity belongs to the session's owning process. Relay should not try to derive it later from device-launch state because manually started sessions would remain incomplete.
-- **Reuse `daemon.CollectDeviceMetadata()` for all sessions.** The helper already returns the needed display and platform fields, so `tunnel run` should reuse it rather than creating a second platform-detection path.
+- **Reuse `daemon.CollectSessionMetadata()` for all sessions.** The helper already returns the needed display and platform fields for session registration, so `tunnel run` should reuse it rather than creating a second platform-detection path.
 - **Normalize `computer_name` before registration.** `computer_name` should be derived once in `tunnel run`: non-blank `DisplayName` first, otherwise `Hostname`. Clients should consume the normalized display value rather than re-implementing this fallback.
 - **Keep relay pass-through.** `internal/relay/session/Registry` and `GET /api/sessions` should continue storing and returning `SessionInfo` directly. No device registry lookups, launch-history joins, or enrichment hooks should be added to the relay request path.
 - **Document `platform_family` as coarse fallback and `platform_id` as raw and client-mapped.** The server should transport both fields, with exact icon mapping remaining client-owned.
@@ -91,7 +91,7 @@ This continues the direction already established in the origin requirements docu
 
 ### Resolved During Planning
 
-- Where should session machine metadata come from? `internal/tunnel/daemon/CollectDeviceMetadata()`.
+- Where should session machine metadata come from? `internal/tunnel/daemon/CollectSessionMetadata()`.
 - Should relay expose both `display_name` and `hostname` on session discovery? No. The public session surface should expose only normalized `computer_name`.
 - Should relay infer session OS from device-launch relationships? No. Session registration itself is the source of truth.
 - Does this require new relay storage or schema changes? No. Session state remains live-only and in-memory.
@@ -109,7 +109,7 @@ This continues the direction already established in the origin requirements docu
 ```mermaid
 sequenceDiagram
     participant Tunnel as tunnel run
-    participant DaemonMeta as CollectDeviceMetadata
+    participant DaemonMeta as CollectSessionMetadata
     participant RelayWS as /agent/ws
     participant Registry as relay session registry
     participant SessionsAPI as GET /api/sessions
@@ -171,7 +171,7 @@ sequenceDiagram
 - Test: `cmd/tunnel/main_test.go`
 
 **Approach:**
-- Call `daemon.CollectDeviceMetadata()` when building `SessionInfo` in `runTunnelSession`.
+- Call `daemon.CollectSessionMetadata()` when building `SessionInfo` in `runTunnelSession`.
 - Populate:
   - `platform_family = metadata.PlatformFamily`
   - `platform_id = metadata.PlatformID`
@@ -266,7 +266,7 @@ sequenceDiagram
 ## System-Wide Impact
 
 - **Interaction graph:** `cmd/tunnel/main.go` now collects local machine metadata before session registration; `/agent/ws` stores the resulting `SessionInfo`; `/api/sessions` continues returning that stored snapshot directly to authenticated clients.
-- **Error propagation:** `CollectDeviceMetadata()` does not currently return an error, so this feature should not create a new startup failure mode for `tunnel run`.
+- **Error propagation:** `CollectSessionMetadata()` does not currently return an error, so this feature should not create a new startup failure mode for `tunnel run`.
 - **State lifecycle risks:** sessions registered by older `tunnel` binaries will not gain the new fields until they reconnect or restart with the updated binary. This is acceptable for a live-only session registry, but downstream clients must tolerate temporarily missing values during rollout.
 - **API surface parity:** `/agent/ws` registration, `GET /api/sessions`, `docs/api.md`, `docs/protocol.md`, `docs/architecture.md`, `README.md`, `CLAUDE.md`, and `AGENTS.md` must all describe the same session fields.
 - **Integration coverage:** end-to-end confidence comes from combining protocol JSON tests, `tunnel run` session registration tests, authenticated `/api/sessions` tests, and launch-correlation websocket tests.
