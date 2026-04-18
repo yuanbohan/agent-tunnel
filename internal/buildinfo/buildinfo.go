@@ -4,7 +4,17 @@ import "strings"
 
 const defaultVersion = "v0.1.0-dev"
 
-var Version = defaultVersion
+type Distribution string
+
+const (
+	DistributionNonRelease      Distribution = "non-release"
+	DistributionOfficialRelease Distribution = "official-release"
+)
+
+var (
+	Version            = defaultVersion
+	DistributionMarker = string(DistributionNonRelease)
+)
 
 func String() string {
 	trimmed := strings.TrimSpace(Version)
@@ -15,11 +25,32 @@ func String() string {
 }
 
 func Major() string {
-	return majorOf(String())
+	return MajorOf(String())
 }
 
 func CompatibilityLine() string {
-	return compatibilityLineOf(String())
+	return CompatibilityLineOf(String())
+}
+
+func DistributionString() Distribution {
+	switch Distribution(strings.TrimSpace(DistributionMarker)) {
+	case DistributionOfficialRelease:
+		return DistributionOfficialRelease
+	default:
+		return DistributionNonRelease
+	}
+}
+
+func IsOfficialRelease() bool {
+	return DistributionString() == DistributionOfficialRelease
+}
+
+func MajorOf(version string) string {
+	return majorOf(version)
+}
+
+func CompatibilityLineOf(version string) string {
+	return compatibilityLineOf(version)
 }
 
 func majorOf(version string) string {

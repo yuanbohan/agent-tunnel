@@ -34,10 +34,6 @@ func (s *fakeStore) AuthFilePath() (string, error) {
 	return s.authPath, nil
 }
 
-func (s *fakeStore) ConfigFilePath() (string, error) {
-	return strings.TrimSuffix(s.authPath, "auth.json") + "config.json", nil
-}
-
 func (s *fakeStore) Load() (storedAuth, error) {
 	if s.loadErr != nil {
 		return storedAuth{}, s.loadErr

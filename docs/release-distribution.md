@@ -30,18 +30,23 @@ Examples:
 
 The public `latest.json` manifest publishes this contract as `compatibility_line`.
 
+Published `tunnel` binaries also embed their own release identity. Official release packaging sets both the requested version and an internal `official-release` distribution marker. Native self-update uses that embedded marker to decide whether the current binary is on the official release channel. Rollback target metadata is still stored locally in `~/.tunnel/updater.json`.
+
 The private-repo `Release Tunnel` workflow enforces that the requested `tunnel` release version stays within the current repo relay compatibility line. It does not publish a `relay` binary; it prevents a `tunnel` release from crossing into a new line until the repo's shared build metadata is updated first.
 
 ## Token Setup
 
-The private source repo needs one secret:
+The private source repo needs two secrets:
 
 - `TUNNEL_DIST_REPO_TOKEN`: a fine-grained personal access token with Contents read/write access to `yuanbohan/tunnel`
+- `TUNNEL_RELEASE_SIGNING_PRIVATE_KEY`: an Ed25519 private key in PEM format used to sign `checksums.txt`
 
 The workflow uses that token to:
 
 - push `install.sh`, `latest.json`, and `README.md` to the public repo default branch
 - create the public GitHub release and upload release assets
+
+The signing key is paired with the public key embedded in `internal/tunnel/update`. Native `tunnel update` and `tunnel rollback` verify `checksums.txt.sig` before trusting any published archive checksum.
 
 ## Release Flow
 
@@ -55,9 +60,12 @@ Published outputs:
 - one GitHub Release in `yuanbohan/tunnel`
 - four `tunnel_<version>_<os>_<arch>.tar.gz` assets
 - one `checksums.txt`
+- one `checksums.txt.sig`
 - refreshed `install.sh`
 - refreshed `latest.json`
 - refreshed public `README.md`
+
+Those same public assets are the only source used by native `tunnel update` and `tunnel rollback`. The CLI does not shell out to `install.sh`; it consumes the published `latest.json`, release archives, `checksums.txt`, and `checksums.txt.sig` directly.
 
 ## Commit Messages
 

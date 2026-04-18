@@ -35,6 +35,8 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 - `session_id` identifies one running `tunnel` process. Relay reconnects for that same process keep the same `session_id`. A fresh agent launch gets a new `session_id`.
 - `tunnel` is the PTY owner. It has no localhost HTTP server; all remote client access goes through the relay.
 - `tunnel run` uses `--base-url` (or `TUNNEL_BASE_URL`) plus runtime auth resolved as `TUNNEL_AUTH_TOKEN` first and `~/.tunnel/auth.json` second. `TUNNEL_BASE_URL` is optional and defaults to `https://diaro.me`.
+- Interactive `tunnel run` also performs one native binary update check at most once per 24-hour interval unless `TUNNEL_UPDATE_DISABLED=1` is set directly or through `~/.tunnel/settings.json`.
+- `tunnel update` installs the latest official release in place, and `tunnel rollback` re-downloads the previously recorded official release after one successful official-to-official upgrade.
 - On launch, `tunnel` must complete relay registration within the startup wait window. If registration does not succeed, startup fails and the local terminal session does not start.
 - After startup, relay unavailability must not interrupt local terminal work. The connector keeps retrying relay registration with backoff, and local sessions continue running unchanged while remote visibility and input are unavailable.
 - The agent is the authority for current terminal state. It maintains the headless terminal mirror and produces attach snapshots from that mirror.
@@ -55,7 +57,8 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 - PTY size remains local-terminal-owned in this phase. Remote clients follow forwarded resize events and do not become size authority.
 - Structured remote input remains `input_text` and `input_key`, with PTY-byte translation owned by `tunnel`.
 - The relay does not ship a bundled frontend. Any UI or client experience is owned by external clients such as the mobile app.
-- Public `tunnel` binary distribution lives in `yuanbohan/tunnel`, which is a distribution-only repo with stable `install.sh`, `latest.json`, and GitHub Releases assets.
+- Public `tunnel` binary distribution lives in `yuanbohan/tunnel`, which is a distribution-only repo with stable `install.sh`, `latest.json`, and GitHub Releases assets, including signed checksums for native self-update.
+- Persistent CLI-owned local state for Tunnel lives under `~/.tunnel/`: `auth.json` for saved auth fallback, `settings.json` for user-editable settings env overrides, and internal `updater.json` for cadence and rollback bookkeeping.
 - Tunnel and relay compatibility is guaranteed only within the same compatibility line. For `v1+`, that line is the semver major version. For pre-`v1`, that line is `0.minor`, so `v0.1.x` and `v0.2.x` are different compatibility lines.
 - Stronger delivery guarantees may be explored later, but do not document or imply them before they exist in code and protocol.
 

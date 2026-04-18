@@ -12,6 +12,7 @@ const (
 	tunnelBaseURLEnv         = "TUNNEL_BASE_URL"
 	tunnelAuthTokenEnv       = "TUNNEL_AUTH_TOKEN"
 	tunnelLaunchRequestIDEnv = "TUNNEL_LAUNCH_REQUEST_ID"
+	tunnelUpdateDisabledEnv  = "TUNNEL_UPDATE_DISABLED"
 )
 
 type runArgs struct {
@@ -60,6 +61,8 @@ func rootHelpText() string {
   tunnel run [options] <command> [args...]
   tunnel auth <command>
   tunnel daemon <command>
+  tunnel update
+  tunnel rollback
   tunnel --help
   tunnel --version
 
@@ -67,6 +70,8 @@ Commands:
   run         Launch a local command and connect it to the relay
   auth        Manage local tunnel authentication
   daemon      Manage the background mobile-launch daemon
+  update      Update tunnel to the latest official release
+  rollback    Roll back tunnel to the previous official release
   help        Show help for a command
 
 Flags:
@@ -76,6 +81,7 @@ Flags:
 Environment:
   %s  Higher-priority auth token override for tunnel run
   %s    Optional relay base URL (default: %s)
+  %s  Disable automatic update checks before tunnel run
 
 Examples:
   tunnel auth login
@@ -83,9 +89,11 @@ Examples:
   tunnel daemon start
   tunnel daemon open
   tunnel daemon sessions
+  tunnel update
+  tunnel rollback
   tunnel run claude
   tunnel run -l api-fix codex --profile prod
-`, tunnelAuthTokenEnv, tunnelBaseURLEnv, defaultTunnelBaseURL)
+`, tunnelAuthTokenEnv, tunnelBaseURLEnv, defaultTunnelBaseURL, tunnelUpdateDisabledEnv)
 }
 
 func runHelpText() string {
@@ -106,11 +114,12 @@ Flags:
 Environment:
   %s  Higher-priority auth token override for tunnel run
   %s    Optional relay base URL (default: %s)
+  %s  Disable automatic update checks before tunnel run
 
 Examples:
   tunnel run claude
   tunnel run -l api-fix codex --profile prod
-`, tunnelBaseURLEnv, defaultTunnelBaseURL, tunnelAuthTokenEnv, tunnelBaseURLEnv, defaultTunnelBaseURL)
+`, tunnelBaseURLEnv, defaultTunnelBaseURL, tunnelAuthTokenEnv, tunnelBaseURLEnv, defaultTunnelBaseURL, tunnelUpdateDisabledEnv)
 }
 
 func authHelpText() string {

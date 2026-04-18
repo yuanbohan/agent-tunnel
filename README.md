@@ -61,6 +61,15 @@ curl -fsSL https://raw.githubusercontent.com/yuanbohan/tunnel/main/install.sh | 
 ```
 
 The installer writes `tunnel` to `~/.local/bin/tunnel` and supports `darwin/arm64`, `darwin/amd64`, `linux/amd64`, and `linux/arm64`.
+Official release packages also publish a signed `checksums.txt` manifest used by native `tunnel update` and `tunnel rollback`.
+
+After install, Tunnel has three binary lifecycle paths:
+
+- `tunnel update` installs the latest official release in place
+- `tunnel rollback` re-downloads the previous recorded official release after one successful official upgrade
+- interactive `tunnel run ...` checks for updates at most once every 24 hours and may prompt before startup
+
+The startup prompt is only shown for interactive `tunnel run` sessions. Non-interactive usage stays silent and never blocks on update interaction.
 
 Tunnel and Relay are guaranteed compatible within the same compatibility line:
 
@@ -71,6 +80,32 @@ The `Release Tunnel` workflow enforces that a published `tunnel` version stays w
 
 Verify the installed version with `tunnel --version`.
 For CLI usage, flags, and examples, run `tunnel --help`. Local command launch now lives under `tunnel run <command>`. `tunnel run` supports `-v` and `-l` as short forms for `--verbose` and `--label`. `--base-url` remains long-form only.
+
+### Local state
+
+Tunnel keeps persistent local CLI state under `~/.tunnel/`:
+
+- `auth.json`: saved local fallback auth created by `tunnel auth login`
+- `settings.json`: user-editable settings, currently used for `env` overrides such as `TUNNEL_UPDATE_DISABLED`
+- `updater.json`: internal updater cadence and rollback bookkeeping
+
+Real environment variables override matching keys from `~/.tunnel/settings.json`.
+
+To disable the automatic startup update check for `tunnel run`, either export:
+
+```sh
+export TUNNEL_UPDATE_DISABLED=1
+```
+
+or add it to `~/.tunnel/settings.json`:
+
+```json
+{
+  "env": {
+    "TUNNEL_UPDATE_DISABLED": "1"
+  }
+}
+```
 
 ## Quick Start
 
@@ -127,6 +162,28 @@ Expected stderr output when relay is available during startup:
 
 Startup banners are rendered inline without consuming an extra terminal row.
 Healthy startup banners are printed in bright green.
+
+Before an interactive `tunnel run`, Tunnel now performs one update check at most once per 24-hour interval. If a newer official release is available, Tunnel shows this startup prompt before the relay registration and PTY startup path begins:
+
+```text
+A new Tunnel version is available
+
+Current: v0.1.7
+Latest:  v0.1.9
+
+? Update Tunnel now?
+> Update now
+  Skip and continue
+```
+
+If you choose `Update now`, Tunnel updates itself to the latest official release and restarts the same `tunnel run` command under the new binary. If the download or replacement step fails before restart, Tunnel reports the failure and continues the current `tunnel run`. If the binary replacement succeeds but the automatic restart fails, Tunnel stops and prints a recovery path instead of silently continuing.
+
+You can always manage the binary explicitly:
+
+```sh
+tunnel update
+tunnel rollback
+```
 
 ### 2b. Start the device daemon
 

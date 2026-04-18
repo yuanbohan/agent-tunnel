@@ -114,17 +114,69 @@ read_manifest_field() {
 	sed -n "s/.*\"$field\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p"
 }
 
+verify_signed_payload() {
+	payload_path="$1"
+	signature_path="$2"
+	artifact_name="$3"
+	allowed_signers_path="$4"
+
+	if ! ssh-keygen -Y verify \
+		-f "$allowed_signers_path" \
+		-I tunnel-release \
+		-n tunnel-release \
+		-s "$signature_path" \
+		<"$payload_path" >/dev/null 2>&1
+	then
+		printf 'error: invalid signature for %s\n' "$artifact_name" >&2
+		exit 1
+	fi
+}
+
 version="${VERSION:-}"
 install_base_url="${TUNNEL_INSTALL_BASE_URL:-https://raw.githubusercontent.com/yuanbohan/tunnel/main}"
 release_repo="${TUNNEL_RELEASE_REPO:-yuanbohan/tunnel}"
 install_dir="${TUNNEL_INSTALL_DIR:-$HOME/.local/bin}"
+release_signing_public_key="${TUNNEL_RELEASE_SIGNING_PUBLIC_KEY:-AAAAC3NzaC1lZDI1NTE5AAAAIO+yV8bMgSRdfozlBhqQ+xdFJZ5cAPI2T9sI6OSZRPXZ}"
 
 require_cmd curl
 require_cmd tar
 require_cmd mktemp
+require_cmd ssh-keygen
+
+tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/tunnel-install.XXXXXX")
+cleanup() {
+	rm -rf "$tmpdir"
+}
+trap cleanup EXIT INT TERM
+
+ssh_keygen_capability_err="$tmpdir/ssh-keygen-capability.err"
+if ! ssh-keygen -Y verify \
+	-f /dev/null \
+	-I tunnel-release \
+	-n tunnel-release \
+	-s /dev/null </dev/null 2>"$ssh_keygen_capability_err"
+then
+	if grep -Eqi 'unknown option|illegal option' "$ssh_keygen_capability_err"; then
+		printf 'error: ssh-keygen with -Y verify support is required (OpenSSH 8.1+)\n' >&2
+		exit 1
+	fi
+fi
+
+latest_manifest_path="$tmpdir/latest.json"
+latest_manifest_signature_path="$tmpdir/latest.json.sig"
+checksums_path="$tmpdir/checksums.txt"
+checksums_signature_path="$tmpdir/checksums.txt.sig"
+allowed_signers_path="$tmpdir/allowed_signers"
+extract_dir="$tmpdir/extract"
+
+printf 'tunnel-release %s %s\n' "ssh-ed25519" "$release_signing_public_key" >"$allowed_signers_path"
 
 if [ -z "$version" ]; then
-	manifest_json=$(read_latest_manifest "$install_base_url/latest.json")
+	curl_fetch -o "$latest_manifest_path" "$install_base_url/latest.json"
+	curl_fetch -o "$latest_manifest_signature_path" "$install_base_url/latest.json.sig"
+	verify_signed_payload "$latest_manifest_path" "$latest_manifest_signature_path" "latest.json" "$allowed_signers_path"
+
+	manifest_json=$(cat "$latest_manifest_path")
 	version=$(printf '%s' "$manifest_json" | read_manifest_field version)
 	if [ -z "$version" ]; then
 		printf 'error: latest.json did not contain a version\n' >&2
@@ -166,20 +218,15 @@ asset_name=$(release_asset_name "$version" "$os" "$arch")
 release_base_url="${TUNNEL_RELEASE_BASE_URL:-https://github.com/$release_repo/releases/download/$version}"
 asset_url="$release_base_url/$asset_name"
 checksums_url="$release_base_url/checksums.txt"
-
-tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/tunnel-install.XXXXXX")
-cleanup() {
-	rm -rf "$tmpdir"
-}
-trap cleanup EXIT INT TERM
-
+checksums_signature_url="$release_base_url/checksums.txt.sig"
 archive_path="$tmpdir/$asset_name"
-checksums_path="$tmpdir/checksums.txt"
-extract_dir="$tmpdir/extract"
 
 mkdir -p "$extract_dir"
 curl_fetch -o "$archive_path" "$asset_url"
 curl_fetch -o "$checksums_path" "$checksums_url"
+curl_fetch -o "$checksums_signature_path" "$checksums_signature_url"
+
+verify_signed_payload "$checksums_path" "$checksums_signature_path" "checksums.txt" "$allowed_signers_path"
 
 expected_checksum=$(awk "/  $asset_name\$/ {print \$1; exit}" "$checksums_path")
 if [ -z "$expected_checksum" ]; then
