@@ -37,11 +37,14 @@ sync_stable_files() {
 	install_source="$3"
 	readme_source="$4"
 	manifest_script="$5"
+	go_bin="$6"
+	signing_key="$7"
 
 	cp "$install_source" "$dest_dir/install.sh"
 	chmod 0755 "$dest_dir/install.sh"
 	cp "$readme_source" "$dest_dir/README.md"
 	"$manifest_script" "$version" >"$dest_dir/latest.json"
+	TUNNEL_RELEASE_SIGNING_PRIVATE_KEY="$signing_key" "$go_bin" run ./cmd/release-sign sign "$dest_dir/latest.json" "$dest_dir/latest.json.sig" >/dev/null
 }
 
 ensure_repo_checkout() {
@@ -82,6 +85,7 @@ manifest_script="${TUNNEL_DIST_MANIFEST_SCRIPT:-$script_dir/render-latest-manife
 dry_run="${PUBLISH_DRY_RUN:-0}"
 clone_dir="${TUNNEL_DIST_CLONE_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/tunnel-dist.XXXXXX")}"
 cleanup_clone="true"
+go_bin="${GO:-go}"
 
 cleanup() {
 	if [ "$cleanup_clone" = "true" ]; then
@@ -126,13 +130,18 @@ if truthy "$dry_run"; then
 	printf 'dry-run: would create draft release %s\n' "$version"
 	printf 'dry-run: would upload 4 archives plus checksums.txt plus checksums.txt.sig\n'
 	printf 'dry-run: would publish release %s before updating latest.json\n' "$version"
-	printf 'dry-run: would sync install.sh, latest.json, and README.md with commit message "release: publish tunnel %s"\n' "$version"
+	printf 'dry-run: would sync install.sh, latest.json, latest.json.sig, and README.md with commit message "release: publish tunnel %s"\n' "$version"
 	exit 0
 fi
 
 token="${TUNNEL_DIST_REPO_TOKEN:-${GH_TOKEN:-}}"
 if [ -z "$token" ]; then
 	printf 'error: TUNNEL_DIST_REPO_TOKEN or GH_TOKEN is required\n' >&2
+	exit 1
+fi
+release_signing_key="${TUNNEL_RELEASE_SIGNING_PRIVATE_KEY:-}"
+if [ -z "$release_signing_key" ]; then
+	printf 'error: TUNNEL_RELEASE_SIGNING_PRIVATE_KEY is required\n' >&2
 	exit 1
 fi
 
@@ -149,7 +158,9 @@ if ! git -C "$clone_dir" rev-parse --verify HEAD >/dev/null 2>&1; then
 	cp "$install_source" "$clone_dir/install.sh"
 	chmod 0755 "$clone_dir/install.sh"
 	cp "$readme_source" "$clone_dir/README.md"
-	git -C "$clone_dir" add install.sh README.md
+	"$manifest_script" "$version" >"$clone_dir/latest.json"
+	TUNNEL_RELEASE_SIGNING_PRIVATE_KEY="$release_signing_key" "$go_bin" run ./cmd/release-sign sign "$clone_dir/latest.json" "$clone_dir/latest.json.sig" >/dev/null
+	git -C "$clone_dir" add install.sh README.md latest.json latest.json.sig
 	if git_commit_if_needed "$clone_dir" "docs: bootstrap public tunnel distribution repo"; then
 		git -C "$clone_dir" push -u origin "$dist_branch" >/dev/null
 	fi
@@ -176,8 +187,8 @@ Tunnel and Relay are guaranteed compatible within the same compatibility line." 
 
 GH_TOKEN="$token" gh release edit "$version" --repo "$dist_repo" --draft=false >/dev/null
 
-sync_stable_files "$clone_dir" "$version" "$install_source" "$readme_source" "$manifest_script"
-git -C "$clone_dir" add install.sh latest.json README.md
+sync_stable_files "$clone_dir" "$version" "$install_source" "$readme_source" "$manifest_script" "$go_bin" "$release_signing_key"
+git -C "$clone_dir" add install.sh latest.json latest.json.sig README.md
 if git_commit_if_needed "$clone_dir" "release: publish tunnel $version"; then
 	git -C "$clone_dir" push origin "$dist_branch" >/dev/null
 fi

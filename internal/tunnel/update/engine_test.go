@@ -167,8 +167,8 @@ func TestEngineUpdateAvailableRejectsUntrustedLatestRelease(t *testing.T) {
 	server, _ := releaseTestServer(t, "v0.1.9", "linux", "amd64", []byte("new-binary"))
 	engine := NewEngine(Config{
 		HTTPClient:      server.Client(),
-		InstallBaseURL:  server.URL,
-		ReleaseBaseURL:  func(version string) string { return server.URL + "/corrupt/" + version },
+		InstallBaseURL:  server.URL + "/bad-latest",
+		ReleaseBaseURL:  func(version string) string { return server.URL + "/download/" + version },
 		CurrentVersion:  func() string { return "v0.1.7" },
 		CurrentOfficial: func() bool { return true },
 		CurrentTarget:   func() (string, string, error) { return "linux", "amd64", nil },
@@ -266,11 +266,21 @@ func releaseTestServer(t *testing.T, version, goos, goarch string, binaryPayload
 	corruptChecksumsPayload := []byte(fmt.Sprintf("%s  %s\n", hex.EncodeToString(bytes.Repeat([]byte{'0'}, sha256.Size))[:64], assetName))
 	signingPublicKey, signingKey, checksumsSignaturePayload := mustReleaseSignature(t, checksumsPayload)
 	corruptChecksumsSignaturePayload := mustSignReleasePayload(t, signingKey, corruptChecksumsPayload)
+	latestManifestPayload := []byte(fmt.Sprintf(`{"version":"%s","compatibility_line":"%s"}`, version, "0.1"))
+	latestManifestSignaturePayload := mustSignReleasePayload(t, signingKey, latestManifestPayload)
+	badLatestManifestPayload := []byte(fmt.Sprintf(`{"version":"%s","compatibility_line":"%s"}`, version, "0.1"))
+	badLatestManifestSignaturePayload := mustSignReleasePayload(t, signingKey, []byte(`{"version":"v9.9.9","compatibility_line":"9"}`))
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/latest.json":
-			_, _ = w.Write([]byte(fmt.Sprintf(`{"version":"%s","compatibility_line":"%s"}`, version, "0.1")))
+			_, _ = w.Write(latestManifestPayload)
+		case "/" + releaseLatestManifestSignatureFileName():
+			_, _ = w.Write(latestManifestSignaturePayload)
+		case "/bad-latest/" + releaseLatestManifestFileName():
+			_, _ = w.Write(badLatestManifestPayload)
+		case "/bad-latest/" + releaseLatestManifestSignatureFileName():
+			_, _ = w.Write(badLatestManifestSignaturePayload)
 		case "/download/" + version + "/" + assetName:
 			_, _ = w.Write(archivePayload)
 		case "/download/" + version + "/" + checksumsFileName:
@@ -287,6 +297,7 @@ func releaseTestServer(t *testing.T, version, goos, goarch string, binaryPayload
 			http.NotFound(w, r)
 		}
 	}))
+	t.Cleanup(server.Close)
 	return server, verifyChecksumsSignatureWithPublicKeyBase64(signingPublicKey)
 }
 

@@ -18,8 +18,13 @@ import (
 )
 
 const (
-	defaultInstallBaseURL = "https://raw.githubusercontent.com/yuanbohan/tunnel/main"
-	defaultReleaseRepo    = "yuanbohan/tunnel"
+	defaultInstallBaseURL  = "https://raw.githubusercontent.com/yuanbohan/tunnel/main"
+	defaultReleaseRepo     = "yuanbohan/tunnel"
+	maxLatestManifestBytes = 64 * 1024
+	maxChecksumsBytes      = 256 * 1024
+	maxSignatureBytes      = 64 * 1024
+	maxArchiveBytes        = 64 * 1024 * 1024
+	maxBinaryBytes         = 64 * 1024 * 1024
 )
 
 type httpClient interface {
@@ -167,9 +172,16 @@ func (e *Engine) InstallVersion(ctx context.Context, version string) (InstallRes
 }
 
 func (e *Engine) fetchLatestRelease(ctx context.Context) (LatestManifest, error) {
-	payload, err := e.fetchBytes(ctx, e.installBaseURL+"/latest.json")
+	payload, err := e.fetchBytes(ctx, e.installBaseURL+"/"+releaseLatestManifestFileName(), maxLatestManifestBytes)
 	if err != nil {
 		return LatestManifest{}, err
+	}
+	signaturePayload, err := e.fetchBytes(ctx, e.installBaseURL+"/"+releaseLatestManifestSignatureFileName(), maxSignatureBytes)
+	if err != nil {
+		return LatestManifest{}, err
+	}
+	if err := e.verifyChecksumsSignature(payload, signaturePayload); err != nil {
+		return LatestManifest{}, fmt.Errorf("verify %s: %w", releaseLatestManifestSignatureFileName(), err)
 	}
 	manifest, err := parseLatestManifest(payload)
 	if err != nil {
@@ -202,7 +214,7 @@ func (e *Engine) installVersion(ctx context.Context, version string) (InstallRes
 	if err != nil {
 		return InstallResult{}, err
 	}
-	archivePayload, err := e.fetchBytes(ctx, releaseBaseURL+"/"+assetName)
+	archivePayload, err := e.fetchBytes(ctx, releaseBaseURL+"/"+assetName, maxArchiveBytes)
 	if err != nil {
 		return InstallResult{}, err
 	}
@@ -251,11 +263,11 @@ func (e *Engine) verifySignedRelease(ctx context.Context, version string) error 
 }
 
 func (e *Engine) fetchVerifiedChecksums(ctx context.Context, releaseBaseURL string) ([]byte, error) {
-	checksumsPayload, err := e.fetchBytes(ctx, releaseBaseURL+"/"+releaseChecksumsFileName())
+	checksumsPayload, err := e.fetchBytes(ctx, releaseBaseURL+"/"+releaseChecksumsFileName(), maxChecksumsBytes)
 	if err != nil {
 		return nil, err
 	}
-	checksumsSignaturePayload, err := e.fetchBytes(ctx, releaseBaseURL+"/"+releaseChecksumsSignatureFileName())
+	checksumsSignaturePayload, err := e.fetchBytes(ctx, releaseBaseURL+"/"+releaseChecksumsSignatureFileName(), maxSignatureBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -265,7 +277,7 @@ func (e *Engine) fetchVerifiedChecksums(ctx context.Context, releaseBaseURL stri
 	return checksumsPayload, nil
 }
 
-func (e *Engine) fetchBytes(ctx context.Context, rawURL string) ([]byte, error) {
+func (e *Engine) fetchBytes(ctx context.Context, rawURL string, maxBytes int64) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build request for %s: %w", rawURL, err)
@@ -280,9 +292,13 @@ func (e *Engine) fetchBytes(ctx context.Context, rawURL string) ([]byte, error) 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("download %s: unexpected HTTP status %s", rawURL, resp.Status)
 	}
-	payload, err := io.ReadAll(resp.Body)
+	limitedReader := io.LimitReader(resp.Body, maxBytes+1)
+	payload, err := io.ReadAll(limitedReader)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", rawURL, err)
+	}
+	if int64(len(payload)) > maxBytes {
+		return nil, fmt.Errorf("read %s: payload exceeded limit of %d bytes", rawURL, maxBytes)
 	}
 	return payload, nil
 }
@@ -336,9 +352,15 @@ func extractTunnelBinary(archivePayload []byte) ([]byte, error) {
 		if header.Typeflag != tar.TypeReg || strings.TrimSpace(header.Name) != "tunnel" {
 			return nil, fmt.Errorf("archive must contain only tunnel")
 		}
-		binaryPayload, err = io.ReadAll(tarReader)
+		if header.Size <= 0 || header.Size > maxBinaryBytes {
+			return nil, fmt.Errorf("archive tunnel binary exceeded limit of %d bytes", maxBinaryBytes)
+		}
+		binaryPayload, err = io.ReadAll(io.LimitReader(tarReader, header.Size+1))
 		if err != nil {
 			return nil, fmt.Errorf("read tunnel binary from archive: %w", err)
+		}
+		if int64(len(binaryPayload)) != header.Size {
+			return nil, fmt.Errorf("archive tunnel binary size mismatch")
 		}
 	}
 	if entryCount == 0 || len(binaryPayload) == 0 {

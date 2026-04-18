@@ -10,6 +10,8 @@ import (
 )
 
 const (
+	latestManifestFileName     = "latest.json"
+	latestManifestSigFileName  = "latest.json.sig"
 	checksumsFileName          = "checksums.txt"
 	checksumsSignatureFileName = "checksums.txt.sig"
 )
@@ -62,6 +64,14 @@ func releaseChecksumsFileName() string {
 
 func releaseChecksumsSignatureFileName() string {
 	return checksumsSignatureFileName
+}
+
+func releaseLatestManifestFileName() string {
+	return latestManifestFileName
+}
+
+func releaseLatestManifestSignatureFileName() string {
+	return latestManifestSigFileName
 }
 
 func currentReleaseTarget() (string, string, error) {

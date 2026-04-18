@@ -27,6 +27,12 @@ sign_checksums_file() {
 	TUNNEL_RELEASE_SIGNING_PRIVATE_KEY="$release_signing_key" "$go_bin" run ./cmd/release-sign sign "$checksums_file" "$signature_path" >/dev/null
 }
 
+sign_latest_manifest_file() {
+	manifest_path="$1"
+	signature_path="$2"
+	TUNNEL_RELEASE_SIGNING_PRIVATE_KEY="$release_signing_key" "$go_bin" run ./cmd/release-sign sign "$manifest_path" "$signature_path" >/dev/null
+}
+
 start_fixture_server() {
 	fixture_dir="$1"
 	port_file="$2"
@@ -89,6 +95,7 @@ version="${TEST_RELEASE_VERSION:-$(release_fixture_version "$repo_relay_version"
 
 GO="$go_bin" RELEASE_DIR="$release_root" TUNNEL_RELEASE_SIGNING_PRIVATE_KEY="$release_signing_key" TUNNEL_RELEASE_SIGNING_PUBLIC_KEY="$release_signing_public_key" "$script_dir/release-package.sh" "$version" >/dev/null
 "$script_dir/render-latest-manifest.sh" "$version" >"$fixture_root/latest.json"
+sign_latest_manifest_file "$fixture_root/latest.json" "$fixture_root/latest.json.sig"
 
 port_file="$tmpdir/port"
 server_pid=$(start_fixture_server "$fixture_root" "$port_file")
@@ -122,6 +129,7 @@ if ! grep -q "add $home_dir/.local/bin to PATH" "$tmpdir/install.out"; then
 fi
 
 mv "$fixture_root/latest.json" "$fixture_root/latest.json.hidden"
+mv "$fixture_root/latest.json.sig" "$fixture_root/latest.json.sig.hidden"
 PATH="/usr/bin:/bin" HOME="$home_dir" \
 VERSION="$version" \
 TUNNEL_RELEASE_BASE_URL="$release_base_url" \
@@ -129,6 +137,7 @@ TUNNEL_RELEASE_SIGNING_PUBLIC_KEY="$release_signing_public_key" \
 TUNNEL_INSTALL_DIR="$home_dir/.local/bin" \
 "$script_dir/install-tunnel.sh" >/dev/null
 mv "$fixture_root/latest.json.hidden" "$fixture_root/latest.json"
+mv "$fixture_root/latest.json.sig.hidden" "$fixture_root/latest.json.sig"
 
 if [ "$("$home_dir/.local/bin/tunnel" --version)" != "tunnel $version" ]; then
 	printf 'error: pinned install path did not preserve requested version\n' >&2
@@ -136,6 +145,7 @@ if [ "$("$home_dir/.local/bin/tunnel" --version)" != "tunnel $version" ]; then
 fi
 
 printf '{"version":"%s"}\n' "$version" >"$fixture_root/latest.json"
+sign_latest_manifest_file "$fixture_root/latest.json" "$fixture_root/latest.json.sig"
 if PATH="/usr/bin:/bin" HOME="$home_dir" \
 	TUNNEL_INSTALL_BASE_URL="$base_url" \
 	TUNNEL_RELEASE_BASE_URL="$release_base_url" \
@@ -153,6 +163,7 @@ if ! grep -q 'latest.json did not contain compatibility_line' "$tmpdir/missing-l
 fi
 
 printf '{"version":"%s","compatibility_line":"9"}\n' "$version" >"$fixture_root/latest.json"
+sign_latest_manifest_file "$fixture_root/latest.json" "$fixture_root/latest.json.sig"
 if PATH="/usr/bin:/bin" HOME="$home_dir" \
 	TUNNEL_INSTALL_BASE_URL="$base_url" \
 	TUNNEL_RELEASE_BASE_URL="$release_base_url" \
@@ -170,6 +181,7 @@ if ! grep -q "latest.json compatibility_line does not match version $version" "$
 fi
 
 "$script_dir/render-latest-manifest.sh" "$version" >"$fixture_root/latest.json"
+sign_latest_manifest_file "$fixture_root/latest.json" "$fixture_root/latest.json.sig"
 
 if PATH="/usr/bin:/bin" HOME="$home_dir" \
 	TUNNEL_INSTALL_OS="linux" \
@@ -313,6 +325,27 @@ if [ "$("$home_dir/.local/bin/tunnel")" != "tunnel old-version" ]; then
 	printf 'error: invalid signature install replaced existing tunnel binary\n' >&2
 	exit 1
 fi
+
+printf '{"version":"%s","compatibility_line":"%s"}\n' "$version" "$(release_compatibility_line "$version")" >"$fixture_root/latest.json"
+printf 'corrupt signature\n' >"$fixture_root/latest.json.sig"
+
+if PATH="/usr/bin:/bin" HOME="$home_dir" \
+	TUNNEL_INSTALL_BASE_URL="$base_url" \
+	TUNNEL_RELEASE_BASE_URL="$release_base_url" \
+	TUNNEL_RELEASE_SIGNING_PUBLIC_KEY="$release_signing_public_key" \
+	TUNNEL_INSTALL_DIR="$home_dir/.local/bin" \
+	"$script_dir/install-tunnel.sh" >/dev/null 2>"$tmpdir/latest-signature.err"
+then
+	printf 'error: invalid latest.json signature install unexpectedly succeeded\n' >&2
+	exit 1
+fi
+
+if ! grep -q 'invalid signature for latest.json' "$tmpdir/latest-signature.err"; then
+	printf 'error: invalid latest.json signature path did not explain failure\n' >&2
+	exit 1
+fi
+
+sign_latest_manifest_file "$fixture_root/latest.json" "$fixture_root/latest.json.sig"
 
 ssh_keygen_wrapper_dir="$tmpdir/no-ssh-y/bin"
 mkdir -p "$ssh_keygen_wrapper_dir"

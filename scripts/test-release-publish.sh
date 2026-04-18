@@ -44,6 +44,7 @@ output=$(
 	PUBLISH_DRY_RUN=1 \
 	RELEASE_DIR="$release_root" \
 	TUNNEL_DIST_REPO="yuanbohan/tunnel" \
+	TUNNEL_RELEASE_SIGNING_PRIVATE_KEY="$release_signing_key" \
 	"$script_dir/publish-tunnel-release.sh" "$version"
 )
 
@@ -52,6 +53,7 @@ for expected in \
 	"dry-run: would create draft release $version" \
 	"dry-run: would upload 4 archives plus checksums.txt plus checksums.txt.sig" \
 	"dry-run: would publish release $version before updating latest.json" \
+	"dry-run: would sync install.sh, latest.json, latest.json.sig, and README.md with commit message \"release: publish tunnel $version\"" \
 	"release: publish tunnel $version"
 do
 	if ! printf '%s\n' "$output" | grep -Fq "$expected"; then
