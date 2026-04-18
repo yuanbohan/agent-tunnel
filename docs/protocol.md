@@ -72,7 +72,10 @@ WebSocket attach notes:
   "label": "api-fix",
   "cwd": "/repo",
   "command_preview": "codex --profile prod",
-  "started_at": 1775376000
+  "started_at": 1775376000,
+  "platform_family": "linux",
+  "platform_id": "ubuntu",
+  "computer_name": "Office Linux"
 }
 ```
 
@@ -80,6 +83,9 @@ Notes:
 
 - `label` may be omitted when empty
 - `started_at` is a Unix timestamp in seconds
+- `platform_family` is the coarse fallback field for session device identity, currently `macos` or `linux`
+- `platform_id` is a best-effort specific identifier for client-side icon mapping
+- `computer_name` is the user-facing machine name chosen by the agent: display name first, hostname as fallback
 - every returned session currently has an owning agent websocket and is attachable
 
 `GET /api/devices` returns the standard API envelope whose `body` is an array of `DeviceInfo` objects:
@@ -393,7 +399,10 @@ It is a mixed websocket:
     "label": "api-fix",
     "cwd": "/repo",
     "command_preview": "codex --profile prod",
-    "started_at": 1775376000
+    "started_at": 1775376000,
+    "platform_family": "linux",
+    "platform_id": "ubuntu",
+    "computer_name": "Office Linux"
   }
 }
 ```
@@ -404,6 +413,7 @@ Notes:
 - the relay treats that websocket as the owner of the live session
 - `launch_request_id` is optional; it is present only when this session was created from `POST /api/devices/:deviceID/launch`
 - when `launch_request_id` is present, the relay may use it to complete one pending launch request as `session_ready` with the new `session_id`
+- session metadata is self-contained on registration; clients should not infer session platform identity by correlating later launch state or online device listings
 
 ### `resize`
 

@@ -59,6 +59,7 @@ var (
 	newConnector = func(url, token string, info protocol.SessionInfo) relayConnector {
 		return connector.New(url, token, info)
 	}
+	collectSessionMetadata    = daemon.CollectDeviceMetadata
 	resolveDaemonPaths        = daemon.ResolvePaths
 	startDaemon               = daemon.StartBackground
 	runDaemonRuntime          = daemon.Run
@@ -156,6 +157,11 @@ func runTunnelSession(ctx context.Context, parsed runArgs, stdout, stderr io.Wri
 
 	commandPreview := strings.TrimSpace(strings.Join(append([]string{command.Name}, command.Args...), " "))
 	sessionID := fmt.Sprintf("%d", time.Now().UnixNano())
+	metadata := collectSessionMetadata()
+	computerName := strings.TrimSpace(metadata.DisplayName)
+	if computerName == "" {
+		computerName = strings.TrimSpace(metadata.Hostname)
+	}
 	info := protocol.SessionInfo{
 		SessionID:      sessionID,
 		Launcher:       command.Name,
@@ -163,6 +169,9 @@ func runTunnelSession(ctx context.Context, parsed runArgs, stdout, stderr io.Wri
 		CWD:            cwd,
 		CommandPreview: commandPreview,
 		StartedAt:      protocol.UnixTimestamp(time.Now().UTC()),
+		PlatformFamily: strings.TrimSpace(metadata.PlatformFamily),
+		PlatformID:     strings.TrimSpace(metadata.PlatformID),
+		ComputerName:   computerName,
 	}
 
 	relay := newConnector(relayURL, resolvedAuth.Token, info)

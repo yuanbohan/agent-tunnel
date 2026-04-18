@@ -135,6 +135,7 @@ func TestRunWithArgsStopsBeforeStartingSessionWhenLocalTerminalPreparationFails(
 	oldStartLocalTerminal := startLocalTerminal
 	oldWaitForExit := waitForExit
 	oldNewConnector := newConnector
+	oldCollectSessionMetadata := collectSessionMetadata
 	t.Cleanup(func() {
 		resolveLauncher = oldResolve
 		prepareLocalTerminal = oldPrepare
@@ -142,6 +143,7 @@ func TestRunWithArgsStopsBeforeStartingSessionWhenLocalTerminalPreparationFails(
 		startLocalTerminal = oldStartLocalTerminal
 		waitForExit = oldWaitForExit
 		newConnector = oldNewConnector
+		collectSessionMetadata = oldCollectSessionMetadata
 	})
 
 	resolveLauncher = func(name string, args []string) (launcher.Command, error) {
@@ -436,6 +438,14 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
 		gotInfo = info
 		return fakeConnector
 	}
+	collectSessionMetadata = func() daemon.DeviceMetadata {
+		return daemon.DeviceMetadata{
+			DisplayName:    "Office Linux",
+			Hostname:       "office-linux",
+			PlatformFamily: daemon.PlatformFamilyLinux,
+			PlatformID:     "ubuntu",
+		}
+	}
 
 	wantErr := errors.New("start session failed")
 	var gotSinks map[string]session.OutputSink
@@ -493,6 +503,15 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
 	}
 	if gotInfo.StartedAt <= 0 {
 		t.Fatal("StartedAt = 0, want current Unix timestamp")
+	}
+	if gotInfo.PlatformFamily != daemon.PlatformFamilyLinux {
+		t.Fatalf("PlatformFamily = %q, want %q", gotInfo.PlatformFamily, daemon.PlatformFamilyLinux)
+	}
+	if gotInfo.PlatformID != "ubuntu" {
+		t.Fatalf("PlatformID = %q, want ubuntu", gotInfo.PlatformID)
+	}
+	if gotInfo.ComputerName != "Office Linux" {
+		t.Fatalf("ComputerName = %q, want Office Linux", gotInfo.ComputerName)
 	}
 	select {
 	case <-fakeConnector.runCalledCh:
@@ -988,6 +1007,7 @@ func TestRunWithArgsUsesUserProvidedCommandForPreview(t *testing.T) {
 	oldStartLocalTerminal := startLocalTerminal
 	oldWaitForExit := waitForExit
 	oldNewConnector := newConnector
+	oldCollectSessionMetadata := collectSessionMetadata
 	t.Cleanup(func() {
 		resolveLauncher = oldResolve
 		prepareLocalTerminal = oldPrepare
@@ -995,6 +1015,7 @@ func TestRunWithArgsUsesUserProvidedCommandForPreview(t *testing.T) {
 		startLocalTerminal = oldStartLocalTerminal
 		waitForExit = oldWaitForExit
 		newConnector = oldNewConnector
+		collectSessionMetadata = oldCollectSessionMetadata
 	})
 
 	resolveLauncher = func(name string, args []string) (launcher.Command, error) {
@@ -1009,6 +1030,14 @@ func TestRunWithArgsUsesUserProvidedCommandForPreview(t *testing.T) {
 	newConnector = func(url, token string, info protocol.SessionInfo) relayConnector {
 		gotInfo = info
 		return &fakeRelayConnector{waitConnected: true, state: connector.StateConnected}
+	}
+	collectSessionMetadata = func() daemon.DeviceMetadata {
+		return daemon.DeviceMetadata{
+			DisplayName:    "",
+			Hostname:       "fallback-host",
+			PlatformFamily: daemon.PlatformFamilyMacOS,
+			PlatformID:     daemon.PlatformFamilyMacOS,
+		}
 	}
 
 	wantErr := errors.New("start session failed")
@@ -1031,6 +1060,15 @@ func TestRunWithArgsUsesUserProvidedCommandForPreview(t *testing.T) {
 	}
 	if gotInfo.CommandPreview != "/opt/bin/custom-agent --mode fast" {
 		t.Fatalf("CommandPreview = %q, want /opt/bin/custom-agent --mode fast", gotInfo.CommandPreview)
+	}
+	if gotInfo.PlatformFamily != daemon.PlatformFamilyMacOS {
+		t.Fatalf("PlatformFamily = %q, want %q", gotInfo.PlatformFamily, daemon.PlatformFamilyMacOS)
+	}
+	if gotInfo.PlatformID != daemon.PlatformFamilyMacOS {
+		t.Fatalf("PlatformID = %q, want %q", gotInfo.PlatformID, daemon.PlatformFamilyMacOS)
+	}
+	if gotInfo.ComputerName != "fallback-host" {
+		t.Fatalf("ComputerName = %q, want fallback-host", gotInfo.ComputerName)
 	}
 }
 

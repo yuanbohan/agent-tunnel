@@ -433,14 +433,20 @@ func TestHandlerReturnsUserScopedLiveSessions(t *testing.T) {
 	aliceSession := env.login(t, "alice", "password123")
 
 	env.registry.RegisterOwned(protocol.SessionInfo{
-		SessionID: "sess-a",
-		Launcher:  "codex",
-		StartedAt: 20,
+		SessionID:      "sess-a",
+		Launcher:       "codex",
+		StartedAt:      20,
+		PlatformFamily: "linux",
+		PlatformID:     "ubuntu",
+		ComputerName:   "Office Linux",
 	}, SessionOwner{UserID: alice.ID, AgentTokenID: "agt-a"}, fakeAgentPeer{})
 	env.registry.RegisterOwned(protocol.SessionInfo{
-		SessionID: "sess-b",
-		Launcher:  "codex",
-		StartedAt: 10,
+		SessionID:      "sess-b",
+		Launcher:       "codex",
+		StartedAt:      10,
+		PlatformFamily: "macos",
+		PlatformID:     "macos",
+		ComputerName:   "Bob Mac",
 	}, SessionOwner{UserID: bob.ID, AgentTokenID: "agt-b"}, fakeAgentPeer{})
 
 	handler := env.handler(nil)
@@ -457,6 +463,15 @@ func TestHandlerReturnsUserScopedLiveSessions(t *testing.T) {
 	decodeAPIEnvelopeFromRecorder(t, rec, http.StatusOK, &sessions)
 	if len(sessions) != 1 || sessions[0].SessionID != "sess-a" {
 		t.Fatalf("sessions = %#v, want only sess-a", sessions)
+	}
+	if sessions[0].PlatformFamily != "linux" {
+		t.Fatalf("PlatformFamily = %q, want linux", sessions[0].PlatformFamily)
+	}
+	if sessions[0].PlatformID != "ubuntu" {
+		t.Fatalf("PlatformID = %q, want ubuntu", sessions[0].PlatformID)
+	}
+	if sessions[0].ComputerName != "Office Linux" {
+		t.Fatalf("ComputerName = %q, want Office Linux", sessions[0].ComputerName)
 	}
 }
 
