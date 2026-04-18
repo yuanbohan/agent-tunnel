@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bufio"
+	"io"
 	"os"
 	"strings"
 )
@@ -13,14 +14,21 @@ func detectLinuxPlatformID() string {
 	}
 	defer file.Close()
 
-	scanner := bufio.NewScanner(file)
+	return parseLinuxPlatformID(file)
+}
+
+func parseLinuxPlatformID(r io.Reader) string {
+	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if !strings.HasPrefix(line, "ID=") {
 			continue
 		}
-		value := strings.TrimPrefix(line, "ID=")
-		return strings.Trim(strings.TrimSpace(value), `"`)
+		value := strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "ID=")), `"`)
+		if value == "" {
+			return PlatformIDUnknown
+		}
+		return value
 	}
 	return PlatformIDUnknown
 }

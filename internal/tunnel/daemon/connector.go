@@ -105,10 +105,10 @@ func (c *deviceConnector) serveOnce(ctx context.Context, handler *launchHandler)
 			continue
 		}
 		result := handler.Handle(frame.RequestID, frame.Command, frame.CWD, frame.Label)
-		if err := conn.WriteJSON(protocol.DeviceUpdateFrame(c.currentDeviceInfo())); err != nil {
+		if err := conn.WriteJSON(protocol.DeviceLaunchResultFrame(frame.RequestID, result.Status, result.Reason)); err != nil {
 			return err
 		}
-		if err := conn.WriteJSON(protocol.DeviceLaunchResultFrame(frame.RequestID, result.Status, result.Reason)); err != nil {
+		if err := conn.WriteJSON(protocol.DeviceUpdateFrame(c.currentDeviceInfo())); err != nil {
 			return err
 		}
 	}

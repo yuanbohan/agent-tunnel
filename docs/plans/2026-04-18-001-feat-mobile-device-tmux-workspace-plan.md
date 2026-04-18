@@ -329,7 +329,7 @@ sequenceDiagram
 ## Documentation / Operational Notes
 
 - This implementation completed the docs sweep across `README.md`, `docs/api.md`, `docs/protocol.md`, `docs/architecture.md`, `CLAUDE.md`, and `AGENTS.md` to remove visible-terminal and launcher-recipe language.
-- Because dev/prod relay deployment already exposes `/device/ws` and `/healthz`, no additional nginx surface is implied by the tmux shift itself; this change is local-runtime and contract oriented, not ingress oriented.
+- This rollout depends on nginx proxying `/device/ws` and `/healthz` so daemon connectivity and doctor health checks work through the relay; keep the nginx templates and deployment docs aligned with that ingress requirement.
 
 ## Sources & References
 
