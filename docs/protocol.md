@@ -13,7 +13,7 @@ The current protocol is built around these boundaries:
 - `session_id` identifies one running `tunnel` process. Relay reconnects for that process keep the same `session_id`. A fresh agent launch gets a fresh `session_id`.
 - `device_id` identifies one machine-local daemon identity. Device reconnects and daemon restarts keep the same `device_id` for that machine-local daemon state.
 - The owning agent is the authority for the current terminal state of that session.
-- The owning device daemon is the authority for whether that machine is currently launchable and for how a new terminal window is opened.
+- The owning device daemon is the authority for whether that machine is currently launchable and for how new remote-launch sessions are created inside its dedicated tmux workspace.
 - The relay is a discovery, auth, and routing layer. It does not retain transcript history and does not emulate the terminal.
 - Hosted relay deployments rely on strict multi-tenant isolation: sessions are owned by the user behind the authenticating agent token, and other users must not discover or attach to them.
 - Sessions are discoverable only while the owning agent websocket is connected. If the agent disconnects, the session disappears from discovery immediately and reappears when the agent re-registers with the same `session_id`.
@@ -27,7 +27,7 @@ All protocol timestamps are Unix timestamps represented as JSON integers in seco
 
 | Endpoint | Role | Auth | Kind | Purpose |
 |----------|------|------|------|---------|
-| `GET /healthz` | Host-local | None | HTTP | Health check for direct relay access; production nginx can keep this off the public surface |
+| `GET /healthz` | Health probe | None | HTTP | Health check for relay reachability through direct access or the public nginx front door |
 | `GET /api/devices` | Client | Bearer | HTTP | Current live device snapshot for the authenticated user |
 | `POST /api/devices/:deviceID/launch` | Client | Bearer | HTTP | Ask one currently online device daemon to launch `tunnel run <command>` and wait for the resulting session to become `session_ready` |
 | `GET /api/sessions` | Client | Bearer | HTTP | Current live session snapshot for the authenticated user |
@@ -93,7 +93,8 @@ Notes:
       "device_id": "dev_abcd1234",
       "display_name": "Yuanbo's MacBook Pro",
       "platform_family": "macos",
-      "platform_id": "macos"
+      "platform_id": "macos",
+      "launch_health": "healthy"
     }
   ]
 }
@@ -103,6 +104,7 @@ Notes:
 
 - `platform_family` is the stable coarse UI fallback field, currently `macos` or `linux`
 - `platform_id` is a best-effort specific identifier for exact icon mapping
+- `launch_health` is the daemon-reported live readiness for remote launch, currently `healthy` or `degraded`
 - device presence is live-only; if the device daemon disconnects, the device disappears from discovery immediately
 
 ## Attach Lifecycle

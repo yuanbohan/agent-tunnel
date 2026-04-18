@@ -83,6 +83,15 @@ func Handle(registry *relaysession.Registry) gin.HandlerFunc {
 			switch frame.Type {
 			case "launch_result":
 				registry.ResolveLaunchIfOwner(register.Device.DeviceID, peer, frame.RequestID, frame.Status, frame.Reason)
+			case "update":
+				if frame.Device == nil {
+					continue
+				}
+				incomingID := strings.TrimSpace(frame.Device.DeviceID)
+				if incomingID == "" || incomingID != register.Device.DeviceID {
+					continue
+				}
+				registry.UpdateIfOwner(register.Device.DeviceID, peer, *frame.Device)
 			}
 		}
 	}

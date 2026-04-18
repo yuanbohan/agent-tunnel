@@ -13,9 +13,9 @@ const (
 	daemonDirName         = "daemon"
 	defaultConfigFileName = "daemon.json"
 	defaultSocketFileName = "daemon.sock"
+	defaultTmuxSocketName = "tmux.sock"
 	defaultPIDFileName    = "daemon.pid"
 	defaultStatusFileName = "status.json"
-	defaultRecipeFileName = "recipe.json"
 	defaultDeviceFileName = "device.json"
 )
 
@@ -25,9 +25,9 @@ type Paths struct {
 	StateDir   string
 	RuntimeDir string
 	SocketPath string
+	TmuxSocketPath string
 	PIDFile    string
 	StatusFile string
-	RecipeFile string
 	DeviceFile string
 }
 
@@ -54,9 +54,9 @@ func ResolvePaths() (Paths, error) {
 		StateDir:   stateDir,
 		RuntimeDir: runtimeDir,
 		SocketPath: filepath.Join(runtimeDir, defaultSocketFileName),
+		TmuxSocketPath: filepath.Join(runtimeDir, defaultTmuxSocketName),
 		PIDFile:    filepath.Join(stateDir, defaultPIDFileName),
 		StatusFile: filepath.Join(stateDir, defaultStatusFileName),
-		RecipeFile: filepath.Join(stateDir, defaultRecipeFileName),
 		DeviceFile: filepath.Join(stateDir, defaultDeviceFileName),
 	}, nil
 }

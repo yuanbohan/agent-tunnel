@@ -236,6 +236,26 @@ func newDaemonCmd() *cobra.Command {
 			return runDaemonDoctor(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	})
+	cmd.AddCommand(&cobra.Command{
+		Use:           "open",
+		Short:         "Open the daemon tmux workspace",
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runDaemonOpen(cmd.Context(), cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
+		Use:           "sessions",
+		Short:         "List daemon tmux sessions",
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runDaemonSessions(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+		},
+	})
 	internalCmd := &cobra.Command{
 		Use:           "internal-run",
 		Hidden:        true,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"time"
@@ -14,6 +15,8 @@ const (
 	actionStop   = "stop"
 	actionDoctor = "doctor"
 )
+
+var ErrNotRunning = errors.New("daemon is not running")
 
 type StatusInfo struct {
 	Running          bool   `json:"running"`
@@ -28,6 +31,7 @@ type StatusInfo struct {
 	RelayConnected   bool   `json:"relay_connected"`
 	LaunchHealth     string `json:"launch_health,omitempty"`
 	LauncherStrategy string `json:"launcher_strategy,omitempty"`
+	WorkspaceBackend string `json:"workspace_backend,omitempty"`
 	LastFailure      string `json:"last_failure,omitempty"`
 }
 
@@ -128,6 +132,9 @@ func Status(ctx context.Context, paths Paths) (StatusInfo, error) {
 			status.RelayConnected = false
 			return status, nil
 		}
+		if errors.Is(loadErr, os.ErrNotExist) {
+			return StatusInfo{}, fmt.Errorf("%w; start it with `tunnel daemon start`", ErrNotRunning)
+		}
 		return StatusInfo{}, err
 	}
 	if response.Error != "" {
@@ -142,6 +149,15 @@ func Status(ctx context.Context, paths Paths) (StatusInfo, error) {
 func Stop(ctx context.Context, paths Paths) error {
 	response, err := request(ctx, paths.SocketPath, Request{Action: actionStop})
 	if err != nil {
+		status, loadErr := LoadStatus(paths)
+		switch {
+		case loadErr == nil:
+			if !status.Running || (status.PID > 0 && !processRunning(status.PID)) {
+				return fmt.Errorf("%w; daemon is already stopped", ErrNotRunning)
+			}
+		case errors.Is(loadErr, os.ErrNotExist):
+			return fmt.Errorf("%w; daemon is already stopped", ErrNotRunning)
+		}
 		return err
 	}
 	if response.Error != "" {

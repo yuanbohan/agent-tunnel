@@ -147,6 +147,18 @@ func (r *Registry) ActivatePending(info protocol.DeviceInfo, owner DeviceOwner, 
 	return true
 }
 
+func (r *Registry) UpdateIfOwner(deviceID string, owner DevicePeer, info protocol.DeviceInfo) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	live, ok := r.devices[deviceID]
+	if !ok || live.peer != owner {
+		return false
+	}
+	live.info = info
+	return true
+}
+
 func (r *Registry) DisconnectIfOwner(deviceID string, owner DevicePeer) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()

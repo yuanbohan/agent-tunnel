@@ -19,6 +19,11 @@ func TestDeviceLaunchFrames(t *testing.T) {
 		t.Fatalf("register payload = %s, want status omitted", registerPayload)
 	}
 
+	update := DeviceUpdateFrame(DeviceInfo{DeviceID: "dev_1", LaunchHealth: "healthy"})
+	if update.Type != "update" || update.Device == nil || update.Device.LaunchHealth != "healthy" {
+		t.Fatalf("update = %#v, want update frame with launch health", update)
+	}
+
 	request := DeviceLaunchRequestFrame("req-1", "codex --help", "/repo", "api-fix")
 	if request.Type != "launch_request" || request.RequestID != "req-1" || request.Command != "codex --help" || request.CWD != "/repo" || request.Label != "api-fix" {
 		t.Fatalf("request = %#v, want launch_request frame", request)

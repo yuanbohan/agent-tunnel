@@ -34,6 +34,7 @@ type StartOptions struct {
 type StartResult struct {
 	AlreadyRunning bool
 	Status         StatusInfo
+	PreservedSessions int
 }
 
 type runtimeState struct {
@@ -48,6 +49,13 @@ func StartBackground(ctx context.Context, options StartOptions) (StartResult, er
 	status, err := currentRunningStatus(ctx, options.Paths)
 	if err == nil && status.Running {
 		return StartResult{AlreadyRunning: true, Status: status}, nil
+	}
+	if err := EnsureTmuxAvailable(); err != nil {
+		return StartResult{}, err
+	}
+	preservedSessions, err := CountWorkspaceSessions(ctx, options.Paths)
+	if err != nil {
+		return StartResult{}, err
 	}
 
 	if err := cleanupStaleRuntime(options.Paths); err != nil {
@@ -135,7 +143,7 @@ func StartBackground(ctx context.Context, options StartOptions) (StartResult, er
 	if err != nil {
 		return StartResult{}, err
 	}
-	return StartResult{Status: status}, nil
+	return StartResult{Status: status, PreservedSessions: preservedSessions}, nil
 }
 
 func Run(ctx context.Context, options RuntimeOptions, readyWriter io.Writer) error {
@@ -145,19 +153,12 @@ func Run(ctx context.Context, options RuntimeOptions, readyWriter io.Writer) err
 	if strings.TrimSpace(options.AuthToken) == "" {
 		return errors.New("missing auth token")
 	}
-	if !hasDesktopSession() {
-		return errors.New("desktop session unavailable")
+	if err := EnsureTmuxAvailable(); err != nil {
+		return err
 	}
 
 	identity, err := readOrCreateDeviceIdentityFn(options.Paths)
 	if err != nil {
-		return err
-	}
-	recipe, err := inferRecipeFn()
-	if err != nil {
-		return err
-	}
-	if err := PersistRecipe(options.Paths, recipe); err != nil {
 		return err
 	}
 
@@ -175,7 +176,7 @@ func Run(ctx context.Context, options RuntimeOptions, readyWriter io.Writer) err
 			PlatformID:       metadata.PlatformID,
 			RelayConnected:   false,
 			LaunchHealth:     LaunchHealthHealthy,
-			LauncherStrategy: recipe.Strategy,
+			WorkspaceBackend: workspaceBackendTmux,
 		},
 		stopCh: make(chan struct{}),
 		paths:  options.Paths,
@@ -220,7 +221,7 @@ func Run(ctx context.Context, options RuntimeOptions, readyWriter io.Writer) err
 	go func() {
 		serverErrCh <- server.Serve(ctx)
 	}()
-	go newDeviceConnector(options.BaseURL, options.AuthToken, state, recipe).Run(ctx, newLaunchHandler(options.BaseURL, options.AuthToken, options.Paths, state, recipe))
+	go newDeviceConnector(options.BaseURL, options.AuthToken, state).Run(ctx, newLaunchHandler(options.BaseURL, options.AuthToken, options.Paths, state))
 
 	if readyWriter != nil {
 		if _, err := io.WriteString(readyWriter, "ready\n"); err != nil {
@@ -351,7 +352,33 @@ func writeJSONFile(path string, value any) error {
 		return err
 	}
 	payload = append(payload, '\n')
-	return os.WriteFile(path, payload, 0o644)
+
+	tmpFile, err := os.CreateTemp(filepath.Dir(path), "tmp-*.json")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmpFile.Name()
+	cleanup := func() {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpPath)
+	}
+	if _, err := tmpFile.Write(payload); err != nil {
+		cleanup()
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Chmod(tmpPath, 0o644); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return nil
 }
 
 func getenv(key string) string {

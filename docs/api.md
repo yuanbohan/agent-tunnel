@@ -155,7 +155,8 @@ Response:
       "device_id": "dev_abcd1234",
       "display_name": "Yuanbo's MacBook Pro",
       "platform_family": "macos",
-      "platform_id": "macos"
+      "platform_id": "macos",
+      "launch_health": "healthy"
     }
   ]
 }
@@ -165,11 +166,12 @@ Notes:
 
 - `platform_family` is the stable UI fallback field for device-class icons, currently `macos` or `linux`
 - `platform_id` is the best-effort specific platform identifier for more exact icon selection, for example `macos`, `ubuntu`, `arch`, `debian`, `fedora`, or `unknown`
+- `launch_health` is the daemon-reported live readiness for remote launch, currently `healthy` or `degraded`
 - the relay returns only devices whose `/device/ws` connection is online right now
 
 ### `POST /api/devices/:deviceID/launch`
 
-Ask one currently online device to create a new session by opening a new terminal window and running `tunnel run <command>`.
+Ask one currently online device to create a new session inside its daemon-managed tmux workspace and run `tunnel run <command>`.
 
 Auth: app bearer token
 
@@ -226,8 +228,8 @@ Known `reason` values in this revision:
 - `device_offline`
 - `busy`
 - `command_not_allowed`
-- `desktop_unavailable`
-- `terminal_launch_failed`
+- `tmux_not_found`
+- `session_start_failed`
 - `tunnel_not_found`
 - `path_not_found`
 - `launch_timeout`

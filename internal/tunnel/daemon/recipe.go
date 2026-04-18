@@ -24,16 +24,9 @@ const (
 )
 
 var (
-	inferRecipeFn                = InferRecipe
 	readOrCreateDeviceIdentityFn = ReadOrCreateDeviceIdentity
 	collectDeviceMetadataFn      = CollectDeviceMetadata
 )
-
-type LauncherRecipe struct {
-	Strategy string   `json:"strategy"`
-	Command  string   `json:"command,omitempty"`
-	Args     []string `json:"args,omitempty"`
-}
 
 type DeviceIdentity struct {
 	DeviceID string `json:"device_id"`
@@ -71,33 +64,6 @@ func ReadOrCreateDeviceIdentity(paths Paths) (DeviceIdentity, error) {
 		return DeviceIdentity{}, err
 	}
 	return identity, nil
-}
-
-func LoadRecipe(paths Paths) (LauncherRecipe, error) {
-	payload, err := os.ReadFile(paths.RecipeFile)
-	if err != nil {
-		return LauncherRecipe{}, err
-	}
-	var recipe LauncherRecipe
-	if err := json.Unmarshal(payload, &recipe); err != nil {
-		return LauncherRecipe{}, err
-	}
-	return recipe, nil
-}
-
-func PersistRecipe(paths Paths, recipe LauncherRecipe) error {
-	return writeJSONFile(paths.RecipeFile, recipe)
-}
-
-func InferRecipe() (LauncherRecipe, error) {
-	switch runtime.GOOS {
-	case "darwin":
-		return inferDarwinRecipe()
-	case "linux":
-		return inferLinuxRecipe()
-	default:
-		return LauncherRecipe{}, fmt.Errorf("unsupported platform: %s", runtime.GOOS)
-	}
 }
 
 func CollectDeviceMetadata() DeviceMetadata {
