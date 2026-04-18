@@ -42,19 +42,19 @@ jobs:
       - name: Package release artifacts
         env:
           TUNNEL_RELEASE_SIGNING_PRIVATE_KEY: ${{ secrets.TUNNEL_RELEASE_SIGNING_PRIVATE_KEY }}
-        run: make release-package RELEASE_VERSION="$RELEASE_VERSION"
+        run: |
+          if [ -z "$TUNNEL_RELEASE_SIGNING_PRIVATE_KEY" ]; then
+            echo "error: TUNNEL_RELEASE_SIGNING_PRIVATE_KEY is not configured" >&2
+            exit 1
+          fi
+          make release-package RELEASE_VERSION="$RELEASE_VERSION"
 
       - name: Require public distribution token
         env:
           TUNNEL_DIST_REPO_TOKEN: ${{ secrets.TUNNEL_DIST_REPO_TOKEN }}
-          TUNNEL_RELEASE_SIGNING_PRIVATE_KEY: ${{ secrets.TUNNEL_RELEASE_SIGNING_PRIVATE_KEY }}
         run: |
           if [ -z "$TUNNEL_DIST_REPO_TOKEN" ]; then
             echo "error: TUNNEL_DIST_REPO_TOKEN is not configured" >&2
-            exit 1
-          fi
-          if [ -z "$TUNNEL_RELEASE_SIGNING_PRIVATE_KEY" ]; then
-            echo "error: TUNNEL_RELEASE_SIGNING_PRIVATE_KEY is not configured" >&2
             exit 1
           fi
 

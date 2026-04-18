@@ -113,7 +113,7 @@ func parseArmoredSSHSIG(signaturePayload []byte) (sshsigBlob, error) {
 	trimmed := strings.TrimSpace(string(signaturePayload))
 	trimmed = strings.TrimPrefix(trimmed, "-----BEGIN SSH SIGNATURE-----")
 	trimmed = strings.TrimSuffix(trimmed, "-----END SSH SIGNATURE-----")
-	trimmed = strings.ReplaceAll(strings.TrimSpace(trimmed), "\n", "")
+	trimmed = strings.Join(strings.Fields(trimmed), "")
 	if trimmed == "" {
 		return sshsigBlob{}, fmt.Errorf("decode checksums signature: empty signature")
 	}

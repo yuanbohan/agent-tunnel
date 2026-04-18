@@ -133,11 +133,11 @@ flowchart TB
 None.
 
 ### Deferred to Planning
-- [Affects R18,R19,R29][Technical] What exact build metadata or release marker should be embedded in the binary so Tunnel can distinguish official release binaries from non-release builds without relying on local files?
-- [Affects R6-R10,R30-R35][Technical] What exact updater-state schema should live under `~/.tunnel/`, and which files should be treated as user-editable versus internal state?
-- [Affects R8,R18,R19][Technical] What exact remote manifest fields should v1 consume beyond the current version and compatibility-line contract?
-- [Affects R20-R28][Technical] What is the safest handoff and re-exec flow for `tunnel run`, including atomic replace behavior and rollback-target recording?
-- [Affects R23-R28][Technical] Should manual `tunnel update` remain latest-only in v1, or should version pinning be intentionally unsupported and documented as such?
+- [Affects R18,R19,R29] (Technical) What exact build metadata or release marker should be embedded in the binary so Tunnel can distinguish official release binaries from non-release builds without relying on local files?
+- [Affects R6-R10,R30-R35] (Technical) What exact updater-state schema should live under `~/.tunnel/`, and which files should be treated as user-editable versus internal state?
+- [Affects R8,R18,R19] (Technical) What exact remote manifest fields should v1 consume beyond the current version and compatibility-line contract?
+- [Affects R20-R28] (Technical) What is the safest handoff and re-exec flow for `tunnel run`, including atomic replace behavior and rollback-target recording?
+- [Affects R23-R28] (Technical) Should manual `tunnel update` remain latest-only in v1, or should version pinning be intentionally unsupported and documented as such?
 
 ## Next Steps
 

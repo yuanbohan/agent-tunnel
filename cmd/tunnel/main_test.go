@@ -111,6 +111,7 @@ func assertHelpText(t *testing.T, text string) {
 		"--version",
 		"TUNNEL_BASE_URL",
 		"TUNNEL_AUTH_TOKEN",
+		"TUNNEL_UPDATE_DISABLED",
 		defaultTunnelBaseURL,
 		"tunnel auth login",
 		"tunnel auth status",
@@ -126,7 +127,7 @@ func assertHelpText(t *testing.T, text string) {
 			t.Fatalf("help text = %q, want fragment %q", text, fragment)
 		}
 	}
-	const wantEnvBlock = "Environment:\n  TUNNEL_AUTH_TOKEN  Higher-priority auth token override for tunnel run\n  TUNNEL_BASE_URL    Optional relay base URL (default: https://diaro.me)"
+	const wantEnvBlock = "Environment:\n  TUNNEL_AUTH_TOKEN  Higher-priority auth token override for tunnel run\n  TUNNEL_BASE_URL    Optional relay base URL (default: https://diaro.me)\n  TUNNEL_UPDATE_DISABLED  Disable automatic update checks before tunnel run"
 	if !strings.Contains(text, wantEnvBlock) {
 		t.Fatalf("help text = %q, want aligned environment block %q", text, wantEnvBlock)
 	}

@@ -176,6 +176,19 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+ssh_keygen_capability_err="$tmpdir/ssh-keygen-capability.err"
+if ! ssh-keygen -Y verify \
+	-f /dev/null \
+	-I tunnel-release \
+	-n tunnel-release \
+	-s /dev/null </dev/null 2>"$ssh_keygen_capability_err"
+then
+	if grep -Eqi 'unknown option|illegal option' "$ssh_keygen_capability_err"; then
+		printf 'error: ssh-keygen with -Y verify support is required (OpenSSH 8.1+)\n' >&2
+		exit 1
+	fi
+fi
+
 archive_path="$tmpdir/$asset_name"
 checksums_path="$tmpdir/checksums.txt"
 checksums_signature_path="$tmpdir/checksums.txt.sig"

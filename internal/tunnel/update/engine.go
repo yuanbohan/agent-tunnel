@@ -171,7 +171,14 @@ func (e *Engine) fetchLatestRelease(ctx context.Context) (LatestManifest, error)
 	if err != nil {
 		return LatestManifest{}, err
 	}
-	return parseLatestManifest(payload)
+	manifest, err := parseLatestManifest(payload)
+	if err != nil {
+		return LatestManifest{}, err
+	}
+	if err := e.verifySignedRelease(ctx, manifest.Version); err != nil {
+		return LatestManifest{}, err
+	}
+	return manifest, nil
 }
 
 func (e *Engine) installVersion(ctx context.Context, version string) (InstallResult, error) {
@@ -191,20 +198,13 @@ func (e *Engine) installVersion(ctx context.Context, version string) (InstallRes
 	assetName := releaseAssetName(version, goos, goarch)
 	releaseBaseURL := strings.TrimRight(e.releaseBaseURL(version), "/")
 
-	checksumsPayload, err := e.fetchBytes(ctx, releaseBaseURL+"/"+releaseChecksumsFileName())
-	if err != nil {
-		return InstallResult{}, err
-	}
-	checksumsSignaturePayload, err := e.fetchBytes(ctx, releaseBaseURL+"/"+releaseChecksumsSignatureFileName())
+	checksumsPayload, err := e.fetchVerifiedChecksums(ctx, releaseBaseURL)
 	if err != nil {
 		return InstallResult{}, err
 	}
 	archivePayload, err := e.fetchBytes(ctx, releaseBaseURL+"/"+assetName)
 	if err != nil {
 		return InstallResult{}, err
-	}
-	if err := e.verifyChecksumsSignature(checksumsPayload, checksumsSignaturePayload); err != nil {
-		return InstallResult{}, fmt.Errorf("verify %s: %w", releaseChecksumsSignatureFileName(), err)
 	}
 	if err := verifyArchiveChecksum(assetName, archivePayload, checksumsPayload); err != nil {
 		return InstallResult{}, err
@@ -240,6 +240,29 @@ func (e *Engine) installVersion(ctx context.Context, version string) (InstallRes
 
 	result.Updated = true
 	return result, nil
+}
+
+func (e *Engine) verifySignedRelease(ctx context.Context, version string) error {
+	releaseBaseURL := strings.TrimRight(e.releaseBaseURL(version), "/")
+	if _, err := e.fetchVerifiedChecksums(ctx, releaseBaseURL); err != nil {
+		return fmt.Errorf("verify signed release metadata for %s: %w", version, err)
+	}
+	return nil
+}
+
+func (e *Engine) fetchVerifiedChecksums(ctx context.Context, releaseBaseURL string) ([]byte, error) {
+	checksumsPayload, err := e.fetchBytes(ctx, releaseBaseURL+"/"+releaseChecksumsFileName())
+	if err != nil {
+		return nil, err
+	}
+	checksumsSignaturePayload, err := e.fetchBytes(ctx, releaseBaseURL+"/"+releaseChecksumsSignatureFileName())
+	if err != nil {
+		return nil, err
+	}
+	if err := e.verifyChecksumsSignature(checksumsPayload, checksumsSignaturePayload); err != nil {
+		return nil, fmt.Errorf("verify %s: %w", releaseChecksumsSignatureFileName(), err)
+	}
+	return checksumsPayload, nil
 }
 
 func (e *Engine) fetchBytes(ctx context.Context, rawURL string) ([]byte, error) {

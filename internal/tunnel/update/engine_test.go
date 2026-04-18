@@ -162,6 +162,23 @@ func TestEngineInstallLatestRejectsSignatureMismatch(t *testing.T) {
 	}
 }
 
+func TestEngineUpdateAvailableRejectsUntrustedLatestRelease(t *testing.T) {
+	ctx := context.Background()
+	server, _ := releaseTestServer(t, "v0.1.9", "linux", "amd64", []byte("new-binary"))
+	engine := NewEngine(Config{
+		HTTPClient:      server.Client(),
+		InstallBaseURL:  server.URL,
+		ReleaseBaseURL:  func(version string) string { return server.URL + "/corrupt/" + version },
+		CurrentVersion:  func() string { return "v0.1.7" },
+		CurrentOfficial: func() bool { return true },
+		CurrentTarget:   func() (string, string, error) { return "linux", "amd64", nil },
+	})
+
+	if _, _, err := engine.UpdateAvailable(ctx); err == nil {
+		t.Fatal("UpdateAvailable error = nil, want signed release verification failure")
+	}
+}
+
 func TestEngineInstallLatestAbortsBeforeReplaceWhenStateHookFails(t *testing.T) {
 	ctx := context.Background()
 	currentBinary := mustExecutableFile(t, []byte("old-binary"))

@@ -314,4 +314,32 @@ if [ "$("$home_dir/.local/bin/tunnel")" != "tunnel old-version" ]; then
 	exit 1
 fi
 
+ssh_keygen_wrapper_dir="$tmpdir/no-ssh-y/bin"
+mkdir -p "$ssh_keygen_wrapper_dir"
+cat >"$ssh_keygen_wrapper_dir/ssh-keygen" <<'EOF'
+#!/bin/sh
+if [ "${1:-}" = "-Y" ]; then
+	printf 'unknown option -- Y\n' >&2
+	exit 1
+fi
+exec /usr/bin/ssh-keygen "$@"
+EOF
+chmod 0755 "$ssh_keygen_wrapper_dir/ssh-keygen"
+
+if PATH="$ssh_keygen_wrapper_dir:/usr/bin:/bin" HOME="$home_dir" \
+	TUNNEL_INSTALL_BASE_URL="$base_url" \
+	TUNNEL_RELEASE_BASE_URL="$release_base_url" \
+	TUNNEL_RELEASE_SIGNING_PUBLIC_KEY="$release_signing_public_key" \
+	TUNNEL_INSTALL_DIR="$home_dir/.local/bin" \
+	"$script_dir/install-tunnel.sh" >/dev/null 2>"$tmpdir/ssh-keygen-cap.err"
+then
+	printf 'error: installer unexpectedly accepted ssh-keygen without -Y support\n' >&2
+	exit 1
+fi
+
+if ! grep -q 'ssh-keygen with -Y verify support is required' "$tmpdir/ssh-keygen-cap.err"; then
+	printf 'error: ssh-keygen capability path did not explain failure\n' >&2
+	exit 1
+fi
+
 printf 'installer smoke tests passed\n'
