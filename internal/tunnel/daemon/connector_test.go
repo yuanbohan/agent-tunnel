@@ -76,7 +76,7 @@ func TestLaunchHandlerReturnsBusyWithoutStartingAnotherLaunch(t *testing.T) {
 		inFlight: true,
 	}
 
-	result := handler.Handle("req-1", "codex", "/repo", "")
+	result := handler.Handle(context.Background(), "req-1", "codex", "/repo", "")
 	if result.Status != "failed" || result.Reason != "busy" {
 		t.Fatalf("result = %#v, want busy failure", result)
 	}
@@ -102,7 +102,7 @@ func TestLaunchHandlerFailsWhenTmuxIsMissing(t *testing.T) {
 		return "", errors.New("not found")
 	}
 
-	result := handler.Handle("req-1", "codex", t.TempDir(), "")
+	result := handler.Handle(context.Background(), "req-1", "codex", t.TempDir(), "")
 	if result.Status != "failed" || result.Reason != "tmux_not_found" {
 		t.Fatalf("result = %#v, want tmux_not_found failure", result)
 	}
@@ -150,7 +150,7 @@ func TestLaunchHandlerFailsWhenTmuxSessionCreationFails(t *testing.T) {
 	}
 	workspaceSessionNameFn = func() (string, error) { return "launch_fixed", nil }
 
-	result := handler.Handle("req-1", "codex", t.TempDir(), "api-fix")
+	result := handler.Handle(context.Background(), "req-1", "codex", t.TempDir(), "api-fix")
 	if result.Status != "failed" || result.Reason != "session_start_failed" {
 		t.Fatalf("result = %#v, want session_start_failed", result)
 	}
@@ -202,7 +202,7 @@ func TestLaunchHandlerCreatesTmuxSessionAndClearsPreviousFailure(t *testing.T) {
 	}
 	workspaceSessionNameFn = func() (string, error) { return "launch_fixed", nil }
 
-	result := handler.Handle("req-1", "codex --profile prod", workdir, "api-fix")
+	result := handler.Handle(context.Background(), "req-1", "codex --profile prod", workdir, "api-fix")
 	if result.Status != "accepted" || result.Reason != "" {
 		t.Fatalf("result = %#v, want accepted launch", result)
 	}
@@ -223,5 +223,56 @@ func TestLaunchHandlerCreatesTmuxSessionAndClearsPreviousFailure(t *testing.T) {
 
 	if got := handler.state.snapshot(); got.LastFailure != "" || got.LaunchHealth != LaunchHealthHealthy {
 		t.Fatalf("status = %#v, want cleared failure and healthy launch state", got)
+	}
+}
+
+func TestLaunchHandlerFailsWhenLaunchContextIsCancelled(t *testing.T) {
+	paths := testPaths(t)
+	handler := &launchHandler{
+		baseURL:   "https://relay.example.com",
+		authToken: "secret-token",
+		paths:     paths,
+		state: &runtimeState{
+			status: StatusInfo{LaunchHealth: LaunchHealthHealthy},
+			paths:  paths,
+		},
+	}
+
+	tunnelDir := t.TempDir()
+	tunnelPath := filepath.Join(tunnelDir, "tunnel")
+	if err := os.WriteFile(tunnelPath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	oldPath := os.Getenv("PATH")
+	if err := os.Setenv("PATH", tunnelDir+string(os.PathListSeparator)+oldPath); err != nil {
+		t.Fatalf("Setenv returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Setenv("PATH", oldPath)
+	})
+
+	oldTmuxLookPath := tmuxLookPathFn
+	oldTmuxCommandContext := tmuxCommandContextFn
+	oldSessionName := workspaceSessionNameFn
+	t.Cleanup(func() {
+		tmuxLookPathFn = oldTmuxLookPath
+		tmuxCommandContextFn = oldTmuxCommandContext
+		workspaceSessionNameFn = oldSessionName
+	})
+	tmuxLookPathFn = func(string) (string, error) { return "/usr/bin/tmux", nil }
+	tmuxCommandContextFn = func(ctx context.Context, _ string, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "sh", "-c", "sleep 5")
+	}
+	workspaceSessionNameFn = func() (string, error) { return "launch_fixed", nil }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result := handler.Handle(ctx, "req-1", "codex", t.TempDir(), "api-fix")
+	if result.Status != "failed" || result.Reason != "session_start_failed" {
+		t.Fatalf("result = %#v, want session_start_failed", result)
+	}
+	if got := handler.state.snapshot(); got.LastFailure != "session_start_failed" || got.LaunchHealth != LaunchHealthDegraded {
+		t.Fatalf("status = %#v, want degraded session_start_failed state", got)
 	}
 }

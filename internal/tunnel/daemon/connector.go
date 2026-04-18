@@ -36,6 +36,8 @@ type launchResult struct {
 	Reason string
 }
 
+const launchSessionTimeout = 15 * time.Second
+
 func newDeviceConnector(baseURL, token string, state *runtimeState) *deviceConnector {
 	return &deviceConnector{
 		baseURL: baseURL,
@@ -78,14 +80,7 @@ func (c *deviceConnector) serveOnce(ctx context.Context, handler *launchHandler)
 	}
 	defer conn.Close()
 
-	status := c.state.snapshot()
-	info := protocol.DeviceInfo{
-		DeviceID:       status.DeviceID,
-		DisplayName:    status.DisplayName,
-		PlatformFamily: status.PlatformFamily,
-		PlatformID:     status.PlatformID,
-		LaunchHealth:   status.LaunchHealth,
-	}
+	info := c.currentDeviceInfo()
 	if err := conn.WriteJSON(protocol.DeviceRegisterFrame(info)); err != nil {
 		return err
 	}
@@ -104,7 +99,7 @@ func (c *deviceConnector) serveOnce(ctx context.Context, handler *launchHandler)
 		if frame.Type != "launch_request" || frame.RequestID == "" {
 			continue
 		}
-		result := handler.Handle(frame.RequestID, frame.Command, frame.CWD, frame.Label)
+		result := handler.Handle(ctx, frame.RequestID, frame.Command, frame.CWD, frame.Label)
 		if err := conn.WriteJSON(protocol.DeviceLaunchResultFrame(frame.RequestID, result.Status, result.Reason)); err != nil {
 			return err
 		}
@@ -151,11 +146,11 @@ func newLaunchHandler(baseURL, authToken string, paths Paths, state *runtimeStat
 	}
 }
 
-func (h *launchHandler) Handle(requestID, command, cwd, label string) launchResult {
-	return h.handle(requestID, command, cwd, label)
+func (h *launchHandler) Handle(ctx context.Context, requestID, command, cwd, label string) launchResult {
+	return h.handle(ctx, requestID, command, cwd, label)
 }
 
-func (h *launchHandler) handle(requestID, command, cwd, label string) launchResult {
+func (h *launchHandler) handle(ctx context.Context, requestID, command, cwd, label string) launchResult {
 	h.state.mu.Lock()
 	if h.inFlight {
 		h.state.mu.Unlock()
@@ -207,7 +202,9 @@ func (h *launchHandler) handle(requestID, command, cwd, label string) launchResu
 	}
 
 	wrapper := buildShellWrapper(h.baseURL, h.authToken, requestID, resolvedCWD, label, args)
-	if _, err := CreateLaunchSession(context.Background(), h.paths, resolvedCWD, wrapper); err != nil {
+	launchCtx, cancel := context.WithTimeout(ctx, launchSessionTimeout)
+	defer cancel()
+	if _, err := CreateLaunchSession(launchCtx, h.paths, resolvedCWD, wrapper); err != nil {
 		h.state.setLastFailure("session_start_failed", true)
 		return launchResult{Status: "failed", Reason: "session_start_failed"}
 	}
