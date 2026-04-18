@@ -181,21 +181,21 @@ Stronger delivery guarantees, transcript history, and remote-driven PTY sizing a
 
 ## Device Launch Model
 
-Remote launch is explicit and desktop-only:
+Remote launch is explicit and tmux-backed:
 
 - users opt in per machine with `tunnel daemon start`
 - the daemon stays online until `tunnel daemon stop`
 - mobile clients use `GET /api/devices` to discover only currently connected devices
 - `POST /api/devices/:deviceID/launch` always returns a `request_id`; success is `status: "session_ready"` plus `session_id`, and failure is `status: "failed"` plus a structured `reason` such as `command_not_allowed`, `device_offline`, `busy`, `path_not_found`, or `launch_timeout`
-- a successful launch opens a new visible terminal window and runs `tunnel run <command>` there
-- when that launched `tunnel run <command>` exits, the window stays open and returns to an interactive shell prompt
-- the daemon owns local launch state such as allowlist, busy/not-busy, launcher recipe, doctor output, and last failure
+- a successful launch creates a new dedicated tmux session and runs `tunnel run <command>` there
+- when that launched `tunnel run <command>` exits, the tmux session stays available and returns to an interactive shell prompt
+- users can inspect or resume the local workspace from any terminal with `tunnel daemon open` or list sessions with `tunnel daemon sessions`
+- the daemon owns local launch state such as allowlist, busy/not-busy, tmux workspace health, doctor output, and last failure
 - the relay only keeps transient online routing for connected daemons; if a daemon disconnects, it disappears from `GET /api/devices` immediately
 
 Current scope boundaries:
 
-- only macOS and Linux desktop GUI environments are supported
-- headless/server-only machines are out of scope for remote launch
+- only macOS and Linux environments with local `tmux` are supported
 - command authorization is a first-token allowlist read from the daemon config
 - device identity is stable per machine-local daemon state, while display metadata such as device name and platform are refreshed whenever the daemon registers with the relay
 

@@ -55,9 +55,9 @@ func testPaths(t *testing.T) Paths {
 		StateDir:   filepath.Join(root, "s"),
 		RuntimeDir: filepath.Join(root, "r"),
 		SocketPath: filepath.Join(root, "r", "d.sock"),
+		TmuxSocketPath: filepath.Join(root, "r", "tmux.sock"),
 		PIDFile:    filepath.Join(root, "s", "pid"),
 		StatusFile: filepath.Join(root, "s", "status.json"),
-		RecipeFile: filepath.Join(root, "s", "recipe.json"),
 		DeviceFile: filepath.Join(root, "s", "device.json"),
 	}
 }

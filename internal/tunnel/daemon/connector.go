@@ -21,7 +21,6 @@ type deviceConnector struct {
 	token   string
 	dialer  *websocket.Dialer
 	state   *runtimeState
-	recipe  LauncherRecipe
 }
 
 type launchHandler struct {
@@ -29,7 +28,6 @@ type launchHandler struct {
 	authToken string
 	paths     Paths
 	state     *runtimeState
-	recipe    LauncherRecipe
 	inFlight  bool
 }
 
@@ -38,13 +36,12 @@ type launchResult struct {
 	Reason string
 }
 
-func newDeviceConnector(baseURL, token string, state *runtimeState, recipe LauncherRecipe) *deviceConnector {
+func newDeviceConnector(baseURL, token string, state *runtimeState) *deviceConnector {
 	return &deviceConnector{
 		baseURL: baseURL,
 		token:   token,
 		dialer:  websocket.DefaultDialer,
 		state:   state,
-		recipe:  recipe,
 	}
 }
 
@@ -87,6 +84,7 @@ func (c *deviceConnector) serveOnce(ctx context.Context, handler *launchHandler)
 		DisplayName:    status.DisplayName,
 		PlatformFamily: status.PlatformFamily,
 		PlatformID:     status.PlatformID,
+		LaunchHealth:   status.LaunchHealth,
 	}
 	if err := conn.WriteJSON(protocol.DeviceRegisterFrame(info)); err != nil {
 		return err
@@ -107,9 +105,23 @@ func (c *deviceConnector) serveOnce(ctx context.Context, handler *launchHandler)
 			continue
 		}
 		result := handler.Handle(frame.RequestID, frame.Command, frame.CWD, frame.Label)
+		if err := conn.WriteJSON(protocol.DeviceUpdateFrame(c.currentDeviceInfo())); err != nil {
+			return err
+		}
 		if err := conn.WriteJSON(protocol.DeviceLaunchResultFrame(frame.RequestID, result.Status, result.Reason)); err != nil {
 			return err
 		}
+	}
+}
+
+func (c *deviceConnector) currentDeviceInfo() protocol.DeviceInfo {
+	status := c.state.snapshot()
+	return protocol.DeviceInfo{
+		DeviceID:       status.DeviceID,
+		DisplayName:    status.DisplayName,
+		PlatformFamily: status.PlatformFamily,
+		PlatformID:     status.PlatformID,
+		LaunchHealth:   status.LaunchHealth,
 	}
 }
 
@@ -130,13 +142,12 @@ func deviceWebSocketURL(baseURL string) (string, error) {
 	return parsed.String(), nil
 }
 
-func newLaunchHandler(baseURL, authToken string, paths Paths, state *runtimeState, recipe LauncherRecipe) *launchHandler {
+func newLaunchHandler(baseURL, authToken string, paths Paths, state *runtimeState) *launchHandler {
 	return &launchHandler{
 		baseURL:   baseURL,
 		authToken: authToken,
 		paths:     paths,
 		state:     state,
-		recipe:    recipe,
 	}
 }
 
@@ -158,9 +169,9 @@ func (h *launchHandler) handle(requestID, command, cwd, label string) launchResu
 		h.state.mu.Unlock()
 	}()
 
-	if !hasDesktopSession() {
-		h.state.setLastFailure("desktop_unavailable", false)
-		return launchResult{Status: "failed", Reason: "desktop_unavailable"}
+	if err := EnsureTmuxAvailable(); err != nil {
+		h.state.setLastFailure("tmux_not_found", true)
+		return launchResult{Status: "failed", Reason: "tmux_not_found"}
 	}
 
 	args, err := shellquote.Split(command)
@@ -196,9 +207,9 @@ func (h *launchHandler) handle(requestID, command, cwd, label string) launchResu
 	}
 
 	wrapper := buildShellWrapper(h.baseURL, h.authToken, requestID, resolvedCWD, label, args)
-	if err := launchWithRecipe(h.recipe, wrapper); err != nil {
-		h.state.setLastFailure("terminal_launch_failed", true)
-		return launchResult{Status: "failed", Reason: "terminal_launch_failed"}
+	if _, err := CreateLaunchSession(context.Background(), h.paths, resolvedCWD, wrapper); err != nil {
+		h.state.setLastFailure("session_start_failed", true)
+		return launchResult{Status: "failed", Reason: "session_start_failed"}
 	}
 
 	h.state.clearLastFailure()

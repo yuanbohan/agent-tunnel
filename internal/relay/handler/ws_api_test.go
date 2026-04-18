@@ -28,6 +28,7 @@ func TestDeviceWebSocketRegistersAndListsDeviceForOwner(t *testing.T) {
 		DisplayName:    "Yuanbo's MacBook Pro",
 		PlatformFamily: "macos",
 		PlatformID:     "macos",
+		LaunchHealth:   "healthy",
 	})
 	defer deviceConn.Close()
 
@@ -38,8 +39,49 @@ func TestDeviceWebSocketRegistersAndListsDeviceForOwner(t *testing.T) {
 	}
 	var devices []protocol.DeviceInfo
 	decodeAPIEnvelopeFromResponse(t, resp, http.StatusOK, &devices)
-	if len(devices) != 1 || devices[0].DeviceID != "dev-1" {
+	if len(devices) != 1 || devices[0].DeviceID != "dev-1" || devices[0].LaunchHealth != "healthy" {
 		t.Fatalf("devices = %#v, want registered device", devices)
+	}
+}
+
+func TestDeviceWebSocketUpdateChangesListedLaunchHealthForOwner(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	issued := env.login(t, "alice", "password123")
+	agentToken := env.createAgentToken(t, user.ID, "Laptop")
+
+	server := httptest.NewServer(env.handler(nil))
+	defer server.Close()
+
+	deviceConn := dialAndRegisterDevice(t, server.URL, agentToken.Plaintext, protocol.DeviceInfo{
+		DeviceID:       "dev-1",
+		DisplayName:    "Yuanbo's MacBook Pro",
+		PlatformFamily: "macos",
+		PlatformID:     "macos",
+		LaunchHealth:   "healthy",
+	})
+	defer deviceConn.Close()
+
+	if err := deviceConn.WriteJSON(protocol.DeviceUpdateFrame(protocol.DeviceInfo{
+		DeviceID:       "dev-1",
+		DisplayName:    "Yuanbo's MacBook Pro",
+		PlatformFamily: "macos",
+		PlatformID:     "macos",
+		LaunchHealth:   "degraded",
+	})); err != nil {
+		t.Fatalf("WriteJSON update returned error: %v", err)
+	}
+
+	resp := doBearerGET(t, server.URL+"/api/devices", issued.AccessToken)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var devices []protocol.DeviceInfo
+	decodeAPIEnvelopeFromResponse(t, resp, http.StatusOK, &devices)
+	if len(devices) != 1 || devices[0].DeviceID != "dev-1" || devices[0].LaunchHealth != "degraded" {
+		t.Fatalf("devices = %#v, want updated degraded launch health", devices)
 	}
 }
 

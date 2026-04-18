@@ -99,7 +99,7 @@ func assertHelpText(t *testing.T, text string) {
 	for _, fragment := range []string{
 		"Usage:\n  tunnel run [options] <command> [args...]",
 		"tunnel auth <command>",
-		"tunnel daemon <start|status|stop|doctor>",
+		"tunnel daemon <command>",
 		"Commands:\n  run",
 		"auth",
 		"daemon",
@@ -111,6 +111,8 @@ func assertHelpText(t *testing.T, text string) {
 		"tunnel auth login",
 		"tunnel auth status",
 		"tunnel daemon start",
+		"tunnel daemon open",
+		"tunnel daemon sessions",
 		"tunnel run claude",
 		"tunnel run -l api-fix codex --profile prod",
 	} {
@@ -513,12 +515,15 @@ func TestRunDaemonStartUsesStoredAuthFallback(t *testing.T) {
 	oldNewStore := newAuthStore
 	oldResolvePaths := resolveDaemonPaths
 	oldStartDaemon := startDaemon
+	oldEnsureDaemonTmuxAvailable := ensureDaemonTmuxAvailable
 	t.Cleanup(func() {
 		newAuthStore = oldNewStore
 		resolveDaemonPaths = oldResolvePaths
 		startDaemon = oldStartDaemon
+		ensureDaemonTmuxAvailable = oldEnsureDaemonTmuxAvailable
 	})
 	newAuthStore = func() authStore { return store }
+	ensureDaemonTmuxAvailable = func() error { return nil }
 	resolveDaemonPaths = func() (daemon.Paths, error) {
 		return daemon.Paths{}, nil
 	}
@@ -554,12 +559,15 @@ func TestRunDaemonStartPrefersEnvAuthOverride(t *testing.T) {
 	oldNewStore := newAuthStore
 	oldResolvePaths := resolveDaemonPaths
 	oldStartDaemon := startDaemon
+	oldEnsureDaemonTmuxAvailable := ensureDaemonTmuxAvailable
 	t.Cleanup(func() {
 		newAuthStore = oldNewStore
 		resolveDaemonPaths = oldResolvePaths
 		startDaemon = oldStartDaemon
+		ensureDaemonTmuxAvailable = oldEnsureDaemonTmuxAvailable
 	})
 	newAuthStore = func() authStore { return store }
+	ensureDaemonTmuxAvailable = func() error { return nil }
 	resolveDaemonPaths = func() (daemon.Paths, error) {
 		return daemon.Paths{}, nil
 	}
@@ -592,13 +600,16 @@ func TestRunDaemonStartReturnsExistingDaemonWithoutResolvingAuth(t *testing.T) {
 	oldDaemonStatus := daemonStatus
 	oldNewStore := newAuthStore
 	oldStartDaemon := startDaemon
+	oldEnsureDaemonTmuxAvailable := ensureDaemonTmuxAvailable
 	t.Cleanup(func() {
 		resolveDaemonPaths = oldResolvePaths
 		daemonStatus = oldDaemonStatus
 		newAuthStore = oldNewStore
 		startDaemon = oldStartDaemon
+		ensureDaemonTmuxAvailable = oldEnsureDaemonTmuxAvailable
 	})
 
+	ensureDaemonTmuxAvailable = func() error { return nil }
 	resolveDaemonPaths = func() (daemon.Paths, error) {
 		return daemon.Paths{}, nil
 	}
@@ -619,6 +630,328 @@ func TestRunDaemonStartReturnsExistingDaemonWithoutResolvingAuth(t *testing.T) {
 	}
 	if got := stdout.String(); got != "daemon already running (pid=42 device_id=dev_existing)\n" {
 		t.Fatalf("stdout = %q, want already-running message", got)
+	}
+}
+
+func TestRunDaemonStartRejectsChangingBaseURLWhileDaemonIsRunning(t *testing.T) {
+	oldResolvePaths := resolveDaemonPaths
+	oldDaemonStatus := daemonStatus
+	oldNewStore := newAuthStore
+	oldStartDaemon := startDaemon
+	oldEnsureDaemonTmuxAvailable := ensureDaemonTmuxAvailable
+	t.Cleanup(func() {
+		resolveDaemonPaths = oldResolvePaths
+		daemonStatus = oldDaemonStatus
+		newAuthStore = oldNewStore
+		startDaemon = oldStartDaemon
+		ensureDaemonTmuxAvailable = oldEnsureDaemonTmuxAvailable
+	})
+
+	ensureDaemonTmuxAvailable = func() error { return nil }
+	resolveDaemonPaths = func() (daemon.Paths, error) {
+		return daemon.Paths{}, nil
+	}
+	daemonStatus = func(ctx context.Context, paths daemon.Paths) (daemon.StatusInfo, error) {
+		return daemon.StatusInfo{
+			Running:  true,
+			PID:      42,
+			DeviceID: "dev_existing",
+			BaseURL:  "https://diaro.me",
+		}, nil
+	}
+	newAuthStore = func() authStore {
+		t.Fatal("newAuthStore should not be called when daemon is already running")
+		return nil
+	}
+	startDaemon = func(ctx context.Context, options daemon.StartOptions) (daemon.StartResult, error) {
+		t.Fatal("startDaemon should not be called when daemon is already running")
+		return daemon.StartResult{}, nil
+	}
+
+	err := runDaemonStart(context.Background(), "http://1.12.249.160", io.Discard, io.Discard)
+	if err == nil {
+		t.Fatal("runDaemonStart error = nil, want base-url mismatch error")
+	}
+	if got := err.Error(); got != "daemon already running against https://diaro.me; stop it before starting with http://1.12.249.160" {
+		t.Fatalf("error = %q, want mismatch guidance", got)
+	}
+}
+
+func TestRunDaemonStatusPrintsFriendlyMessageWhenDaemonNotStarted(t *testing.T) {
+	oldResolvePaths := resolveDaemonPaths
+	oldDaemonStatus := daemonStatus
+	t.Cleanup(func() {
+		resolveDaemonPaths = oldResolvePaths
+		daemonStatus = oldDaemonStatus
+	})
+
+	resolveDaemonPaths = func() (daemon.Paths, error) {
+		return daemon.Paths{}, nil
+	}
+	daemonStatus = func(context.Context, daemon.Paths) (daemon.StatusInfo, error) {
+		return daemon.StatusInfo{}, daemon.ErrNotRunning
+	}
+
+	var stdout bytes.Buffer
+	if err := runDaemonStatus(context.Background(), &stdout, io.Discard); err != nil {
+		t.Fatalf("runDaemonStatus returned error: %v", err)
+	}
+	const want = "running: false\nstatus: not started\nhint: start it with `tunnel daemon start`\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+}
+
+func TestRunDaemonStartPrintsTmuxInstallGuidanceWhenTmuxMissing(t *testing.T) {
+	oldEnsureDaemonTmuxAvailable := ensureDaemonTmuxAvailable
+	t.Cleanup(func() {
+		ensureDaemonTmuxAvailable = oldEnsureDaemonTmuxAvailable
+	})
+	ensureDaemonTmuxAvailable = func() error { return daemon.ErrTmuxNotFound }
+
+	err := runDaemonStart(context.Background(), "http://127.0.0.1:8586", io.Discard, io.Discard)
+	if err == nil {
+		t.Fatal("runDaemonStart error = nil, want tmux guidance")
+	}
+	if !strings.Contains(err.Error(), "tmux is required for `tunnel daemon`") {
+		t.Fatalf("error = %q, want tmux install guidance", err.Error())
+	}
+}
+
+func TestRunDaemonStopPrintsFriendlyMessageWhenDaemonNotRunning(t *testing.T) {
+	oldResolvePaths := resolveDaemonPaths
+	oldDaemonStop := daemonStop
+	t.Cleanup(func() {
+		resolveDaemonPaths = oldResolvePaths
+		daemonStop = oldDaemonStop
+	})
+
+	resolveDaemonPaths = func() (daemon.Paths, error) {
+		return daemon.Paths{}, nil
+	}
+	daemonStop = func(context.Context, daemon.Paths) error {
+		return daemon.ErrNotRunning
+	}
+
+	var stdout bytes.Buffer
+	if err := runDaemonStop(context.Background(), &stdout, io.Discard); err != nil {
+		t.Fatalf("runDaemonStop returned error: %v", err)
+	}
+	if got := stdout.String(); got != "daemon already stopped\n" {
+		t.Fatalf("stdout = %q, want already-stopped message", got)
+	}
+}
+
+func TestRunDaemonOpenUsesWorkspaceHelper(t *testing.T) {
+	oldResolvePaths := resolveDaemonPaths
+	oldOpenDaemonWorkspace := openDaemonWorkspace
+	t.Cleanup(func() {
+		resolveDaemonPaths = oldResolvePaths
+		openDaemonWorkspace = oldOpenDaemonWorkspace
+	})
+
+	resolveDaemonPaths = func() (daemon.Paths, error) {
+		return daemon.Paths{}, nil
+	}
+	called := false
+	openDaemonWorkspace = func(context.Context, daemon.Paths, io.Reader, io.Writer, io.Writer) error {
+		called = true
+		return nil
+	}
+
+	if err := runDaemonOpen(context.Background(), strings.NewReader(""), io.Discard, io.Discard); err != nil {
+		t.Fatalf("runDaemonOpen returned error: %v", err)
+	}
+	if !called {
+		t.Fatal("runDaemonOpen did not call workspace helper")
+	}
+}
+
+func TestRunDaemonSessionsPrintsThinWorkspaceListing(t *testing.T) {
+	oldResolvePaths := resolveDaemonPaths
+	oldListDaemonWorkspace := listDaemonWorkspace
+	t.Cleanup(func() {
+		resolveDaemonPaths = oldResolvePaths
+		listDaemonWorkspace = oldListDaemonWorkspace
+	})
+
+	resolveDaemonPaths = func() (daemon.Paths, error) {
+		return daemon.Paths{}, nil
+	}
+	listDaemonWorkspace = func(context.Context, daemon.Paths) ([]daemon.WorkspaceSession, error) {
+		return []daemon.WorkspaceSession{{Name: "launch_abc", Windows: 1, Attached: 0}}, nil
+	}
+
+	var stdout bytes.Buffer
+	if err := runDaemonSessions(context.Background(), &stdout, io.Discard); err != nil {
+		t.Fatalf("runDaemonSessions returned error: %v", err)
+	}
+	got := stdout.String()
+	for _, want := range []string{"NAME", "WINDOWS", "ATTACHED", "launch_abc"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("stdout = %q, want fragment %q", got, want)
+		}
+	}
+}
+
+func TestRunDaemonStatusPrintsFriendlyPanelWhenDaemonIsRunning(t *testing.T) {
+	oldResolvePaths := resolveDaemonPaths
+	oldDaemonStatus := daemonStatus
+	t.Cleanup(func() {
+		resolveDaemonPaths = oldResolvePaths
+		daemonStatus = oldDaemonStatus
+	})
+
+	resolveDaemonPaths = func() (daemon.Paths, error) {
+		return daemon.Paths{}, nil
+	}
+	daemonStatus = func(context.Context, daemon.Paths) (daemon.StatusInfo, error) {
+		return daemon.StatusInfo{
+			Running:          true,
+			PID:              98338,
+			BaseURL:          "https://diaro.me",
+			DeviceID:         "dev_8c0bfb5ee7c954f71d6dd3e4",
+			DisplayName:      "yuanbo's MacBook Air",
+			Hostname:         "yuanbos-MacBook-Air.local",
+			PlatformFamily:   "macos",
+			RelayConnected:   false,
+			LaunchHealth:     daemon.LaunchHealthHealthy,
+			WorkspaceBackend: "tmux",
+		}, nil
+	}
+
+	var stdout bytes.Buffer
+	if err := runDaemonStatus(context.Background(), &stdout, io.Discard); err != nil {
+		t.Fatalf("runDaemonStatus returned error: %v", err)
+	}
+	got := stdout.String()
+	for _, want := range []string{
+		"Tunnel Daemon Status\n",
+		"✅ Status: running\n",
+		"⚠️ Relay: disconnected\n",
+		"✅ Launch Readiness: ready\n",
+		"Device: yuanbo's MacBook Air\n",
+		"Device ID: dev_8c0bfb5ee7c954f71d6dd3e4\n",
+		"Host: yuanbos-MacBook-Air.local (macos)\n",
+		"PID: 98338\n",
+		"Relay URL: https://diaro.me\n",
+		"Workspace: tmux\n",
+		"Last Launch Failure: none\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("stdout = %q, want fragment %q", got, want)
+		}
+	}
+}
+
+func TestRunDaemonDoctorPrintsFriendlyReportAndReturnsExitError(t *testing.T) {
+	oldResolvePaths := resolveDaemonPaths
+	oldDaemonDoctor := daemonDoctor
+	oldNewStore := newAuthStore
+	oldResolveDoctorRelayBaseURL := resolveDoctorRelayBaseURL
+	oldDoctorProbeRelayHealth := doctorProbeRelayHealth
+	t.Cleanup(func() {
+		resolveDaemonPaths = oldResolvePaths
+		daemonDoctor = oldDaemonDoctor
+		newAuthStore = oldNewStore
+		resolveDoctorRelayBaseURL = oldResolveDoctorRelayBaseURL
+		doctorProbeRelayHealth = oldDoctorProbeRelayHealth
+	})
+
+	resolveDaemonPaths = func() (daemon.Paths, error) {
+		return daemon.Paths{}, nil
+	}
+	newAuthStore = func() authStore {
+		return &fakeStore{loadErr: errStoredAuthNotFound}
+	}
+	resolveDoctorRelayBaseURL = func(context.Context, daemon.Paths) string {
+		return "https://diaro.me"
+	}
+	doctorProbeRelayHealth = func(context.Context, string) error {
+		return errors.New("dial timeout")
+	}
+	daemonDoctor = func(context.Context, daemon.Paths) (daemon.DoctorReport, error) {
+		return daemon.DoctorReport{
+			Checks: []daemon.DoctorCheck{
+				{
+					Name:   "daemon process",
+					Status: daemon.CheckStatusFail,
+					Detail: "background daemon is not running, so remote launches cannot start on this machine",
+				},
+				{
+					Name:   "tmux",
+					Status: daemon.CheckStatusOK,
+					Detail: "tmux is installed, so remote launches can create persistent workspace sessions",
+				},
+			},
+		}, nil
+	}
+
+	var stdout bytes.Buffer
+	err := runDaemonDoctor(context.Background(), &stdout, io.Discard)
+	var exitErr exitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("runDaemonDoctor error = %v, want exitError", err)
+	}
+	if exitErr.code != 1 {
+		t.Fatalf("exitErr.code = %d, want 1", exitErr.code)
+	}
+	got := stdout.String()
+	for _, want := range []string{
+		"Tunnel Daemon Doctor\n",
+		"Status: not ready for remote launch (2 fail, 1 warn, 1 ok)\n",
+		"❌ Auth Token\n",
+		"⚠️ Relay Server\n",
+		"relay_base_url: https://diaro.me; healthz: unavailable (dial timeout)\n",
+		"❌ Daemon\n",
+		"background daemon is not running, so remote launches cannot start on this machine\n",
+		"✅ Tmux\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("stdout = %q, want fragment %q", got, want)
+		}
+	}
+}
+
+func TestRunDaemonDoctorUsesDefaultRelayBaseURLWhenNothingIsRecorded(t *testing.T) {
+	oldResolvePaths := resolveDaemonPaths
+	oldDaemonDoctor := daemonDoctor
+	oldNewStore := newAuthStore
+	oldResolveDoctorRelayBaseURL := resolveDoctorRelayBaseURL
+	oldDoctorProbeRelayHealth := doctorProbeRelayHealth
+	t.Cleanup(func() {
+		resolveDaemonPaths = oldResolvePaths
+		daemonDoctor = oldDaemonDoctor
+		newAuthStore = oldNewStore
+		resolveDoctorRelayBaseURL = oldResolveDoctorRelayBaseURL
+		doctorProbeRelayHealth = oldDoctorProbeRelayHealth
+	})
+
+	resolveDaemonPaths = func() (daemon.Paths, error) {
+		return daemon.Paths{}, nil
+	}
+	newAuthStore = func() authStore {
+		return &fakeStore{
+			authPath: "/tmp/.tunnel/auth.json",
+			record:   newStoredAuth("alice", "stored-token", "tok_123", "file-token", 1_700_000_000, time.Unix(1_700_000_100, 0)),
+		}
+	}
+	resolveDoctorRelayBaseURL = func(context.Context, daemon.Paths) string {
+		return defaultTunnelBaseURL
+	}
+	doctorProbeRelayHealth = func(context.Context, string) error {
+		return nil
+	}
+	daemonDoctor = func(context.Context, daemon.Paths) (daemon.DoctorReport, error) {
+		return daemon.DoctorReport{Checks: []daemon.DoctorCheck{{Name: "daemon process", Status: daemon.CheckStatusOK, Detail: "background daemon is running"}}}, nil
+	}
+
+	var stdout bytes.Buffer
+	if err := runDaemonDoctor(context.Background(), &stdout, io.Discard); err != nil {
+		t.Fatalf("runDaemonDoctor returned error: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "relay_base_url: https://diaro.me; healthz: ok") {
+		t.Fatalf("stdout = %q, want default relay base URL healthz line", stdout.String())
 	}
 }
 

@@ -28,8 +28,16 @@ type usageError struct {
 	help   string
 }
 
+type exitError struct {
+	code int
+}
+
 func (e usageError) Error() string {
 	return e.msg
+}
+
+func (e exitError) Error() string {
+	return fmt.Sprintf("exit status %d", e.code)
 }
 
 func usagef(format string, args ...any) error {
@@ -51,7 +59,7 @@ func rootHelpText() string {
 	return fmt.Sprintf(`Usage:
   tunnel run [options] <command> [args...]
   tunnel auth <command>
-  tunnel daemon <start|status|stop|doctor>
+  tunnel daemon <command>
   tunnel --help
   tunnel --version
 
@@ -73,6 +81,8 @@ Examples:
   tunnel auth login
   tunnel auth status
   tunnel daemon start
+  tunnel daemon open
+  tunnel daemon sessions
   tunnel run claude
   tunnel run -l api-fix codex --profile prod
 `, tunnelAuthTokenEnv, tunnelBaseURLEnv, defaultTunnelBaseURL)
@@ -132,6 +142,8 @@ Commands:
   status      Show daemon status
   stop        Stop the background daemon
   doctor      Run daemon diagnostics
+  open        Open the daemon tmux workspace
+  sessions    List daemon tmux sessions
 
 Flags:
   -h, --help       Show this help message and exit
@@ -144,6 +156,8 @@ Examples:
   tunnel daemon status
   tunnel daemon stop
   tunnel daemon doctor
+  tunnel daemon open
+  tunnel daemon sessions
 `
 }
 

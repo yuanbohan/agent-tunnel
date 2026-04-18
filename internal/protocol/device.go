@@ -5,6 +5,7 @@ type DeviceInfo struct {
 	DisplayName    string `json:"display_name"`
 	PlatformFamily string `json:"platform_family"`
 	PlatformID     string `json:"platform_id"`
+	LaunchHealth   string `json:"launch_health,omitempty"`
 }
 
 type DeviceFrame struct {
@@ -21,6 +22,13 @@ type DeviceFrame struct {
 func DeviceRegisterFrame(info DeviceInfo) DeviceFrame {
 	return DeviceFrame{
 		Type:   "register",
+		Device: &info,
+	}
+}
+
+func DeviceUpdateFrame(info DeviceInfo) DeviceFrame {
+	return DeviceFrame{
+		Type:   "update",
 		Device: &info,
 	}
 }

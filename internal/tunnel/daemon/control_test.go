@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -55,6 +56,24 @@ func TestStatusFallsBackToPersistedStateWhenSocketUnavailable(t *testing.T) {
 	}
 	if got.DeviceID != "dev_321" || got.LaunchHealth != LaunchHealthDegraded {
 		t.Fatalf("status = %#v, want persisted fields preserved", got)
+	}
+}
+
+func TestStatusReturnsNotRunningWhenNoDaemonStateExists(t *testing.T) {
+	paths := testPaths(t)
+
+	_, err := Status(context.Background(), paths)
+	if !errors.Is(err, ErrNotRunning) {
+		t.Fatalf("Status error = %v, want ErrNotRunning", err)
+	}
+}
+
+func TestStopReturnsNotRunningWhenNoDaemonStateExists(t *testing.T) {
+	paths := testPaths(t)
+
+	err := Stop(context.Background(), paths)
+	if !errors.Is(err, ErrNotRunning) {
+		t.Fatalf("Stop error = %v, want ErrNotRunning", err)
 	}
 }
 

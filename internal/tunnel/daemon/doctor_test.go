@@ -3,36 +3,31 @@ package daemon
 import (
 	"context"
 	"errors"
-	"os"
 	"testing"
 )
 
 func TestBuildDoctorReportReturnsNonZeroForWarnOrFail(t *testing.T) {
 	paths := testPaths(t)
 
-	oldLoadRecipe := loadRecipeFn
-	oldInferRecipe := inferRecipeFn
 	oldLoadConfig := loadConfigFn
-	oldLookPath := lookPathFn
+	oldProbeRelayHealth := probeRelayHealthFn
+	oldTmuxLookPath := tmuxLookPathFn
+	oldListWorkspace := listWorkspaceFn
 	t.Cleanup(func() {
-		loadRecipeFn = oldLoadRecipe
-		inferRecipeFn = oldInferRecipe
 		loadConfigFn = oldLoadConfig
-		lookPathFn = oldLookPath
+		probeRelayHealthFn = oldProbeRelayHealth
+		tmuxLookPathFn = oldTmuxLookPath
+		listWorkspaceFn = oldListWorkspace
 	})
 
-	loadRecipeFn = func(Paths) (LauncherRecipe, error) {
-		return LauncherRecipe{}, errors.New("missing")
-	}
-	inferRecipeFn = func() (LauncherRecipe, error) {
-		return LauncherRecipe{}, errors.New("missing")
-	}
 	loadConfigFn = func(Paths) (Config, error) {
 		return DefaultConfig(), nil
 	}
-	lookPathFn = func(string) (string, error) {
-		return "/usr/bin/tunnel", nil
+	probeRelayHealthFn = func(context.Context, string) error {
+		return errors.New("unreachable")
 	}
+	tmuxLookPathFn = func(string) (string, error) { return "", errors.New("missing") }
+	listWorkspaceFn = func(context.Context, Paths) ([]WorkspaceSession, error) { return nil, nil }
 
 	report := BuildDoctorReport(context.Background(), paths, StatusInfo{Running: false})
 	if report.ExitCode() == 0 {
@@ -42,38 +37,56 @@ func TestBuildDoctorReportReturnsNonZeroForWarnOrFail(t *testing.T) {
 
 func TestDoctorReturnsHealthyExitCodeWhenChecksAreOK(t *testing.T) {
 	paths := testPaths(t)
-	if err := os.Setenv("GOOS_OVERRIDE_FOR_TESTS", "darwin"); err != nil {
-		t.Fatalf("Setenv returned error: %v", err)
-	}
-	if err := os.Setenv("TERM_PROGRAM", "Apple_Terminal"); err != nil {
-		t.Fatalf("Setenv returned error: %v", err)
-	}
-	t.Cleanup(func() {
-		os.Unsetenv("GOOS_OVERRIDE_FOR_TESTS")
-		os.Unsetenv("TERM_PROGRAM")
-	})
-
-	oldLoadRecipe := loadRecipeFn
 	oldLoadConfig := loadConfigFn
-	oldLookPath := lookPathFn
+	oldProbeRelayHealth := probeRelayHealthFn
+	oldTmuxLookPath := tmuxLookPathFn
+	oldListWorkspace := listWorkspaceFn
 	t.Cleanup(func() {
-		loadRecipeFn = oldLoadRecipe
 		loadConfigFn = oldLoadConfig
-		lookPathFn = oldLookPath
+		probeRelayHealthFn = oldProbeRelayHealth
+		tmuxLookPathFn = oldTmuxLookPath
+		listWorkspaceFn = oldListWorkspace
 	})
 
-	loadRecipeFn = func(Paths) (LauncherRecipe, error) {
-		return LauncherRecipe{Strategy: "terminal_app"}, nil
-	}
 	loadConfigFn = func(Paths) (Config, error) {
 		return DefaultConfig(), nil
 	}
-	lookPathFn = func(string) (string, error) {
-		return "/usr/bin/tunnel", nil
+	probeRelayHealthFn = func(context.Context, string) error {
+		return nil
 	}
+	tmuxLookPathFn = func(string) (string, error) { return "/usr/bin/tmux", nil }
+	listWorkspaceFn = func(context.Context, Paths) ([]WorkspaceSession, error) { return []WorkspaceSession{{Name: "launch_1"}}, nil }
 
-	report := BuildDoctorReport(context.Background(), paths, StatusInfo{Running: true, RelayConnected: true})
+	report := BuildDoctorReport(context.Background(), paths, StatusInfo{
+		Running:        true,
+		RelayConnected: true,
+		BaseURL:        "https://relay.example.com",
+	})
 	if report.ExitCode() != 0 {
 		t.Fatalf("ExitCode() = %d, want 0", report.ExitCode())
+	}
+}
+
+func TestWorkspaceCheckReportsReachableWorkspace(t *testing.T) {
+	paths := testPaths(t)
+
+	oldTmuxLookPath := tmuxLookPathFn
+	oldListWorkspace := listWorkspaceFn
+	t.Cleanup(func() {
+		tmuxLookPathFn = oldTmuxLookPath
+		listWorkspaceFn = oldListWorkspace
+	})
+
+	tmuxLookPathFn = func(string) (string, error) { return "/usr/bin/tmux", nil }
+	listWorkspaceFn = func(context.Context, Paths) ([]WorkspaceSession, error) {
+		return []WorkspaceSession{{Name: "launch_1"}}, nil
+	}
+
+	check := workspaceCheck(context.Background(), paths)
+	if check.Status != CheckStatusOK {
+		t.Fatalf("Status = %q, want ok", check.Status)
+	}
+	if check.Detail != "the daemon-managed tmux workspace is reachable and currently has 1 session(s)" {
+		t.Fatalf("Detail = %q, want workspace explanation", check.Detail)
 	}
 }

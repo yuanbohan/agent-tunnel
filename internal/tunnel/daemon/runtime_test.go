@@ -12,29 +12,16 @@ import (
 
 func TestRunWritesStatusAndAnswersControlRequests(t *testing.T) {
 	paths := testPaths(t)
-	if err := os.Setenv("GOOS_OVERRIDE_FOR_TESTS", "linux"); err != nil {
-		t.Fatalf("Setenv returned error: %v", err)
-	}
-	if err := os.Setenv("DISPLAY", ":0"); err != nil {
-		t.Fatalf("Setenv returned error: %v", err)
-	}
-	t.Cleanup(func() {
-		os.Unsetenv("GOOS_OVERRIDE_FOR_TESTS")
-		os.Unsetenv("DISPLAY")
-	})
-
-	oldInferRecipe := inferRecipeFn
+	oldTmuxLookPath := tmuxLookPathFn
 	oldReadIdentity := readOrCreateDeviceIdentityFn
 	oldCollectMetadata := collectDeviceMetadataFn
 	t.Cleanup(func() {
-		inferRecipeFn = oldInferRecipe
+		tmuxLookPathFn = oldTmuxLookPath
 		readOrCreateDeviceIdentityFn = oldReadIdentity
 		collectDeviceMetadataFn = oldCollectMetadata
 	})
 
-	inferRecipeFn = func() (LauncherRecipe, error) {
-		return LauncherRecipe{Strategy: "test_strategy"}, nil
-	}
+	tmuxLookPathFn = func(string) (string, error) { return "/usr/bin/tmux", nil }
 	readOrCreateDeviceIdentityFn = func(Paths) (DeviceIdentity, error) {
 		return DeviceIdentity{DeviceID: "dev_test"}, nil
 	}
@@ -69,7 +56,7 @@ func TestRunWritesStatusAndAnswersControlRequests(t *testing.T) {
 	for {
 		status, err := Status(context.Background(), paths)
 		if err == nil {
-			if !status.Running || status.DeviceID != "dev_test" || status.LauncherStrategy != "test_strategy" {
+			if !status.Running || status.DeviceID != "dev_test" || status.WorkspaceBackend != workspaceBackendTmux {
 				t.Fatalf("status = %#v, want running daemon status", status)
 			}
 			break
@@ -100,50 +87,38 @@ func TestRunWritesStatusAndAnswersControlRequests(t *testing.T) {
 	}
 }
 
-func TestRunFailsWithoutDesktopSession(t *testing.T) {
+func TestRunFailsWithoutTmux(t *testing.T) {
 	paths := testPaths(t)
-	if err := os.Setenv("GOOS_OVERRIDE_FOR_TESTS", "linux"); err != nil {
-		t.Fatalf("Setenv returned error: %v", err)
-	}
-	os.Unsetenv("DISPLAY")
-	os.Unsetenv("WAYLAND_DISPLAY")
+	oldTmuxLookPath := tmuxLookPathFn
 	t.Cleanup(func() {
-		os.Unsetenv("GOOS_OVERRIDE_FOR_TESTS")
+		tmuxLookPathFn = oldTmuxLookPath
 	})
+	tmuxLookPathFn = func(string) (string, error) {
+		return "", errors.New("not found")
+	}
 
 	err := Run(context.Background(), RuntimeOptions{
 		Paths:     paths,
 		BaseURL:   "https://relay.example.com",
 		AuthToken: "token",
 	}, nil)
-	if err == nil || err.Error() != "desktop session unavailable" {
-		t.Fatalf("Run error = %v, want desktop session unavailable", err)
+	if !errors.Is(err, ErrTmuxNotFound) {
+		t.Fatalf("Run error = %v, want ErrTmuxNotFound", err)
 	}
 }
 
 func TestRunCleansUpPersistedStateOnSocketStartupFailure(t *testing.T) {
 	paths := testPaths(t)
 	paths.SocketPath = filepath.Join(paths.RuntimeDir, "missing", "daemon.sock")
-	if err := os.Setenv("GOOS_OVERRIDE_FOR_TESTS", "linux"); err != nil {
-		t.Fatalf("Setenv returned error: %v", err)
-	}
-	if err := os.Setenv("DISPLAY", ":0"); err != nil {
-		t.Fatalf("Setenv returned error: %v", err)
-	}
-	t.Cleanup(func() {
-		os.Unsetenv("GOOS_OVERRIDE_FOR_TESTS")
-		os.Unsetenv("DISPLAY")
-	})
-
-	oldInferRecipe := inferRecipeFn
+	oldTmuxLookPath := tmuxLookPathFn
 	oldReadIdentity := readOrCreateDeviceIdentityFn
 	oldCollectMetadata := collectDeviceMetadataFn
 	t.Cleanup(func() {
-		inferRecipeFn = oldInferRecipe
+		tmuxLookPathFn = oldTmuxLookPath
 		readOrCreateDeviceIdentityFn = oldReadIdentity
 		collectDeviceMetadataFn = oldCollectMetadata
 	})
-	inferRecipeFn = func() (LauncherRecipe, error) { return LauncherRecipe{Strategy: "test_strategy"}, nil }
+	tmuxLookPathFn = func(string) (string, error) { return "/usr/bin/tmux", nil }
 	readOrCreateDeviceIdentityFn = func(Paths) (DeviceIdentity, error) { return DeviceIdentity{DeviceID: "dev_test"}, nil }
 	collectDeviceMetadataFn = func() DeviceMetadata {
 		return DeviceMetadata{DisplayName: "Test Device", Hostname: "test-host", PlatformFamily: PlatformFamilyLinux, PlatformID: "ubuntu"}

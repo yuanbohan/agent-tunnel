@@ -6,7 +6,7 @@ This document describes the current system shape for the attach-based protocol.
 
 `tunnel` owns the real local agent process, its PTY, and the authoritative current terminal state for that session. Built-in CLI commands own the top-level namespace, and local command launch happens only through `tunnel run <command>`. Every PATH-resolved launcher command follows the same path: one local PTY child, one session hub, one headless terminal mirror, one outbound relay connector, and no launcher-specific sidecar.
 
-Separately, `tunnel daemon` owns one explicit background device-launch runtime on a desktop machine. That daemon has its own local control socket, its own live relay connector on `/device/ws`, and its own launcher recipe used to open new visible terminal windows running future `tunnel run <command>` sessions. The daemon is the state authority for device launch behavior; the relay only brokers currently online daemon connections plus the short-lived correlation needed to turn one launch request into one later `session_ready` result.
+Separately, `tunnel daemon` owns one explicit background device-launch runtime on a machine with local `tmux`. That daemon has its own local control socket, its own live relay connector on `/device/ws`, and its own dedicated tmux workspace used to create future `tunnel run <command>` sessions. The daemon is the state authority for device launch behavior; the relay only brokers currently online daemon connections plus the short-lived correlation needed to turn one launch request into one later `session_ready` result.
 
 The relay exposes authenticated APIs so external clients can register accounts, log in, manage agent tokens, discover live sessions, discover live devices, attach to one online session, and request that one online device daemon create a new session. Operator maintenance routes stay outside the public `/api/` namespace and are intended for host-local use only. PostgreSQL is the durable source of truth for users, invite codes, app sessions, agent tokens, and operator audit records. App auth uses opaque bearer access tokens with a nominal 24 hour lifetime, rotating refresh tokens with a 30 day sliding lifetime, and a 90 day absolute session lifetime anchored at the original login. The relay is not the terminal-state authority and it does not retain transcript history.
 
@@ -114,9 +114,9 @@ The relay does not own:
 - preview rendering
 - content interpretation of terminal output
 - end-to-end guarantees that a remote client observed every PTY byte
-- terminal-window creation on device daemons
+- creation or ownership of local tmux workspace sessions on device daemons
 - offline device inventory
-- daemon health, last launch failure, or launcher-recipe state
+- daemon health, last launch failure, or tmux-workspace state
 
 ### Client
 
@@ -231,11 +231,11 @@ Closing the agent process ends the session. A later agent launch starts a differ
 The device-launch lifecycle is separate from session attach:
 
 1. `tunnel daemon start` creates a background runtime on one desktop machine.
-2. That runtime infers one launcher recipe, persists a stable `device_id`, and connects to `/device/ws`.
+2. That runtime ensures local `tmux` is available, persists a stable `device_id`, and connects to `/device/ws`.
 3. `GET /api/devices` lists only currently connected devices for the owning user.
 4. `POST /api/devices/:id/launch` routes one request to that live device daemon and assigns a relay-scoped `request_id`.
-5. The daemon decides locally whether the request is allowed, whether it is already busy, whether the requested `cwd` is valid, and whether the local terminal launch succeeded.
-6. If the daemon accepts the terminal-window launch locally, it starts a new terminal window running `tunnel run <command>` with the requested cwd and optional label, and it passes the launch correlation forward.
+5. The daemon decides locally whether the request is allowed, whether it is already busy, whether the requested `cwd` is valid, and whether a new tmux-backed session can be created.
+6. If the daemon accepts the launch locally, it starts a new tmux session running `tunnel run <command>` with the requested cwd and optional label, and it passes the launch correlation forward.
 7. The later `tunnel run <command>` process registers a normal session on `/agent/ws` and includes that launch correlation.
 8. The relay completes the pending mobile launch request as `session_ready` when it sees the matching session registration, or returns a structured timeout failure if that registration does not arrive in time.
 9. Session discovery and attach then proceed through the unchanged session APIs.
@@ -243,7 +243,7 @@ The device-launch lifecycle is separate from session attach:
 ## Package Map
 
 - `cmd/tunnel`: local `tunnel` entrypoint
-- `internal/tunnel/daemon/`: local daemon control socket, persisted device identity, launcher recipe inference, doctor/status reporting, and relay device connector
+- `internal/tunnel/daemon/`: local daemon control socket, persisted device identity, tmux workspace management, doctor/status reporting, and relay device connector
 - `internal/tunnel/session/`: PTY ownership, local terminal handling, hub fanout, resize state, and terminal mirror
 - `internal/tunnel/connector/`: outbound relay connection, session registration, attach routing, and resize signaling
 - `cmd/relay`: relay entrypoint
