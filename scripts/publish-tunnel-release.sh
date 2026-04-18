@@ -102,6 +102,10 @@ if [ ! -f "$artifact_dir/checksums.txt" ]; then
 	printf 'error: missing %s/checksums.txt\n' "$artifact_dir" >&2
 	exit 1
 fi
+if [ ! -f "$artifact_dir/checksums.txt.sig" ]; then
+	printf 'error: missing %s/checksums.txt.sig\n' "$artifact_dir" >&2
+	exit 1
+fi
 if [ ! -f "$install_source" ]; then
 	printf 'error: missing install source %s\n' "$install_source" >&2
 	exit 1
@@ -120,7 +124,7 @@ if truthy "$dry_run"; then
 	printf 'dry-run: would publish %s from %s to %s\n' "$version" "$artifact_dir" "$dist_repo"
 	printf 'dry-run: would bootstrap %s if branch %s is missing\n' "$dist_repo" "$dist_branch"
 	printf 'dry-run: would create draft release %s\n' "$version"
-	printf 'dry-run: would upload 4 archives plus checksums.txt\n'
+	printf 'dry-run: would upload 4 archives plus checksums.txt plus checksums.txt.sig\n'
 	printf 'dry-run: would publish release %s before updating latest.json\n' "$version"
 	printf 'dry-run: would sync install.sh, latest.json, and README.md with commit message "release: publish tunnel %s"\n' "$version"
 	exit 0
@@ -160,6 +164,7 @@ compatibility_line=$(release_compatibility_line "$version")
 GH_TOKEN="$token" gh release create "$version" \
 	"$artifact_dir"/tunnel_*.tar.gz \
 	"$artifact_dir/checksums.txt" \
+	"$artifact_dir/checksums.txt.sig" \
 	--repo "$dist_repo" \
 	--target "$dist_branch" \
 	--title "tunnel $version" \

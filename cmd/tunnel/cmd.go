@@ -8,7 +8,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-type runHandler func(context.Context, runArgs, io.Writer, io.Writer) error
+type runHandler func(context.Context, io.Reader, runArgs, io.Writer, io.Writer) error
 
 type loginHandler func(context.Context, authLoginArgs, io.Reader, io.Writer, io.Writer) error
 
@@ -16,19 +16,27 @@ type logoutHandler func(context.Context, io.Writer) error
 
 type statusHandler func(context.Context, io.Writer) error
 
+type updateHandler func(context.Context, io.Writer, io.Writer) error
+
+type rollbackHandler func(context.Context, io.Writer, io.Writer) error
+
 type commandHandlers struct {
-	run    runHandler
-	login  loginHandler
-	logout logoutHandler
-	status statusHandler
+	run      runHandler
+	login    loginHandler
+	logout   logoutHandler
+	status   statusHandler
+	update   updateHandler
+	rollback rollbackHandler
 }
 
 func defaultCommandHandlers() commandHandlers {
 	return commandHandlers{
-		run:    runTunnelSession,
-		login:  runAuthLogin,
-		logout: runAuthLogout,
-		status: runAuthStatus,
+		run:      runTunnelSession,
+		login:    runAuthLogin,
+		logout:   runAuthLogout,
+		status:   runAuthStatus,
+		update:   runManualUpdate,
+		rollback: runManualRollback,
 	}
 }
 
@@ -58,6 +66,8 @@ func newRootCmd(handlers commandHandlers) *cobra.Command {
 	root.AddCommand(newRunCmd(handlers.run))
 	root.AddCommand(newAuthCmd(handlers))
 	root.AddCommand(newDaemonCmd())
+	root.AddCommand(newUpdateCmd(handlers.update))
+	root.AddCommand(newRollbackCmd(handlers.rollback))
 	root.AddCommand(newVersionCmd())
 	return root
 }
@@ -84,7 +94,7 @@ func newRunCmd(runFn runHandler) *cobra.Command {
 				return usageWithHelp(runHelpText(), "missing launcher command")
 			}
 
-			return runFn(cmd.Context(), runArgs{
+			return runFn(cmd.Context(), cmd.InOrStdin(), runArgs{
 				Verbose:      verbose,
 				Label:        label,
 				BaseURL:      resolved,
@@ -142,10 +152,36 @@ func newVersionCmd() *cobra.Command {
 	}
 }
 
+func newUpdateCmd(updateFn updateHandler) *cobra.Command {
+	return &cobra.Command{
+		Use:           "update",
+		Short:         "Update tunnel to the latest official release",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		Args:          cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return updateFn(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+		},
+	}
+}
+
+func newRollbackCmd(rollbackFn rollbackHandler) *cobra.Command {
+	return &cobra.Command{
+		Use:           "rollback",
+		Short:         "Roll back tunnel to the previous official release",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		Args:          cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return rollbackFn(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+		},
+	}
+}
+
 func parseRunArgsForTest(args []string) (runArgs, error) {
 	var captured runArgs
 	handlers := defaultCommandHandlers()
-	handlers.run = func(_ context.Context, parsed runArgs, _, _ io.Writer) error {
+	handlers.run = func(_ context.Context, _ io.Reader, parsed runArgs, _, _ io.Writer) error {
 		captured = parsed
 		return nil
 	}

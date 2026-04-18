@@ -134,7 +134,11 @@ func runWithIOArgs(args []string, stdin io.Reader, stdout, stderr io.Writer) err
 	return nil
 }
 
-func runTunnelSession(ctx context.Context, parsed runArgs, stdout, stderr io.Writer) error {
+func runTunnelSession(ctx context.Context, stdin io.Reader, parsed runArgs, stdout, stderr io.Writer) error {
+	if err := maybeHandleStartupUpdate(ctx, stdin, stdout, stderr); err != nil {
+		return err
+	}
+
 	relayURL := relayWebSocketBaseURL(parsed.BaseURL)
 	resolvedAuth, err := resolveRuntimeAuth(newAuthStore(), osEnv)
 	if err != nil {
@@ -225,7 +229,7 @@ func legacyLauncherCommand(args []string) string {
 		return ""
 	}
 	switch first {
-	case "run", "auth", "daemon", "help", "version":
+	case "run", "auth", "daemon", "update", "rollback", "help", "version":
 		return ""
 	default:
 		return first

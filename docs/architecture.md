@@ -22,6 +22,7 @@ The local terminal is still the primary and most complete view of the PTY sessio
 
 - startup gating: relay registration must succeed during the startup wait window
 - runtime behavior: if relay outages occur, local terminal work continues; the connector retries registration with backoff
+- before interactive `tunnel run`, Tunnel may perform one native binary update check at most once per 24-hour interval, prompt in English, and re-exec the same command under a newly installed binary
 
 ```text
 local machine
@@ -72,9 +73,12 @@ local machine
 It owns:
 
 - the top-level CLI contract, including `tunnel run` and `tunnel auth`
+- native binary lifecycle commands `tunnel update` and `tunnel rollback`
 - terminal-native login that exchanges relay username/password for one locally saved agent token in `~/.tunnel/auth.json`
+- persistent CLI state under `~/.tunnel/`, with `settings.json` as the user-editable settings file and `updater.json` as internal updater state
 - runtime auth precedence for `tunnel run`: `TUNNEL_AUTH_TOKEN` first, then `~/.tunnel/auth.json`
 - runtime auth precedence for `tunnel daemon start`: `TUNNEL_AUTH_TOKEN` first, then `~/.tunnel/auth.json`
+- automatic startup-update disable through `TUNNEL_UPDATE_DISABLED` or `~/.tunnel/settings.json` `env` overrides
 - launcher resolution
 - PTY lifecycle and local terminal raw mode
 - startup relay wait and background reconnect policy

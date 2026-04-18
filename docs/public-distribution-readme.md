@@ -20,6 +20,16 @@ Supported targets:
 - Linux ARM64 (`linux/arm64`)
 
 The installer writes `tunnel` to `~/.local/bin/tunnel`.
+Official releases also publish signed checksums used by native `tunnel update` and `tunnel rollback`.
+
+Manual lifecycle commands:
+
+```sh
+tunnel update
+tunnel rollback
+```
+
+Interactive `tunnel run ...` also checks for updates at most once every 24 hours and may prompt before startup when a newer official release is available.
 
 Verify the installed version:
 

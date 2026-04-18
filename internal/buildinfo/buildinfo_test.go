@@ -12,6 +12,32 @@ func TestStringReturnsDefaultVersionWhenUnset(t *testing.T) {
 	}
 }
 
+func TestDistributionDefaultsToNonRelease(t *testing.T) {
+	oldDistribution := DistributionMarker
+	DistributionMarker = ""
+	t.Cleanup(func() { DistributionMarker = oldDistribution })
+
+	if got := DistributionString(); got != DistributionNonRelease {
+		t.Fatalf("DistributionString() = %q, want %q", got, DistributionNonRelease)
+	}
+	if IsOfficialRelease() {
+		t.Fatal("IsOfficialRelease() = true, want false")
+	}
+}
+
+func TestDistributionRecognizesOfficialRelease(t *testing.T) {
+	oldDistribution := DistributionMarker
+	DistributionMarker = string(DistributionOfficialRelease)
+	t.Cleanup(func() { DistributionMarker = oldDistribution })
+
+	if got := DistributionString(); got != DistributionOfficialRelease {
+		t.Fatalf("DistributionString() = %q, want %q", got, DistributionOfficialRelease)
+	}
+	if !IsOfficialRelease() {
+		t.Fatal("IsOfficialRelease() = false, want true")
+	}
+}
+
 func TestMajorUsesSemanticMajorForVersionContract(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -26,12 +52,8 @@ func TestMajorUsesSemanticMajorForVersionContract(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			oldVersion := Version
-			Version = tc.version
-			t.Cleanup(func() { Version = oldVersion })
-
-			if got := Major(); got != tc.want {
-				t.Fatalf("Major() = %q, want %q", got, tc.want)
+			if got := MajorOf(tc.version); got != tc.want {
+				t.Fatalf("MajorOf(%q) = %q, want %q", tc.version, got, tc.want)
 			}
 		})
 	}
@@ -52,12 +74,8 @@ func TestCompatibilityLineUsesPreOneMinorLine(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			oldVersion := Version
-			Version = tc.version
-			t.Cleanup(func() { Version = oldVersion })
-
-			if got := CompatibilityLine(); got != tc.want {
-				t.Fatalf("CompatibilityLine() = %q, want %q", got, tc.want)
+			if got := CompatibilityLineOf(tc.version); got != tc.want {
+				t.Fatalf("CompatibilityLineOf(%q) = %q, want %q", tc.version, got, tc.want)
 			}
 		})
 	}

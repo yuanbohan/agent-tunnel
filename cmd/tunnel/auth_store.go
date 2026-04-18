@@ -5,16 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 )
 
 const (
-	tunnelConfigDirName = ".tunnel"
-	tunnelAuthFileName  = "auth.json"
-	tunnelConfigName    = "config.json"
-	authSchemaVersion   = 1
+	authSchemaVersion = 1
 )
 
 var (
@@ -35,7 +31,6 @@ type storedAuth struct {
 
 type authStore interface {
 	AuthFilePath() (string, error)
-	ConfigFilePath() (string, error)
 	Load() (storedAuth, error)
 	Save(storedAuth) error
 	Clear() error
@@ -48,24 +43,19 @@ func defaultAuthStore() authStore {
 }
 
 func (fileAuthStore) AuthFilePath() (string, error) {
-	dir, err := tunnelConfigDirPath()
+	paths, err := resolveLocalStatePaths()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, tunnelAuthFileName), nil
-}
-
-func (fileAuthStore) ConfigFilePath() (string, error) {
-	dir, err := tunnelConfigDirPath()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, tunnelConfigName), nil
+	return paths.AuthFile, nil
 }
 
 func (store fileAuthStore) Load() (storedAuth, error) {
 	path, err := store.AuthFilePath()
 	if err != nil {
+		return storedAuth{}, err
+	}
+	if err := rejectSymlinkPath(path, "auth store"); err != nil {
 		return storedAuth{}, err
 	}
 
@@ -95,48 +85,9 @@ func (store fileAuthStore) Save(record storedAuth) error {
 	if err != nil {
 		return err
 	}
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("create config dir %s: %w", dir, err)
-	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		return fmt.Errorf("chmod config dir %s: %w", dir, err)
-	}
-
 	record.Version = authSchemaVersion
-	payload, err := json.MarshalIndent(record, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encode auth store: %w", err)
-	}
-	payload = append(payload, '\n')
-
-	tmpFile, err := os.CreateTemp(dir, "auth-*.tmp")
-	if err != nil {
-		return fmt.Errorf("create auth temp file: %w", err)
-	}
-	tmpPath := tmpFile.Name()
-	cleanup := func() {
-		tmpFile.Close()
-		_ = os.Remove(tmpPath)
-	}
-	if err := tmpFile.Chmod(0o600); err != nil {
-		cleanup()
-		return fmt.Errorf("chmod auth temp file: %w", err)
-	}
-	if _, err := tmpFile.Write(payload); err != nil {
-		cleanup()
-		return fmt.Errorf("write auth temp file: %w", err)
-	}
-	if err := tmpFile.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("close auth temp file: %w", err)
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("replace auth store %s: %w", path, err)
-	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		return fmt.Errorf("chmod auth store %s: %w", path, err)
+	if err := writePrivateJSONFile(path, record); err != nil {
+		return fmt.Errorf("save auth store %s: %w", path, err)
 	}
 	return nil
 }
@@ -146,23 +97,14 @@ func (store fileAuthStore) Clear() error {
 	if err != nil {
 		return err
 	}
+	if err := rejectSymlinkPath(path, "auth store"); err != nil {
+		return err
+	}
 	err = os.Remove(path)
 	if err == nil || errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	return fmt.Errorf("remove auth store %s: %w", path, err)
-}
-
-func tunnelConfigDirPath() (string, error) {
-	home, err := userHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve home directory: %w", err)
-	}
-	home = strings.TrimSpace(home)
-	if home == "" {
-		return "", fmt.Errorf("resolve home directory: empty path")
-	}
-	return filepath.Join(home, tunnelConfigDirName), nil
 }
 
 type authSource string

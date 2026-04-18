@@ -3,6 +3,7 @@
 set -eu
 
 script_dir=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+repo_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
 
 # shellcheck source=/dev/null
 . "$script_dir/release-common.sh"
@@ -10,11 +11,17 @@ script_dir=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/tunnel-release-test.XXXXXX")
 cleanup() {
 	rm -rf "$tmpdir"
+	rm -rf "${probe_dir:-}"
 }
 trap cleanup EXIT INT TERM
 
 release_root="$tmpdir/releases"
 go_bin="${GO:-go}"
+signing_private_key="$tmpdir/release-signing-private.pem"
+signing_public_key="$tmpdir/release-signing-public.txt"
+"$go_bin" run ./cmd/release-sign keygen "$signing_private_key" "$signing_public_key" >/dev/null
+release_signing_key=$(cat "$signing_private_key")
+release_signing_public_key=$(awk 'NR==1 {print $2}' "$signing_public_key")
 repo_relay_version=$("$go_bin" run ./cmd/relay version | awk 'NR==1 {print $2}')
 if [ -z "$repo_relay_version" ]; then
 	printf 'error: could not determine current relay version\n' >&2
@@ -24,7 +31,7 @@ version="${TEST_RELEASE_VERSION:-$(release_fixture_version "$repo_relay_version"
 incompatible_version=$(release_incompatible_version "$repo_relay_version")
 output_dir="$release_root/$version"
 
-GO="$go_bin" RELEASE_DIR="$release_root" "$script_dir/release-package.sh" "$version" >/dev/null
+GO="$go_bin" RELEASE_DIR="$release_root" TUNNEL_RELEASE_SIGNING_PRIVATE_KEY="$release_signing_key" TUNNEL_RELEASE_SIGNING_PUBLIC_KEY="$release_signing_public_key" "$script_dir/release-package.sh" "$version" >/dev/null
 
 if [ ! -d "$output_dir" ]; then
 	printf 'error: missing output dir %s\n' "$output_dir" >&2
@@ -39,6 +46,10 @@ fi
 
 if [ ! -f "$output_dir/checksums.txt" ]; then
 	printf 'error: missing checksums.txt\n' >&2
+	exit 1
+fi
+if [ ! -f "$output_dir/checksums.txt.sig" ]; then
+	printf 'error: missing checksums.txt.sig\n' >&2
 	exit 1
 fi
 
@@ -77,7 +88,34 @@ if [ "$("$extract_dir/tunnel" --version)" != "tunnel $version" ]; then
 	exit 1
 fi
 
-if GO="$go_bin" RELEASE_DIR="$release_root" "$script_dir/release-package.sh" "v0.1.2foo" >/dev/null 2>"$tmpdir/invalid-version.err"
+probe_dir="$repo_root/.tmp-release-package-probe"
+mkdir -p "$probe_dir"
+cat >"$probe_dir/main.go" <<'EOF'
+package main
+
+import (
+	"fmt"
+
+	"yuanbohan/tunnel/internal/buildinfo"
+)
+
+func main() {
+	fmt.Println(buildinfo.DistributionString())
+}
+EOF
+
+probe_output=$(cd "$repo_root" && "$go_bin" run \
+	-trimpath \
+	-ldflags="-X yuanbohan/tunnel/internal/buildinfo.Version=$version -X yuanbohan/tunnel/internal/buildinfo.DistributionMarker=official-release" \
+	"$probe_dir/main.go")
+rm -rf "$probe_dir"
+
+if [ "$probe_output" != "official-release" ]; then
+	printf 'error: official-release ldflags did not set distribution marker\n' >&2
+	exit 1
+fi
+
+if GO="$go_bin" RELEASE_DIR="$release_root" TUNNEL_RELEASE_SIGNING_PRIVATE_KEY="$release_signing_key" TUNNEL_RELEASE_SIGNING_PUBLIC_KEY="$release_signing_public_key" "$script_dir/release-package.sh" "v0.1.2foo" >/dev/null 2>"$tmpdir/invalid-version.err"
 then
 	printf 'error: invalid version unexpectedly passed validation\n' >&2
 	exit 1
@@ -88,7 +126,7 @@ if ! grep -q 'version must look like v0.1.0' "$tmpdir/invalid-version.err"; then
 	exit 1
 fi
 
-if GO="$go_bin" RELEASE_DIR="$release_root" "$script_dir/release-package.sh" "$incompatible_version" >/dev/null 2>"$tmpdir/compatibility.err"
+if GO="$go_bin" RELEASE_DIR="$release_root" TUNNEL_RELEASE_SIGNING_PRIVATE_KEY="$release_signing_key" TUNNEL_RELEASE_SIGNING_PUBLIC_KEY="$release_signing_public_key" "$script_dir/release-package.sh" "$incompatible_version" >/dev/null 2>"$tmpdir/compatibility.err"
 then
 	printf 'error: mismatched compatibility line unexpectedly packaged\n' >&2
 	exit 1
@@ -96,6 +134,22 @@ fi
 
 if ! grep -q 'outside the current relay compatibility line' "$tmpdir/compatibility.err"; then
 	printf 'error: compatibility-line path did not explain failure\n' >&2
+	exit 1
+fi
+
+other_private_key="$tmpdir/other-signing-private.pem"
+other_public_key="$tmpdir/other-signing-public.txt"
+"$go_bin" run ./cmd/release-sign keygen "$other_private_key" "$other_public_key" >/dev/null
+other_release_signing_public_key=$(awk 'NR==1 {print $2}' "$other_public_key")
+
+if GO="$go_bin" RELEASE_DIR="$release_root" TUNNEL_RELEASE_SIGNING_PRIVATE_KEY="$release_signing_key" TUNNEL_RELEASE_SIGNING_PUBLIC_KEY="$other_release_signing_public_key" "$script_dir/release-package.sh" "$version" >/dev/null 2>"$tmpdir/signing-key-mismatch.err"
+then
+	printf 'error: mismatched signing key unexpectedly packaged\n' >&2
+	exit 1
+fi
+
+if ! grep -q 'does not match the trusted release signing public key' "$tmpdir/signing-key-mismatch.err"; then
+	printf 'error: signing key mismatch path did not explain failure\n' >&2
 	exit 1
 fi
 
