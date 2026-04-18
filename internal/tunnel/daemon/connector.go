@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -205,6 +206,10 @@ func (h *launchHandler) handle(ctx context.Context, requestID, command, cwd, lab
 	launchCtx, cancel := context.WithTimeout(ctx, launchSessionTimeout)
 	defer cancel()
 	if _, err := CreateLaunchSession(launchCtx, h.paths, resolvedCWD, wrapper); err != nil {
+		if errors.Is(err, ErrTmuxNotFound) {
+			h.state.setLastFailure("tmux_not_found", true)
+			return launchResult{Status: "failed", Reason: "tmux_not_found"}
+		}
 		h.state.setLastFailure("session_start_failed", true)
 		return launchResult{Status: "failed", Reason: "session_start_failed"}
 	}

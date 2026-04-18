@@ -159,6 +159,57 @@ func TestLaunchHandlerFailsWhenTmuxSessionCreationFails(t *testing.T) {
 	}
 }
 
+func TestLaunchHandlerPreservesTmuxNotFoundWhenTmuxDisappearsAfterPreflight(t *testing.T) {
+	paths := testPaths(t)
+	handler := &launchHandler{
+		baseURL:   "https://relay.example.com",
+		authToken: "secret-token",
+		paths:     paths,
+		state: &runtimeState{
+			status: StatusInfo{LaunchHealth: LaunchHealthHealthy},
+			paths:  paths,
+		},
+	}
+
+	tunnelDir := t.TempDir()
+	tunnelPath := filepath.Join(tunnelDir, "tunnel")
+	if err := os.WriteFile(tunnelPath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	oldPath := os.Getenv("PATH")
+	if err := os.Setenv("PATH", tunnelDir+string(os.PathListSeparator)+oldPath); err != nil {
+		t.Fatalf("Setenv returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Setenv("PATH", oldPath)
+	})
+
+	oldTmuxLookPath := tmuxLookPathFn
+	oldSessionName := workspaceSessionNameFn
+	t.Cleanup(func() {
+		tmuxLookPathFn = oldTmuxLookPath
+		workspaceSessionNameFn = oldSessionName
+	})
+
+	lookups := 0
+	tmuxLookPathFn = func(string) (string, error) {
+		lookups++
+		if lookups == 1 {
+			return "/usr/bin/tmux", nil
+		}
+		return "", errors.New("not found")
+	}
+	workspaceSessionNameFn = func() (string, error) { return "launch_fixed", nil }
+
+	result := handler.Handle(context.Background(), "req-1", "codex", t.TempDir(), "api-fix")
+	if result.Status != "failed" || result.Reason != "tmux_not_found" {
+		t.Fatalf("result = %#v, want tmux_not_found", result)
+	}
+	if got := handler.state.snapshot(); got.LastFailure != "tmux_not_found" || got.LaunchHealth != LaunchHealthDegraded {
+		t.Fatalf("status = %#v, want degraded tmux_not_found state", got)
+	}
+}
+
 func TestLaunchHandlerCreatesTmuxSessionAndClearsPreviousFailure(t *testing.T) {
 	paths := testPaths(t)
 	argFile := filepath.Join(t.TempDir(), "args.txt")
