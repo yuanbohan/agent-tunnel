@@ -17,9 +17,9 @@ type SessionInfo struct {
 	CWD            string `json:"cwd"`
 	CommandPreview string `json:"command_preview"`
 	StartedAt      int    `json:"started_at"`
-	PlatformFamily string `json:"platform_family,omitempty"`
-	PlatformID     string `json:"platform_id,omitempty"`
-	ComputerName   string `json:"computer_name,omitempty"`
+	PlatformFamily string `json:"platform_family"`
+	PlatformID     string `json:"platform_id"`
+	ComputerName   string `json:"computer_name"`
 }
 
 // AgentFrame is the JSON envelope sent over the agent WebSocket to the relay.

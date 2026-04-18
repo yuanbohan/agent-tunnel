@@ -129,7 +129,7 @@ func TestSessionSummaryJSONUsesStableFieldNames(t *testing.T) {
 	}
 }
 
-func TestSessionSummaryOmittedUnsetOptionalFields(t *testing.T) {
+func TestSessionSummaryUsesStableDeviceIdentityKeysWhenUnset(t *testing.T) {
 	info := SessionInfo{
 		SessionID:      "sess-2",
 		Launcher:       "claude",
@@ -145,14 +145,14 @@ func TestSessionSummaryOmittedUnsetOptionalFields(t *testing.T) {
 	if strings.Contains(string(raw), `"label":`) {
 		t.Fatalf("json = %s, did not expect label", raw)
 	}
-	if strings.Contains(string(raw), `"platform_family":`) {
-		t.Fatalf("json = %s, did not expect platform_family", raw)
+	if !strings.Contains(string(raw), `"platform_family":""`) {
+		t.Fatalf("json = %s, want empty platform_family", raw)
 	}
-	if strings.Contains(string(raw), `"platform_id":`) {
-		t.Fatalf("json = %s, did not expect platform_id", raw)
+	if !strings.Contains(string(raw), `"platform_id":""`) {
+		t.Fatalf("json = %s, want empty platform_id", raw)
 	}
-	if strings.Contains(string(raw), `"computer_name":`) {
-		t.Fatalf("json = %s, did not expect computer_name", raw)
+	if !strings.Contains(string(raw), `"computer_name":""`) {
+		t.Fatalf("json = %s, want empty computer_name", raw)
 	}
 }
 

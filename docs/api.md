@@ -699,8 +699,9 @@ Notes:
 - only sessions owned by the authenticated user are returned
 - another user's live sessions must remain invisible even when both users have active `tunnel` connections
 - the list is live-only, not history
+- `platform_family`, `platform_id`, and `computer_name` are stable keys in the session payload; when metadata is unavailable they are returned as empty strings rather than omitted
 - `platform_family` is the coarse fallback field for session device identity, currently `macos` or `linux`
-- `platform_id` is the best-effort specific platform identifier for client icon mapping, for example `macos`, `ubuntu`, `debian`, `arch`, `fedora`, or `unknown`
+- `platform_id` is the best-effort specific platform identifier for client icon mapping, for example `macos`, `ubuntu`, `debian`, `arch`, or `fedora`
 - `computer_name` is the user-facing machine name chosen by the agent: display name first, hostname as fallback
 
 Error responses:

@@ -1072,6 +1072,139 @@ func TestRunWithArgsUsesUserProvidedCommandForPreview(t *testing.T) {
 	}
 }
 
+func TestRunWithArgsNormalizesUnavailableSessionIdentityMetadata(t *testing.T) {
+	setTestEnv(t)
+
+	oldResolve := resolveLauncher
+	oldPrepare := prepareLocalTerminal
+	oldStartSession := startSession
+	oldStartLocalTerminal := startLocalTerminal
+	oldWaitForExit := waitForExit
+	oldNewConnector := newConnector
+	oldCollectSessionMetadata := collectSessionMetadata
+	t.Cleanup(func() {
+		resolveLauncher = oldResolve
+		prepareLocalTerminal = oldPrepare
+		startSession = oldStartSession
+		startLocalTerminal = oldStartLocalTerminal
+		waitForExit = oldWaitForExit
+		newConnector = oldNewConnector
+		collectSessionMetadata = oldCollectSessionMetadata
+	})
+
+	resolveLauncher = func(name string, args []string) (launcher.Command, error) {
+		return launcher.Command{Name: name, Path: "/usr/bin/codex", Args: append([]string(nil), args...)}, nil
+	}
+
+	prepareLocalTerminal = func() (*session.LocalTerminal, error) {
+		return &session.LocalTerminal{}, nil
+	}
+
+	var gotInfo protocol.SessionInfo
+	newConnector = func(url, token string, info protocol.SessionInfo) relayConnector {
+		gotInfo = info
+		return &fakeRelayConnector{waitConnected: true, state: connector.StateConnected}
+	}
+	collectSessionMetadata = func() daemon.DeviceMetadata {
+		return daemon.DeviceMetadata{
+			DisplayName:    "",
+			Hostname:       "   ",
+			PlatformFamily: "",
+			PlatformID:     "",
+		}
+	}
+
+	wantErr := errors.New("start session failed")
+	startSession = func(_ context.Context, path string, args []string, sinks map[string]session.OutputSink) (*session.Running, error) {
+		return nil, wantErr
+	}
+
+	waitForExit = func(context.Context, <-chan struct{}, <-chan error) error {
+		return nil
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err := runWithArgs([]string{"tunnel", "run", "codex"}, &stdout, &stderr)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("runWithArgs error = %v, want %v", err, wantErr)
+	}
+	if gotInfo.PlatformFamily != "" {
+		t.Fatalf("PlatformFamily = %q, want empty", gotInfo.PlatformFamily)
+	}
+	if gotInfo.PlatformID != "" {
+		t.Fatalf("PlatformID = %q, want empty", gotInfo.PlatformID)
+	}
+	if gotInfo.ComputerName != "" {
+		t.Fatalf("ComputerName = %q, want empty", gotInfo.ComputerName)
+	}
+}
+
+func TestRunWithArgsPreservesLiteralUnknownIdentityValues(t *testing.T) {
+	setTestEnv(t)
+
+	oldResolve := resolveLauncher
+	oldPrepare := prepareLocalTerminal
+	oldStartSession := startSession
+	oldStartLocalTerminal := startLocalTerminal
+	oldWaitForExit := waitForExit
+	oldNewConnector := newConnector
+	oldCollectSessionMetadata := collectSessionMetadata
+	t.Cleanup(func() {
+		resolveLauncher = oldResolve
+		prepareLocalTerminal = oldPrepare
+		startSession = oldStartSession
+		startLocalTerminal = oldStartLocalTerminal
+		waitForExit = oldWaitForExit
+		newConnector = oldNewConnector
+		collectSessionMetadata = oldCollectSessionMetadata
+	})
+
+	resolveLauncher = func(name string, args []string) (launcher.Command, error) {
+		return launcher.Command{Name: name, Path: "/usr/bin/codex", Args: append([]string(nil), args...)}, nil
+	}
+
+	prepareLocalTerminal = func() (*session.LocalTerminal, error) {
+		return &session.LocalTerminal{}, nil
+	}
+
+	var gotInfo protocol.SessionInfo
+	newConnector = func(url, token string, info protocol.SessionInfo) relayConnector {
+		gotInfo = info
+		return &fakeRelayConnector{waitConnected: true, state: connector.StateConnected}
+	}
+	collectSessionMetadata = func() daemon.DeviceMetadata {
+		return daemon.DeviceMetadata{
+			DisplayName:    "Unknown Device",
+			Hostname:       "real-host",
+			PlatformFamily: daemon.PlatformFamilyLinux,
+			PlatformID:     "unknown",
+		}
+	}
+
+	wantErr := errors.New("start session failed")
+	startSession = func(_ context.Context, path string, args []string, sinks map[string]session.OutputSink) (*session.Running, error) {
+		return nil, wantErr
+	}
+
+	waitForExit = func(context.Context, <-chan struct{}, <-chan error) error {
+		return nil
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err := runWithArgs([]string{"tunnel", "run", "codex"}, &stdout, &stderr)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("runWithArgs error = %v, want %v", err, wantErr)
+	}
+	if gotInfo.ComputerName != "Unknown Device" {
+		t.Fatalf("ComputerName = %q, want literal Unknown Device preserved", gotInfo.ComputerName)
+	}
+	if gotInfo.PlatformID != "unknown" {
+		t.Fatalf("PlatformID = %q, want literal unknown preserved", gotInfo.PlatformID)
+	}
+}
+
 func TestRunWithArgsForwardsLaunchRequestIDFromEnv(t *testing.T) {
 	setTestEnv(t)
 

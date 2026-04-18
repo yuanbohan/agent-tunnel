@@ -83,6 +83,7 @@ Notes:
 
 - `label` may be omitted when empty
 - `started_at` is a Unix timestamp in seconds
+- `platform_family`, `platform_id`, and `computer_name` are stable keys in the session payload; when metadata is unavailable they are returned as empty strings rather than omitted
 - `platform_family` is the coarse fallback field for session device identity, currently `macos` or `linux`
 - `platform_id` is a best-effort specific identifier for client-side icon mapping
 - `computer_name` is the user-facing machine name chosen by the agent: display name first, hostname as fallback
