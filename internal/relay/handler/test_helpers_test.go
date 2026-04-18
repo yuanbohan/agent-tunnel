@@ -738,6 +738,9 @@ func dialAndRegisterAgentWithLaunchRequest(t *testing.T, serverURL, agentToken, 
 		CWD:            "/tmp/project",
 		CommandPreview: "codex",
 		StartedAt:      10,
+		PlatformFamily: "linux",
+		PlatformID:     "ubuntu",
+		ComputerName:   "Office Linux",
 	}, launchRequestID)); err != nil {
 		t.Fatalf("WriteJSON register returned error: %v", err)
 	}

@@ -14,10 +14,22 @@ func detectLinuxPlatformID() string {
 	}
 	defer file.Close()
 
-	return parseLinuxPlatformID(file)
+	id, ok := parseLinuxPlatformIDValue(file)
+	if !ok {
+		return PlatformIDUnknown
+	}
+	return id
 }
 
 func parseLinuxPlatformID(r io.Reader) string {
+	id, ok := parseLinuxPlatformIDValue(r)
+	if !ok {
+		return PlatformIDUnknown
+	}
+	return id
+}
+
+func parseLinuxPlatformIDValue(r io.Reader) (string, bool) {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -26,9 +38,9 @@ func parseLinuxPlatformID(r io.Reader) string {
 		}
 		value := strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "ID=")), `"`)
 		if value == "" {
-			return PlatformIDUnknown
+			return "", false
 		}
-		return value
+		return value, true
 	}
-	return PlatformIDUnknown
+	return "", false
 }

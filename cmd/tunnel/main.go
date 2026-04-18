@@ -59,6 +59,7 @@ var (
 	newConnector = func(url, token string, info protocol.SessionInfo) relayConnector {
 		return connector.New(url, token, info)
 	}
+	collectSessionMetadata    = daemon.CollectSessionMetadata
 	resolveDaemonPaths        = daemon.ResolvePaths
 	startDaemon               = daemon.StartBackground
 	runDaemonRuntime          = daemon.Run
@@ -160,6 +161,7 @@ func runTunnelSession(ctx context.Context, stdin io.Reader, parsed runArgs, stdo
 
 	commandPreview := strings.TrimSpace(strings.Join(append([]string{command.Name}, command.Args...), " "))
 	sessionID := fmt.Sprintf("%d", time.Now().UnixNano())
+	platformFamily, platformID, computerName := sessionIdentityFromMetadata(collectSessionMetadata())
 	info := protocol.SessionInfo{
 		SessionID:      sessionID,
 		Launcher:       command.Name,
@@ -167,6 +169,9 @@ func runTunnelSession(ctx context.Context, stdin io.Reader, parsed runArgs, stdo
 		CWD:            cwd,
 		CommandPreview: commandPreview,
 		StartedAt:      protocol.UnixTimestamp(time.Now().UTC()),
+		PlatformFamily: platformFamily,
+		PlatformID:     platformID,
+		ComputerName:   computerName,
 	}
 
 	relay := newConnector(relayURL, resolvedAuth.Token, info)
@@ -218,6 +223,27 @@ func runTunnelSession(ctx context.Context, stdin io.Reader, parsed runArgs, stdo
 	}()
 
 	return waitForExit(ctx, done, waitErr)
+}
+
+func sessionIdentityFromMetadata(metadata daemon.DeviceMetadata) (platformFamily, platformID, computerName string) {
+	computerName = strings.TrimSpace(metadata.DisplayName)
+	if computerName == "" {
+		computerName = strings.TrimSpace(metadata.Hostname)
+	}
+
+	platformFamily = strings.TrimSpace(metadata.PlatformFamily)
+	switch platformFamily {
+	case daemon.PlatformFamilyLinux, daemon.PlatformFamilyMacOS:
+	default:
+		platformFamily = ""
+	}
+
+	platformID = strings.TrimSpace(metadata.PlatformID)
+	if platformFamily == "" {
+		platformID = ""
+	}
+
+	return platformFamily, platformID, computerName
 }
 
 func legacyLauncherCommand(args []string) string {

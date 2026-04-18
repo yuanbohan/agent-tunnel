@@ -100,6 +100,9 @@ Code map (excerpt):
 - user-scoped discovery and attach authorization are a hard multi-tenant guarantee for hosted relay deployments
 - a missing session can mean "offline now", not just "never existed"
 - a session can disappear and later reappear with the same `session_id` if the same running `tunnel` process reconnects
+- session metadata now includes best-effort machine identity fields for UI display: `platform_family`, `platform_id`, and `computer_name`
+- `computer_name` is already normalized by the agent before registration: prefer local display name when available, otherwise fall back to hostname
+- `platform_id` is a raw best-effort identifier intended for client-side icon mapping; clients should keep their own whitelist and fall back gracefully for unknown values
 
 ### Device Model
 
@@ -681,7 +684,10 @@ Response:
       "label": "api-fix",
       "cwd": "/repo",
       "command_preview": "codex --profile prod",
-      "started_at": 1775376000
+      "started_at": 1775376000,
+      "platform_family": "linux",
+      "platform_id": "ubuntu",
+      "computer_name": "Office Linux"
     }
   ]
 }
@@ -693,6 +699,10 @@ Notes:
 - only sessions owned by the authenticated user are returned
 - another user's live sessions must remain invisible even when both users have active `tunnel` connections
 - the list is live-only, not history
+- `platform_family`, `platform_id`, and `computer_name` are stable keys in the session payload; when metadata is unavailable they are returned as empty strings rather than omitted
+- `platform_family` is the coarse fallback field for session device identity, currently `macos` or `linux`
+- `platform_id` is the best-effort specific platform identifier for client icon mapping, for example `macos`, `ubuntu`, `debian`, `arch`, or `fedora`
+- `computer_name` is the user-facing machine name chosen by the agent: display name first, hostname as fallback
 
 Error responses:
 

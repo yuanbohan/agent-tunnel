@@ -18,3 +18,13 @@ func TestParseLinuxPlatformIDReturnsTrimmedID(t *testing.T) {
 		t.Fatalf("parseLinuxPlatformID() = %q, want ubuntu", got)
 	}
 }
+
+func TestParseLinuxPlatformIDValuePreservesLiteralUnknown(t *testing.T) {
+	got, ok := parseLinuxPlatformIDValue(strings.NewReader("NAME=Unknown Linux\nID=unknown\n"))
+	if !ok {
+		t.Fatal("parseLinuxPlatformIDValue() ok = false, want true")
+	}
+	if got != "unknown" {
+		t.Fatalf("parseLinuxPlatformIDValue() = %q, want unknown", got)
+	}
+}

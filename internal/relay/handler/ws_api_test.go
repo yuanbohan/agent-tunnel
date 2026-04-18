@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -601,6 +603,15 @@ func TestAgentRegistrationKeepsLiveSessionsUserScopedAcrossOwners(t *testing.T) 
 	if len(aliceSessions) != 1 || aliceSessions[0].SessionID != "sess-a" {
 		t.Fatalf("alice sessions = %#v, want only sess-a", aliceSessions)
 	}
+	if aliceSessions[0].PlatformFamily != "linux" {
+		t.Fatalf("alice PlatformFamily = %q, want linux", aliceSessions[0].PlatformFamily)
+	}
+	if aliceSessions[0].PlatformID != "ubuntu" {
+		t.Fatalf("alice PlatformID = %q, want ubuntu", aliceSessions[0].PlatformID)
+	}
+	if aliceSessions[0].ComputerName != "Office Linux" {
+		t.Fatalf("alice ComputerName = %q, want Office Linux", aliceSessions[0].ComputerName)
+	}
 
 	bobResp := doBearerGET(t, server.URL+"/api/sessions", bobIssued.AccessToken)
 	defer bobResp.Body.Close()
@@ -611,5 +622,77 @@ func TestAgentRegistrationKeepsLiveSessionsUserScopedAcrossOwners(t *testing.T) 
 	decodeAPIEnvelopeFromResponse(t, bobResp, http.StatusOK, &bobSessions)
 	if len(bobSessions) != 1 || bobSessions[0].SessionID != "sess-b" {
 		t.Fatalf("bob sessions = %#v, want only sess-b", bobSessions)
+	}
+	if bobSessions[0].PlatformFamily != "linux" {
+		t.Fatalf("bob PlatformFamily = %q, want linux", bobSessions[0].PlatformFamily)
+	}
+	if bobSessions[0].PlatformID != "ubuntu" {
+		t.Fatalf("bob PlatformID = %q, want ubuntu", bobSessions[0].PlatformID)
+	}
+	if bobSessions[0].ComputerName != "Office Linux" {
+		t.Fatalf("bob ComputerName = %q, want Office Linux", bobSessions[0].ComputerName)
+	}
+}
+
+func TestAgentRegistrationWithoutIdentityMetadataStillReturnsStableSessionKeys(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	issued := env.login(t, "alice", "password123")
+	agentToken := env.createAgentToken(t, user.ID, "Laptop")
+
+	server := httptest.NewServer(env.handler(nil))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/agent/ws"
+	headers := http.Header{}
+	headers.Set("Authorization", bearerAuth(agentToken.Plaintext))
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, headers)
+	if err != nil {
+		t.Fatalf("Dial returned error: %v", err)
+	}
+	defer conn.Close()
+
+	if err := conn.WriteJSON(protocol.RegisterFrame(protocol.SessionInfo{
+		SessionID:      "sess-empty",
+		Launcher:       "codex",
+		CWD:            "/tmp/project",
+		CommandPreview: "codex",
+		StartedAt:      10,
+	})); err != nil {
+		t.Fatalf("WriteJSON register returned error: %v", err)
+	}
+	waitForOwnedSession(t, env.registry, "sess-empty", user.ID)
+
+	resp := doBearerGET(t, server.URL+"/api/sessions", issued.AccessToken)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	payload, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll returned error: %v", err)
+	}
+	var envResp apiEnvelope
+	if err := json.Unmarshal(payload, &envResp); err != nil {
+		t.Fatalf("Unmarshal returned error: %v, body=%q", err, strings.TrimSpace(string(payload)))
+	}
+	body := string(envResp.Body)
+	for _, want := range []string{`"platform_family":""`, `"platform_id":""`, `"computer_name":""`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("response body = %s, want %s", body, want)
+		}
+	}
+
+	var sessions []protocol.SessionInfo
+	if err := json.Unmarshal(envResp.Body, &sessions); err != nil {
+		t.Fatalf("Unmarshal sessions returned error: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].SessionID != "sess-empty" {
+		t.Fatalf("sessions = %#v, want only sess-empty", sessions)
+	}
+	if sessions[0].PlatformFamily != "" || sessions[0].PlatformID != "" || sessions[0].ComputerName != "" {
+		t.Fatalf("session = %#v, want empty identity fields", sessions[0])
 	}
 }

@@ -15,6 +15,9 @@ func TestRegisterFrameRoundTrip(t *testing.T) {
 		CWD:            "/tmp/project",
 		CommandPreview: "codex --profile prod",
 		StartedAt:      started,
+		PlatformFamily: "linux",
+		PlatformID:     "ubuntu",
+		ComputerName:   "Office Linux",
 	}, "req-123")
 
 	raw, err := json.Marshal(frame)
@@ -38,6 +41,15 @@ func TestRegisterFrameRoundTrip(t *testing.T) {
 	}
 	if decoded.Session.StartedAt != started {
 		t.Fatalf("StartedAt = %v, want %v", decoded.Session.StartedAt, started)
+	}
+	if decoded.Session.PlatformFamily != "linux" {
+		t.Fatalf("PlatformFamily = %q, want linux", decoded.Session.PlatformFamily)
+	}
+	if decoded.Session.PlatformID != "ubuntu" {
+		t.Fatalf("PlatformID = %q, want ubuntu", decoded.Session.PlatformID)
+	}
+	if decoded.Session.ComputerName != "Office Linux" {
+		t.Fatalf("ComputerName = %q, want Office Linux", decoded.Session.ComputerName)
 	}
 	if decoded.LaunchRequestID != "req-123" {
 		t.Fatalf("LaunchRequestID = %q, want req-123", decoded.LaunchRequestID)
@@ -87,6 +99,9 @@ func TestSessionSummaryJSONUsesStableFieldNames(t *testing.T) {
 		Label:          "docs",
 		CWD:            "/Users/test/project",
 		CommandPreview: "gemini",
+		PlatformFamily: "macos",
+		PlatformID:     "macos",
+		ComputerName:   "Yuanbo's MacBook Pro",
 	}
 
 	raw, err := json.Marshal(info)
@@ -101,6 +116,9 @@ func TestSessionSummaryJSONUsesStableFieldNames(t *testing.T) {
 		"label",
 		"cwd",
 		"command_preview",
+		"platform_family",
+		"platform_id",
+		"computer_name",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("json = %s, want field %q", got, want)
@@ -111,7 +129,7 @@ func TestSessionSummaryJSONUsesStableFieldNames(t *testing.T) {
 	}
 }
 
-func TestSessionSummaryOmittedUnsetOptionalFields(t *testing.T) {
+func TestSessionSummaryUsesStableDeviceIdentityKeysWhenUnset(t *testing.T) {
 	info := SessionInfo{
 		SessionID:      "sess-2",
 		Launcher:       "claude",
@@ -126,6 +144,15 @@ func TestSessionSummaryOmittedUnsetOptionalFields(t *testing.T) {
 
 	if strings.Contains(string(raw), `"label":`) {
 		t.Fatalf("json = %s, did not expect label", raw)
+	}
+	if !strings.Contains(string(raw), `"platform_family":""`) {
+		t.Fatalf("json = %s, want empty platform_family", raw)
+	}
+	if !strings.Contains(string(raw), `"platform_id":""`) {
+		t.Fatalf("json = %s, want empty platform_id", raw)
+	}
+	if !strings.Contains(string(raw), `"computer_name":""`) {
+		t.Fatalf("json = %s, want empty computer_name", raw)
 	}
 }
 

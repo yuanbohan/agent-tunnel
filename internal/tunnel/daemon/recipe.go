@@ -78,19 +78,41 @@ func CollectDeviceMetadata() DeviceMetadata {
 	}
 }
 
+func CollectSessionMetadata() DeviceMetadata {
+	hostname, _ := os.Hostname()
+	displayName := detectSessionDisplayName()
+	family, id := detectSessionPlatform()
+	return DeviceMetadata{
+		DisplayName:    displayName,
+		Hostname:       hostname,
+		PlatformFamily: family,
+		PlatformID:     id,
+	}
+}
+
 func detectDisplayName(hostname string) string {
 	switch runtime.GOOS {
 	case "darwin":
-		if output, err := exec.Command("scutil", "--get", "ComputerName").Output(); err == nil {
-			if trimmed := strings.TrimSpace(string(output)); trimmed != "" {
-				return trimmed
-			}
+		if displayName := detectSessionDisplayName(); displayName != "" {
+			return displayName
 		}
 	}
 	if trimmed := strings.TrimSpace(hostname); trimmed != "" {
 		return trimmed
 	}
 	return "Unknown Device"
+}
+
+func detectSessionDisplayName() string {
+	if runtime.GOOS != "darwin" {
+		return ""
+	}
+	if output, err := exec.Command("scutil", "--get", "ComputerName").Output(); err == nil {
+		if trimmed := strings.TrimSpace(string(output)); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func detectPlatform() (string, string) {
@@ -102,6 +124,30 @@ func detectPlatform() (string, string) {
 	default:
 		return runtime.GOOS, PlatformIDUnknown
 	}
+}
+
+func detectSessionPlatform() (string, string) {
+	switch runtime.GOOS {
+	case "darwin":
+		return PlatformFamilyMacOS, PlatformFamilyMacOS
+	case "linux":
+		id, ok := detectSessionLinuxPlatformID()
+		if !ok {
+			return PlatformFamilyLinux, ""
+		}
+		return PlatformFamilyLinux, id
+	default:
+		return "", ""
+	}
+}
+
+func detectSessionLinuxPlatformID() (string, bool) {
+	file, err := os.Open("/etc/os-release")
+	if err != nil {
+		return "", false
+	}
+	defer file.Close()
+	return parseLinuxPlatformIDValue(file)
 }
 
 func newOpaqueID(prefix string, numBytes int) (string, error) {
