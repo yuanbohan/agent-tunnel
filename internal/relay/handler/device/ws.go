@@ -10,6 +10,7 @@ import (
 	"github.com/gorilla/websocket"
 	"yuanbohan/tunnel/internal/config"
 	"yuanbohan/tunnel/internal/protocol"
+	"yuanbohan/tunnel/internal/relay/auth"
 	relaysession "yuanbohan/tunnel/internal/relay/device"
 	"yuanbohan/tunnel/internal/relay/handler/httpx"
 	"yuanbohan/tunnel/internal/relay/handler/middleware"
@@ -24,9 +25,13 @@ func (e errString) Error() string { return string(e) }
 
 var errInvalidDeviceRegister = errString("invalid device register frame")
 
-func Handle(registry *relaysession.Registry) gin.HandlerFunc {
+func Handle(registry *relaysession.Registry, agentTokens *auth.AgentTokenService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authenticated := middleware.AuthenticatedAgent(c)
+		token, ok := httpx.BearerTokenFromRequest(c.Request)
+		if !ok {
+			return
+		}
 
 		conn, err := allowAllDeviceOrigins.Upgrade(c.Writer, c.Request, nil)
 		if err != nil {
@@ -56,6 +61,14 @@ func Handle(registry *relaysession.Registry) gin.HandlerFunc {
 			return
 		}
 		if strings.TrimSpace(register.Device.DeviceID) == "" {
+			return
+		}
+
+		reauthenticated, err := agentTokens.Authenticate(c.Request.Context(), token)
+		if err != nil {
+			return
+		}
+		if reauthenticated.User.ID != authenticated.User.ID || reauthenticated.Token.ID != authenticated.Token.ID {
 			return
 		}
 
