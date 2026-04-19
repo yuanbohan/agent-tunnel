@@ -1,6 +1,9 @@
 package buildinfo
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 const defaultVersion = "v0.1.0-dev"
 
@@ -12,10 +15,19 @@ const (
 )
 
 var (
+	// Version is the current version of the application.
 	Version            = defaultVersion
+	// DistributionMarker indicates if this is an official release or a development build.
 	DistributionMarker = string(DistributionNonRelease)
+	// GitBranch is the git branch the binary was built from.
+	GitBranch          = "unknown"
+	// GitCommit is the git commit SHA the binary was built from.
+	GitCommit          = "unknown"
+	// BuildTime is the UTC timestamp when the binary was built.
+	BuildTime          = "unknown"
 )
 
+// String returns the current version as a trimmed string, defaulting if empty.
 func String() string {
 	trimmed := strings.TrimSpace(Version)
 	if trimmed == "" {
@@ -24,14 +36,17 @@ func String() string {
 	return trimmed
 }
 
+// Major returns the major version part of the current application version.
 func Major() string {
 	return MajorOf(String())
 }
 
+// CompatibilityLine returns the version compatibility line (major.minor for 0.x, else major).
 func CompatibilityLine() string {
 	return CompatibilityLineOf(String())
 }
 
+// DistributionString returns the current distribution marker as a Distribution type.
 func DistributionString() Distribution {
 	switch Distribution(strings.TrimSpace(DistributionMarker)) {
 	case DistributionOfficialRelease:
@@ -41,16 +56,28 @@ func DistributionString() Distribution {
 	}
 }
 
+// IsOfficialRelease returns true if the current build is an official release.
 func IsOfficialRelease() bool {
 	return DistributionString() == DistributionOfficialRelease
 }
 
+// MajorOf extracts the major version part from the provided version string.
 func MajorOf(version string) string {
 	return majorOf(version)
 }
 
+// CompatibilityLineOf extracts the compatibility line from the provided version string.
 func CompatibilityLineOf(version string) string {
 	return compatibilityLineOf(version)
+}
+
+// BuildTimeUnix returns the build time as Unix seconds.
+func BuildTimeUnix() int64 {
+	t, err := time.Parse(time.RFC3339, strings.TrimSpace(BuildTime))
+	if err != nil {
+		return 0
+	}
+	return t.Unix()
 }
 
 func majorOf(version string) string {

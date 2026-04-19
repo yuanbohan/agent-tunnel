@@ -65,6 +65,7 @@ func newRouter(
 	})
 
 	router.GET("/healthz", api.Healthz())
+	router.GET("/internal/version", middleware.LocalOnly(), api.Version())
 
 	router.POST(types.OperatorInviteCodesPath, middleware.OperatorAuth(), api.CreateInvites(operatorSvc))
 	router.POST(types.OperatorInviteListPath, middleware.OperatorAuth(), api.ListInvites(operatorSvc))
