@@ -136,7 +136,7 @@ version="${VERSION:-}"
 install_base_url="${TUNNEL_INSTALL_BASE_URL:-https://raw.githubusercontent.com/yuanbohan/tunnel/main}"
 release_repo="${TUNNEL_RELEASE_REPO:-yuanbohan/tunnel}"
 install_dir="${TUNNEL_INSTALL_DIR:-$HOME/.local/bin}"
-release_signing_public_key="${TUNNEL_RELEASE_SIGNING_PUBLIC_KEY:-AAAAC3NzaC1lZDI1NTE5AAAAIO+yV8bMgSRdfozlBhqQ+xdFJZ5cAPI2T9sI6OSZRPXZ}"
+release_signing_public_key="${TUNNEL_RELEASE_SIGNING_PUBLIC_KEY:-AAAAC3NzaC1lZDI1NTE5AAAAIJ9OrgAvOri02pL9XEZo3KsAupH8NjNOKhz7Uhb7l1uW}"
 
 require_cmd curl
 require_cmd tar
