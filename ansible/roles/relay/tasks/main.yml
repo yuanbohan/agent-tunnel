@@ -46,6 +46,18 @@
     dest: "{{ relay_install_root }}/relay-migrate"
     rsync_path: "sudo rsync"
     archive: yes
+    owner: false
+    group: false
+    perms: false
+  tags:
+    - relay-migrator
+
+- name: Set permissions for relay migrator binary
+  ansible.builtin.file:
+    path: "{{ relay_install_root }}/relay-migrate"
+    owner: root
+    group: root
+    mode: "0755"
   tags:
     - relay-migrator
 
@@ -55,6 +67,18 @@
     dest: "{{ relay_install_root }}/relay"
     rsync_path: "sudo rsync"
     archive: yes
+    owner: false
+    group: false
+    perms: false
+  tags:
+    - relay-binary
+
+- name: Set permissions for relay binary
+  ansible.builtin.file:
+    path: "{{ relay_install_root }}/relay"
+    owner: root
+    group: root
+    mode: "0755"
   tags:
     - relay-binary
 
