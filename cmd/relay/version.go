@@ -7,6 +7,7 @@ import (
 	"yuanbohan/tunnel/internal/buildinfo"
 )
 
+// writeVersion writes the current application version and git metadata to the writer.
 func writeVersion(w io.Writer) error {
 	_, err := fmt.Fprintf(w, "relay %s\n", buildinfo.String())
 	if err != nil {

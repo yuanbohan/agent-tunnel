@@ -8,6 +8,8 @@ import (
 	"yuanbohan/tunnel/internal/relay/handler/response"
 )
 
+// LocalOnly returns a Gin middleware that restricts access to requests from localhost
+// and ensures no proxy headers (X-Forwarded-For, etc.) are present.
 func LocalOnly() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Ensure the request is from loopback and has no proxy headers.
