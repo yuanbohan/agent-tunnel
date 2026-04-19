@@ -112,7 +112,6 @@ func runWithIOArgs(args []string, stdin io.Reader, stdout, stderr io.Writer) err
 	}
 
 	cmd := newRootCmd(defaultCommandHandlers())
-	cmd.SetContext(withInvocationArgs(context.Background(), args))
 	cmd.SetIn(stdin)
 	cmd.SetOut(stdout)
 	cmd.SetErr(stderr)
@@ -160,7 +159,7 @@ func runTunnelSession(ctx context.Context, stdin io.Reader, parsed runArgs, stdo
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	commandPreview := invocationCommandPreview(ctx)
+	commandPreview := strings.TrimSpace(strings.Join(append([]string{command.Name}, command.Args...), " "))
 	gitBranch := detectGitBranch(ctx, cwd)
 	sessionID := fmt.Sprintf("%d", time.Now().UnixNano())
 	platformFamily, platformID, computerName := sessionIdentityFromMetadata(collectSessionMetadata())

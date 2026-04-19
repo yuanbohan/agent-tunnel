@@ -435,7 +435,7 @@ func TestHandlerReturnsUserScopedLiveSessions(t *testing.T) {
 	env.registry.RegisterOwned(protocol.SessionInfo{
 		SessionID:      "sess-a",
 		Launcher:       "codex",
-		CommandPreview: "tunnel run codex",
+		CommandPreview: "codex",
 		GitBranch:      "main",
 		StartedAt:      20,
 		PlatformFamily: "linux",

@@ -8,35 +8,6 @@ import (
 	"testing"
 )
 
-func TestInvocationCommandPreviewUsesOriginalArgv(t *testing.T) {
-	ctx := withInvocationArgs(context.Background(), []string{
-		"tunnel",
-		"run",
-		"--verbose",
-		"--label",
-		"api fix",
-		"--base-url",
-		"https://relay.example.com/base",
-		"codex",
-		"--profile",
-		"prod",
-		"--note",
-		"hello world",
-	})
-
-	got := invocationCommandPreview(ctx)
-	want := "tunnel run --verbose --label 'api fix' --base-url https://relay.example.com/base codex --profile prod --note 'hello world'"
-	if got != want {
-		t.Fatalf("invocationCommandPreview() = %q, want %q", got, want)
-	}
-}
-
-func TestInvocationCommandPreviewReturnsEmptyWithoutContext(t *testing.T) {
-	if got := invocationCommandPreview(context.Background()); got != "" {
-		t.Fatalf("invocationCommandPreview() = %q, want empty", got)
-	}
-}
-
 func TestGitBranchForDirReturnsEmptyOutsideGitRepo(t *testing.T) {
 	dir := t.TempDir()
 

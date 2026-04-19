@@ -509,8 +509,8 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
 	if len(gotArgs) != 2 || gotArgs[0] != "--profile" || gotArgs[1] != "prod" {
 		t.Fatalf("args = %#v, want untouched launcher args", gotArgs)
 	}
-	if gotInfo.CommandPreview != "tunnel run --label api-fix codex --profile prod" {
-		t.Fatalf("CommandPreview = %q, want full tunnel invocation", gotInfo.CommandPreview)
+	if gotInfo.CommandPreview != "codex --profile prod" {
+		t.Fatalf("CommandPreview = %q, want codex --profile prod", gotInfo.CommandPreview)
 	}
 	if gotInfo.GitBranch != "main" {
 		t.Fatalf("GitBranch = %q, want main", gotInfo.GitBranch)
@@ -1079,8 +1079,8 @@ func TestRunWithArgsUsesUserProvidedCommandForPreview(t *testing.T) {
 	if gotInfo.Launcher != "/opt/bin/custom-agent" {
 		t.Fatalf("Launcher = %q, want /opt/bin/custom-agent", gotInfo.Launcher)
 	}
-	if gotInfo.CommandPreview != "tunnel run /opt/bin/custom-agent --mode fast" {
-		t.Fatalf("CommandPreview = %q, want full tunnel invocation", gotInfo.CommandPreview)
+	if gotInfo.CommandPreview != "/opt/bin/custom-agent --mode fast" {
+		t.Fatalf("CommandPreview = %q, want /opt/bin/custom-agent --mode fast", gotInfo.CommandPreview)
 	}
 	if gotInfo.GitBranch != "feature/custom-agent" {
 		t.Fatalf("GitBranch = %q, want feature/custom-agent", gotInfo.GitBranch)

@@ -13,7 +13,7 @@ func TestRegisterFrameRoundTrip(t *testing.T) {
 		Launcher:       "codex",
 		Label:          "api-fix",
 		CWD:            "/tmp/project",
-		CommandPreview: "tunnel run --label api-fix codex --profile prod",
+		CommandPreview: "codex --profile prod",
 		GitBranch:      "main",
 		StartedAt:      started,
 		PlatformFamily: "linux",
@@ -99,7 +99,7 @@ func TestSessionSummaryJSONUsesStableFieldNames(t *testing.T) {
 		Launcher:       "gemini",
 		Label:          "docs",
 		CWD:            "/Users/test/project",
-		CommandPreview: "tunnel run gemini",
+		CommandPreview: "gemini",
 		GitBranch:      "release/docs",
 		PlatformFamily: "macos",
 		PlatformID:     "macos",
@@ -137,7 +137,7 @@ func TestSessionSummaryUsesStableDeviceIdentityKeysWhenUnset(t *testing.T) {
 		SessionID:      "sess-2",
 		Launcher:       "claude",
 		CWD:            "/Users/test/project",
-		CommandPreview: "tunnel run claude",
+		CommandPreview: "claude",
 	}
 
 	raw, err := json.Marshal(info)
