@@ -107,8 +107,9 @@ func TestRunWithHandlersPrintsVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runWithHandlers returned error: %v", err)
 	}
-	if got := stdout.String(); got != "relay v0.1.0-dev\n" {
-		t.Fatalf("stdout = %q, want relay v0.1.0-dev", got)
+	want := "relay v0.1.0-dev\nbranch: unknown\ncommit: unknown\nbuild:  unknown\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
 	}
 }
 
