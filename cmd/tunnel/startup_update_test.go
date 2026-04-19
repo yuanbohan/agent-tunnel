@@ -252,9 +252,7 @@ func TestMaybeHandleStartupUpdateReexecFailureReturnsRecoveryError(t *testing.T)
 
 func TestMaybeHandleStartupUpdateSkipsRecentCheckWithoutNetwork(t *testing.T) {
 	withTempHome(t)
-	if err := saveUpdaterState(updaterState{
-		LastCheckedAt: 1_712_345_678,
-	}); err != nil {
+	if err := saveUpdaterState(updaterState{LastCheckedAt: 1_712_345_678}); err != nil {
 		t.Fatalf("saveUpdaterState returned error: %v", err)
 	}
 
@@ -281,9 +279,7 @@ func TestMaybeHandleStartupUpdateSkipsRecentCheckWithoutNetwork(t *testing.T) {
 
 func TestMaybeHandleStartupUpdateFailedCheckStillAdvancesGate(t *testing.T) {
 	withTempHome(t)
-	engine := &fakeStartupUpdater{
-		updateAvailableErr: errors.New("network exploded"),
-	}
+	engine := &fakeStartupUpdater{updateAvailableErr: errors.New("network exploded")}
 
 	oldInteractive := isInteractiveTerminal
 	oldNewUpdaterEngine := newUpdaterEngine

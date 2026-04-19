@@ -20,7 +20,7 @@ Supported targets:
 - Linux ARM64 (`linux/arm64`)
 
 The installer writes `tunnel` to `~/.local/bin/tunnel`.
-Official releases also publish signed checksums used by native `tunnel update` and `tunnel rollback`.
+Official releases also publish `checksums.txt` used by native `tunnel update` and `tunnel rollback`.
 
 Manual lifecycle commands:
 

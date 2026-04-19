@@ -58,7 +58,7 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 - PTY size remains local-terminal-owned in this phase. Remote clients follow forwarded resize events and do not become size authority.
 - Structured remote input remains `input_text` and `input_key`, with PTY-byte translation owned by `tunnel`.
 - The relay does not ship a bundled frontend. Any UI or client experience is owned by external clients such as the mobile app.
-- Public `tunnel` binary distribution lives in `yuanbohan/tunnel`, which is a distribution-only repo with stable `install.sh`, `latest.json`, and GitHub Releases assets, including signed checksums for native self-update.
+- Public `tunnel` binary distribution lives in `yuanbohan/tunnel`, which is a distribution-only repo with stable `install.sh`, `latest.json`, and GitHub Releases assets, including `checksums.txt` for native self-update integrity checks.
 - Persistent CLI-owned local state for Tunnel lives under `~/.tunnel/`: `auth.json` for saved auth fallback, `settings.json` for user-editable settings env overrides, and internal `updater.json` for cadence and rollback bookkeeping.
 - Tunnel and relay compatibility is guaranteed only within the same compatibility line. For `v1+`, that line is the semver major version. For pre-`v1`, that line is `0.minor`, so `v0.1.x` and `v0.2.x` are different compatibility lines.
 - Stronger delivery guarantees may be explored later, but do not document or imply them before they exist in code and protocol.

@@ -40,14 +40,7 @@ jobs:
           make test-release-publish
 
       - name: Package release artifacts
-        env:
-          TUNNEL_RELEASE_SIGNING_PRIVATE_KEY: ${{ secrets.TUNNEL_RELEASE_SIGNING_PRIVATE_KEY }}
-        run: |
-          if [ -z "$TUNNEL_RELEASE_SIGNING_PRIVATE_KEY" ]; then
-            echo "error: TUNNEL_RELEASE_SIGNING_PRIVATE_KEY is not configured" >&2
-            exit 1
-          fi
-          make release-package RELEASE_VERSION="$RELEASE_VERSION"
+        run: make release-package RELEASE_VERSION="$RELEASE_VERSION"
 
       - name: Verify packaged binary
         run: |
@@ -74,7 +67,6 @@ jobs:
       - name: Publish public release
         env:
           TUNNEL_DIST_REPO_TOKEN: ${{ secrets.TUNNEL_DIST_REPO_TOKEN }}
-          TUNNEL_RELEASE_SIGNING_PRIVATE_KEY: ${{ secrets.TUNNEL_RELEASE_SIGNING_PRIVATE_KEY }}
         run: ./scripts/publish-tunnel-release.sh "$RELEASE_VERSION"
 
       - name: Verify public install
