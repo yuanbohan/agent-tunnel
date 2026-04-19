@@ -52,13 +52,19 @@ ensure_repo_checkout() {
 	branch="$2"
 	dest_dir="$3"
 
-	git clone "$repo_url" "$dest_dir" >/dev/null
-	if git -C "$dest_dir" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
-		git -C "$dest_dir" checkout -B "$branch" "origin/$branch" >/dev/null
-		return 0
+	if git clone "$repo_url" "$dest_dir" >/dev/null 2>&1; then
+		if git -C "$dest_dir" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+			git -C "$dest_dir" checkout -B "$branch" "origin/$branch" >/dev/null
+			return 0
+		fi
+		git -C "$dest_dir" checkout --orphan "$branch" >/dev/null
+	else
+		mkdir -p "$dest_dir"
+		git -C "$dest_dir" init >/dev/null
+		git -C "$dest_dir" remote add origin "$repo_url" >/dev/null
+		git -C "$dest_dir" checkout -b "$branch" >/dev/null
 	fi
 
-	git -C "$dest_dir" checkout --orphan "$branch" >/dev/null
 	find "$dest_dir" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
 }
 
@@ -155,6 +161,7 @@ git -C "$clone_dir" config user.name "github-actions[bot]"
 git -C "$clone_dir" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
 if ! git -C "$clone_dir" rev-parse --verify HEAD >/dev/null 2>&1; then
+	printf 'bootstrapping public distribution repo at %s branch %s...\n' "$dist_repo" "$dist_branch"
 	cp "$install_source" "$clone_dir/install.sh"
 	chmod 0755 "$clone_dir/install.sh"
 	cp "$readme_source" "$clone_dir/README.md"
@@ -162,6 +169,7 @@ if ! git -C "$clone_dir" rev-parse --verify HEAD >/dev/null 2>&1; then
 	TUNNEL_RELEASE_SIGNING_PRIVATE_KEY="$release_signing_key" "$go_bin" run ./cmd/release-sign sign "$clone_dir/latest.json" "$clone_dir/latest.json.sig" >/dev/null
 	git -C "$clone_dir" add install.sh README.md latest.json latest.json.sig
 	if git_commit_if_needed "$clone_dir" "docs: bootstrap public tunnel distribution repo"; then
+		printf 'pushing bootstrap commit...\n'
 		git -C "$clone_dir" push -u origin "$dist_branch" >/dev/null
 	fi
 fi
@@ -171,6 +179,7 @@ GH_TOKEN="$token" gh release view "$version" --repo "$dist_repo" >/dev/null 2>&1
 	exit 1
 }
 
+printf 'creating draft release %s in %s...\n' "$version" "$dist_repo"
 compatibility_line=$(release_compatibility_line "$version")
 GH_TOKEN="$token" gh release create "$version" \
 	"$artifact_dir"/tunnel_*.tar.gz \
@@ -185,8 +194,10 @@ Compatibility line: $compatibility_line
 Tunnel and Relay are guaranteed compatible within the same compatibility line." \
 	--draft
 
-GH_TOKEN="$token" gh release edit "$version" --repo "$dist_repo" --draft=false >/dev/null
+printf 'publishing release %s...\n' "$version"
+GH_TOKEN="$token" gh release edit "$version" --repo "$dist_repo" --draft=false
 
+printf 'syncing stable files to %s branch %s...\n' "$dist_repo" "$dist_branch"
 sync_stable_files "$clone_dir" "$version" "$install_source" "$readme_source" "$manifest_script" "$go_bin" "$release_signing_key"
 git -C "$clone_dir" add install.sh latest.json latest.json.sig README.md
 if git_commit_if_needed "$clone_dir" "release: publish tunnel $version"; then

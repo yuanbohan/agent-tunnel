@@ -64,11 +64,17 @@ release_targets | while IFS=' ' read -r os arch; do
 	ldflags="-s -w -X yuanbohan/tunnel/internal/buildinfo.Version=$version -X yuanbohan/tunnel/internal/buildinfo.DistributionMarker=official-release -X yuanbohan/tunnel/internal/tunnel/update.OfficialReleaseSigningPublicKeyBase64=$trusted_signing_public_key"
 
 	mkdir -p "$target_dir"
+	printf 'building tunnel for %s/%s...\n' "$os" "$arch"
 	GOOS="$os" GOARCH="$arch" "$go_bin" build \
 		-trimpath \
 		-ldflags="$ldflags" \
 		-o "$bin_path" \
 		./cmd/tunnel
+
+	if [ ! -f "$bin_path" ]; then
+		printf 'error: failed to build tunnel for %s/%s\n' "$os" "$arch" >&2
+		exit 1
+	fi
 
 	tar -C "$target_dir" -czf "$archive_path" tunnel
 done
