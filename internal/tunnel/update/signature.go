@@ -19,7 +19,7 @@ const (
 	officialReleaseSignatureVersion        uint32 = 1
 )
 
-var officialReleaseSigningPublicKeyBase64 = defaultOfficialReleaseSigningPublicKey
+var OfficialReleaseSigningPublicKeyBase64 = defaultOfficialReleaseSigningPublicKey
 
 type sshsigBlob struct {
 	Version       uint32
@@ -43,8 +43,8 @@ type sshsigSignedData struct {
 	Hash          []byte
 }
 
-func OfficialReleaseSigningPublicKeyBase64() string {
-	return strings.TrimSpace(officialReleaseSigningPublicKeyBase64)
+func GetOfficialReleaseSigningPublicKeyBase64() string {
+	return strings.TrimSpace(OfficialReleaseSigningPublicKeyBase64)
 }
 
 func OfficialReleaseSignatureNamespace() string {
@@ -52,7 +52,7 @@ func OfficialReleaseSignatureNamespace() string {
 }
 
 func verifyOfficialReleaseChecksumsSignature(checksumsPayload, signaturePayload []byte) error {
-	return verifyChecksumsSignatureWithPublicKeyBase64(OfficialReleaseSigningPublicKeyBase64())(checksumsPayload, signaturePayload)
+	return verifyChecksumsSignatureWithPublicKeyBase64(GetOfficialReleaseSigningPublicKeyBase64())(checksumsPayload, signaturePayload)
 }
 
 func verifyChecksumsSignatureWithPublicKeyBase64(publicKeyBase64 string) func([]byte, []byte) error {

@@ -61,7 +61,7 @@ release_targets | while IFS=' ' read -r os arch; do
 	target_dir="$stage_dir/$os-$arch"
 	bin_path="$target_dir/tunnel"
 	archive_path="$output_dir/$(release_asset_name "$version" "$os" "$arch")"
-	ldflags="-s -w -X yuanbohan/tunnel/internal/buildinfo.Version=$version -X yuanbohan/tunnel/internal/buildinfo.DistributionMarker=official-release -X yuanbohan/tunnel/internal/tunnel/update.officialReleaseSigningPublicKeyBase64=$trusted_signing_public_key"
+	ldflags="-s -w -X yuanbohan/tunnel/internal/buildinfo.Version=$version -X yuanbohan/tunnel/internal/buildinfo.DistributionMarker=official-release -X yuanbohan/tunnel/internal/tunnel/update.OfficialReleaseSigningPublicKeyBase64=$trusted_signing_public_key"
 
 	mkdir -p "$target_dir"
 	GOOS="$os" GOARCH="$arch" "$go_bin" build \
