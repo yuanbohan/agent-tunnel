@@ -19,6 +19,10 @@ while [[ $# -gt 0 ]]; do
         PUSH=true
         shift 
         ;;
+    "" )
+        # Skip empty strings from Makefile
+        shift
+        ;;
     v[0-9]*.[0-9]*.[0-9]*) 
         VERSION_OVERRIDE="$1"
         shift 
