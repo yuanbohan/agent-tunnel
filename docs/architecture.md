@@ -8,7 +8,7 @@ This document describes the current system shape for the attach-based protocol.
 
 Separately, `tunnel daemon` owns one explicit background device-launch runtime on a machine with local `tmux`. That daemon has its own local control socket, its own live relay connector on `/device/ws`, and its own dedicated tmux workspace used to create future `tunnel run <command>` sessions. The daemon is the state authority for device launch behavior; the relay only brokers currently online daemon connections plus the short-lived correlation needed to turn one launch request into one later `session_ready` result.
 
-The relay exposes authenticated APIs so external clients can register accounts, log in, manage agent tokens, discover live sessions, discover live devices, attach to one online session, and request that one online device daemon create a new session. Operator maintenance routes stay outside the public `/api/` namespace and are intended for host-local use only. PostgreSQL is the durable source of truth for users, invite codes, app sessions, agent tokens, and operator audit records. App auth uses opaque bearer access tokens with a nominal 24-hour lifetime, rotating refresh tokens with a 30-day sliding lifetime, and a 90-day absolute session lifetime anchored at the original login. The relay is not the terminal-state authority and it does not retain transcript history. Live session discovery includes agent-supplied device identity metadata such as `platform_family`, `platform_id`, and normalized `computer_name`.
+The relay exposes authenticated APIs so external clients can register accounts, log in, manage agent tokens, discover live sessions, discover live devices, attach to one online session, and request that one online device daemon create a new session. Operator maintenance routes stay outside the public `/api/` namespace and are intended for host-local use only. PostgreSQL is the durable source of truth for users, invite codes, app sessions, agent tokens, and operator audit records. App auth uses opaque bearer access tokens with a nominal 24-hour lifetime, rotating refresh tokens with a 30-day sliding lifetime, and a 90-day absolute session lifetime anchored at the original login. The relay is not the terminal-state authority and it does not retain transcript history. Live session discovery includes agent-supplied startup command metadata, best-effort Git branch metadata for the startup `cwd`, and device identity metadata such as `platform_family`, `platform_id`, and normalized `computer_name`.
 
 For hosted deployments, the security invariant is strict user scoping: the user who owns the agent token also owns the live session, `GET /api/sessions` returns only that user's sessions, and cross-user attach attempts resolve as not found.
 
@@ -99,7 +99,7 @@ It owns:
 - binding each live session to the user who owns the authenticating agent token
 - fixed-token local-only operator control routes for invite creation, invite disable, and account deletion
 - current live-session snapshots for discovery
-- preserving agent-supplied session metadata for discovery, including normalized computer identity
+- preserving agent-supplied session metadata for discovery, including startup command display, startup-directory Git branch, and normalized computer identity
 - current online-session discovery and immediate offline removal when the owning agent disconnects
 - the owner websocket for each live session
 - client attach websockets for online sessions

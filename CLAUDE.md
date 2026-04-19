@@ -41,7 +41,7 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 - After startup, relay unavailability must not interrupt local terminal work. The connector keeps retrying relay registration with backoff, and local sessions continue running unchanged while remote visibility and input are unavailable.
 - The agent is the authority for current terminal state. It maintains the headless terminal mirror and produces attach snapshots from that mirror.
 - Remote viewing is session-scoped: clients discover sessions with `GET /api/sessions` and attach with `GET /api/sessions/:id/attach/ws`.
-- Session discovery includes agent-supplied device identity metadata such as `platform_family`, `platform_id`, and normalized `computer_name`.
+- Session discovery includes agent-supplied startup metadata such as `command_preview`, `git_branch`, `platform_family`, `platform_id`, and normalized `computer_name`.
 - Remote launch is device-scoped: clients discover devices with `GET /api/devices` and request new session creation with `POST /api/devices/:id/launch`, which requires per-launch `cwd`, may include optional `label`, and succeeds only when the new session becomes `session_ready`.
 - Browser attach clients must be same-origin with the relay host; native clients that omit `Origin` remain supported.
 - Remote recovery in this revision is fresh snapshot recovery of the current terminal state, including bounded agent-local normal-buffer scrollback when available. There is no transcript replay API and no global live-output websocket contract.

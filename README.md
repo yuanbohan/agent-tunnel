@@ -9,7 +9,7 @@ The remote contract now has two live-only surfaces:
 
 On attach, the owning `tunnel` process sends a fresh terminal-state snapshot, which may include bounded agent-local normal-buffer scrollback, and then continues streaming live PTY bytes on that same websocket.
 
-`tunnel` starts a real CLI command such as `claude`, `codex`, `gemini`, `qwen`, or `aider`, keeps the launching terminal interactive, and registers the session with a relay server. The relay is API-only: it authenticates app clients with user-scoped bearer tokens, authenticates agents with user-owned long-lived agent tokens, lists live sessions, lists currently online daemons, brokers session-scoped attaches, forwards structured input, and forwards device launch requests. Session discovery now includes best-effort machine identity metadata from the registering agent, including platform family, platform id, and normalized computer name. Operator maintenance routes stay host-local outside the public `/api/` namespace. It does not retain transcript history and it does not emulate the terminal.
+`tunnel` starts a real CLI command such as `claude`, `codex`, `gemini`, `qwen`, or `aider`, keeps the launching terminal interactive, and registers the session with a relay server. The relay is API-only: it authenticates app clients with user-scoped bearer tokens, authenticates agents with user-owned long-lived agent tokens, lists live sessions, lists currently online daemons, brokers session-scoped attaches, forwards structured input, and forwards device launch requests. Session discovery now includes the agent-reported startup command string, best-effort Git branch metadata for the startup directory, and best-effort machine identity metadata from the registering agent, including platform family, platform id, and normalized computer name. Operator maintenance routes stay host-local outside the public `/api/` namespace. It does not retain transcript history and it does not emulate the terminal.
 
 On startup, `tunnel` must establish relay registration during the startup wait window. If registration does not succeed, startup exits with a relay connection error and does not launch the local terminal session.
 
@@ -227,7 +227,7 @@ The current remote model is:
 
 - `tunnel` owns the PTY and maintains the authoritative headless terminal mirror for that running session
 - the relay stores live session metadata such as `started_at`
-- the relay also stores agent-supplied session device identity metadata such as `platform_family`, `platform_id`, and normalized `computer_name`
+- the relay also stores agent-supplied session startup metadata such as `command_preview`, `git_branch`, `platform_family`, `platform_id`, and normalized `computer_name`
 - `started_at` is a Unix timestamp encoded as a JSON integer in seconds
 - a remote attach asks the agent for the current terminal state, plus bounded in-memory normal-buffer scrollback when available, not for relay-owned or durable old output history
 - after the initial snapshot, the same attach continues as an ordered live byte stream for that client

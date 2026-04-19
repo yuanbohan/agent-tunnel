@@ -16,6 +16,7 @@ type SessionInfo struct {
 	Label          string `json:"label,omitempty"`
 	CWD            string `json:"cwd"`
 	CommandPreview string `json:"command_preview"`
+	GitBranch      string `json:"git_branch"`
 	StartedAt      int    `json:"started_at"`
 	PlatformFamily string `json:"platform_family"`
 	PlatformID     string `json:"platform_id"`

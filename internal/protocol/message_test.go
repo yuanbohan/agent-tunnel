@@ -13,7 +13,8 @@ func TestRegisterFrameRoundTrip(t *testing.T) {
 		Launcher:       "codex",
 		Label:          "api-fix",
 		CWD:            "/tmp/project",
-		CommandPreview: "codex --profile prod",
+		CommandPreview: "tunnel run --label api-fix codex --profile prod",
+		GitBranch:      "main",
 		StartedAt:      started,
 		PlatformFamily: "linux",
 		PlatformID:     "ubuntu",
@@ -98,7 +99,8 @@ func TestSessionSummaryJSONUsesStableFieldNames(t *testing.T) {
 		Launcher:       "gemini",
 		Label:          "docs",
 		CWD:            "/Users/test/project",
-		CommandPreview: "gemini",
+		CommandPreview: "tunnel run gemini",
+		GitBranch:      "release/docs",
 		PlatformFamily: "macos",
 		PlatformID:     "macos",
 		ComputerName:   "Yuanbo's MacBook Pro",
@@ -116,6 +118,7 @@ func TestSessionSummaryJSONUsesStableFieldNames(t *testing.T) {
 		"label",
 		"cwd",
 		"command_preview",
+		"git_branch",
 		"platform_family",
 		"platform_id",
 		"computer_name",
@@ -134,7 +137,7 @@ func TestSessionSummaryUsesStableDeviceIdentityKeysWhenUnset(t *testing.T) {
 		SessionID:      "sess-2",
 		Launcher:       "claude",
 		CWD:            "/Users/test/project",
-		CommandPreview: "claude",
+		CommandPreview: "tunnel run claude",
 	}
 
 	raw, err := json.Marshal(info)
@@ -153,6 +156,9 @@ func TestSessionSummaryUsesStableDeviceIdentityKeysWhenUnset(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), `"computer_name":""`) {
 		t.Fatalf("json = %s, want empty computer_name", raw)
+	}
+	if !strings.Contains(string(raw), `"git_branch":""`) {
+		t.Fatalf("json = %s, want empty git_branch", raw)
 	}
 }
 

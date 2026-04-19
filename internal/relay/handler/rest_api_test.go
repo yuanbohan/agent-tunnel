@@ -435,6 +435,8 @@ func TestHandlerReturnsUserScopedLiveSessions(t *testing.T) {
 	env.registry.RegisterOwned(protocol.SessionInfo{
 		SessionID:      "sess-a",
 		Launcher:       "codex",
+		CommandPreview: "tunnel run codex",
+		GitBranch:      "main",
 		StartedAt:      20,
 		PlatformFamily: "linux",
 		PlatformID:     "ubuntu",
@@ -472,6 +474,9 @@ func TestHandlerReturnsUserScopedLiveSessions(t *testing.T) {
 	}
 	if sessions[0].ComputerName != "Office Linux" {
 		t.Fatalf("ComputerName = %q, want Office Linux", sessions[0].ComputerName)
+	}
+	if sessions[0].GitBranch != "main" {
+		t.Fatalf("GitBranch = %q, want main", sessions[0].GitBranch)
 	}
 }
 

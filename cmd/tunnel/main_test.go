@@ -31,6 +31,16 @@ type fakeRelayConnector struct {
 	stateCh         chan connector.State
 }
 
+func stubDetectGitBranch(t *testing.T, branch string) {
+	t.Helper()
+
+	oldDetectGitBranch := detectGitBranch
+	detectGitBranch = func(context.Context, string) string { return branch }
+	t.Cleanup(func() {
+		detectGitBranch = oldDetectGitBranch
+	})
+}
+
 func (f *fakeRelayConnector) SetInitialSize(cols, rows int) {
 	f.initialCols = cols
 	f.initialRows = rows
@@ -150,6 +160,7 @@ func TestRunWithArgsStopsBeforeStartingSessionWhenLocalTerminalPreparationFails(
 		newConnector = oldNewConnector
 		collectSessionMetadata = oldCollectSessionMetadata
 	})
+	stubDetectGitBranch(t, "")
 
 	resolveLauncher = func(name string, args []string) (launcher.Command, error) {
 		return launcher.Command{Name: name, Path: "/bin/echo", Args: append([]string(nil), args...)}, nil
@@ -443,6 +454,7 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
 		gotInfo = info
 		return fakeConnector
 	}
+	stubDetectGitBranch(t, "main")
 	collectSessionMetadata = func() daemon.DeviceMetadata {
 		return daemon.DeviceMetadata{
 			DisplayName:    "Office Linux",
@@ -497,8 +509,11 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
 	if len(gotArgs) != 2 || gotArgs[0] != "--profile" || gotArgs[1] != "prod" {
 		t.Fatalf("args = %#v, want untouched launcher args", gotArgs)
 	}
-	if gotInfo.CommandPreview != "codex --profile prod" {
-		t.Fatalf("CommandPreview = %q, want codex --profile prod", gotInfo.CommandPreview)
+	if gotInfo.CommandPreview != "tunnel run --label api-fix codex --profile prod" {
+		t.Fatalf("CommandPreview = %q, want full tunnel invocation", gotInfo.CommandPreview)
+	}
+	if gotInfo.GitBranch != "main" {
+		t.Fatalf("GitBranch = %q, want main", gotInfo.GitBranch)
 	}
 	if gotInfo.CWD == "" {
 		t.Fatal("CWD = empty, want current working directory")
@@ -1036,6 +1051,7 @@ func TestRunWithArgsUsesUserProvidedCommandForPreview(t *testing.T) {
 		gotInfo = info
 		return &fakeRelayConnector{waitConnected: true, state: connector.StateConnected}
 	}
+	stubDetectGitBranch(t, "feature/custom-agent")
 	collectSessionMetadata = func() daemon.DeviceMetadata {
 		return daemon.DeviceMetadata{
 			DisplayName:    "",
@@ -1063,8 +1079,11 @@ func TestRunWithArgsUsesUserProvidedCommandForPreview(t *testing.T) {
 	if gotInfo.Launcher != "/opt/bin/custom-agent" {
 		t.Fatalf("Launcher = %q, want /opt/bin/custom-agent", gotInfo.Launcher)
 	}
-	if gotInfo.CommandPreview != "/opt/bin/custom-agent --mode fast" {
-		t.Fatalf("CommandPreview = %q, want /opt/bin/custom-agent --mode fast", gotInfo.CommandPreview)
+	if gotInfo.CommandPreview != "tunnel run /opt/bin/custom-agent --mode fast" {
+		t.Fatalf("CommandPreview = %q, want full tunnel invocation", gotInfo.CommandPreview)
+	}
+	if gotInfo.GitBranch != "feature/custom-agent" {
+		t.Fatalf("GitBranch = %q, want feature/custom-agent", gotInfo.GitBranch)
 	}
 	if gotInfo.PlatformFamily != daemon.PlatformFamilyMacOS {
 		t.Fatalf("PlatformFamily = %q, want %q", gotInfo.PlatformFamily, daemon.PlatformFamilyMacOS)
@@ -1110,6 +1129,7 @@ func TestRunWithArgsNormalizesUnavailableSessionIdentityMetadata(t *testing.T) {
 		gotInfo = info
 		return &fakeRelayConnector{waitConnected: true, state: connector.StateConnected}
 	}
+	stubDetectGitBranch(t, "")
 	collectSessionMetadata = func() daemon.DeviceMetadata {
 		return daemon.DeviceMetadata{
 			DisplayName:    "",
@@ -1142,6 +1162,9 @@ func TestRunWithArgsNormalizesUnavailableSessionIdentityMetadata(t *testing.T) {
 	}
 	if gotInfo.ComputerName != "" {
 		t.Fatalf("ComputerName = %q, want empty", gotInfo.ComputerName)
+	}
+	if gotInfo.GitBranch != "" {
+		t.Fatalf("GitBranch = %q, want empty", gotInfo.GitBranch)
 	}
 }
 
@@ -1178,6 +1201,7 @@ func TestRunWithArgsPreservesLiteralUnknownIdentityValues(t *testing.T) {
 		gotInfo = info
 		return &fakeRelayConnector{waitConnected: true, state: connector.StateConnected}
 	}
+	stubDetectGitBranch(t, "main")
 	collectSessionMetadata = func() daemon.DeviceMetadata {
 		return daemon.DeviceMetadata{
 			DisplayName:    "Unknown Device",
@@ -1208,6 +1232,9 @@ func TestRunWithArgsPreservesLiteralUnknownIdentityValues(t *testing.T) {
 	if gotInfo.PlatformID != "unknown" {
 		t.Fatalf("PlatformID = %q, want literal unknown preserved", gotInfo.PlatformID)
 	}
+	if gotInfo.GitBranch != "main" {
+		t.Fatalf("GitBranch = %q, want main", gotInfo.GitBranch)
+	}
 }
 
 func TestRunWithArgsForwardsLaunchRequestIDFromEnv(t *testing.T) {
@@ -1227,6 +1254,7 @@ func TestRunWithArgsForwardsLaunchRequestIDFromEnv(t *testing.T) {
 		waitForExit = oldWaitForExit
 		newConnector = oldNewConnector
 	})
+	stubDetectGitBranch(t, "")
 
 	oldLaunchRequestID, hadLaunchRequestID := os.LookupEnv(tunnelLaunchRequestIDEnv)
 	os.Setenv(tunnelLaunchRequestIDEnv, "req-123")
@@ -1290,6 +1318,7 @@ func TestRunWithArgsPrintsStartupBannerOnExit(t *testing.T) {
 		waitForExit = oldWaitForExit
 		newConnector = oldNewConnector
 	})
+	stubDetectGitBranch(t, "")
 
 	resolveLauncher = func(name string, args []string) (launcher.Command, error) {
 		return launcher.Command{Name: name, Path: "/bin/sh", Args: []string{"-c", "exit 0"}}, nil
@@ -1343,6 +1372,7 @@ func TestRunWithArgsSuppressesStartupBannerByDefault(t *testing.T) {
 		waitForExit = oldWaitForExit
 		newConnector = oldNewConnector
 	})
+	stubDetectGitBranch(t, "")
 
 	resolveLauncher = func(name string, args []string) (launcher.Command, error) {
 		return launcher.Command{Name: name, Path: "/bin/sh", Args: []string{"-c", "exit 0"}}, nil
@@ -1389,6 +1419,7 @@ func TestRunWithArgsFailsStartupWhenRelayCannotConnect(t *testing.T) {
 		waitForExit = oldWaitForExit
 		newConnector = oldNewConnector
 	})
+	stubDetectGitBranch(t, "")
 
 	resolveLauncher = func(name string, args []string) (launcher.Command, error) {
 		return launcher.Command{Name: name, Path: "/bin/sh", Args: []string{"-c", "exit 0"}}, nil

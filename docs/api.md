@@ -100,7 +100,9 @@ Code map (excerpt):
 - user-scoped discovery and attach authorization are a hard multi-tenant guarantee for hosted relay deployments
 - a missing session can mean "offline now", not just "never existed"
 - a session can disappear and later reappear with the same `session_id` if the same running `tunnel` process reconnects
-- session metadata now includes best-effort machine identity fields for UI display: `platform_family`, `platform_id`, and `computer_name`
+- session metadata now includes the agent-reported startup command string, best-effort Git branch for the startup `cwd`, and best-effort machine identity fields for UI display
+- `command_preview` is a string rendering of the actual `tunnel` process argv for that live session, intended for display rather than command replay
+- `git_branch` is the Git branch for the registered startup `cwd` when that directory is on a symbolic branch; otherwise it is an empty string
 - `computer_name` is already normalized by the agent before registration: prefer local display name when available, otherwise fall back to hostname
 - `platform_id` is a raw best-effort identifier intended for client-side icon mapping; clients should keep their own whitelist and fall back gracefully for unknown values
 
@@ -683,7 +685,8 @@ Response:
       "launcher": "codex",
       "label": "api-fix",
       "cwd": "/repo",
-      "command_preview": "codex --profile prod",
+      "command_preview": "tunnel run --label api-fix codex --profile prod",
+      "git_branch": "main",
       "started_at": 1775376000,
       "platform_family": "linux",
       "platform_id": "ubuntu",
@@ -699,6 +702,8 @@ Notes:
 - only sessions owned by the authenticated user are returned
 - another user's live sessions must remain invisible even when both users have active `tunnel` connections
 - the list is live-only, not history
+- `command_preview` is the display-oriented startup command string reported by the agent for this live session
+- `git_branch` is the best-effort Git branch for `cwd`; when the startup directory is not on a symbolic branch it is returned as an empty string
 - `platform_family`, `platform_id`, and `computer_name` are stable keys in the session payload; when metadata is unavailable they are returned as empty strings rather than omitted
 - `platform_family` is the coarse fallback field for session device identity, currently `macos` or `linux`
 - `platform_id` is the best-effort specific platform identifier for client icon mapping, for example `macos`, `ubuntu`, `debian`, `arch`, or `fedora`
