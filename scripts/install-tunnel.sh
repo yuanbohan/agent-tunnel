@@ -114,7 +114,25 @@ read_manifest_field() {
 	sed -n "s/.*\"$field\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p"
 }
 
+signature_escape_hatch_hint() {
+	cat >&2 <<'HINT'
+
+If you trust the download source and want to install anyway, re-run the same
+command with TUNNEL_SKIP_SIGNATURE_VERIFY=1 set, for example:
+
+  curl -fsSL https://raw.githubusercontent.com/yuanbohan/tunnel/main/install.sh \
+    | TUNNEL_SKIP_SIGNATURE_VERIFY=1 sh
+
+Skipping verification means the downloaded binary is not authenticated against
+the release signing key. Only skip if you verified the release through another
+channel (for example, by checking the GitHub release page yourself).
+HINT
+}
+
 verify_signed_payload() {
+	if [ "$skip_sig_verify" = "1" ]; then
+		return 0
+	fi
 	payload_path="$1"
 	signature_path="$2"
 	artifact_name="$3"
@@ -128,6 +146,11 @@ verify_signed_payload() {
 		<"$payload_path" >/dev/null 2>&1
 	then
 		printf 'error: invalid signature for %s\n' "$artifact_name" >&2
+		printf '%s did not pass cryptographic verification against the trusted release signing key.\n' "$artifact_name" >&2
+		printf 'this usually means one of:\n' >&2
+		printf '  - the release metadata is malformed (release-author workflow bug)\n' >&2
+		printf '  - the downloaded file was tampered with in transit or at the mirror\n' >&2
+		signature_escape_hatch_hint
 		exit 1
 	fi
 }
@@ -137,28 +160,51 @@ install_base_url="${TUNNEL_INSTALL_BASE_URL:-https://raw.githubusercontent.com/y
 release_repo="${TUNNEL_RELEASE_REPO:-yuanbohan/tunnel}"
 install_dir="${TUNNEL_INSTALL_DIR:-$HOME/.local/bin}"
 release_signing_public_key="${TUNNEL_RELEASE_SIGNING_PUBLIC_KEY:-AAAAC3NzaC1lZDI1NTE5AAAAIJ9OrgAvOri02pL9XEZo3KsAupH8NjNOKhz7Uhb7l1uW}"
+skip_sig_verify="${TUNNEL_SKIP_SIGNATURE_VERIFY:-0}"
 
 require_cmd curl
 require_cmd tar
 require_cmd mktemp
-require_cmd ssh-keygen
+
+if [ "$skip_sig_verify" = "1" ]; then
+	printf 'warning: signature verification disabled (TUNNEL_SKIP_SIGNATURE_VERIFY=1)\n' >&2
+	printf 'warning: downloaded artifacts will not be authenticated\n' >&2
+else
+	if ! command -v ssh-keygen >/dev/null 2>&1; then
+		printf 'error: required command not found: ssh-keygen\n' >&2
+		printf 'ssh-keygen is used to verify the downloaded release signature.\n' >&2
+		printf 'install OpenSSH (version 8.1 or newer) and try again.\n' >&2
+		signature_escape_hatch_hint
+		exit 1
+	fi
+fi
 
 tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/tunnel-install.XXXXXX")
+tmp_bin=""
 cleanup() {
 	rm -rf "$tmpdir"
+	if [ -n "$tmp_bin" ]; then
+		rm -f "$tmp_bin"
+	fi
+	return 0
 }
 trap cleanup EXIT INT TERM
 
-ssh_keygen_capability_err="$tmpdir/ssh-keygen-capability.err"
-if ! ssh-keygen -Y verify \
-	-f /dev/null \
-	-I tunnel-release \
-	-n tunnel-release \
-	-s /dev/null </dev/null 2>"$ssh_keygen_capability_err"
-then
-	if grep -Eqi 'unknown option|illegal option' "$ssh_keygen_capability_err"; then
-		printf 'error: ssh-keygen with -Y verify support is required (OpenSSH 8.1+)\n' >&2
-		exit 1
+if [ "$skip_sig_verify" != "1" ]; then
+	ssh_keygen_capability_err="$tmpdir/ssh-keygen-capability.err"
+	if ! ssh-keygen -Y verify \
+		-f /dev/null \
+		-I tunnel-release \
+		-n tunnel-release \
+		-s /dev/null </dev/null >/dev/null 2>"$ssh_keygen_capability_err"
+	then
+		if grep -Eqi 'unknown option|illegal option' "$ssh_keygen_capability_err"; then
+			printf 'error: ssh-keygen with -Y verify support is required (OpenSSH 8.1+)\n' >&2
+			printf 'your ssh-keygen is too old to verify the release signature.\n' >&2
+			printf 'upgrade OpenSSH to 8.1 or newer and try again.\n' >&2
+			signature_escape_hatch_hint
+			exit 1
+		fi
 	fi
 fi
 
@@ -257,6 +303,7 @@ tmp_bin="$install_dir/.tunnel.$$.tmp"
 cp "$extract_dir/tunnel" "$tmp_bin"
 chmod 0755 "$tmp_bin"
 mv -f "$tmp_bin" "$install_dir/tunnel"
+tmp_bin=""
 
 printf 'installed tunnel %s to %s/tunnel\n' "$version" "$install_dir"
 
