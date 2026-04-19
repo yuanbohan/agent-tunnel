@@ -52,8 +52,8 @@ ensure_repo_checkout() {
 	branch="$2"
 	dest_dir="$3"
 
-	if ! git clone "$repo_url" "$dest_dir" >/dev/null; then
-		printf 'error: failed to clone %s into %s\n' "$repo_url" "$dest_dir" >&2
+	if ! git clone "$repo_url" "$dest_dir" >/dev/null 2>&1; then
+		printf 'error: failed to clone distribution repository into %s\n' "$dest_dir" >&2
 		exit 1
 	fi
 
@@ -96,13 +96,11 @@ cleanup() {
 	if [ "$cleanup_clone" = "true" ]; then
 		rm -rf "$clone_dir"
 	fi
-	rm -rf "${stage_dir:-}"
+	if [ -n "${stage_dir:-}" ]; then
+		rm -rf "$stage_dir"
+	fi
 }
 trap cleanup EXIT INT TERM
-
-stage_dir=$(mktemp -d "${TMPDIR:-/tmp}/tunnel-publish.XXXXXX")
-release_sign_bin="$stage_dir/release-sign"
-"$go_bin" build -o "$release_sign_bin" "$repo_root/cmd/release-sign"
 
 for os_arch in "darwin arm64" "darwin amd64" "linux amd64" "linux arm64"; do
 	set -- $os_arch
@@ -152,6 +150,18 @@ fi
 release_signing_key="${TUNNEL_RELEASE_SIGNING_PRIVATE_KEY:-}"
 if [ -z "$release_signing_key" ]; then
 	printf 'error: TUNNEL_RELEASE_SIGNING_PRIVATE_KEY is required\n' >&2
+	exit 1
+fi
+
+stage_dir=$(mktemp -d "${TMPDIR:-/tmp}/tunnel-publish.XXXXXX")
+release_sign_bin="$stage_dir/release-sign"
+"$go_bin" build -o "$release_sign_bin" "$repo_root/cmd/release-sign"
+
+# Verify that the release signing key matches the expected public key
+trusted_signing_public_key="AAAAC3NzaC1lZDI1NTE5AAAAIJ9OrgAvOri02pL9XEZo3KsAupH8NjNOKhz7Uhb7l1uW"
+derived_signing_public_key=$(TUNNEL_RELEASE_SIGNING_PRIVATE_KEY="$release_signing_key" "$release_sign_bin" public-key)
+if [ "$derived_signing_public_key" != "$trusted_signing_public_key" ]; then
+	printf 'error: TUNNEL_RELEASE_SIGNING_PRIVATE_KEY does not match the trusted release signing public key\n' >&2
 	exit 1
 fi
 
