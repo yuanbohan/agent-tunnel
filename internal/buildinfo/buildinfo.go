@@ -14,6 +14,9 @@ const (
 var (
 	Version            = defaultVersion
 	DistributionMarker = string(DistributionNonRelease)
+	GitBranch          = "unknown"
+	GitCommit          = "unknown"
+	BuildTime          = "unknown"
 )
 
 func String() string {

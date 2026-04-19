@@ -65,7 +65,10 @@ release_targets | while IFS=' ' read -r os arch; do
 	target_dir="$stage_dir/$os-$arch"
 	bin_path="$target_dir/tunnel"
 	archive_path="$output_dir/$(release_asset_name "$version" "$os" "$arch")"
-	ldflags="-s -w -X yuanbohan/tunnel/internal/buildinfo.Version=$version -X yuanbohan/tunnel/internal/buildinfo.DistributionMarker=official-release -X yuanbohan/tunnel/internal/tunnel/update.OfficialReleaseSigningPublicKeyBase64=$trusted_signing_public_key"
+	git_commit=$(git rev-parse HEAD 2>/dev/null || echo unknown)
+	git_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)
+	build_time=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+	ldflags="-s -w -X yuanbohan/tunnel/internal/buildinfo.Version=$version -X yuanbohan/tunnel/internal/buildinfo.DistributionMarker=official-release -X yuanbohan/tunnel/internal/tunnel/update.OfficialReleaseSigningPublicKeyBase64=$trusted_signing_public_key -X yuanbohan/tunnel/internal/buildinfo.GitCommit=$git_commit -X yuanbohan/tunnel/internal/buildinfo.GitBranch=$git_branch -X yuanbohan/tunnel/internal/buildinfo.BuildTime=$build_time"
 
 	mkdir -p "$target_dir"
 	printf 'building tunnel for %s/%s...\n' "$os" "$arch"
