@@ -1,19 +1,25 @@
 GIT_COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
 GIT_BRANCH ?= $(shell git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)
 BUILD_TIME ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
-LDFLAGS := -X yuanbohan/tunnel/internal/buildinfo.GitCommit=$(GIT_COMMIT) -X yuanbohan/tunnel/internal/buildinfo.GitBranch=$(GIT_BRANCH) -X yuanbohan/tunnel/internal/buildinfo.BuildTime=$(BUILD_TIME)
 
-.PHONY: all build build-linux migrate clean vet test test-relay
+LDFLAGS_BASE := -X yuanbohan/tunnel/internal/buildinfo.GitCommit=$(GIT_COMMIT) -X yuanbohan/tunnel/internal/buildinfo.GitBranch=$(GIT_BRANCH) -X yuanbohan/tunnel/internal/buildinfo.BuildTime=$(BUILD_TIME)
+
+.PHONY: all build build-linux migrate clean vet test test-relay _resolve_version
 
 all: build ## Build default local binaries.
 
-build: ## Build local `tunnel`, `relay`, and `relay-migrate` binaries into `$(BIN_DIR)`.
+_resolve_version: ## Resolve and potentially tag/push the version.
+	$(eval VERSION_VAL := $(shell ./scripts/git-version.sh --push "$(VERSION)"))
+	$(eval LDFLAGS := $(LDFLAGS_BASE) -X yuanbohan/tunnel/internal/buildinfo.Version=$(VERSION_VAL))
+	@printf '🚀 Building version: %s\n' "$(VERSION_VAL)"
+
+build: _resolve_version ## Build local `tunnel`, `relay`, and `relay-migrate` binaries.
 	mkdir -p "$(BIN_DIR)"
 	$(GO) build -ldflags="$(LDFLAGS)" -o "$(TUNNEL_BIN)" $(TUNNEL_PKG)
 	$(GO) build -ldflags="$(LDFLAGS)" -o "$(RELAY_BUILD_BIN)" $(RELAY_PKG)
 	$(GO) build -ldflags="$(LDFLAGS)" -o "$(MIGRATOR_BUILD_BIN)" $(MIGRATOR_PKG)
 
-build-linux: ## Build Linux amd64 `tunnel`, `relay`, and `relay-migrate` binaries into `$(BIN_DIR)`. Relay and migrator are stripped (`-s -w`) to shrink deploy uploads.
+build-linux: _resolve_version ## Build Linux binaries with stripped symbols.
 	@printf '🔨 Building Linux binaries...\n'
 	@mkdir -p "$(BIN_DIR)"
 	@GOOS=linux GOARCH=amd64 $(GO) build -ldflags="$(LDFLAGS)" -o "$(TUNNEL_BIN)" $(TUNNEL_PKG)
