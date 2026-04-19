@@ -22,7 +22,6 @@ const (
 	defaultReleaseRepo     = "yuanbohan/tunnel"
 	maxLatestManifestBytes = 64 * 1024
 	maxChecksumsBytes      = 256 * 1024
-	maxSignatureBytes      = 64 * 1024
 	maxArchiveBytes        = 64 * 1024 * 1024
 	maxBinaryBytes         = 64 * 1024 * 1024
 )
@@ -32,31 +31,29 @@ type httpClient interface {
 }
 
 type Config struct {
-	HTTPClient               httpClient
-	InstallBaseURL           string
-	ReleaseBaseURL           func(version string) string
-	ExecutablePath           func() (string, error)
-	ReplaceExecutable        func(path string, payload []byte, mode os.FileMode) error
-	CurrentVersion           func() string
-	CurrentOfficial          func() bool
-	CurrentTarget            func() (string, string, error)
-	BeforeReplace            func(InstallResult) error
-	OnReplaceFailure         func(InstallResult) error
-	VerifyChecksumsSignature func(checksumsPayload, signaturePayload []byte) error
+	HTTPClient        httpClient
+	InstallBaseURL    string
+	ReleaseBaseURL    func(version string) string
+	ExecutablePath    func() (string, error)
+	ReplaceExecutable func(path string, payload []byte, mode os.FileMode) error
+	CurrentVersion    func() string
+	CurrentOfficial   func() bool
+	CurrentTarget     func() (string, string, error)
+	BeforeReplace     func(InstallResult) error
+	OnReplaceFailure  func(InstallResult) error
 }
 
 type Engine struct {
-	httpClient               httpClient
-	installBaseURL           string
-	releaseBaseURL           func(version string) string
-	executablePath           func() (string, error)
-	replaceExecutable        func(path string, payload []byte, mode os.FileMode) error
-	currentVersion           func() string
-	currentOfficial          func() bool
-	currentTarget            func() (string, string, error)
-	beforeReplace            func(InstallResult) error
-	onReplaceFailure         func(InstallResult) error
-	verifyChecksumsSignature func(checksumsPayload, signaturePayload []byte) error
+	httpClient        httpClient
+	installBaseURL    string
+	releaseBaseURL    func(version string) string
+	executablePath    func() (string, error)
+	replaceExecutable func(path string, payload []byte, mode os.FileMode) error
+	currentVersion    func() string
+	currentOfficial   func() bool
+	currentTarget     func() (string, string, error)
+	beforeReplace     func(InstallResult) error
+	onReplaceFailure  func(InstallResult) error
 }
 
 type InstallResult struct {
@@ -111,23 +108,17 @@ func NewEngine(cfg Config) *Engine {
 		currentTarget = currentReleaseTarget
 	}
 
-	verifyChecksumsSignature := cfg.VerifyChecksumsSignature
-	if verifyChecksumsSignature == nil {
-		verifyChecksumsSignature = verifyOfficialReleaseChecksumsSignature
-	}
-
 	return &Engine{
-		httpClient:               client,
-		installBaseURL:           installBaseURL,
-		releaseBaseURL:           releaseBaseURL,
-		executablePath:           executablePath,
-		replaceExecutable:        replaceExecutableFn,
-		currentVersion:           currentVersion,
-		currentOfficial:          currentOfficial,
-		currentTarget:            currentTarget,
-		beforeReplace:            cfg.BeforeReplace,
-		onReplaceFailure:         cfg.OnReplaceFailure,
-		verifyChecksumsSignature: verifyChecksumsSignature,
+		httpClient:        client,
+		installBaseURL:    installBaseURL,
+		releaseBaseURL:    releaseBaseURL,
+		executablePath:    executablePath,
+		replaceExecutable: replaceExecutableFn,
+		currentVersion:    currentVersion,
+		currentOfficial:   currentOfficial,
+		currentTarget:     currentTarget,
+		beforeReplace:     cfg.BeforeReplace,
+		onReplaceFailure:  cfg.OnReplaceFailure,
 	}
 }
 
@@ -176,18 +167,11 @@ func (e *Engine) fetchLatestRelease(ctx context.Context) (LatestManifest, error)
 	if err != nil {
 		return LatestManifest{}, err
 	}
-	signaturePayload, err := e.fetchBytes(ctx, e.installBaseURL+"/"+releaseLatestManifestSignatureFileName(), maxSignatureBytes)
-	if err != nil {
-		return LatestManifest{}, err
-	}
-	if err := e.verifyChecksumsSignature(payload, signaturePayload); err != nil {
-		return LatestManifest{}, fmt.Errorf("verify %s: %w", releaseLatestManifestSignatureFileName(), err)
-	}
 	manifest, err := parseLatestManifest(payload)
 	if err != nil {
 		return LatestManifest{}, err
 	}
-	if err := e.verifySignedRelease(ctx, manifest.Version); err != nil {
+	if err := e.ensureReleaseChecksumsAvailable(ctx, manifest.Version); err != nil {
 		return LatestManifest{}, err
 	}
 	return manifest, nil
@@ -210,7 +194,7 @@ func (e *Engine) installVersion(ctx context.Context, version string) (InstallRes
 	assetName := releaseAssetName(version, goos, goarch)
 	releaseBaseURL := strings.TrimRight(e.releaseBaseURL(version), "/")
 
-	checksumsPayload, err := e.fetchVerifiedChecksums(ctx, releaseBaseURL)
+	checksumsPayload, err := e.fetchChecksums(ctx, releaseBaseURL)
 	if err != nil {
 		return InstallResult{}, err
 	}
@@ -254,27 +238,16 @@ func (e *Engine) installVersion(ctx context.Context, version string) (InstallRes
 	return result, nil
 }
 
-func (e *Engine) verifySignedRelease(ctx context.Context, version string) error {
+func (e *Engine) ensureReleaseChecksumsAvailable(ctx context.Context, version string) error {
 	releaseBaseURL := strings.TrimRight(e.releaseBaseURL(version), "/")
-	if _, err := e.fetchVerifiedChecksums(ctx, releaseBaseURL); err != nil {
-		return fmt.Errorf("verify signed release metadata for %s: %w", version, err)
+	if _, err := e.fetchChecksums(ctx, releaseBaseURL); err != nil {
+		return fmt.Errorf("load release checksums for %s: %w", version, err)
 	}
 	return nil
 }
 
-func (e *Engine) fetchVerifiedChecksums(ctx context.Context, releaseBaseURL string) ([]byte, error) {
-	checksumsPayload, err := e.fetchBytes(ctx, releaseBaseURL+"/"+releaseChecksumsFileName(), maxChecksumsBytes)
-	if err != nil {
-		return nil, err
-	}
-	checksumsSignaturePayload, err := e.fetchBytes(ctx, releaseBaseURL+"/"+releaseChecksumsSignatureFileName(), maxSignatureBytes)
-	if err != nil {
-		return nil, err
-	}
-	if err := e.verifyChecksumsSignature(checksumsPayload, checksumsSignaturePayload); err != nil {
-		return nil, fmt.Errorf("verify %s: %w", releaseChecksumsSignatureFileName(), err)
-	}
-	return checksumsPayload, nil
+func (e *Engine) fetchChecksums(ctx context.Context, releaseBaseURL string) ([]byte, error) {
+	return e.fetchBytes(ctx, releaseBaseURL+"/"+releaseChecksumsFileName(), maxChecksumsBytes)
 }
 
 func (e *Engine) fetchBytes(ctx context.Context, rawURL string, maxBytes int64) ([]byte, error) {
@@ -360,17 +333,43 @@ func extractTunnelBinary(archivePayload []byte) ([]byte, error) {
 			return nil, fmt.Errorf("read tunnel binary from archive: %w", err)
 		}
 		if int64(len(binaryPayload)) != header.Size {
-			return nil, fmt.Errorf("archive tunnel binary size mismatch")
+			return nil, fmt.Errorf("archive tunnel binary exceeded declared size")
 		}
 	}
 	if entryCount == 0 || len(binaryPayload) == 0 {
-		return nil, fmt.Errorf("archive must contain only tunnel")
+		return nil, fmt.Errorf("archive did not contain tunnel")
 	}
 	return binaryPayload, nil
 }
 
-func resolveExecutableTarget(resolve func() (string, error)) (string, os.FileMode, error) {
-	path, err := resolve()
+func replaceExecutable(path string, payload []byte, mode os.FileMode) error {
+	dir := filepath.Dir(path)
+	tempFile, err := os.CreateTemp(dir, ".tunnel-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp executable: %w", err)
+	}
+	tempPath := tempFile.Name()
+	defer os.Remove(tempPath)
+
+	if _, err := tempFile.Write(payload); err != nil {
+		tempFile.Close()
+		return fmt.Errorf("write temp executable: %w", err)
+	}
+	if err := tempFile.Chmod(mode); err != nil {
+		tempFile.Close()
+		return fmt.Errorf("chmod temp executable: %w", err)
+	}
+	if err := tempFile.Close(); err != nil {
+		return fmt.Errorf("close temp executable: %w", err)
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return fmt.Errorf("replace executable: %w", err)
+	}
+	return nil
+}
+
+func resolveExecutableTarget(executablePath func() (string, error)) (string, os.FileMode, error) {
+	path, err := executablePath()
 	if err != nil {
 		return "", 0, fmt.Errorf("resolve executable path: %w", err)
 	}
@@ -378,14 +377,13 @@ func resolveExecutableTarget(resolve func() (string, error)) (string, os.FileMod
 	if path == "" {
 		return "", 0, fmt.Errorf("resolve executable path: empty path")
 	}
-
 	resolvedPath, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		return "", 0, fmt.Errorf("resolve executable path %s: %w", path, err)
 	}
 	info, err := os.Stat(resolvedPath)
 	if err != nil {
-		return "", 0, fmt.Errorf("stat executable path %s: %w", resolvedPath, err)
+		return "", 0, fmt.Errorf("stat executable %s: %w", resolvedPath, err)
 	}
 	if !info.Mode().IsRegular() {
 		return "", 0, fmt.Errorf("self-update only supports regular executable files")
@@ -396,37 +394,4 @@ func resolveExecutableTarget(resolve func() (string, error)) (string, os.FileMod
 	}
 	_ = file.Close()
 	return resolvedPath, info.Mode().Perm(), nil
-}
-
-func replaceExecutable(path string, binaryPayload []byte, mode os.FileMode) error {
-	dir := filepath.Dir(path)
-	tmpFile, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
-	if err != nil {
-		return fmt.Errorf("create temp executable for %s: %w", path, err)
-	}
-	tmpPath := tmpFile.Name()
-	cleanup := func() {
-		_ = tmpFile.Close()
-		_ = os.Remove(tmpPath)
-	}
-	if _, err := tmpFile.Write(binaryPayload); err != nil {
-		cleanup()
-		return fmt.Errorf("write temp executable for %s: %w", path, err)
-	}
-	if err := tmpFile.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("close temp executable for %s: %w", path, err)
-	}
-	if err := os.Chmod(tmpPath, mode); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("chmod temp executable for %s: %w", path, err)
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("replace executable %s: %w", path, err)
-	}
-	if err := os.Chmod(path, mode); err != nil {
-		return fmt.Errorf("chmod executable %s: %w", path, err)
-	}
-	return nil
 }

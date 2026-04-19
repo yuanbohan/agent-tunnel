@@ -10,7 +10,7 @@ Recommended setup:
 
 - Keep the public repo owned by your personal account or org.
 - Do not add outside collaborators unless you want them to push.
-- If you enable branch protection on `main`, make sure the release workflow still has a path to update `install.sh`, `latest.json`, and `README.md`. A strict "pull requests only" rule on `main` will block this publish flow.
+- If you enable branch protection on `main`, make sure the release workflow still has a path to update `install.sh` and `latest.json`. A strict "pull requests only" rule on `main` will block this publish flow.
 
 ## Compatibility Contract
 
@@ -36,17 +36,16 @@ The private-repo `Release Tunnel` workflow enforces that the requested `tunnel` 
 
 ## Token Setup
 
-The private source repo needs two secrets:
+The private source repo needs one secret:
 
 - `TUNNEL_DIST_REPO_TOKEN`: a fine-grained personal access token with Contents read/write access to `yuanbohan/tunnel`
-- `TUNNEL_RELEASE_SIGNING_PRIVATE_KEY`: an Ed25519 private key in PEM format used to sign `checksums.txt`
 
 The workflow uses that token to:
 
-- push `install.sh`, `latest.json`, and `README.md` to the public repo default branch
+- push `install.sh` and `latest.json` to the public repo default branch
 - create the public GitHub release and upload release assets
 
-The signing key is paired with the public key embedded in `internal/tunnel/update`. Native `tunnel update` and `tunnel rollback` verify `checksums.txt.sig` before trusting any published archive checksum.
+Native `tunnel update` and `tunnel rollback` download `checksums.txt` before verifying archive checksums.
 
 ## Release Flow
 
@@ -60,12 +59,10 @@ Published outputs:
 - one GitHub Release in `yuanbohan/tunnel`
 - four `tunnel_<version>_<os>_<arch>.tar.gz` assets
 - one `checksums.txt`
-- one `checksums.txt.sig`
 - refreshed `install.sh`
 - refreshed `latest.json`
-- refreshed public `README.md`
 
-Those same public assets are the only source used by native `tunnel update` and `tunnel rollback`. The CLI does not shell out to `install.sh`; it consumes the published `latest.json`, release archives, `checksums.txt`, and `checksums.txt.sig` directly.
+Those same public assets are the only source used by native `tunnel update` and `tunnel rollback`. The CLI does not shell out to `install.sh`; it consumes the published `latest.json`, release archives, and `checksums.txt` directly.
 
 ## Commit Messages
 

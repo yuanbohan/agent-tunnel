@@ -10,10 +10,8 @@ import (
 )
 
 const (
-	latestManifestFileName     = "latest.json"
-	latestManifestSigFileName  = "latest.json.sig"
-	checksumsFileName          = "checksums.txt"
-	checksumsSignatureFileName = "checksums.txt.sig"
+	latestManifestFileName = "latest.json"
+	checksumsFileName      = "checksums.txt"
 )
 
 type LatestManifest struct {
@@ -62,16 +60,8 @@ func releaseChecksumsFileName() string {
 	return checksumsFileName
 }
 
-func releaseChecksumsSignatureFileName() string {
-	return checksumsSignatureFileName
-}
-
 func releaseLatestManifestFileName() string {
 	return latestManifestFileName
-}
-
-func releaseLatestManifestSignatureFileName() string {
-	return latestManifestSigFileName
 }
 
 func currentReleaseTarget() (string, string, error) {

@@ -118,9 +118,7 @@ func TestRunManualUpdatePrintsRollbackUnavailableReason(t *testing.T) {
 
 func TestRunManualRollbackUsesRecordedVersionAndClearsState(t *testing.T) {
 	withTempHome(t)
-	if err := saveUpdaterState(updaterState{
-		RollbackVersion: "v0.1.7",
-	}); err != nil {
+	if err := saveUpdaterState(updaterState{RollbackVersion: "v0.1.7"}); err != nil {
 		t.Fatalf("saveUpdaterState returned error: %v", err)
 	}
 	engine := &fakeUpdaterEngine{

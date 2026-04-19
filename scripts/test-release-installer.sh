@@ -21,18 +21,6 @@ replace_checksum_entry() {
 	mv "$checksums_file.tmp" "$checksums_file"
 }
 
-sign_checksums_file() {
-	checksums_file="$1"
-	signature_path="$2"
-	TUNNEL_RELEASE_SIGNING_PRIVATE_KEY="$release_signing_key" "$go_bin" run ./cmd/release-sign sign "$checksums_file" "$signature_path" >/dev/null
-}
-
-sign_latest_manifest_file() {
-	manifest_path="$1"
-	signature_path="$2"
-	TUNNEL_RELEASE_SIGNING_PRIVATE_KEY="$release_signing_key" "$go_bin" run ./cmd/release-sign sign "$manifest_path" "$signature_path" >/dev/null
-}
-
 start_fixture_server() {
 	fixture_dir="$1"
 	port_file="$2"
@@ -81,11 +69,6 @@ fixture_root="$tmpdir/fixture"
 release_root="$fixture_root/releases/download"
 mkdir -p "$release_root"
 go_bin="${GO:-go}"
-signing_private_key="$tmpdir/release-signing-private.pem"
-signing_public_key="$tmpdir/release-signing-public.txt"
-"$go_bin" run ./cmd/release-sign keygen "$signing_private_key" "$signing_public_key" >/dev/null
-release_signing_key=$(cat "$signing_private_key")
-release_signing_public_key=$(awk 'NR==1 {print $2}' "$signing_public_key")
 repo_relay_version=$("$go_bin" run ./cmd/relay version | awk 'NR==1 {print $2}')
 if [ -z "$repo_relay_version" ]; then
 	printf 'error: could not determine current relay version\n' >&2
@@ -93,9 +76,8 @@ if [ -z "$repo_relay_version" ]; then
 fi
 version="${TEST_RELEASE_VERSION:-$(release_fixture_version "$repo_relay_version")}"
 
-GO="$go_bin" RELEASE_DIR="$release_root" TUNNEL_RELEASE_SIGNING_PRIVATE_KEY="$release_signing_key" TUNNEL_RELEASE_SIGNING_PUBLIC_KEY="$release_signing_public_key" "$script_dir/release-package.sh" "$version" >/dev/null
+GO="$go_bin" RELEASE_DIR="$release_root" "$script_dir/release-package.sh" "$version" >/dev/null
 "$script_dir/render-latest-manifest.sh" "$version" >"$fixture_root/latest.json"
-sign_latest_manifest_file "$fixture_root/latest.json" "$fixture_root/latest.json.sig"
 
 port_file="$tmpdir/port"
 server_pid=$(start_fixture_server "$fixture_root" "$port_file")
@@ -109,7 +91,6 @@ mkdir -p "$home_dir"
 PATH="/usr/bin:/bin" HOME="$home_dir" \
 TUNNEL_INSTALL_BASE_URL="$base_url" \
 TUNNEL_RELEASE_BASE_URL="$release_base_url" \
-TUNNEL_RELEASE_SIGNING_PUBLIC_KEY="$release_signing_public_key" \
 TUNNEL_INSTALL_DIR="$home_dir/.local/bin" \
 "$script_dir/install-tunnel.sh" >"$tmpdir/install.out"
 
@@ -129,15 +110,12 @@ if ! grep -q "add $home_dir/.local/bin to PATH" "$tmpdir/install.out"; then
 fi
 
 mv "$fixture_root/latest.json" "$fixture_root/latest.json.hidden"
-mv "$fixture_root/latest.json.sig" "$fixture_root/latest.json.sig.hidden"
 PATH="/usr/bin:/bin" HOME="$home_dir" \
 VERSION="$version" \
 TUNNEL_RELEASE_BASE_URL="$release_base_url" \
-TUNNEL_RELEASE_SIGNING_PUBLIC_KEY="$release_signing_public_key" \
 TUNNEL_INSTALL_DIR="$home_dir/.local/bin" \
 "$script_dir/install-tunnel.sh" >/dev/null
 mv "$fixture_root/latest.json.hidden" "$fixture_root/latest.json"
-mv "$fixture_root/latest.json.sig.hidden" "$fixture_root/latest.json.sig"
 
 if [ "$("$home_dir/.local/bin/tunnel" --version)" != "tunnel $version" ]; then
 	printf 'error: pinned install path did not preserve requested version\n' >&2
@@ -145,11 +123,9 @@ if [ "$("$home_dir/.local/bin/tunnel" --version)" != "tunnel $version" ]; then
 fi
 
 printf '{"version":"%s"}\n' "$version" >"$fixture_root/latest.json"
-sign_latest_manifest_file "$fixture_root/latest.json" "$fixture_root/latest.json.sig"
 if PATH="/usr/bin:/bin" HOME="$home_dir" \
 	TUNNEL_INSTALL_BASE_URL="$base_url" \
 	TUNNEL_RELEASE_BASE_URL="$release_base_url" \
-	TUNNEL_RELEASE_SIGNING_PUBLIC_KEY="$release_signing_public_key" \
 	TUNNEL_INSTALL_DIR="$home_dir/.local/bin" \
 	"$script_dir/install-tunnel.sh" >/dev/null 2>"$tmpdir/missing-line.err"
 then
@@ -163,11 +139,9 @@ if ! grep -q 'latest.json did not contain compatibility_line' "$tmpdir/missing-l
 fi
 
 printf '{"version":"%s","compatibility_line":"9"}\n' "$version" >"$fixture_root/latest.json"
-sign_latest_manifest_file "$fixture_root/latest.json" "$fixture_root/latest.json.sig"
 if PATH="/usr/bin:/bin" HOME="$home_dir" \
 	TUNNEL_INSTALL_BASE_URL="$base_url" \
 	TUNNEL_RELEASE_BASE_URL="$release_base_url" \
-	TUNNEL_RELEASE_SIGNING_PUBLIC_KEY="$release_signing_public_key" \
 	TUNNEL_INSTALL_DIR="$home_dir/.local/bin" \
 	"$script_dir/install-tunnel.sh" >/dev/null 2>"$tmpdir/manifest.err"
 then
@@ -181,14 +155,12 @@ if ! grep -q "latest.json compatibility_line does not match version $version" "$
 fi
 
 "$script_dir/render-latest-manifest.sh" "$version" >"$fixture_root/latest.json"
-sign_latest_manifest_file "$fixture_root/latest.json" "$fixture_root/latest.json.sig"
 
 if PATH="/usr/bin:/bin" HOME="$home_dir" \
 	TUNNEL_INSTALL_OS="linux" \
 	TUNNEL_INSTALL_ARCH="s390x" \
 	TUNNEL_INSTALL_BASE_URL="$base_url" \
 	TUNNEL_RELEASE_BASE_URL="$release_base_url" \
-	TUNNEL_RELEASE_SIGNING_PUBLIC_KEY="$release_signing_public_key" \
 	TUNNEL_INSTALL_DIR="$home_dir/.local/bin" \
 	"$script_dir/install-tunnel.sh" >/dev/null 2>"$tmpdir/unsupported.err"
 then
@@ -209,10 +181,8 @@ current_arch=$("$go_bin" env GOARCH)
 current_asset=$(release_asset_name "$version" "$current_os" "$current_arch")
 current_asset_path="$fixture_root/releases/download/$version/$current_asset"
 checksums_file="$fixture_root/releases/download/$version/checksums.txt"
-checksums_signature_file="$fixture_root/releases/download/$version/checksums.txt.sig"
 cp "$current_asset_path" "$current_asset_path.good"
 cp "$checksums_file" "$checksums_file.good"
-cp "$checksums_signature_file" "$checksums_signature_file.good"
 
 bad_members_dir="$tmpdir/bad-members"
 mkdir -p "$bad_members_dir"
@@ -220,12 +190,10 @@ cp "$home_dir/.local/bin/tunnel" "$bad_members_dir/tunnel"
 printf 'surprise\n' >"$bad_members_dir/bonus"
 tar -C "$bad_members_dir" -czf "$current_asset_path" tunnel bonus
 replace_checksum_entry "$checksums_file" "$current_asset" "$(release_hash_file "$current_asset_path")"
-sign_checksums_file "$checksums_file" "$checksums_signature_file"
 
 if PATH="/usr/bin:/bin" HOME="$home_dir" \
 	TUNNEL_INSTALL_BASE_URL="$base_url" \
 	TUNNEL_RELEASE_BASE_URL="$release_base_url" \
-	TUNNEL_RELEASE_SIGNING_PUBLIC_KEY="$release_signing_public_key" \
 	TUNNEL_INSTALL_DIR="$home_dir/.local/bin" \
 	"$script_dir/install-tunnel.sh" >/dev/null 2>"$tmpdir/archive-members.err"
 then
@@ -245,19 +213,16 @@ fi
 
 cp "$current_asset_path.good" "$current_asset_path"
 cp "$checksums_file.good" "$checksums_file"
-cp "$checksums_signature_file.good" "$checksums_signature_file"
 
 bad_link_dir="$tmpdir/bad-link"
 mkdir -p "$bad_link_dir"
 ln -sf /etc/passwd "$bad_link_dir/tunnel"
 tar -C "$bad_link_dir" -czf "$current_asset_path" tunnel
 replace_checksum_entry "$checksums_file" "$current_asset" "$(release_hash_file "$current_asset_path")"
-sign_checksums_file "$checksums_file" "$checksums_signature_file"
 
 if PATH="/usr/bin:/bin" HOME="$home_dir" \
 	TUNNEL_INSTALL_BASE_URL="$base_url" \
 	TUNNEL_RELEASE_BASE_URL="$release_base_url" \
-	TUNNEL_RELEASE_SIGNING_PUBLIC_KEY="$release_signing_public_key" \
 	TUNNEL_INSTALL_DIR="$home_dir/.local/bin" \
 	"$script_dir/install-tunnel.sh" >/dev/null 2>"$tmpdir/archive-link.err"
 then
@@ -277,14 +242,11 @@ fi
 
 cp "$current_asset_path.good" "$current_asset_path"
 cp "$checksums_file.good" "$checksums_file"
-cp "$checksums_signature_file.good" "$checksums_signature_file"
 replace_checksum_entry "$checksums_file" "$current_asset" "badbadbadbadbadbadbadbadbadbadbadbadbadbadbadbadbadbadbadbadbadb"
-sign_checksums_file "$checksums_file" "$checksums_signature_file"
 
 if PATH="/usr/bin:/bin" HOME="$home_dir" \
 	TUNNEL_INSTALL_BASE_URL="$base_url" \
 	TUNNEL_RELEASE_BASE_URL="$release_base_url" \
-	TUNNEL_RELEASE_SIGNING_PUBLIC_KEY="$release_signing_public_key" \
 	TUNNEL_INSTALL_DIR="$home_dir/.local/bin" \
 	"$script_dir/install-tunnel.sh" >/dev/null 2>"$tmpdir/checksum.err"
 then
@@ -299,79 +261,6 @@ fi
 
 if [ "$("$home_dir/.local/bin/tunnel")" != "tunnel old-version" ]; then
 	printf 'error: failed install replaced existing tunnel binary\n' >&2
-	exit 1
-fi
-
-cp "$checksums_file.good" "$checksums_file"
-printf 'corrupt signature\n' >"$checksums_signature_file"
-
-if PATH="/usr/bin:/bin" HOME="$home_dir" \
-	TUNNEL_INSTALL_BASE_URL="$base_url" \
-	TUNNEL_RELEASE_BASE_URL="$release_base_url" \
-	TUNNEL_RELEASE_SIGNING_PUBLIC_KEY="$release_signing_public_key" \
-	TUNNEL_INSTALL_DIR="$home_dir/.local/bin" \
-	"$script_dir/install-tunnel.sh" >/dev/null 2>"$tmpdir/signature.err"
-then
-	printf 'error: invalid signature install unexpectedly succeeded\n' >&2
-	exit 1
-fi
-
-if ! grep -q 'invalid signature for checksums.txt' "$tmpdir/signature.err"; then
-	printf 'error: invalid signature path did not explain failure\n' >&2
-	exit 1
-fi
-
-if [ "$("$home_dir/.local/bin/tunnel")" != "tunnel old-version" ]; then
-	printf 'error: invalid signature install replaced existing tunnel binary\n' >&2
-	exit 1
-fi
-
-printf '{"version":"%s","compatibility_line":"%s"}\n' "$version" "$(release_compatibility_line "$version")" >"$fixture_root/latest.json"
-printf 'corrupt signature\n' >"$fixture_root/latest.json.sig"
-
-if PATH="/usr/bin:/bin" HOME="$home_dir" \
-	TUNNEL_INSTALL_BASE_URL="$base_url" \
-	TUNNEL_RELEASE_BASE_URL="$release_base_url" \
-	TUNNEL_RELEASE_SIGNING_PUBLIC_KEY="$release_signing_public_key" \
-	TUNNEL_INSTALL_DIR="$home_dir/.local/bin" \
-	"$script_dir/install-tunnel.sh" >/dev/null 2>"$tmpdir/latest-signature.err"
-then
-	printf 'error: invalid latest.json signature install unexpectedly succeeded\n' >&2
-	exit 1
-fi
-
-if ! grep -q 'invalid signature for latest.json' "$tmpdir/latest-signature.err"; then
-	printf 'error: invalid latest.json signature path did not explain failure\n' >&2
-	exit 1
-fi
-
-sign_latest_manifest_file "$fixture_root/latest.json" "$fixture_root/latest.json.sig"
-
-ssh_keygen_wrapper_dir="$tmpdir/no-ssh-y/bin"
-mkdir -p "$ssh_keygen_wrapper_dir"
-cat >"$ssh_keygen_wrapper_dir/ssh-keygen" <<'EOF'
-#!/bin/sh
-if [ "${1:-}" = "-Y" ]; then
-	printf 'unknown option -- Y\n' >&2
-	exit 1
-fi
-exec /usr/bin/ssh-keygen "$@"
-EOF
-chmod 0755 "$ssh_keygen_wrapper_dir/ssh-keygen"
-
-if PATH="$ssh_keygen_wrapper_dir:/usr/bin:/bin" HOME="$home_dir" \
-	TUNNEL_INSTALL_BASE_URL="$base_url" \
-	TUNNEL_RELEASE_BASE_URL="$release_base_url" \
-	TUNNEL_RELEASE_SIGNING_PUBLIC_KEY="$release_signing_public_key" \
-	TUNNEL_INSTALL_DIR="$home_dir/.local/bin" \
-	"$script_dir/install-tunnel.sh" >/dev/null 2>"$tmpdir/ssh-keygen-cap.err"
-then
-	printf 'error: installer unexpectedly accepted ssh-keygen without -Y support\n' >&2
-	exit 1
-fi
-
-if ! grep -q 'ssh-keygen with -Y verify support is required' "$tmpdir/ssh-keygen-cap.err"; then
-	printf 'error: ssh-keygen capability path did not explain failure\n' >&2
 	exit 1
 fi
 

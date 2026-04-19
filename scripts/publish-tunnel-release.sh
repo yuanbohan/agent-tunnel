@@ -4,12 +4,8 @@ set -eu
 
 truthy() {
 	case "${1:-}" in
-		1|true|TRUE|yes|YES|on|ON)
-			return 0
-			;;
-		*)
-			return 1
-			;;
+		1|true|TRUE|yes|YES|on|ON) return 0 ;;
+		*) return 1 ;;
 	esac
 }
 
@@ -35,16 +31,19 @@ sync_stable_files() {
 	dest_dir="$1"
 	version="$2"
 	install_source="$3"
-	readme_source="$4"
-	manifest_script="$5"
-	go_bin="$6"
-	signing_key="$7"
+	manifest_script="$4"
 
 	cp "$install_source" "$dest_dir/install.sh"
 	chmod 0755 "$dest_dir/install.sh"
-	cp "$readme_source" "$dest_dir/README.md"
 	"$manifest_script" "$version" >"$dest_dir/latest.json"
-	TUNNEL_RELEASE_SIGNING_PRIVATE_KEY="$signing_key" "$release_sign_bin" sign "$dest_dir/latest.json" "$dest_dir/latest.json.sig" >/dev/null
+	rm -f "$dest_dir/latest.json.sig" "$dest_dir/checksums.txt.sig"
+}
+
+stage_stable_files() {
+	repo_dir="$1"
+
+	git -C "$repo_dir" add install.sh latest.json
+	git -C "$repo_dir" rm -f --ignore-unmatch latest.json.sig checksums.txt.sig >/dev/null
 }
 
 ensure_repo_checkout() {
@@ -85,19 +84,14 @@ artifact_dir="$release_root/$version"
 dist_repo="${TUNNEL_DIST_REPO:-}"
 dist_branch="${TUNNEL_DIST_BRANCH:-main}"
 install_source="${TUNNEL_DIST_INSTALL_SOURCE:-$script_dir/install-tunnel.sh}"
-readme_source="${TUNNEL_DIST_README_SOURCE:-$repo_root/docs/public-distribution-readme.md}"
 manifest_script="${TUNNEL_DIST_MANIFEST_SCRIPT:-$script_dir/render-latest-manifest.sh}"
 dry_run="${PUBLISH_DRY_RUN:-0}"
 clone_dir="${TUNNEL_DIST_CLONE_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/tunnel-dist.XXXXXX")}"
 cleanup_clone="true"
-go_bin="${GO:-go}"
 
 cleanup() {
 	if [ "$cleanup_clone" = "true" ]; then
 		rm -rf "$clone_dir"
-	fi
-	if [ -n "${stage_dir:-}" ]; then
-		rm -rf "$stage_dir"
 	fi
 }
 trap cleanup EXIT INT TERM
@@ -114,19 +108,10 @@ if [ ! -f "$artifact_dir/checksums.txt" ]; then
 	printf 'error: missing %s/checksums.txt\n' "$artifact_dir" >&2
 	exit 1
 fi
-if [ ! -f "$artifact_dir/checksums.txt.sig" ]; then
-	printf 'error: missing %s/checksums.txt.sig\n' "$artifact_dir" >&2
-	exit 1
-fi
 if [ ! -f "$install_source" ]; then
 	printf 'error: missing install source %s\n' "$install_source" >&2
 	exit 1
 fi
-if [ ! -f "$readme_source" ]; then
-	printf 'error: missing public README source %s\n' "$readme_source" >&2
-	exit 1
-fi
-
 if [ -z "$dist_repo" ]; then
 	printf 'error: TUNNEL_DIST_REPO is required (for example yuanbohan/tunnel)\n' >&2
 	exit 1
@@ -136,32 +121,15 @@ if truthy "$dry_run"; then
 	printf 'dry-run: would publish %s from %s to %s\n' "$version" "$artifact_dir" "$dist_repo"
 	printf 'dry-run: would bootstrap %s if branch %s is missing\n' "$dist_repo" "$dist_branch"
 	printf 'dry-run: would create draft release %s\n' "$version"
-	printf 'dry-run: would upload 4 archives plus checksums.txt plus checksums.txt.sig\n'
+	printf 'dry-run: would upload 4 archives plus checksums.txt\n'
 	printf 'dry-run: would publish release %s before updating latest.json\n' "$version"
-	printf 'dry-run: would sync install.sh, latest.json, latest.json.sig, and README.md with commit message "release: publish tunnel %s"\n' "$version"
+	printf 'dry-run: would sync install.sh and latest.json, remove stale .sig files, with commit message "release: publish tunnel %s"\n' "$version"
 	exit 0
 fi
 
 token="${TUNNEL_DIST_REPO_TOKEN:-${GH_TOKEN:-}}"
 if [ -z "$token" ]; then
 	printf 'error: TUNNEL_DIST_REPO_TOKEN or GH_TOKEN is required\n' >&2
-	exit 1
-fi
-release_signing_key="${TUNNEL_RELEASE_SIGNING_PRIVATE_KEY:-}"
-if [ -z "$release_signing_key" ]; then
-	printf 'error: TUNNEL_RELEASE_SIGNING_PRIVATE_KEY is required\n' >&2
-	exit 1
-fi
-
-stage_dir=$(mktemp -d "${TMPDIR:-/tmp}/tunnel-publish.XXXXXX")
-release_sign_bin="$stage_dir/release-sign"
-"$go_bin" build -o "$release_sign_bin" "$repo_root/cmd/release-sign"
-
-# Verify that the release signing key matches the expected public key
-trusted_signing_public_key="AAAAC3NzaC1lZDI1NTE5AAAAIJ9OrgAvOri02pL9XEZo3KsAupH8NjNOKhz7Uhb7l1uW"
-derived_signing_public_key=$(TUNNEL_RELEASE_SIGNING_PRIVATE_KEY="$release_signing_key" "$release_sign_bin" public-key)
-if [ "$derived_signing_public_key" != "$trusted_signing_public_key" ]; then
-	printf 'error: TUNNEL_RELEASE_SIGNING_PRIVATE_KEY does not match the trusted release signing public key\n' >&2
 	exit 1
 fi
 
@@ -178,10 +146,9 @@ if ! git -C "$clone_dir" rev-parse --verify HEAD >/dev/null 2>&1; then
 	printf 'bootstrapping public distribution repo at %s branch %s...\n' "$dist_repo" "$dist_branch"
 	cp "$install_source" "$clone_dir/install.sh"
 	chmod 0755 "$clone_dir/install.sh"
-	cp "$readme_source" "$clone_dir/README.md"
 	"$manifest_script" "$version" >"$clone_dir/latest.json"
-	TUNNEL_RELEASE_SIGNING_PRIVATE_KEY="$release_signing_key" "$release_sign_bin" sign "$clone_dir/latest.json" "$clone_dir/latest.json.sig" >/dev/null
-	git -C "$clone_dir" add install.sh README.md latest.json latest.json.sig
+	rm -f "$clone_dir/latest.json.sig" "$clone_dir/checksums.txt.sig"
+	stage_stable_files "$clone_dir"
 	if git_commit_if_needed "$clone_dir" "docs: bootstrap public tunnel distribution repo"; then
 		printf 'pushing bootstrap commit...\n'
 		git -C "$clone_dir" push -u origin "$dist_branch" >/dev/null
@@ -198,7 +165,6 @@ compatibility_line=$(release_compatibility_line "$version")
 GH_TOKEN="$token" gh release create "$version" \
 	"$artifact_dir/"tunnel_*.tar.gz \
 	"$artifact_dir/checksums.txt" \
-	"$artifact_dir/checksums.txt.sig" \
 	--repo "$dist_repo" \
 	--target "$dist_branch" \
 	--title "tunnel $version" \
@@ -212,8 +178,8 @@ printf 'publishing release %s...\n' "$version"
 GH_TOKEN="$token" gh release edit "$version" --repo "$dist_repo" --draft=false
 
 printf 'syncing stable files to %s branch %s...\n' "$dist_repo" "$dist_branch"
-sync_stable_files "$clone_dir" "$version" "$install_source" "$readme_source" "$manifest_script" "$go_bin" "$release_signing_key"
-git -C "$clone_dir" add install.sh latest.json latest.json.sig README.md
+sync_stable_files "$clone_dir" "$version" "$install_source" "$manifest_script"
+stage_stable_files "$clone_dir"
 if git_commit_if_needed "$clone_dir" "release: publish tunnel $version"; then
 	git -C "$clone_dir" push origin "$dist_branch" >/dev/null
 fi

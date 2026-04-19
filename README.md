@@ -61,7 +61,7 @@ curl -fsSL https://raw.githubusercontent.com/yuanbohan/tunnel/main/install.sh | 
 ```
 
 The installer writes `tunnel` to `~/.local/bin/tunnel` and supports `darwin/arm64`, `darwin/amd64`, `linux/amd64`, and `linux/arm64`.
-Official release packages also publish a signed `checksums.txt` manifest used by native `tunnel update` and `tunnel rollback`.
+Official release packages also publish a `checksums.txt` manifest used by native `tunnel update` and `tunnel rollback`.
 
 After install, Tunnel has three binary lifecycle paths:
 
