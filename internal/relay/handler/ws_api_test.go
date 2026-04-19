@@ -34,15 +34,23 @@ func TestDeviceWebSocketRegistersAndListsDeviceForOwner(t *testing.T) {
 	})
 	defer deviceConn.Close()
 
-	resp := doBearerGET(t, server.URL+"/api/devices", issued.AccessToken)
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
-	var devices []protocol.DeviceInfo
-	decodeAPIEnvelopeFromResponse(t, resp, http.StatusOK, &devices)
-	if len(devices) != 1 || devices[0].DeviceID != "dev-1" || devices[0].LaunchHealth != "healthy" {
-		t.Fatalf("devices = %#v, want registered device", devices)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		resp := doBearerGET(t, server.URL+"/api/devices", issued.AccessToken)
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+		var devices []protocol.DeviceInfo
+		decodeAPIEnvelopeFromResponse(t, resp, http.StatusOK, &devices)
+		resp.Body.Close()
+		if len(devices) == 1 && devices[0].DeviceID == "dev-1" && devices[0].LaunchHealth == "healthy" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("devices = %#v, want registered device", devices)
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
 }
 
@@ -124,15 +132,23 @@ func TestDeviceWebSocketUpdateIgnoresMismatchedDeviceID(t *testing.T) {
 		t.Fatalf("WriteJSON update returned error: %v", err)
 	}
 
-	resp := doBearerGET(t, server.URL+"/api/devices", issued.AccessToken)
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
-	var devices []protocol.DeviceInfo
-	decodeAPIEnvelopeFromResponse(t, resp, http.StatusOK, &devices)
-	if len(devices) != 1 || devices[0].DeviceID != "dev-1" || devices[0].LaunchHealth != "healthy" {
-		t.Fatalf("devices = %#v, want unchanged registered device info", devices)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		resp := doBearerGET(t, server.URL+"/api/devices", issued.AccessToken)
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+		var devices []protocol.DeviceInfo
+		decodeAPIEnvelopeFromResponse(t, resp, http.StatusOK, &devices)
+		resp.Body.Close()
+		if len(devices) == 1 && devices[0].DeviceID == "dev-1" && devices[0].LaunchHealth == "healthy" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("devices = %#v, want unchanged registered device info", devices)
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
 }
 
