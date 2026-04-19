@@ -1,6 +1,9 @@
 package buildinfo
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 const defaultVersion = "v0.1.0-dev"
 
@@ -66,6 +69,15 @@ func MajorOf(version string) string {
 // CompatibilityLineOf extracts the compatibility line from the provided version string.
 func CompatibilityLineOf(version string) string {
 	return compatibilityLineOf(version)
+}
+
+// BuildTimeUnix returns the build time as Unix seconds.
+func BuildTimeUnix() int64 {
+	t, err := time.Parse(time.RFC3339, strings.TrimSpace(BuildTime))
+	if err != nil {
+		return 0
+	}
+	return t.Unix()
 }
 
 func majorOf(version string) string {

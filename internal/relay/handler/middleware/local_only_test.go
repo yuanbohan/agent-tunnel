@@ -32,6 +32,18 @@ func TestLocalOnly(t *testing.T) {
 			wantStatus: http.StatusForbidden,
 		},
 		{
+			name:       "local-with-x-real-ip",
+			remoteAddr: "127.0.0.1:12345",
+			headers:    map[string]string{"X-Real-IP": "1.1.1.1"},
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "local-with-forwarded",
+			remoteAddr: "127.0.0.1:12345",
+			headers:    map[string]string{"Forwarded": "for=1.1.1.1"},
+			wantStatus: http.StatusForbidden,
+		},
+		{
 			name:       "remote-ip",
 			remoteAddr: "1.1.1.1:12345",
 			wantStatus: http.StatusForbidden,
