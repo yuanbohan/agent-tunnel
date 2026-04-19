@@ -52,19 +52,18 @@ ensure_repo_checkout() {
 	branch="$2"
 	dest_dir="$3"
 
-	if git clone "$repo_url" "$dest_dir" >/dev/null 2>&1; then
-		if git -C "$dest_dir" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
-			git -C "$dest_dir" checkout -B "$branch" "origin/$branch" >/dev/null
-			return 0
-		fi
-		git -C "$dest_dir" checkout --orphan "$branch" >/dev/null
-	else
-		mkdir -p "$dest_dir"
-		git -C "$dest_dir" init >/dev/null
-		git -C "$dest_dir" remote add origin "$repo_url" >/dev/null
-		git -C "$dest_dir" checkout -b "$branch" >/dev/null
+	if ! git clone "$repo_url" "$dest_dir" >/dev/null; then
+		printf 'error: failed to clone %s into %s\n' "$repo_url" "$dest_dir" >&2
+		exit 1
 	fi
 
+	if git -C "$dest_dir" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+		git -C "$dest_dir" checkout -B "$branch" "origin/$branch" >/dev/null
+		return 0
+	fi
+
+	git -C "$dest_dir" checkout --orphan "$branch" >/dev/null
+	git -C "$dest_dir" rm --cached -r . >/dev/null || true
 	find "$dest_dir" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
 }
 
