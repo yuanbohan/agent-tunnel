@@ -30,7 +30,11 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-repo_relay_version=$("$go_bin" run ./cmd/relay version | awk 'NR==1 {print $2}')
+# Pre-build release-sign to use during packaging
+release_sign_bin="$stage_dir/release-sign"
+"$go_bin" build -o "$release_sign_bin" "$repo_root/cmd/release-sign"
+
+repo_relay_version=$("$go_bin" run "$repo_root/cmd/relay" version | awk 'NR==1 {print $2}')
 if [ -z "$repo_relay_version" ]; then
 	printf 'error: could not determine relay compatibility line from current repo\n' >&2
 	exit 1
@@ -46,9 +50,9 @@ if [ -z "$release_signing_key" ]; then
 	exit 1
 fi
 if [ -z "$trusted_signing_public_key" ]; then
-	trusted_signing_public_key=$("$go_bin" run ./cmd/release-sign trusted-public-key)
+	trusted_signing_public_key=$("$release_sign_bin" trusted-public-key)
 fi
-derived_signing_public_key=$(TUNNEL_RELEASE_SIGNING_PRIVATE_KEY="$release_signing_key" "$go_bin" run ./cmd/release-sign public-key)
+derived_signing_public_key=$(TUNNEL_RELEASE_SIGNING_PRIVATE_KEY="$release_signing_key" "$release_sign_bin" public-key)
 if [ "$derived_signing_public_key" != "$trusted_signing_public_key" ]; then
 	printf 'error: TUNNEL_RELEASE_SIGNING_PRIVATE_KEY does not match the trusted release signing public key\n' >&2
 	exit 1
@@ -69,7 +73,7 @@ release_targets | while IFS=' ' read -r os arch; do
 		-trimpath \
 		-ldflags="$ldflags" \
 		-o "$bin_path" \
-		./cmd/tunnel
+		"$repo_root/cmd/tunnel"
 
 	if [ ! -f "$bin_path" ]; then
 		printf 'error: failed to build tunnel for %s/%s\n' "$os" "$arch" >&2
@@ -87,6 +91,6 @@ release_targets | while IFS=' ' read -r os arch; do
 	printf '%s  %s\n' "$(release_hash_file "$archive_path")" "$archive_name" >>"$checksums_file"
 done
 
-TUNNEL_RELEASE_SIGNING_PRIVATE_KEY="$release_signing_key" "$go_bin" run ./cmd/release-sign sign "$checksums_file" "$output_dir/checksums.txt.sig"
+TUNNEL_RELEASE_SIGNING_PRIVATE_KEY="$release_signing_key" "$release_sign_bin" sign "$checksums_file" "$output_dir/checksums.txt.sig"
 
 printf 'packaged tunnel release assets in %s\n' "$output_dir"

@@ -12,7 +12,7 @@ import (
 
 const (
 	officialReleaseSigningKeyType                 = "ssh-ed25519"
-	defaultOfficialReleaseSigningPublicKey        = "AAAAC3NzaC1lZDI1NTE5AAAAIO+yV8bMgSRdfozlBhqQ+xdFJZ5cAPI2T9sI6OSZRPXZ"
+	defaultOfficialReleaseSigningPublicKey        = "AAAAC3NzaC1lZDI1NTE5AAAAIJ9OrgAvOri02pL9XEZo3KsAupH8NjNOKhz7Uhb7l1uW"
 	officialReleaseSignatureMagicPreamble         = "SSHSIG"
 	officialReleaseSignatureNamespace             = "tunnel-release"
 	officialReleaseSignatureHashAlgorithm         = "sha512"
