@@ -43,6 +43,9 @@ func TestRegisterFrameRoundTrip(t *testing.T) {
 	if decoded.Session.StartedAt != started {
 		t.Fatalf("StartedAt = %v, want %v", decoded.Session.StartedAt, started)
 	}
+	if decoded.Session.GitBranch != "main" {
+		t.Fatalf("GitBranch = %q, want main", decoded.Session.GitBranch)
+	}
 	if decoded.Session.PlatformFamily != "linux" {
 		t.Fatalf("PlatformFamily = %q, want linux", decoded.Session.PlatformFamily)
 	}

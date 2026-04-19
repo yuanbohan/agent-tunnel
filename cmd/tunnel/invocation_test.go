@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestGitBranchForDirReturnsEmptyOutsideGitRepo(t *testing.T) {
@@ -13,6 +14,21 @@ func TestGitBranchForDirReturnsEmptyOutsideGitRepo(t *testing.T) {
 
 	if got := gitBranchForDir(context.Background(), dir); got != "" {
 		t.Fatalf("gitBranchForDir() = %q, want empty outside git repo", got)
+	}
+}
+
+func TestGitBranchForDirReturnsBranchName(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "README.md"), "hello\n")
+	runGit(t, dir, "init")
+	runGit(t, dir, "config", "user.email", "test@example.com")
+	runGit(t, dir, "config", "user.name", "Test User")
+	runGit(t, dir, "add", "README.md")
+	runGit(t, dir, "commit", "-m", "init")
+	runGit(t, dir, "checkout", "-b", "feature/git-branch")
+
+	if got := gitBranchForDir(context.Background(), dir); got != "feature/git-branch" {
+		t.Fatalf("gitBranchForDir() = %q, want feature/git-branch", got)
 	}
 }
 
@@ -58,7 +74,10 @@ func writeTestFile(t *testing.T, path, contents string) {
 func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 
-	cmd := exec.Command("git", args...)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v returned error: %v, output=%s", args, err, output)
