@@ -72,6 +72,7 @@ WebSocket attach notes:
   "label": "api-fix",
   "cwd": "/repo",
   "command_preview": "codex --profile prod",
+  "git_branch": "main",
   "started_at": 1775376000,
   "platform_family": "linux",
   "platform_id": "ubuntu",
@@ -83,6 +84,7 @@ Notes:
 
 - `label` may be omitted when empty
 - `started_at` is a Unix timestamp in seconds
+- `git_branch` is the best-effort Git branch for `cwd`; when the startup directory is not on a symbolic branch it is returned as an empty string
 - `platform_family`, `platform_id`, and `computer_name` are stable keys in the session payload; when metadata is unavailable they are returned as empty strings rather than omitted
 - `platform_family` is the coarse fallback field for session device identity, currently `macos` or `linux`
 - `platform_id` is a best-effort specific identifier for client-side icon mapping
@@ -400,6 +402,7 @@ It is a mixed websocket:
     "label": "api-fix",
     "cwd": "/repo",
     "command_preview": "codex --profile prod",
+    "git_branch": "main",
     "started_at": 1775376000,
     "platform_family": "linux",
     "platform_id": "ubuntu",

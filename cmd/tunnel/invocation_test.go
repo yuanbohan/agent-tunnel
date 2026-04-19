@@ -1,0 +1,85 @@
+package main
+
+import (
+	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+func TestGitBranchForDirReturnsEmptyOutsideGitRepo(t *testing.T) {
+	dir := t.TempDir()
+
+	if got := gitBranchForDir(context.Background(), dir); got != "" {
+		t.Fatalf("gitBranchForDir() = %q, want empty outside git repo", got)
+	}
+}
+
+func TestGitBranchForDirReturnsBranchName(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "README.md"), "hello\n")
+	runGit(t, dir, "init")
+	runGit(t, dir, "config", "user.email", "test@example.com")
+	runGit(t, dir, "config", "user.name", "Test User")
+	runGit(t, dir, "add", "README.md")
+	runGit(t, dir, "commit", "-m", "init")
+	runGit(t, dir, "checkout", "-b", "feature/git-branch")
+
+	if got := gitBranchForDir(context.Background(), dir); got != "feature/git-branch" {
+		t.Fatalf("gitBranchForDir() = %q, want feature/git-branch", got)
+	}
+}
+
+func TestGitBranchForDirReturnsEmptyForDetachedHead(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "README.md"), "hello\n")
+	runGit(t, dir, "init")
+	runGit(t, dir, "config", "user.email", "test@example.com")
+	runGit(t, dir, "config", "user.name", "Test User")
+	runGit(t, dir, "add", "README.md")
+	runGit(t, dir, "commit", "-m", "init")
+	runGit(t, dir, "checkout", "--detach", "HEAD")
+
+	if got := gitBranchForDir(context.Background(), dir); got != "" {
+		t.Fatalf("gitBranchForDir() = %q, want empty on detached HEAD", got)
+	}
+}
+
+func TestGitBranchForDirHonorsCanceledContext(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "README.md"), "hello\n")
+	runGit(t, dir, "init")
+	runGit(t, dir, "config", "user.email", "test@example.com")
+	runGit(t, dir, "config", "user.name", "Test User")
+	runGit(t, dir, "add", "README.md")
+	runGit(t, dir, "commit", "-m", "init")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if got := gitBranchForDir(ctx, dir); got != "" {
+		t.Fatalf("gitBranchForDir() = %q, want empty for canceled context", got)
+	}
+}
+
+func writeTestFile(t *testing.T, path, contents string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q) returned error: %v", path, err)
+	}
+}
+
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v returned error: %v, output=%s", args, err, output)
+	}
+}

@@ -612,6 +612,9 @@ func TestAgentRegistrationKeepsLiveSessionsUserScopedAcrossOwners(t *testing.T) 
 	if aliceSessions[0].ComputerName != "Office Linux" {
 		t.Fatalf("alice ComputerName = %q, want Office Linux", aliceSessions[0].ComputerName)
 	}
+	if aliceSessions[0].GitBranch != "main" {
+		t.Fatalf("alice GitBranch = %q, want main", aliceSessions[0].GitBranch)
+	}
 
 	bobResp := doBearerGET(t, server.URL+"/api/sessions", bobIssued.AccessToken)
 	defer bobResp.Body.Close()
@@ -631,6 +634,9 @@ func TestAgentRegistrationKeepsLiveSessionsUserScopedAcrossOwners(t *testing.T) 
 	}
 	if bobSessions[0].ComputerName != "Office Linux" {
 		t.Fatalf("bob ComputerName = %q, want Office Linux", bobSessions[0].ComputerName)
+	}
+	if bobSessions[0].GitBranch != "main" {
+		t.Fatalf("bob GitBranch = %q, want main", bobSessions[0].GitBranch)
 	}
 }
 
@@ -679,7 +685,7 @@ func TestAgentRegistrationWithoutIdentityMetadataStillReturnsStableSessionKeys(t
 		t.Fatalf("Unmarshal returned error: %v, body=%q", err, strings.TrimSpace(string(payload)))
 	}
 	body := string(envResp.Body)
-	for _, want := range []string{`"platform_family":""`, `"platform_id":""`, `"computer_name":""`} {
+	for _, want := range []string{`"platform_family":""`, `"platform_id":""`, `"computer_name":""`, `"git_branch":""`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("response body = %s, want %s", body, want)
 		}

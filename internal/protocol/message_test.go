@@ -14,6 +14,7 @@ func TestRegisterFrameRoundTrip(t *testing.T) {
 		Label:          "api-fix",
 		CWD:            "/tmp/project",
 		CommandPreview: "codex --profile prod",
+		GitBranch:      "main",
 		StartedAt:      started,
 		PlatformFamily: "linux",
 		PlatformID:     "ubuntu",
@@ -41,6 +42,9 @@ func TestRegisterFrameRoundTrip(t *testing.T) {
 	}
 	if decoded.Session.StartedAt != started {
 		t.Fatalf("StartedAt = %v, want %v", decoded.Session.StartedAt, started)
+	}
+	if decoded.Session.GitBranch != "main" {
+		t.Fatalf("GitBranch = %q, want main", decoded.Session.GitBranch)
 	}
 	if decoded.Session.PlatformFamily != "linux" {
 		t.Fatalf("PlatformFamily = %q, want linux", decoded.Session.PlatformFamily)
@@ -99,6 +103,7 @@ func TestSessionSummaryJSONUsesStableFieldNames(t *testing.T) {
 		Label:          "docs",
 		CWD:            "/Users/test/project",
 		CommandPreview: "gemini",
+		GitBranch:      "release/docs",
 		PlatformFamily: "macos",
 		PlatformID:     "macos",
 		ComputerName:   "Yuanbo's MacBook Pro",
@@ -116,6 +121,7 @@ func TestSessionSummaryJSONUsesStableFieldNames(t *testing.T) {
 		"label",
 		"cwd",
 		"command_preview",
+		"git_branch",
 		"platform_family",
 		"platform_id",
 		"computer_name",
@@ -153,6 +159,9 @@ func TestSessionSummaryUsesStableDeviceIdentityKeysWhenUnset(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), `"computer_name":""`) {
 		t.Fatalf("json = %s, want empty computer_name", raw)
+	}
+	if !strings.Contains(string(raw), `"git_branch":""`) {
+		t.Fatalf("json = %s, want empty git_branch", raw)
 	}
 }
 

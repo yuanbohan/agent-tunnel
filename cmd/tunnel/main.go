@@ -160,6 +160,7 @@ func runTunnelSession(ctx context.Context, stdin io.Reader, parsed runArgs, stdo
 	defer stop()
 
 	commandPreview := strings.TrimSpace(strings.Join(append([]string{command.Name}, command.Args...), " "))
+	gitBranch := detectGitBranch(ctx, cwd)
 	sessionID := fmt.Sprintf("%d", time.Now().UnixNano())
 	platformFamily, platformID, computerName := sessionIdentityFromMetadata(collectSessionMetadata())
 	info := protocol.SessionInfo{
@@ -168,6 +169,7 @@ func runTunnelSession(ctx context.Context, stdin io.Reader, parsed runArgs, stdo
 		Label:          parsed.Label,
 		CWD:            cwd,
 		CommandPreview: commandPreview,
+		GitBranch:      gitBranch,
 		StartedAt:      protocol.UnixTimestamp(time.Now().UTC()),
 		PlatformFamily: platformFamily,
 		PlatformID:     platformID,
