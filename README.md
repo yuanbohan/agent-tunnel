@@ -321,6 +321,34 @@ Deploy is intentionally narrower than install: it does not install packages, req
 
 Use `ANSIBLE_DRY_RUN=1` for a check-mode preview and `ANSIBLE_EXTRA_VARS_FILE=<path>` if you want to layer extra vars on top of the checked-in inventories.
 
+### Manual Binary Deployment
+
+If `make deploy-*` or `make relay-bin-*` fails due to network instability (e.g., `rsync` connection reset, MTU issues, or large file transfer timeouts), you can manually install the binaries using `scp` with a rate limit:
+
+1.  **Build Linux binaries locally**:
+    ```bash
+    make build-linux
+    ```
+
+2.  **Upload to a temporary directory** (e.g., to `dev` with a 4Mbps limit):
+    ```bash
+    scp -l 4000 bin/relay ubuntu@1.12.249.160:/tmp/relay
+    scp -l 4000 bin/relay-migrate ubuntu@1.12.249.160:/tmp/relay-migrate
+    ```
+
+3.  **Install on the remote host**:
+    ```bash
+    ssh ubuntu@1.12.249.160 "sudo mv /tmp/relay /usr/local/bin/relay && \
+                             sudo mv /tmp/relay-migrate /usr/local/bin/relay-migrate && \
+                             sudo chown root:root /usr/local/bin/relay* && \
+                             sudo chmod 0755 /usr/local/bin/relay*"
+    ```
+
+4.  **Complete the configuration and restart**:
+    ```bash
+    make relay-dev   # or relay-prod
+    ```
+
 ## Launchers
 
 `tunnel` does not maintain a launcher allowlist. It resolves the user-provided command from `PATH`, starts it locally, and records that same command in session metadata and startup output.
