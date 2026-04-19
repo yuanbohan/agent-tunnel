@@ -126,7 +126,7 @@ func runPublicKey() error {
 }
 
 func runTrustedPublicKey() error {
-	fmt.Println(tunnelupdate.GetOfficialReleaseSigningPublicKeyBase64())
+	fmt.Println(strings.TrimSpace(tunnelupdate.OfficialReleaseSigningPublicKeyBase64))
 	return nil
 }
 
