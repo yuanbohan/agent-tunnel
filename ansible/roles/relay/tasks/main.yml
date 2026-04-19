@@ -41,18 +41,20 @@
     - schema
 
 - name: Install relay migrator binary
-  ansible.builtin.copy:
+  ansible.posix.synchronize:
     src: "{{ relay_local_bin_dir }}/relay-migrate"
     dest: "{{ relay_install_root }}/relay-migrate"
-    mode: "0755"
+    rsync_path: "sudo rsync"
+    archive: yes
   tags:
     - relay-migrator
 
 - name: Install relay binary
-  ansible.builtin.copy:
+  ansible.posix.synchronize:
     src: "{{ relay_local_bin_dir }}/relay"
     dest: "{{ relay_install_root }}/relay"
-    mode: "0755"
+    rsync_path: "sudo rsync"
+    archive: yes
   tags:
     - relay-binary
 
