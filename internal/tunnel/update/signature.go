@@ -12,14 +12,12 @@ import (
 
 const (
 	officialReleaseSigningKeyType                 = "ssh-ed25519"
-	defaultOfficialReleaseSigningPublicKey        = "AAAAC3NzaC1lZDI1NTE5AAAAIO+yV8bMgSRdfozlBhqQ+xdFJZ5cAPI2T9sI6OSZRPXZ"
+	defaultOfficialReleaseSigningPublicKey        = "AAAAC3NzaC1lZDI1NTE5AAAAIJ9OrgAvOri02pL9XEZo3KsAupH8NjNOKhz7Uhb7l1uW"
 	officialReleaseSignatureMagicPreamble         = "SSHSIG"
 	officialReleaseSignatureNamespace             = "tunnel-release"
 	officialReleaseSignatureHashAlgorithm         = "sha512"
 	officialReleaseSignatureVersion        uint32 = 1
 )
-
-var OfficialReleaseSigningPublicKeyBase64 = defaultOfficialReleaseSigningPublicKey
 
 type sshsigBlob struct {
 	Version       uint32
@@ -43,16 +41,18 @@ type sshsigSignedData struct {
 	Hash          []byte
 }
 
-func GetOfficialReleaseSigningPublicKeyBase64() string {
-	return strings.TrimSpace(OfficialReleaseSigningPublicKeyBase64)
+// OfficialReleaseSigningPublicKeyBase64 returns the base64-encoded SSH public key used to verify official releases.
+func OfficialReleaseSigningPublicKeyBase64() string {
+	return strings.TrimSpace(defaultOfficialReleaseSigningPublicKey)
 }
 
+// OfficialReleaseSignatureNamespace returns the SSHSIG namespace used for official release signatures.
 func OfficialReleaseSignatureNamespace() string {
 	return officialReleaseSignatureNamespace
 }
 
 func verifyOfficialReleaseChecksumsSignature(checksumsPayload, signaturePayload []byte) error {
-	return verifyChecksumsSignatureWithPublicKeyBase64(GetOfficialReleaseSigningPublicKeyBase64())(checksumsPayload, signaturePayload)
+	return verifyChecksumsSignatureWithPublicKeyBase64(OfficialReleaseSigningPublicKeyBase64())(checksumsPayload, signaturePayload)
 }
 
 func verifyChecksumsSignatureWithPublicKeyBase64(publicKeyBase64 string) func([]byte, []byte) error {

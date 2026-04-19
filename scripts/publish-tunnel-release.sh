@@ -44,7 +44,7 @@ sync_stable_files() {
 	chmod 0755 "$dest_dir/install.sh"
 	cp "$readme_source" "$dest_dir/README.md"
 	"$manifest_script" "$version" >"$dest_dir/latest.json"
-	TUNNEL_RELEASE_SIGNING_PRIVATE_KEY="$signing_key" "$go_bin" run ./cmd/release-sign sign "$dest_dir/latest.json" "$dest_dir/latest.json.sig" >/dev/null
+	TUNNEL_RELEASE_SIGNING_PRIVATE_KEY="$signing_key" "$release_sign_bin" sign "$dest_dir/latest.json" "$dest_dir/latest.json.sig" >/dev/null
 }
 
 ensure_repo_checkout() {
@@ -52,19 +52,18 @@ ensure_repo_checkout() {
 	branch="$2"
 	dest_dir="$3"
 
-	if git clone "$repo_url" "$dest_dir" >/dev/null 2>&1; then
-		if git -C "$dest_dir" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
-			git -C "$dest_dir" checkout -B "$branch" "origin/$branch" >/dev/null
-			return 0
-		fi
-		git -C "$dest_dir" checkout --orphan "$branch" >/dev/null
-	else
-		mkdir -p "$dest_dir"
-		git -C "$dest_dir" init >/dev/null
-		git -C "$dest_dir" remote add origin "$repo_url" >/dev/null
-		git -C "$dest_dir" checkout -b "$branch" >/dev/null
+	if ! git clone "$repo_url" "$dest_dir" >/dev/null 2>&1; then
+		printf 'error: failed to clone distribution repository into %s\n' "$dest_dir" >&2
+		exit 1
 	fi
 
+	if git -C "$dest_dir" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+		git -C "$dest_dir" checkout -B "$branch" "origin/$branch" >/dev/null
+		return 0
+	fi
+
+	git -C "$dest_dir" checkout --orphan "$branch" >/dev/null
+	git -C "$dest_dir" rm --cached -r . >/dev/null || true
 	find "$dest_dir" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
 }
 
@@ -96,6 +95,9 @@ go_bin="${GO:-go}"
 cleanup() {
 	if [ "$cleanup_clone" = "true" ]; then
 		rm -rf "$clone_dir"
+	fi
+	if [ -n "${stage_dir:-}" ]; then
+		rm -rf "$stage_dir"
 	fi
 }
 trap cleanup EXIT INT TERM
@@ -151,6 +153,18 @@ if [ -z "$release_signing_key" ]; then
 	exit 1
 fi
 
+stage_dir=$(mktemp -d "${TMPDIR:-/tmp}/tunnel-publish.XXXXXX")
+release_sign_bin="$stage_dir/release-sign"
+"$go_bin" build -o "$release_sign_bin" "$repo_root/cmd/release-sign"
+
+# Verify that the release signing key matches the expected public key
+trusted_signing_public_key="AAAAC3NzaC1lZDI1NTE5AAAAIJ9OrgAvOri02pL9XEZo3KsAupH8NjNOKhz7Uhb7l1uW"
+derived_signing_public_key=$(TUNNEL_RELEASE_SIGNING_PRIVATE_KEY="$release_signing_key" "$release_sign_bin" public-key)
+if [ "$derived_signing_public_key" != "$trusted_signing_public_key" ]; then
+	printf 'error: TUNNEL_RELEASE_SIGNING_PRIVATE_KEY does not match the trusted release signing public key\n' >&2
+	exit 1
+fi
+
 require_cmd git
 require_cmd gh
 
@@ -166,7 +180,7 @@ if ! git -C "$clone_dir" rev-parse --verify HEAD >/dev/null 2>&1; then
 	chmod 0755 "$clone_dir/install.sh"
 	cp "$readme_source" "$clone_dir/README.md"
 	"$manifest_script" "$version" >"$clone_dir/latest.json"
-	TUNNEL_RELEASE_SIGNING_PRIVATE_KEY="$release_signing_key" "$go_bin" run ./cmd/release-sign sign "$clone_dir/latest.json" "$clone_dir/latest.json.sig" >/dev/null
+	TUNNEL_RELEASE_SIGNING_PRIVATE_KEY="$release_signing_key" "$release_sign_bin" sign "$clone_dir/latest.json" "$clone_dir/latest.json.sig" >/dev/null
 	git -C "$clone_dir" add install.sh README.md latest.json latest.json.sig
 	if git_commit_if_needed "$clone_dir" "docs: bootstrap public tunnel distribution repo"; then
 		printf 'pushing bootstrap commit...\n'
@@ -182,7 +196,7 @@ GH_TOKEN="$token" gh release view "$version" --repo "$dist_repo" >/dev/null 2>&1
 printf 'creating draft release %s in %s...\n' "$version" "$dist_repo"
 compatibility_line=$(release_compatibility_line "$version")
 GH_TOKEN="$token" gh release create "$version" \
-	"$artifact_dir"/tunnel_*.tar.gz \
+	"$artifact_dir/"tunnel_*.tar.gz \
 	"$artifact_dir/checksums.txt" \
 	"$artifact_dir/checksums.txt.sig" \
 	--repo "$dist_repo" \
