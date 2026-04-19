@@ -104,10 +104,10 @@
   tags:
     - nginx
 
-- name: Enable and restart nginx
+- name: Enable and reload nginx
   ansible.builtin.systemd:
     name: nginx
-    state: restarted
+    state: reloaded
     enabled: true
     daemon_reload: true
   tags:

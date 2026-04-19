@@ -48,10 +48,10 @@ postgres-dev: ## Ensure PostgreSQL user/database/password state. Updates the rem
 postgres-prod: ## Ensure PostgreSQL user/database/password state. Updates the remote Postgres role state only; use for first DB bootstrap or credential changes.
 	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/prod.yml ANSIBLE_TAGS=postgres
 
-nginx-dev: ## Render `/etc/nginx/...` config, site files, websocket map, and restart nginx. Use after domain/upstream/reverse-proxy changes.
+nginx-dev: ## Render `/etc/nginx/...` config, site files, websocket map, and reload nginx. Use after domain/upstream/reverse-proxy changes.
 	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/dev.yml ANSIBLE_TAGS=nginx
 
-nginx-prod: ## Render `/etc/nginx/...` config, site files, websocket map, and restart nginx. Use after domain/upstream/reverse-proxy changes.
+nginx-prod: ## Render `/etc/nginx/...` config, site files, websocket map, and reload nginx. Use after domain/upstream/reverse-proxy changes.
 	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/prod.yml ANSIBLE_TAGS=nginx
 
 certbot-dev: ## Manage `/etc/letsencrypt/...` certificate issuance, renewal hook, and timer. Use for first TLS setup or domain/email/cert renewal changes.
