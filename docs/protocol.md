@@ -375,9 +375,9 @@ or
 Notes:
 
 - `request_id` is relay-scoped and correlates one launch request with one result
-- `status: "accepted"` means the daemon validated the request and successfully handed it off to a local terminal launcher
+- `status: "accepted"` means the daemon validated the request and successfully created the local tmux-backed launch session
 - `status: "accepted"` still does not complete the client-visible launch flow; the relay waits for a later `/agent/ws` registration carrying the same launch request correlation
-- the relay keeps only transient online-device routing state; device health, last failure, and launcher details remain local to the daemon
+- the relay keeps only transient online-device routing state; device health, last failure, and tmux workspace details remain local to the daemon
 
 ## Agent WebSocket
 

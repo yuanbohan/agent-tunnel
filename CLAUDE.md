@@ -27,6 +27,7 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 - `internal/tunnel/launcher/` is the thin PATH resolution layer for the user-provided launcher command.
 - `internal/buildinfo/` owns shared tunnel/relay version metadata and compatibility-line helpers used by release builds, public manifests, and version reporting.
 - `docs/api.md` is the current public app-facing relay API reference, including auth, request and response shapes, and error contracts.
+- `docs/daemon.md` is the daemon-specific implementation contract for lifecycle, tmux workspace ownership, launch validation, launch health, and failure reasons.
 - `docs/architecture.md` describes how all Go packages and relay-facing protocols interact.
 - `docs/release-distribution.md` describes the private-source/public-distribution release workflow for `tunnel`.
 
@@ -46,7 +47,7 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 - Browser attach clients must be same-origin with the relay host; native clients that omit `Origin` remain supported.
 - Remote recovery in this revision is fresh snapshot recovery of the current terminal state, including bounded agent-local normal-buffer scrollback when available. There is no transcript replay API and no global live-output websocket contract.
 - The relay stores live session metadata, owner connection state, and active attach routing state. It must not be described as retaining transcript history or terminal state.
-- The relay only keeps transient routing state for currently connected `/device/ws` daemons and the in-flight correlation needed to turn one launch request into one `session_ready` result or timeout. Device health, launcher details, and last failure remain daemon-local.
+- The relay only keeps transient routing state for currently connected `/device/ws` daemons and the in-flight correlation needed to turn one launch request into one `session_ready` result or timeout. Device health, tmux workspace details, and last failure remain daemon-local.
 - The agent-side mirror may retain bounded in-memory normal-buffer scrollback for attach snapshots. That is agent-local state, not relay-owned or durable history.
 - The local terminal remains the most complete source of truth for session output in the current product revision.
 - A successful attach yields `attached`, snapshot bytes, `snapshot_done`, then live PTY bytes on the same websocket.
@@ -65,9 +66,10 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 
 ## Docs Expectations
 
-- Keep `README.md`, `docs/api.md`, `docs/protocol.md`, `docs/architecture.md`, `CLAUDE.md`, and `AGENTS.md` aligned with the active attach-based contract and current implementation status when behavior or scope changes.
+- Keep `README.md`, `docs/api.md`, `docs/protocol.md`, `docs/daemon.md`, `docs/architecture.md`, `CLAUDE.md`, and `AGENTS.md` aligned with the active attach-based contract and current implementation status when behavior or scope changes.
 - If you change app-facing relay auth, public client endpoints, request or response shapes, app-visible error statuses or reasons, or client attach WebSocket message contracts, update `docs/api.md`.
 - If you change relay auth, relay lifecycle, client-facing endpoints, or PTY/input behavior, update `docs/architecture.md`.
+- If you change daemon lifecycle, tmux workspace ownership, launch validation, daemon health, local daemon state, or daemon failure reasons, update `docs/daemon.md`.
 - If you change attach lifecycle semantics, session-state semantics, `/api/sessions/:id/attach/ws`, or `/agent/ws` attach-control messages, update `README.md`, `docs/protocol.md`, `docs/architecture.md`, `CLAUDE.md`, and `AGENTS.md`.
 - If you change snapshot generation, live-byte delivery, resize ownership, or structured input semantics, update `README.md`, `docs/protocol.md`, `docs/architecture.md`, `CLAUDE.md`, and `AGENTS.md`.
 - If you change operator-facing startup flow or environment variables, update `README.md`.

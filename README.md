@@ -257,6 +257,8 @@ Current scope boundaries:
 - command authorization is a first-token allowlist read from the daemon config
 - device identity is stable per machine-local daemon state, while display metadata such as device name and platform are refreshed whenever the daemon registers with the relay
 
+See `docs/daemon.md` for the implementation contract that constrains daemon lifecycle, tmux workspace ownership, launch correlation, health reporting, and failure reasons.
+
 ## VPS Deployment
 
 See [docs/deployment.md](docs/deployment.md) for the full deployment guide covering one-time host bootstrap (`nginx`, PostgreSQL, and optional `certbot`), systemd, the relay-specific nginx site config, automated deploys, and the operational runbook.

@@ -15,6 +15,7 @@ import (
 const workspaceBackendTmux = "tmux"
 
 var ErrTmuxNotFound = errors.New("tmux is not installed")
+var ErrNoWorkspaceSessions = errors.New("no daemon-managed workspace sessions")
 
 type WorkspaceSession struct {
 	Name     string
@@ -83,11 +84,10 @@ func OpenWorkspace(ctx context.Context, paths Paths, stdin io.Reader, stdout, st
 		return err
 	}
 
-	args := []string{"attach-session"}
 	if len(sessions) == 0 {
-		args = []string{"new-session"}
+		return ErrNoWorkspaceSessions
 	}
-	return runTmuxInteractive(ctx, paths, stdin, stdout, stderr, args...)
+	return runTmuxInteractive(ctx, paths, stdin, stdout, stderr, "attach-session")
 }
 
 func CreateLaunchSession(ctx context.Context, paths Paths, cwd, command string) (string, error) {

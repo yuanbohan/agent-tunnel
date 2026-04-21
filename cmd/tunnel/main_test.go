@@ -806,6 +806,30 @@ func TestRunDaemonOpenUsesWorkspaceHelper(t *testing.T) {
 	}
 }
 
+func TestRunDaemonOpenPrintsFriendlyMessageWhenWorkspaceIsEmpty(t *testing.T) {
+	oldResolvePaths := resolveDaemonPaths
+	oldOpenDaemonWorkspace := openDaemonWorkspace
+	t.Cleanup(func() {
+		resolveDaemonPaths = oldResolvePaths
+		openDaemonWorkspace = oldOpenDaemonWorkspace
+	})
+
+	resolveDaemonPaths = func() (daemon.Paths, error) {
+		return daemon.Paths{}, nil
+	}
+	openDaemonWorkspace = func(context.Context, daemon.Paths, io.Reader, io.Writer, io.Writer) error {
+		return daemon.ErrNoWorkspaceSessions
+	}
+
+	var stdout bytes.Buffer
+	if err := runDaemonOpen(context.Background(), strings.NewReader(""), &stdout, io.Discard); err != nil {
+		t.Fatalf("runDaemonOpen returned error: %v", err)
+	}
+	if got := stdout.String(); got != "no daemon-managed sessions; start one from a remote launch first\n" {
+		t.Fatalf("stdout = %q, want no-sessions message", got)
+	}
+}
+
 func TestRunDaemonSessionsPrintsThinWorkspaceListing(t *testing.T) {
 	oldResolvePaths := resolveDaemonPaths
 	oldListDaemonWorkspace := listDaemonWorkspace

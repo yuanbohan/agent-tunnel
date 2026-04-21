@@ -30,7 +30,6 @@ type StatusInfo struct {
 	PlatformID       string `json:"platform_id,omitempty"`
 	RelayConnected   bool   `json:"relay_connected"`
 	LaunchHealth     string `json:"launch_health,omitempty"`
-	LauncherStrategy string `json:"launcher_strategy,omitempty"`
 	WorkspaceBackend string `json:"workspace_backend,omitempty"`
 	LastFailure      string `json:"last_failure,omitempty"`
 }

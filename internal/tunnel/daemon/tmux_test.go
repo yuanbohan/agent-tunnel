@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -76,10 +77,10 @@ func TestCreateLaunchSessionUsesDedicatedSocketAndReturnsGeneratedName(t *testin
 	}
 }
 
-func TestOpenWorkspaceCreatesSessionWhenWorkspaceIsEmpty(t *testing.T) {
+func TestOpenWorkspaceReturnsNoSessionsWhenWorkspaceIsEmpty(t *testing.T) {
 	paths := testPaths(t)
 	argFile := filepath.Join(t.TempDir(), "args.txt")
-script := writeFakeTmuxScript(t, `#!/bin/sh
+	script := writeFakeTmuxScript(t, `#!/bin/sh
 if [ "$3" = "list-sessions" ]; then
   echo "no server running" >&2
   exit 1
@@ -98,16 +99,12 @@ printf '%s\n' "$@" > `+shellEscape(argFile)+`
 		return exec.CommandContext(ctx, script, args...)
 	}
 
-	if err := OpenWorkspace(context.Background(), paths, strings.NewReader(""), io.Discard, io.Discard); err != nil {
-		t.Fatalf("OpenWorkspace returned error: %v", err)
+	if err := OpenWorkspace(context.Background(), paths, strings.NewReader(""), io.Discard, io.Discard); !errors.Is(err, ErrNoWorkspaceSessions) {
+		t.Fatalf("OpenWorkspace error = %v, want ErrNoWorkspaceSessions", err)
 	}
 
-	payload, err := os.ReadFile(argFile)
-	if err != nil {
-		t.Fatalf("ReadFile returned error: %v", err)
-	}
-	if !strings.Contains(string(payload), "new-session") {
-		t.Fatalf("tmux args = %q, want new-session", string(payload))
+	if _, err := os.Stat(argFile); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("OpenWorkspace created or touched tmux session args file, stat err = %v", err)
 	}
 }
 

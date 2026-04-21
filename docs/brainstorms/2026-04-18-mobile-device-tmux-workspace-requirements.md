@@ -59,7 +59,7 @@ This is still a new product capability, not an extension of attach. The mobile c
 - R31. Each remote launch request must create one independent `tmux` session inside the daemon-managed workspace.
 - R32. `tunnel daemon open` must work from any terminal the user chooses; it must not depend on remembering or detecting the terminal used to start the daemon.
 - R33. If `tunnel daemon open` is run when the workspace contains sessions, it must attach using normal `tmux` behavior rather than a custom dashboard or chooser UI.
-- R34. If `tunnel daemon open` is run when the workspace contains no sessions, it must still open the empty daemon-managed `tmux` workspace rather than failing.
+- R34. If `tunnel daemon open` is run when the daemon-managed workspace contains no sessions, it must not open `tmux`; it must tell the user that there are no daemon-managed sessions to open.
 - R35. v1 must not introduce `tunnel`-managed per-session open, close, alias, or picker workflows beyond the thin `sessions` listing and the general `open` entry point.
 
 **Session Lifetime**
@@ -95,6 +95,7 @@ This is still a new product capability, not an extension of attach. The mobile c
 - A successful launch creates a new independent `tmux` session in the daemon-managed workspace, starts `tunnel run <command>` there, and returns `session_ready` with a concrete `session_id`.
 - When the launched command exits, the `tmux` session remains available and returns to an interactive shell prompt.
 - If the daemon is restarted or stopped after sessions have been created, those existing `tmux` sessions remain available and can be revisited with `tunnel daemon open`.
+- `tunnel daemon open` re-enters existing daemon-managed sessions, while an empty daemon-managed workspace reports that there are no sessions to open instead of creating an empty tmux session.
 - `tunnel daemon sessions` gives the user a thin view of the daemon-managed sessions without requiring a custom session-management layer.
 - A missing or unusable cwd is rejected before session start with a structured failure result.
 - A second concurrent launch request to the same device fails with a structured busy result instead of creating duplicate sessions.
