@@ -434,6 +434,7 @@ func TestHandlerReturnsUserScopedLiveSessions(t *testing.T) {
 
 	env.registry.RegisterOwned(protocol.SessionInfo{
 		SessionID:      "sess-a",
+		DeviceID:       "dev-a",
 		Launcher:       "codex",
 		CommandPreview: "codex",
 		GitBranch:      "main",
@@ -477,6 +478,9 @@ func TestHandlerReturnsUserScopedLiveSessions(t *testing.T) {
 	}
 	if sessions[0].GitBranch != "main" {
 		t.Fatalf("GitBranch = %q, want main", sessions[0].GitBranch)
+	}
+	if sessions[0].DeviceID != "dev-a" {
+		t.Fatalf("DeviceID = %q, want dev-a", sessions[0].DeviceID)
 	}
 }
 

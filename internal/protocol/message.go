@@ -12,6 +12,7 @@ func UnixTimestamp(t time.Time) int {
 // SessionInfo describes a live agent session registered with the relay.
 type SessionInfo struct {
 	SessionID      string `json:"session_id"`
+	DeviceID       string `json:"device_id"`
 	Launcher       string `json:"launcher"`
 	Label          string `json:"label,omitempty"`
 	CWD            string `json:"cwd"`

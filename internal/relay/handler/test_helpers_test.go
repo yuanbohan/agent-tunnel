@@ -722,6 +722,10 @@ func dialAndRegisterAgent(t *testing.T, serverURL, agentToken, sessionID string)
 }
 
 func dialAndRegisterAgentWithLaunchRequest(t *testing.T, serverURL, agentToken, sessionID, launchRequestID string) *websocket.Conn {
+	return dialAndRegisterAgentWithLaunchRequestAndDeviceID(t, serverURL, agentToken, sessionID, launchRequestID, "")
+}
+
+func dialAndRegisterAgentWithLaunchRequestAndDeviceID(t *testing.T, serverURL, agentToken, sessionID, launchRequestID, deviceID string) *websocket.Conn {
 	t.Helper()
 	wsURL := "ws" + strings.TrimPrefix(serverURL, "http") + "/agent/ws"
 	headers := http.Header{}
@@ -734,6 +738,7 @@ func dialAndRegisterAgentWithLaunchRequest(t *testing.T, serverURL, agentToken, 
 
 	if err := conn.WriteJSON(protocol.RegisterFrameWithLaunchRequest(protocol.SessionInfo{
 		SessionID:      sessionID,
+		DeviceID:       deviceID,
 		Launcher:       "codex",
 		CWD:            "/tmp/project",
 		CommandPreview: "codex",
