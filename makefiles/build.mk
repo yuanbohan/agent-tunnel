@@ -4,12 +4,12 @@ BUILD_TIME ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 LDFLAGS_BASE := -X yuanbohan/tunnel/internal/buildinfo.GitCommit=$(GIT_COMMIT) -X yuanbohan/tunnel/internal/buildinfo.GitBranch=$(GIT_BRANCH) -X yuanbohan/tunnel/internal/buildinfo.BuildTime=$(BUILD_TIME)
 
-.PHONY: all build build-linux migrate clean vet test test-relay _resolve_version
+.PHONY: all build build-linux tag-version migrate clean vet test test-relay _resolve_version
 
 all: build ## Build default local binaries.
 
-_resolve_version: ## Resolve and potentially tag/push the version.
-	$(eval VERSION_VAL := $(shell ./scripts/git-version.sh --push "$(VERSION)"))
+_resolve_version:
+	$(eval VERSION_VAL := $(shell ./scripts/git-version.sh "$(VERSION)"))
 	$(eval LDFLAGS := $(LDFLAGS_BASE) -X yuanbohan/tunnel/internal/buildinfo.Version=$(VERSION_VAL))
 	@printf '🚀 Building version: %s\n' "$(VERSION_VAL)"
 
@@ -26,6 +26,10 @@ build-linux: _resolve_version ## Build Linux binaries with stripped symbols.
 	@GOOS=linux GOARCH=amd64 $(GO) build -ldflags="-s -w $(LDFLAGS)" -o "$(RELAY_BUILD_BIN)" $(RELAY_PKG)
 	@GOOS=linux GOARCH=amd64 $(GO) build -ldflags="-s -w $(LDFLAGS)" -o "$(MIGRATOR_BUILD_BIN)" $(MIGRATOR_PKG)
 	@printf '✅ Linux binaries are ready in %s\n' "$(BIN_DIR)"
+
+tag-version: ## Resolve the next version, create the git tag if needed, and push it to origin.
+	@version=$$(./scripts/git-version.sh --push "$(VERSION)"); \
+	printf 'pushed version tag: %s\n' "$$version"
 
 migrate: ## Run relay schema migrations locally using the current shell environment.
 	$(GO) run $(MIGRATOR_PKG) --schema-dir ./schema $(MIGRATOR_ARGS)

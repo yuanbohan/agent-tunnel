@@ -1,8 +1,8 @@
 .PHONY: ansible-run install install-local install-dev install-prod install-remote
 
-install: install-local ## Install `tunnel`, `relay`, and `relay-migrate` into `$(INSTALL_DIR)`.
+install: install-local ## Build and install local binaries into `$(INSTALL_DIR)` without tagging or pushing.
 
-install-local: build ## Install `tunnel`, `relay`, and `relay-migrate` into `$(INSTALL_DIR)`.
+install-local: build ## Build and install local binaries into `$(INSTALL_DIR)` without tagging or pushing.
 	@set -e; \
 	mkdir -p "$(INSTALL_DIR)"; \
 	rm -f "$(INSTALL_TUNNEL_BIN)" "$(INSTALL_RELAY_BIN)" "$(INSTALL_MIGRATOR_BIN)"; \
