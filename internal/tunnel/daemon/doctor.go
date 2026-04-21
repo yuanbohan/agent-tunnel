@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 )
@@ -232,23 +231,5 @@ func lastLaunchFailureCheck(status StatusInfo) DoctorCheck {
 		Name:   "last launch failure",
 		Status: CheckStatusWarn,
 		Detail: "most recent remote launch failed: " + status.LastFailure,
-	}
-}
-
-func hasDesktopSession() bool {
-	switch getenv("GOOS_OVERRIDE_FOR_TESTS") {
-	case "darwin":
-		return strings.TrimSpace(getenv("TERM_PROGRAM")) != "" || strings.TrimSpace(getenv("SSH_TTY")) == ""
-	case "linux":
-		return strings.TrimSpace(getenv("DISPLAY")) != "" || strings.TrimSpace(getenv("WAYLAND_DISPLAY")) != ""
-	}
-
-	switch runtimeGOOS() {
-	case "darwin":
-		return strings.TrimSpace(getenv("SSH_TTY")) == ""
-	case "linux":
-		return strings.TrimSpace(os.Getenv("DISPLAY")) != "" || strings.TrimSpace(os.Getenv("WAYLAND_DISPLAY")) != ""
-	default:
-		return false
 	}
 }

@@ -556,6 +556,10 @@ func runDaemonOpen(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 		if errors.Is(err, daemon.ErrTmuxNotFound) {
 			return errors.New(daemonTmuxInstallGuidance())
 		}
+		if errors.Is(err, daemon.ErrNoWorkspaceSessions) {
+			_, _ = io.WriteString(stdout, "no daemon-managed sessions; start one from a remote launch first\n")
+			return nil
+		}
 		return err
 	}
 	return nil

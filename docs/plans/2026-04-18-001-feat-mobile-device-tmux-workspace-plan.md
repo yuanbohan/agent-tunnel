@@ -72,7 +72,7 @@ This changes the local ownership model more than the relay contract. The relay s
 
 ### Resolved During Planning
 
-- **Should `tunnel daemon open` require a running daemon?** No. It should attach directly to the dedicated tmux workspace so preserved sessions remain accessible after daemon stop.
+- **Should `tunnel daemon open` require a running daemon?** No. It should attach directly to existing sessions in the dedicated tmux workspace so preserved sessions remain accessible after daemon stop. If no daemon-managed sessions exist, it should report that there is nothing to open instead of creating an empty tmux session.
 - **Should launch-health state stay daemon-owned or move into the relay?** It stays daemon-owned. The relay only reflects the latest daemon-reported health in the live device snapshot.
 - **Should this plan preserve the current device launch HTTP contract?** Yes. `session_ready` remains the only success state, and the tmux refactor should not weaken request/response semantics.
 
@@ -146,7 +146,7 @@ sequenceDiagram
 **Test scenarios:**
 - Happy path: creating a workspace-backed session uses the dedicated tmux socket and produces a discoverable session in that workspace only.
 - Happy path: listing sessions against an existing dedicated socket returns the expected session names without touching the user's default tmux server.
-- Edge case: starting or opening the workspace when no tmux server exists yet initializes the dedicated workspace without requiring the daemon control socket.
+- Edge case: starting the daemon when no tmux server exists yet succeeds without requiring the daemon control socket, while opening an empty workspace reports that there are no daemon-managed sessions instead of creating one.
 - Edge case: daemon shutdown leaves the tmux server and sessions intact while marking the daemon status itself as stopped.
 - Error path: missing `tmux` returns a typed workspace error rather than a generic exec failure.
 - Integration: runtime startup after a previous daemon stop reuses the existing workspace and preserved sessions instead of reinitializing state.
@@ -187,7 +187,7 @@ sequenceDiagram
 **Test scenarios:**
 - Happy path: `tunnel daemon open` attaches through the dedicated tmux socket when sessions exist.
 - Happy path: `tunnel daemon sessions` returns a thin read-only listing for the dedicated workspace.
-- Edge case: `tunnel daemon open` works even when the daemon process is stopped but the workspace still exists.
+- Edge case: `tunnel daemon open` works even when the daemon process is stopped but daemon-managed tmux sessions still exist.
 - Edge case: `tunnel daemon start` reports preserved sessions when a workspace already contains them.
 - Error path: missing `tmux` on macOS returns install guidance using Homebrew language; missing `tmux` on the first supported Linux family returns the appropriate package-manager guidance.
 - Error path: `doctor` reports tmux-related degradation/failure instead of desktop-session or launcher-recipe failure.
