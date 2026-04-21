@@ -13,12 +13,12 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 - `internal/tunnel/session/` owns PTY lifecycle, Hub fanout, local terminal attach, resize/input forwarding, and the terminal mirror used for attach snapshots.
 - `internal/tunnel/daemon/` owns the explicit background daemon started by `tunnel daemon ...`, including the local control socket, persisted device identity, dedicated tmux workspace, doctor/status behavior, and device-side relay connector.
 - `internal/protocol/` defines attach-oriented wire types: agent registration, attach control, session info, structured input, and client-routed terminal-byte packets.
-- `internal/protocol/` also defines device-oriented wire types for device registration and launch request/result routing.
+- `internal/protocol/` also defines device-oriented wire types for device registration, launch request/result routing, and terminate request/result routing.
 - `internal/tunnel/connector/` is the mandatory outbound connector from a local `tunnel` process to `/agent/ws` on the relay. It registers sessions, publishes resize metadata, answers attach-open/attach-close control, and routes client-scoped terminal bytes.
 - `internal/relay/auth/` owns invite codes, usernames/passwords, app sessions, and agent token services.
 - `internal/relay/operator/` owns operator-only invite and user maintenance services.
-- `internal/relay/device/` owns live in-memory online-device routing, device listing, and launch-request coordination.
-- `internal/relay/session/` owns live in-memory session ownership, attach routing, and attach-session indexing.
+- `internal/relay/device/` owns live in-memory online-device routing, device listing, launch-request coordination, and terminate-request routing.
+- `internal/relay/session/` owns live in-memory session ownership, daemon terminate metadata, attach routing, and attach-session indexing.
 - `internal/config/` owns relay process configuration loaded during relay startup.
 - `internal/logx/` owns the global structured logger setup used across the relay.
 - `internal/relay/handler/` owns the Gin router, HTTP middleware, REST handlers, and WebSocket transport split by API, agent, device, and attach concerns.
@@ -27,7 +27,7 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 - `internal/tunnel/launcher/` is the thin PATH resolution layer for the user-provided launcher command.
 - `internal/buildinfo/` owns shared tunnel/relay version metadata and compatibility-line helpers used by release builds, public manifests, and version reporting.
 - `docs/api.md` is the current public app-facing relay API reference, including auth, request and response shapes, and error contracts.
-- `docs/daemon.md` is the daemon-specific implementation contract for lifecycle, tmux workspace ownership, launch validation, launch health, and failure reasons.
+- `docs/daemon.md` is the daemon-specific implementation contract for lifecycle, tmux workspace ownership, workspace close behavior, launch/terminate validation, launch health, and failure reasons.
 - `docs/architecture.md` describes how all Go packages and relay-facing protocols interact.
 - `docs/release-distribution.md` describes the private-source/public-distribution release workflow for `tunnel`.
 
@@ -42,12 +42,12 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 - After startup, relay unavailability must not interrupt local terminal work. The connector keeps retrying relay registration with backoff, and local sessions continue running unchanged while remote visibility and input are unavailable.
 - The agent is the authority for current terminal state. It maintains the headless terminal mirror and produces attach snapshots from that mirror.
 - Remote viewing is session-scoped: clients discover sessions with `GET /api/sessions` and attach with `GET /api/sessions/:id/attach/ws`.
-- Session discovery includes metadata such as `git_branch`, optional local daemon `device_id`, `platform_family`, `platform_id`, and normalized `computer_name`.
-- Remote launch is device-scoped: clients discover devices with `GET /api/devices` and request new session creation with `POST /api/devices/:id/launch`, which requires per-launch `cwd`, may include optional `label`, and succeeds only when the new session becomes `session_ready`.
+- Session discovery includes metadata such as `git_branch`, optional local daemon `device_id`, `platform_family`, `platform_id`, normalized `computer_name`, and `terminate_supported` for daemon-created sessions with live terminate metadata.
+- Remote launch is device-scoped: clients discover devices with `GET /api/devices` and request new session creation with `POST /api/devices/:id/launch`, which requires per-launch `cwd`, may include optional `label`, and succeeds only when the new session becomes `session_ready`. Mobile session shutdown is the separate `POST /api/sessions/:id/terminate` operation and applies only to daemon-created sessions with terminate metadata.
 - Browser attach clients must be same-origin with the relay host; native clients that omit `Origin` remain supported.
 - Remote recovery in this revision is fresh snapshot recovery of the current terminal state, including bounded agent-local normal-buffer scrollback when available. There is no transcript replay API and no global live-output websocket contract.
 - The relay stores live session metadata, owner connection state, and active attach routing state. It must not be described as retaining transcript history or terminal state.
-- The relay only keeps transient routing state for currently connected `/device/ws` daemons and the in-flight correlation needed to turn one launch request into one `session_ready` result or timeout. Device health, tmux workspace details, and last failure remain daemon-local.
+- The relay only keeps transient routing state for currently connected `/device/ws` daemons, the in-flight correlation needed to turn one launch request into one `session_ready` result or timeout, and live-only terminate metadata for daemon-created sessions. Device health, tmux workspace details, terminate history, and last failure remain daemon-local.
 - `tunnel run` includes `device_id` in session registration when it can read an existing daemon identity from local daemon state; otherwise the field is an empty string. The relay stores the registered `device_id` without launch-request validation.
 - The agent-side mirror may retain bounded in-memory normal-buffer scrollback for attach snapshots. That is agent-local state, not relay-owned or durable history.
 - The local terminal remains the most complete source of truth for session output in the current product revision.
@@ -70,7 +70,7 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 - Keep `README.md`, `docs/api.md`, `docs/protocol.md`, `docs/daemon.md`, `docs/architecture.md`, `CLAUDE.md`, and `AGENTS.md` aligned with the active attach-based contract and current implementation status when behavior or scope changes.
 - If you change app-facing relay auth, public client endpoints, request or response shapes, app-visible error statuses or reasons, or client attach WebSocket message contracts, update `docs/api.md`.
 - If you change relay auth, relay lifecycle, client-facing endpoints, or PTY/input behavior, update `docs/architecture.md`.
-- If you change daemon lifecycle, tmux workspace ownership, launch validation, daemon health, local daemon state, or daemon failure reasons, update `docs/daemon.md`.
+- If you change daemon lifecycle, tmux workspace ownership, workspace close behavior, launch or terminate validation, daemon health, local daemon state, or daemon failure reasons, update `docs/daemon.md`.
 - If you change attach lifecycle semantics, session-state semantics, `/api/sessions/:id/attach/ws`, or `/agent/ws` attach-control messages, update `README.md`, `docs/protocol.md`, `docs/architecture.md`, `CLAUDE.md`, and `AGENTS.md`.
 - If you change snapshot generation, live-byte delivery, resize ownership, or structured input semantics, update `README.md`, `docs/protocol.md`, `docs/architecture.md`, `CLAUDE.md`, and `AGENTS.md`.
 - If you change operator-facing startup flow or environment variables, update `README.md`.

@@ -228,6 +228,125 @@ func TestRegistryListForUserReturnsOnlyOwnedSessions(t *testing.T) {
 	}
 }
 
+func TestRegistryTerminateTargetRequiresExplicitDaemonLaunchMetadata(t *testing.T) {
+	reg := NewRegistry()
+	reg.RegisterOwned(protocol.SessionInfo{
+		SessionID: "direct",
+		DeviceID:  "dev-1",
+		Launcher:  "codex",
+	}, SessionOwner{UserID: 1, AgentTokenID: "agt-1"}, fakeAgentPeer{})
+	reg.RegisterOwnedWithTerminateTarget(protocol.SessionInfo{
+		SessionID: "daemon",
+		DeviceID:  "dev-1",
+		Launcher:  "codex",
+	}, SessionOwner{UserID: 1, AgentTokenID: "agt-1"}, fakeAgentPeer{}, TerminateTarget{
+		DeviceID:         "dev-1",
+		WorkspaceSession: "launch_fixed",
+	})
+
+	target, err := reg.TerminateTargetForUser("daemon", 1)
+	if err != nil {
+		t.Fatalf("TerminateTargetForUser returned error: %v", err)
+	}
+	if target.DeviceID != "dev-1" || target.WorkspaceSession != "launch_fixed" {
+		t.Fatalf("target = %#v, want dev-1 launch_fixed", target)
+	}
+	if _, err := reg.TerminateTargetForUser("direct", 1); !errors.Is(err, ErrSessionTerminateUnsupported) {
+		t.Fatalf("direct terminate error = %v, want ErrSessionTerminateUnsupported", err)
+	}
+
+	sessions := reg.ListForUser(1)
+	support := map[string]bool{}
+	for _, info := range sessions {
+		support[info.SessionID] = info.TerminateSupported
+	}
+	if support["direct"] {
+		t.Fatal("direct session TerminateSupported = true, want false")
+	}
+	if !support["daemon"] {
+		t.Fatal("daemon session TerminateSupported = false, want true")
+	}
+}
+
+func TestRegistryPreservesTerminateTargetWhenSessionReregistersWithoutTarget(t *testing.T) {
+	reg := NewRegistry()
+	owner := SessionOwner{UserID: 1, AgentTokenID: "agt-1"}
+	reg.RegisterOwnedWithTerminateTarget(protocol.SessionInfo{
+		SessionID: "sess-1",
+		DeviceID:  "dev-1",
+		Launcher:  "codex",
+	}, owner, fakeAgentPeer{}, TerminateTarget{
+		DeviceID:         "dev-1",
+		WorkspaceSession: "launch_fixed",
+	})
+
+	reg.RegisterOwnedWithTerminateTarget(protocol.SessionInfo{
+		SessionID: "sess-1",
+		DeviceID:  "dev-1",
+		Launcher:  "codex",
+	}, owner, fakeAgentPeer{}, TerminateTarget{})
+
+	target, err := reg.TerminateTargetForUser("sess-1", 1)
+	if err != nil {
+		t.Fatalf("TerminateTargetForUser returned error: %v", err)
+	}
+	if target.DeviceID != "dev-1" || target.WorkspaceSession != "launch_fixed" {
+		t.Fatalf("target = %#v, want preserved dev-1 launch_fixed", target)
+	}
+}
+
+func TestRegistrySetTerminateTargetForUserBackfillsLiveSession(t *testing.T) {
+	reg := NewRegistry()
+	reg.RegisterOwned(protocol.SessionInfo{
+		SessionID: "sess-1",
+		DeviceID:  "dev-1",
+		Launcher:  "codex",
+	}, SessionOwner{UserID: 1, AgentTokenID: "agt-1"}, fakeAgentPeer{})
+
+	if ok := reg.SetTerminateTargetForUser("sess-1", 2, TerminateTarget{DeviceID: "dev-1", WorkspaceSession: "launch_fixed"}); ok {
+		t.Fatal("SetTerminateTargetForUser returned true for cross-user session")
+	}
+	if ok := reg.SetTerminateTargetForUser("sess-1", 1, TerminateTarget{DeviceID: "dev-1", WorkspaceSession: "launch_fixed"}); !ok {
+		t.Fatal("SetTerminateTargetForUser returned false for owned session")
+	}
+	target, err := reg.TerminateTargetForUser("sess-1", 1)
+	if err != nil {
+		t.Fatalf("TerminateTargetForUser returned error: %v", err)
+	}
+	if target.DeviceID != "dev-1" || target.WorkspaceSession != "launch_fixed" {
+		t.Fatalf("target = %#v, want dev-1 launch_fixed", target)
+	}
+}
+
+func TestRegistryRemoveForUserRemovesOwnedSessionAndClosesAttaches(t *testing.T) {
+	reg := NewRegistry()
+	owner := &recordingPeer{}
+	client := &recordingAttachPeer{}
+	reg.RegisterOwned(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, SessionOwner{UserID: 1}, owner)
+	if _, err := reg.StartAttach("sess-1", "client-1", client); err != nil {
+		t.Fatalf("StartAttach returned error: %v", err)
+	}
+
+	if removed := reg.RemoveForUser("sess-1", 2); removed {
+		t.Fatal("RemoveForUser returned true for cross-user session")
+	}
+	if _, ok := reg.Session("sess-1"); !ok {
+		t.Fatal("session missing after cross-user RemoveForUser")
+	}
+	if removed := reg.RemoveForUser("sess-1", 1); !removed {
+		t.Fatal("RemoveForUser returned false for owner")
+	}
+	if _, ok := reg.Session("sess-1"); ok {
+		t.Fatal("session still exists after owner RemoveForUser")
+	}
+	if reasons := client.CloseReasons(); len(reasons) != 1 || reasons[0] != "session_offline" {
+		t.Fatalf("close reasons = %#v, want [session_offline]", reasons)
+	}
+	if owner.closed != 0 {
+		t.Fatalf("owner closed = %d, want 0", owner.closed)
+	}
+}
+
 func TestRegistryMissingSessionErrors(t *testing.T) {
 	reg := NewRegistry()
 

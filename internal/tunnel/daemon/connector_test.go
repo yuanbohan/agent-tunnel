@@ -257,7 +257,7 @@ func TestLaunchHandlerCreatesTmuxSessionAndClearsPreviousFailure(t *testing.T) {
 	workspaceSessionNameFn = func() (string, error) { return "launch_fixed", nil }
 
 	result := handler.Handle(context.Background(), "req-1", "codex --profile prod", workdir, "api-fix")
-	if result.Status != "accepted" || result.Reason != "" {
+	if result.Status != "accepted" || result.Reason != "" || result.WorkspaceSession != "launch_fixed" {
 		t.Fatalf("result = %#v, want accepted launch", result)
 	}
 
@@ -277,6 +277,67 @@ func TestLaunchHandlerCreatesTmuxSessionAndClearsPreviousFailure(t *testing.T) {
 
 	if got := handler.state.snapshot(); got.LastFailure != "" || got.LaunchHealth != LaunchHealthHealthy {
 		t.Fatalf("status = %#v, want cleared failure and healthy launch state", got)
+	}
+}
+
+func TestLaunchHandlerTerminatesWorkspaceSession(t *testing.T) {
+	paths := testPaths(t)
+	argFile := filepath.Join(t.TempDir(), "args.txt")
+	script := writeFakeTmuxScript(t, "#!/bin/sh\nprintf '%s\n' \"$@\" > "+shellEscape(argFile)+"\n")
+	handler := &launchHandler{
+		paths: paths,
+		state: &runtimeState{
+			status: StatusInfo{LaunchHealth: LaunchHealthHealthy},
+			paths:  paths,
+		},
+	}
+
+	oldTmuxLookPath := tmuxLookPathFn
+	oldTmuxCommandContext := tmuxCommandContextFn
+	t.Cleanup(func() {
+		tmuxLookPathFn = oldTmuxLookPath
+		tmuxCommandContextFn = oldTmuxCommandContext
+	})
+	tmuxLookPathFn = func(string) (string, error) { return script, nil }
+	tmuxCommandContextFn = func(ctx context.Context, _ string, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, script, args...)
+	}
+
+	result := handler.Terminate(context.Background(), "launch_fixed")
+	if result.Status != "terminated" || result.Reason != "" {
+		t.Fatalf("result = %#v, want terminated", result)
+	}
+	payload, err := os.ReadFile(argFile)
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+	gotArgs := string(payload)
+	for _, want := range []string{"-S", paths.TmuxSocketPath, "kill-session", "-t", "launch_fixed"} {
+		if !strings.Contains(gotArgs, want+"\n") {
+			t.Fatalf("tmux args = %q, want %q", gotArgs, want)
+		}
+	}
+}
+
+func TestLaunchHandlerTerminateReportsMissingWorkspaceSession(t *testing.T) {
+	paths := testPaths(t)
+	handler := &launchHandler{
+		paths: paths,
+		state: &runtimeState{
+			status: StatusInfo{LaunchHealth: LaunchHealthHealthy},
+			paths:  paths,
+		},
+	}
+
+	oldTmuxLookPath := tmuxLookPathFn
+	t.Cleanup(func() {
+		tmuxLookPathFn = oldTmuxLookPath
+	})
+	tmuxLookPathFn = func(string) (string, error) { return "/usr/bin/tmux", nil }
+
+	result := handler.Terminate(context.Background(), "")
+	if result.Status != "failed" || result.Reason != "session_not_found" {
+		t.Fatalf("result = %#v, want session_not_found failure", result)
 	}
 }
 

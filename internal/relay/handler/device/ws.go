@@ -11,10 +11,11 @@ import (
 	"yuanbohan/tunnel/internal/config"
 	"yuanbohan/tunnel/internal/protocol"
 	"yuanbohan/tunnel/internal/relay/auth"
-	relaysession "yuanbohan/tunnel/internal/relay/device"
+	relaydevice "yuanbohan/tunnel/internal/relay/device"
 	"yuanbohan/tunnel/internal/relay/handler/httpx"
 	"yuanbohan/tunnel/internal/relay/handler/middleware"
 	handlerws "yuanbohan/tunnel/internal/relay/handler/ws"
+	relaysession "yuanbohan/tunnel/internal/relay/session"
 )
 
 var allowAllDeviceOrigins = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
@@ -25,7 +26,7 @@ func (e errString) Error() string { return string(e) }
 
 var errInvalidDeviceRegister = errString("invalid device register frame")
 
-func Handle(registry *relaysession.Registry, agentTokens *auth.AgentTokenService) gin.HandlerFunc {
+func Handle(registry *relaydevice.Registry, sessionRegistry *relaysession.Registry, agentTokens *auth.AgentTokenService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authenticated := middleware.AuthenticatedAgent(c)
 		token, ok := httpx.BearerTokenFromRequest(c.Request)
@@ -41,7 +42,7 @@ func Handle(registry *relaysession.Registry, agentTokens *auth.AgentTokenService
 
 		tracker := handlerws.NewTracker(c.Request.URL.Path, c.Request.RemoteAddr, httpx.RequestIDFromRequest(c.Request))
 		peer := newWSDevicePeer(conn, tracker)
-		owner := relaysession.DeviceOwner{
+		owner := relaydevice.DeviceOwner{
 			UserID:       authenticated.User.ID,
 			AgentTokenID: authenticated.Token.ID,
 		}
@@ -95,7 +96,14 @@ func Handle(registry *relaysession.Registry, agentTokens *auth.AgentTokenService
 			}
 			switch frame.Type {
 			case "launch_result":
-				registry.ResolveLaunchIfOwner(register.Device.DeviceID, peer, frame.RequestID, frame.Status, frame.Reason)
+				if completion, ok := registry.ResolveLaunchIfOwner(register.Device.DeviceID, peer, frame.RequestID, frame.Status, frame.Reason, frame.WorkspaceSession); ok && completion.SessionID != "" && sessionRegistry != nil {
+					sessionRegistry.SetTerminateTargetForUser(completion.SessionID, authenticated.User.ID, relaysession.TerminateTarget{
+						DeviceID:         completion.Target.DeviceID,
+						WorkspaceSession: completion.Target.WorkspaceSession,
+					})
+				}
+			case "terminate_result":
+				registry.ResolveTerminateIfOwner(register.Device.DeviceID, peer, frame.RequestID, frame.Status, frame.Reason)
 			case "update":
 				if frame.Device == nil {
 					continue

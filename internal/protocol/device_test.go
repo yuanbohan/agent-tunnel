@@ -48,4 +48,19 @@ func TestDeviceLaunchFrames(t *testing.T) {
 	if !strings.Contains(string(payload), `"status":"failed"`) {
 		t.Fatalf("payload = %s, want explicit status", payload)
 	}
+
+	accepted := DeviceLaunchResultFrameWithWorkspace("req-2", "accepted", "", "launch_fixed")
+	if accepted.Type != "launch_result" || accepted.WorkspaceSession != "launch_fixed" {
+		t.Fatalf("accepted = %#v, want workspace session on accepted launch result", accepted)
+	}
+
+	terminateRequest := DeviceTerminateRequestFrame("term-1", "sess-1", "launch_fixed")
+	if terminateRequest.Type != "terminate_request" || terminateRequest.RequestID != "term-1" || terminateRequest.SessionID != "sess-1" || terminateRequest.WorkspaceSession != "launch_fixed" {
+		t.Fatalf("terminateRequest = %#v, want terminate_request frame", terminateRequest)
+	}
+
+	terminateResult := DeviceTerminateResultFrame("term-1", "terminated", "")
+	if terminateResult.Type != "terminate_result" || terminateResult.RequestID != "term-1" || terminateResult.Status != "terminated" {
+		t.Fatalf("terminateResult = %#v, want terminate_result frame", terminateResult)
+	}
 }

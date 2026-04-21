@@ -134,6 +134,7 @@ func assertHelpText(t *testing.T, text string) {
 		"tunnel auth status",
 		"tunnel daemon start",
 		"tunnel daemon open",
+		"tunnel daemon close",
 		"tunnel daemon sessions",
 		"tunnel run claude",
 		"tunnel run -l api-fix codex --profile prod",
@@ -837,6 +838,87 @@ func TestRunDaemonOpenPrintsFriendlyMessageWhenWorkspaceIsEmpty(t *testing.T) {
 	}
 }
 
+func TestRunDaemonCloseUsesWorkspaceHelper(t *testing.T) {
+	oldResolvePaths := resolveDaemonPaths
+	oldCloseDaemonWorkspace := closeDaemonWorkspace
+	t.Cleanup(func() {
+		resolveDaemonPaths = oldResolvePaths
+		closeDaemonWorkspace = oldCloseDaemonWorkspace
+	})
+
+	resolveDaemonPaths = func() (daemon.Paths, error) {
+		return daemon.Paths{}, nil
+	}
+	called := false
+	closeDaemonWorkspace = func(context.Context, daemon.Paths) error {
+		called = true
+		return nil
+	}
+
+	var stdout bytes.Buffer
+	if err := runDaemonClose(context.Background(), &stdout, io.Discard); err != nil {
+		t.Fatalf("runDaemonClose returned error: %v", err)
+	}
+	if !called {
+		t.Fatal("runDaemonClose did not call workspace helper")
+	}
+	if got := stdout.String(); got != "daemon workspace view closed\n" {
+		t.Fatalf("stdout = %q, want closed message", got)
+	}
+}
+
+func TestRunDaemonClosePrintsFriendlyMessageWhenWorkspaceIsNotOpen(t *testing.T) {
+	oldResolvePaths := resolveDaemonPaths
+	oldCloseDaemonWorkspace := closeDaemonWorkspace
+	t.Cleanup(func() {
+		resolveDaemonPaths = oldResolvePaths
+		closeDaemonWorkspace = oldCloseDaemonWorkspace
+	})
+
+	resolveDaemonPaths = func() (daemon.Paths, error) {
+		return daemon.Paths{}, nil
+	}
+	closeDaemonWorkspace = func(context.Context, daemon.Paths) error {
+		return daemon.ErrNoOpenWorkspace
+	}
+
+	var stdout bytes.Buffer
+	if err := runDaemonClose(context.Background(), &stdout, io.Discard); err != nil {
+		t.Fatalf("runDaemonClose returned error: %v", err)
+	}
+	if got := stdout.String(); got != "no open daemon workspace to close\n" {
+		t.Fatalf("stdout = %q, want no-open-workspace message", got)
+	}
+}
+
+func TestRunDaemonCloseReturnsTmuxInstallGuidanceWhenTmuxIsMissing(t *testing.T) {
+	oldResolvePaths := resolveDaemonPaths
+	oldCloseDaemonWorkspace := closeDaemonWorkspace
+	t.Cleanup(func() {
+		resolveDaemonPaths = oldResolvePaths
+		closeDaemonWorkspace = oldCloseDaemonWorkspace
+	})
+
+	resolveDaemonPaths = func() (daemon.Paths, error) {
+		return daemon.Paths{}, nil
+	}
+	closeDaemonWorkspace = func(context.Context, daemon.Paths) error {
+		return daemon.ErrTmuxNotFound
+	}
+
+	var stdout bytes.Buffer
+	err := runDaemonClose(context.Background(), &stdout, io.Discard)
+	if err == nil {
+		t.Fatal("runDaemonClose returned nil error, want tmux install guidance")
+	}
+	if !strings.Contains(err.Error(), "tmux is required") {
+		t.Fatalf("error = %q, want tmux install guidance", err.Error())
+	}
+	if got := stdout.String(); got != "" {
+		t.Fatalf("stdout = %q, want empty stdout", got)
+	}
+}
+
 func TestRunDaemonSessionsPrintsThinWorkspaceListing(t *testing.T) {
 	oldResolvePaths := resolveDaemonPaths
 	oldListDaemonWorkspace := listDaemonWorkspace
@@ -915,6 +997,8 @@ func TestRunDaemonStatusPrintsFriendlyPanelWhenDaemonIsRunning(t *testing.T) {
 }
 
 func TestRunDaemonDoctorPrintsFriendlyReportAndReturnsExitError(t *testing.T) {
+	t.Setenv(tunnelAuthTokenEnv, "")
+
 	oldResolvePaths := resolveDaemonPaths
 	oldDaemonDoctor := daemonDoctor
 	oldNewStore := newAuthStore

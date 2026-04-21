@@ -69,6 +69,7 @@ var (
 	daemonDoctor              = daemon.Doctor
 	ensureDaemonTmuxAvailable = daemon.EnsureTmuxAvailable
 	openDaemonWorkspace       = daemon.OpenWorkspace
+	closeDaemonWorkspace      = daemon.CloseWorkspace
 	listDaemonWorkspace       = daemon.ListWorkspaceSessions
 	resolveDoctorRelayBaseURL = func(ctx context.Context, paths daemon.Paths) string {
 		status, err := daemonStatus(ctx, paths)
@@ -576,6 +577,28 @@ func runDaemonOpen(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 		}
 		return err
 	}
+	return nil
+}
+
+func runDaemonClose(ctx context.Context, stdout, stderr io.Writer) error {
+	if err := ensureDaemonPlatformSupported(); err != nil {
+		return err
+	}
+	paths, err := resolveDaemonPaths()
+	if err != nil {
+		return err
+	}
+	if err := closeDaemonWorkspace(ctx, paths); err != nil {
+		if errors.Is(err, daemon.ErrTmuxNotFound) {
+			return errors.New(daemonTmuxInstallGuidance())
+		}
+		if errors.Is(err, daemon.ErrNoOpenWorkspace) {
+			_, _ = io.WriteString(stdout, "no open daemon workspace to close\n")
+			return nil
+		}
+		return err
+	}
+	_, _ = io.WriteString(stdout, "daemon workspace view closed\n")
 	return nil
 }
 

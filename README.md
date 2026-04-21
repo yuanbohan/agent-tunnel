@@ -5,7 +5,7 @@ Launch a terminal agent locally and expose the running PTY through relay-backed 
 The remote contract now has two live-only surfaces:
 
 - session attach: clients discover live sessions with `GET /api/sessions`, then attach to one session with `GET /api/sessions/:id/attach/ws`
-- device launch: clients discover currently online devices with `GET /api/devices`, then ask one device daemon to launch `tunnel run <command>` with required `cwd`, optional `label`, and wait for `session_ready`
+- device launch: clients discover currently online devices with `GET /api/devices`, then ask one device daemon to launch `tunnel run <command>` with required `cwd`, optional `label`, and wait for `session_ready`; daemon-created sessions can later be terminated through `POST /api/sessions/:id/terminate` when `terminate_supported` is true
 
 On attach, the owning `tunnel` process sends a fresh terminal-state snapshot, which may include bounded agent-local normal-buffer scrollback, and then continues streaming live PTY bytes on that same websocket.
 
@@ -247,7 +247,9 @@ Remote launch is explicit and tmux-backed:
 - `POST /api/devices/:deviceID/launch` always returns a `request_id`; success is `status: "session_ready"` plus `session_id`, and failure is `status: "failed"` plus a structured `reason` such as `command_not_allowed`, `device_offline`, `busy`, `path_not_found`, or `launch_timeout`
 - a successful launch creates a new dedicated tmux session and runs `tunnel run <command>` there
 - when that launched `tunnel run <command>` exits, the tmux session stays available and returns to an interactive shell prompt
-- users can inspect or resume the local workspace from any terminal with `tunnel daemon open` or list sessions with `tunnel daemon sessions`
+- users can inspect or resume the local workspace from any terminal with `tunnel daemon open`, detach one open workspace view with `tunnel daemon close`, or list sessions with `tunnel daemon sessions`
+- `tunnel daemon close` is the inverse of `open`: it closes a local tmux workspace view if one is open, but it does not stop the daemon or terminate any session
+- mobile/API session shutdown uses `POST /api/sessions/:sessionID/terminate` and is intentionally named `terminate`; it is available only for daemon-created sessions with `terminate_supported: true`
 - the daemon owns local launch state such as allowlist, busy/not-busy, tmux workspace health, doctor output, and last failure
 - the relay only keeps transient online routing for connected daemons; if a daemon disconnects, it disappears from `GET /api/devices` immediately
 

@@ -33,8 +33,9 @@ type launchHandler struct {
 }
 
 type launchResult struct {
-	Status string
-	Reason string
+	Status           string
+	Reason           string
+	WorkspaceSession string
 }
 
 const launchSessionTimeout = 15 * time.Second
@@ -97,15 +98,26 @@ func (c *deviceConnector) serveOnce(ctx context.Context, handler *launchHandler)
 		if err := conn.ReadJSON(&frame); err != nil {
 			return err
 		}
-		if frame.Type != "launch_request" || frame.RequestID == "" {
-			continue
-		}
-		result := handler.Handle(ctx, frame.RequestID, frame.Command, frame.CWD, frame.Label)
-		if err := conn.WriteJSON(protocol.DeviceLaunchResultFrame(frame.RequestID, result.Status, result.Reason)); err != nil {
-			return err
-		}
-		if err := conn.WriteJSON(protocol.DeviceUpdateFrame(c.currentDeviceInfo())); err != nil {
-			return err
+		switch frame.Type {
+		case "launch_request":
+			if frame.RequestID == "" {
+				continue
+			}
+			result := handler.Handle(ctx, frame.RequestID, frame.Command, frame.CWD, frame.Label)
+			if err := conn.WriteJSON(protocol.DeviceLaunchResultFrameWithWorkspace(frame.RequestID, result.Status, result.Reason, result.WorkspaceSession)); err != nil {
+				return err
+			}
+			if err := conn.WriteJSON(protocol.DeviceUpdateFrame(c.currentDeviceInfo())); err != nil {
+				return err
+			}
+		case "terminate_request":
+			if frame.RequestID == "" {
+				continue
+			}
+			result := handler.Terminate(ctx, frame.WorkspaceSession)
+			if err := conn.WriteJSON(protocol.DeviceTerminateResultFrame(frame.RequestID, result.Status, result.Reason)); err != nil {
+				return err
+			}
 		}
 	}
 }
@@ -205,7 +217,8 @@ func (h *launchHandler) handle(ctx context.Context, requestID, command, cwd, lab
 	wrapper := buildShellWrapper(h.baseURL, h.authToken, requestID, resolvedCWD, label, args)
 	launchCtx, cancel := context.WithTimeout(ctx, launchSessionTimeout)
 	defer cancel()
-	if _, err := CreateLaunchSession(launchCtx, h.paths, resolvedCWD, wrapper); err != nil {
+	workspaceSession, err := CreateLaunchSession(launchCtx, h.paths, resolvedCWD, wrapper)
+	if err != nil {
 		if errors.Is(err, ErrTmuxNotFound) {
 			h.state.setLastFailure("tmux_not_found", true)
 			return launchResult{Status: "failed", Reason: "tmux_not_found"}
@@ -215,7 +228,26 @@ func (h *launchHandler) handle(ctx context.Context, requestID, command, cwd, lab
 	}
 
 	h.state.clearLastFailure()
-	return launchResult{Status: "accepted"}
+	return launchResult{Status: "accepted", WorkspaceSession: workspaceSession}
+}
+
+func (h *launchHandler) Terminate(ctx context.Context, workspaceSession string) launchResult {
+	terminateCtx, cancel := context.WithTimeout(ctx, launchSessionTimeout)
+	defer cancel()
+	if err := TerminateWorkspaceSession(terminateCtx, h.paths, workspaceSession); err != nil {
+		switch {
+		case errors.Is(err, ErrTmuxNotFound):
+			h.state.setLastFailure("tmux_not_found", true)
+			return launchResult{Status: "failed", Reason: "tmux_not_found"}
+		case errors.Is(err, ErrWorkspaceSessionNotFound):
+			h.state.setLastFailure("session_not_found", false)
+			return launchResult{Status: "failed", Reason: "session_not_found"}
+		default:
+			h.state.setLastFailure("session_terminate_failed", true)
+			return launchResult{Status: "failed", Reason: "session_terminate_failed"}
+		}
+	}
+	return launchResult{Status: "terminated"}
 }
 
 func resolveLaunchCWD(cwd string) (string, error) {

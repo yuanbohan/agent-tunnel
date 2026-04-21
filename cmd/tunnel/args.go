@@ -88,6 +88,7 @@ Examples:
   tunnel auth status
   tunnel daemon start
   tunnel daemon open
+  tunnel daemon close
   tunnel daemon sessions
   tunnel update
   tunnel rollback
@@ -152,6 +153,7 @@ Commands:
   stop        Stop the background daemon
   doctor      Run daemon diagnostics
   open        Open the daemon tmux workspace
+  close       Close one open daemon tmux workspace view
   sessions    List daemon tmux sessions
 
 Flags:
@@ -166,6 +168,7 @@ Examples:
   tunnel daemon stop
   tunnel daemon doctor
   tunnel daemon open
+  tunnel daemon close
   tunnel daemon sessions
 `
 }
