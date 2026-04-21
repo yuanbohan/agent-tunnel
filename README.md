@@ -359,7 +359,7 @@ If `make deploy-*` or `make relay-bin-*` fails due to network instability (e.g.,
 
 ```bash
 make build             # builds bin/tunnel, bin/relay, and bin/relay-migrate
-make install           # installs tunnel, relay, and relay-migrate to ~/.local/bin
+make install           # installs local tunnel, relay, and relay-migrate builds to ~/.local/bin without tagging or pushing
 make install-dev       # installs packages and syncs the dev nginx config
 make install-prod      # installs packages, certbot, and syncs the prod nginx config
 make deploy-website-dev   # build ../agent-tunnel-website and publish it to the dev host

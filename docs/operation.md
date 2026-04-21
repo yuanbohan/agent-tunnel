@@ -42,7 +42,7 @@ Notes:
 | `relay invite disable --code <code>` | Disable an existing invite code |
 | `relay invite list` | List all invite codes with status and current binding |
 | `relay user delete --username <name>` | Delete a user account and free the username |
-| `make install` / `make install-local` | Install the local `tunnel`, `relay`, and `relay-migrate` binaries into `$(INSTALL_DIR)` |
+| `make install` / `make install-local` | Build and install the local `tunnel`, `relay`, and `relay-migrate` binaries into `$(INSTALL_DIR)` without creating or pushing git tags |
 | `make init-dev` / `make init-prod` | Fresh-host bootstrap: install base packages, create the relay PostgreSQL user and database, render nginx, and (prod only) issue the Let's Encrypt cert and switch nginx to TLS |
 | `make install-dev` | Install base packages on the dev host and sync the HTTP nginx site that fronts the relay |
 | `make install-prod` | Install base packages on the prod host plus `certbot`, certificate issuance/renewal wiring, and the HTTPS nginx site (assumes the cert already exists) |
