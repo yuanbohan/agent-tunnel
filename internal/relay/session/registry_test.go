@@ -704,6 +704,7 @@ func TestRegistryDisconnectAgentTokenSessionsMatchesTokenOwnership(t *testing.T)
 func TestRegistrySnapshotJSONRoundTrip(t *testing.T) {
 	info := protocol.SessionInfo{
 		SessionID:      "sess-1",
+		DeviceID:       "dev-1",
 		Launcher:       "codex",
 		CWD:            "/tmp/project",
 		CommandPreview: "codex",
@@ -721,6 +722,9 @@ func TestRegistrySnapshotJSONRoundTrip(t *testing.T) {
 	}
 	if decoded.SessionID != "sess-1" {
 		t.Fatalf("SessionID = %q, want sess-1", decoded.SessionID)
+	}
+	if decoded.DeviceID != "dev-1" {
+		t.Fatalf("DeviceID = %q, want dev-1", decoded.DeviceID)
 	}
 	if decoded.StartedAt != 10 {
 		t.Fatalf("StartedAt = %d, want 10", decoded.StartedAt)

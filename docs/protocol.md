@@ -68,6 +68,7 @@ WebSocket attach notes:
 ```json
 {
   "session_id": "sess-1",
+  "device_id": "dev_abcd1234",
   "launcher": "codex",
   "label": "api-fix",
   "cwd": "/repo",
@@ -83,6 +84,7 @@ WebSocket attach notes:
 Notes:
 
 - `label` may be omitted when empty
+- `device_id` is copied from the registering session when the local `tunnel run` can read an existing daemon identity; otherwise it is an empty string
 - `started_at` is a Unix timestamp in seconds
 - `git_branch` is the best-effort Git branch for `cwd`; when the startup directory is not on a symbolic branch it is returned as an empty string
 - `platform_family`, `platform_id`, and `computer_name` are stable keys in the session payload; when metadata is unavailable they are returned as empty strings rather than omitted
@@ -398,6 +400,7 @@ It is a mixed websocket:
   "launch_request_id": "dev_abcd1234-150405.000000000",
   "session": {
     "session_id": "sess-1",
+    "device_id": "dev_abcd1234",
     "launcher": "codex",
     "label": "api-fix",
     "cwd": "/repo",
@@ -416,6 +419,7 @@ Notes:
 - `register` must be the first agent control frame on the websocket
 - the relay treats that websocket as the owner of the live session
 - `launch_request_id` is optional; it is present only when this session was created from `POST /api/devices/:deviceID/launch`
+- the relay stores `session.device_id` from the registration payload without launch-request validation; agents send an empty string when local daemon identity is unavailable
 - when `launch_request_id` is present, the relay may use it to complete one pending launch request as `session_ready` with the new `session_id`
 - session metadata is self-contained on registration; clients should not infer session platform identity by correlating later launch state or online device listings
 

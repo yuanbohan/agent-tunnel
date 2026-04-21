@@ -25,6 +25,9 @@ func TestBuildShellWrapperScopesInjectedTokenToTunnelCommand(t *testing.T) {
 	if !strings.Contains(wrapper, `TUNNEL_LAUNCH_REQUEST_ID=req-123`) {
 		t.Fatalf("wrapper = %q, want launch request id assignment", wrapper)
 	}
+	if strings.Contains(wrapper, `DEVICE_ID`) {
+		t.Fatalf("wrapper = %q, did not expect device id environment injection", wrapper)
+	}
 }
 
 func TestResolveLaunchCWDReturnsAbsolutePath(t *testing.T) {

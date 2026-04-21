@@ -60,6 +60,7 @@ var (
 		return connector.New(url, token, info)
 	}
 	collectSessionMetadata    = daemon.CollectSessionMetadata
+	readSessionDeviceIdentity = daemon.ReadDeviceIdentity
 	resolveDaemonPaths        = daemon.ResolvePaths
 	startDaemon               = daemon.StartBackground
 	runDaemonRuntime          = daemon.Run
@@ -165,6 +166,7 @@ func runTunnelSession(ctx context.Context, stdin io.Reader, parsed runArgs, stdo
 	platformFamily, platformID, computerName := sessionIdentityFromMetadata(collectSessionMetadata())
 	info := protocol.SessionInfo{
 		SessionID:      sessionID,
+		DeviceID:       sessionDeviceID(),
 		Launcher:       command.Name,
 		Label:          parsed.Label,
 		CWD:            cwd,
@@ -225,6 +227,18 @@ func runTunnelSession(ctx context.Context, stdin io.Reader, parsed runArgs, stdo
 	}()
 
 	return waitForExit(ctx, done, waitErr)
+}
+
+func sessionDeviceID() string {
+	paths, err := resolveDaemonPaths()
+	if err != nil {
+		return ""
+	}
+	identity, err := readSessionDeviceIdentity(paths)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(identity.DeviceID)
 }
 
 func sessionIdentityFromMetadata(metadata daemon.DeviceMetadata) (platformFamily, platformID, computerName string) {

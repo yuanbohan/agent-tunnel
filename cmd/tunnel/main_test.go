@@ -87,6 +87,13 @@ func (f *fakeRelayConnector) WriteOutput([]byte) error {
 
 func setTestEnv(t *testing.T) {
 	t.Helper()
+	oldReadSessionDeviceIdentity := readSessionDeviceIdentity
+	readSessionDeviceIdentity = func(daemon.Paths) (daemon.DeviceIdentity, error) {
+		return daemon.DeviceIdentity{}, os.ErrNotExist
+	}
+	t.Cleanup(func() {
+		readSessionDeviceIdentity = oldReadSessionDeviceIdentity
+	})
 	for _, kv := range [][2]string{
 		{"TUNNEL_BASE_URL", "http://127.0.0.1:8586"},
 		{"TUNNEL_AUTH_TOKEN", "test-token"},
@@ -1109,6 +1116,9 @@ func TestRunWithArgsUsesUserProvidedCommandForPreview(t *testing.T) {
 	if gotInfo.GitBranch != "feature/custom-agent" {
 		t.Fatalf("GitBranch = %q, want feature/custom-agent", gotInfo.GitBranch)
 	}
+	if gotInfo.DeviceID != "" {
+		t.Fatalf("DeviceID = %q, want empty for direct local run", gotInfo.DeviceID)
+	}
 	if gotInfo.PlatformFamily != daemon.PlatformFamilyMacOS {
 		t.Fatalf("PlatformFamily = %q, want %q", gotInfo.PlatformFamily, daemon.PlatformFamilyMacOS)
 	}
@@ -1117,6 +1127,29 @@ func TestRunWithArgsUsesUserProvidedCommandForPreview(t *testing.T) {
 	}
 	if gotInfo.ComputerName != "fallback-host" {
 		t.Fatalf("ComputerName = %q, want fallback-host", gotInfo.ComputerName)
+	}
+}
+
+func TestSessionDeviceIDReadsExistingDaemonIdentity(t *testing.T) {
+	oldResolveDaemonPaths := resolveDaemonPaths
+	oldReadSessionDeviceIdentity := readSessionDeviceIdentity
+	t.Cleanup(func() {
+		resolveDaemonPaths = oldResolveDaemonPaths
+		readSessionDeviceIdentity = oldReadSessionDeviceIdentity
+	})
+
+	resolveDaemonPaths = func() (daemon.Paths, error) {
+		return daemon.Paths{DeviceFile: "/tmp/tunnel-device.json"}, nil
+	}
+	readSessionDeviceIdentity = func(paths daemon.Paths) (daemon.DeviceIdentity, error) {
+		if paths.DeviceFile != "/tmp/tunnel-device.json" {
+			t.Fatalf("DeviceFile = %q, want /tmp/tunnel-device.json", paths.DeviceFile)
+		}
+		return daemon.DeviceIdentity{DeviceID: " dev-existing "}, nil
+	}
+
+	if got := sessionDeviceID(); got != "dev-existing" {
+		t.Fatalf("sessionDeviceID() = %q, want dev-existing", got)
 	}
 }
 

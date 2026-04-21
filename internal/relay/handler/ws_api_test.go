@@ -220,7 +220,7 @@ func TestDeviceWebSocketLaunchRequestRoundTrip(t *testing.T) {
 			return
 		}
 
-		agentConnCh <- dialAndRegisterAgentWithLaunchRequest(t, server.URL, agentToken.Plaintext, "sess-1", frame.RequestID)
+		agentConnCh <- dialAndRegisterAgentWithLaunchRequestAndDeviceID(t, server.URL, agentToken.Plaintext, "sess-1", frame.RequestID, "dev-1")
 	}()
 
 	resp := doBearerPOST(t, server.URL+"/api/devices/dev-1/launch", issued.AccessToken, `{"command":"codex","cwd":"/repo","label":"api-fix"}`)
@@ -235,10 +235,52 @@ func TestDeviceWebSocketLaunchRequestRoundTrip(t *testing.T) {
 		t.Fatalf("launch = %#v, want session_ready sess-1", launch)
 	}
 	agentConn := <-agentConnCh
+
+	devicesResp := doBearerGET(t, server.URL+"/api/devices", issued.AccessToken)
+	defer devicesResp.Body.Close()
+	var devices []protocol.DeviceInfo
+	decodeAPIEnvelopeFromResponse(t, devicesResp, http.StatusOK, &devices)
+	if len(devices) != 1 || devices[0].DeviceID != "dev-1" {
+		t.Fatalf("devices = %#v, want dev-1", devices)
+	}
+
+	sessionsResp := doBearerGET(t, server.URL+"/api/sessions", issued.AccessToken)
+	defer sessionsResp.Body.Close()
+	var sessions []protocol.SessionInfo
+	decodeAPIEnvelopeFromResponse(t, sessionsResp, http.StatusOK, &sessions)
+	if len(sessions) != 1 || sessions[0].SessionID != "sess-1" || sessions[0].DeviceID != devices[0].DeviceID {
+		t.Fatalf("sessions = %#v, want sess-1 with device_id %q", sessions, devices[0].DeviceID)
+	}
+
 	if err := agentConn.Close(); err != nil {
 		t.Errorf("Close returned error: %v", err)
 	}
 	<-done
+}
+
+func TestAgentRegistrationWithoutLaunchPreservesDeviceID(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	issued := env.login(t, "alice", "password123")
+	agentToken := env.createAgentToken(t, user.ID, "Laptop")
+
+	server := httptest.NewServer(env.handler(nil))
+	defer server.Close()
+
+	agentConn := dialAndRegisterAgentWithLaunchRequestAndDeviceID(t, server.URL, agentToken.Plaintext, "sess-direct", "", "dev-existing")
+	defer agentConn.Close()
+
+	resp := doBearerGET(t, server.URL+"/api/sessions", issued.AccessToken)
+	defer resp.Body.Close()
+	var sessions []protocol.SessionInfo
+	decodeAPIEnvelopeFromResponse(t, resp, http.StatusOK, &sessions)
+	if len(sessions) != 1 || sessions[0].SessionID != "sess-direct" {
+		t.Fatalf("sessions = %#v, want sess-direct", sessions)
+	}
+	if sessions[0].DeviceID != "dev-existing" {
+		t.Fatalf("DeviceID = %q, want dev-existing", sessions[0].DeviceID)
+	}
 }
 
 func TestDeviceWebSocketPendingPeerCannotRegisterAfterTokenRevoke(t *testing.T) {

@@ -100,8 +100,9 @@ Code map (excerpt):
 - user-scoped discovery and attach authorization are a hard multi-tenant guarantee for hosted relay deployments
 - a missing session can mean "offline now", not just "never existed"
 - a session can disappear and later reappear with the same `session_id` if the same running `tunnel` process reconnects
-- session metadata now includes best-effort Git branch for the startup `cwd` and best-effort machine identity fields for UI display: `platform_family`, `platform_id`, and `computer_name`
+- session metadata now includes best-effort Git branch for the startup `cwd`, optional daemon identity through `device_id`, and best-effort machine identity fields for UI display: `platform_family`, `platform_id`, and `computer_name`
 - `git_branch` is the Git branch for the registered startup `cwd` when that directory is on a symbolic branch; otherwise it is an empty string
+- `device_id` is copied from the registering session when that local `tunnel run` can read an existing daemon identity; otherwise it is an empty string
 - `computer_name` is already normalized by the agent before registration: prefer local display name when available, otherwise fall back to hostname
 - `platform_id` is a raw best-effort identifier intended for client-side icon mapping; clients should keep their own whitelist and fall back gracefully for unknown values
 
@@ -168,6 +169,7 @@ Response:
 
 Notes:
 
+- `device_id` is the stable daemon identity; sessions that report the same value in `GET /api/sessions` are associated with that daemon identity
 - `platform_family` is the stable UI fallback field for device-class icons, currently `macos` or `linux`
 - `platform_id` is the best-effort specific platform identifier for more exact icon selection, for example `macos`, `ubuntu`, `arch`, `debian`, `fedora`, or `unknown`
 - `launch_health` is the daemon-reported live readiness for remote launch, currently `healthy` or `degraded`
@@ -242,6 +244,7 @@ Notes:
 
 - the relay may hold this request open for roughly 20-30 seconds while waiting for the launched session to register
 - `status: "session_ready"` is the only success state in this contract
+- a successful daemon-launched session appears in `GET /api/sessions`; its `device_id` is whatever the launched `tunnel run` reports from local daemon state
 - `session_id` from the launch response can be used immediately with the normal session discovery and attach flow
 - the launch flow still does not auto-attach to the new session
 
@@ -681,6 +684,7 @@ Response:
   "body": [
     {
       "session_id": "sess-1",
+      "device_id": "dev_abcd1234",
       "launcher": "codex",
       "label": "api-fix",
       "cwd": "/repo",
@@ -702,6 +706,8 @@ Notes:
 - another user's live sessions must remain invisible even when both users have active `tunnel` connections
 - the list is live-only, not history
 - `git_branch` is the best-effort Git branch for `cwd`; when the startup directory is not on a symbolic branch it is returned as an empty string
+- `device_id` is copied from the registering session when the local `tunnel run` can read an existing daemon identity; otherwise it is an empty string
+- when `device_id` is non-empty and the daemon is currently online, clients can use it to correlate with `GET /api/devices[].device_id`; the relay does not validate that relationship during session registration
 - `platform_family`, `platform_id`, and `computer_name` are stable keys in the session payload; when metadata is unavailable they are returned as empty strings rather than omitted
 - `platform_family` is the coarse fallback field for session device identity, currently `macos` or `linux`
 - `platform_id` is the best-effort specific platform identifier for client icon mapping, for example `macos`, `ubuntu`, `debian`, `arch`, or `fedora`

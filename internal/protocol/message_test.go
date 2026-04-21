@@ -10,6 +10,7 @@ func TestRegisterFrameRoundTrip(t *testing.T) {
 	started := 1775131200
 	frame := RegisterFrameWithLaunchRequest(SessionInfo{
 		SessionID:      "sess-123",
+		DeviceID:       "dev-123",
 		Launcher:       "codex",
 		Label:          "api-fix",
 		CWD:            "/tmp/project",
@@ -39,6 +40,9 @@ func TestRegisterFrameRoundTrip(t *testing.T) {
 	}
 	if decoded.Session.SessionID != "sess-123" {
 		t.Fatalf("SessionID = %q, want sess-123", decoded.Session.SessionID)
+	}
+	if decoded.Session.DeviceID != "dev-123" {
+		t.Fatalf("DeviceID = %q, want dev-123", decoded.Session.DeviceID)
 	}
 	if decoded.Session.StartedAt != started {
 		t.Fatalf("StartedAt = %v, want %v", decoded.Session.StartedAt, started)
@@ -99,6 +103,7 @@ func TestAttachedMessageRoundTrip(t *testing.T) {
 func TestSessionSummaryJSONUsesStableFieldNames(t *testing.T) {
 	info := SessionInfo{
 		SessionID:      "sess-1",
+		DeviceID:       "dev-1",
 		Launcher:       "gemini",
 		Label:          "docs",
 		CWD:            "/Users/test/project",
@@ -117,6 +122,7 @@ func TestSessionSummaryJSONUsesStableFieldNames(t *testing.T) {
 	got := string(raw)
 	for _, want := range []string{
 		"session_id",
+		"device_id",
 		"launcher",
 		"label",
 		"cwd",
@@ -162,6 +168,9 @@ func TestSessionSummaryUsesStableDeviceIdentityKeysWhenUnset(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), `"git_branch":""`) {
 		t.Fatalf("json = %s, want empty git_branch", raw)
+	}
+	if !strings.Contains(string(raw), `"device_id":""`) {
+		t.Fatalf("json = %s, want empty device_id", raw)
 	}
 }
 

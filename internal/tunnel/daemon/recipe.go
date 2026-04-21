@@ -40,15 +40,8 @@ type DeviceMetadata struct {
 }
 
 func ReadOrCreateDeviceIdentity(paths Paths) (DeviceIdentity, error) {
-	payload, err := os.ReadFile(paths.DeviceFile)
+	identity, err := ReadDeviceIdentity(paths)
 	if err == nil {
-		var identity DeviceIdentity
-		if err := json.Unmarshal(payload, &identity); err != nil {
-			return DeviceIdentity{}, err
-		}
-		if strings.TrimSpace(identity.DeviceID) == "" {
-			return DeviceIdentity{}, fmt.Errorf("daemon device identity at %s is missing device_id", paths.DeviceFile)
-		}
 		return identity, nil
 	}
 	if !errors.Is(err, os.ErrNotExist) {
@@ -59,9 +52,24 @@ func ReadOrCreateDeviceIdentity(paths Paths) (DeviceIdentity, error) {
 	if err != nil {
 		return DeviceIdentity{}, err
 	}
-	identity := DeviceIdentity{DeviceID: deviceID}
+	identity = DeviceIdentity{DeviceID: deviceID}
 	if err := writeJSONFile(paths.DeviceFile, identity); err != nil {
 		return DeviceIdentity{}, err
+	}
+	return identity, nil
+}
+
+func ReadDeviceIdentity(paths Paths) (DeviceIdentity, error) {
+	payload, err := os.ReadFile(paths.DeviceFile)
+	if err != nil {
+		return DeviceIdentity{}, err
+	}
+	var identity DeviceIdentity
+	if err := json.Unmarshal(payload, &identity); err != nil {
+		return DeviceIdentity{}, err
+	}
+	if strings.TrimSpace(identity.DeviceID) == "" {
+		return DeviceIdentity{}, fmt.Errorf("daemon device identity at %s is missing device_id", paths.DeviceFile)
 	}
 	return identity, nil
 }

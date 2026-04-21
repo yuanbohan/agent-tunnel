@@ -75,15 +75,17 @@ func Handle(registry *session.Registry, deviceRegistry *relaydevice.Registry) gi
 		}
 
 		peer := newWSAgentPeer(conn, tracker)
-		registry.RegisterOwned(*register.Session, session.SessionOwner{
+		sessionOwner := session.SessionOwner{
 			UserID:       authenticated.User.ID,
 			AgentTokenID: authenticated.Token.ID,
-		}, peer)
+		}
+		registry.RegisterOwned(*register.Session, sessionOwner, peer)
 		if deviceRegistry != nil && register.LaunchRequestID != "" {
-			deviceRegistry.CompleteLaunchIfOwner(register.LaunchRequestID, relaydevice.DeviceOwner{
+			deviceOwner := relaydevice.DeviceOwner{
 				UserID:       authenticated.User.ID,
 				AgentTokenID: authenticated.Token.ID,
-			}, register.Session.SessionID)
+			}
+			deviceRegistry.CompleteLaunchIfOwner(register.LaunchRequestID, deviceOwner, register.Session.SessionID)
 		}
 		defer registry.DisconnectIfOwner(register.Session.SessionID, peer)
 
