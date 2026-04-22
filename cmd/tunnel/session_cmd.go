@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -28,6 +27,8 @@ type tableColumn struct {
 	value func(sessionRow) string
 }
 
+const sessionCWDColumnWidth = 32
+
 var sessionTableColumns = []tableColumn{
 	{title: "Scope", width: 7, value: func(row sessionRow) string { return row.scope }},
 	{title: "Source", width: 6, value: func(row sessionRow) string { return row.source }},
@@ -35,7 +36,7 @@ var sessionTableColumns = []tableColumn{
 	{title: "Label", width: 16, value: func(row sessionRow) string { return row.label }},
 	{title: "Command", width: 24, value: func(row sessionRow) string { return row.command }},
 	{title: "Machine", width: 22, value: func(row sessionRow) string { return row.machine }},
-	{title: "CWD", width: 32, value: func(row sessionRow) string { return row.cwd }},
+	{title: "CWD", width: sessionCWDColumnWidth, value: func(row sessionRow) string { return row.cwd }},
 	{title: "Age", width: 8, value: func(row sessionRow) string { return row.age }},
 }
 
@@ -86,7 +87,7 @@ func buildSessionRow(info protocol.SessionInfo, localDeviceID string, now time.T
 		label:   emptyValue(info.Label),
 		command: emptyValue(sessionCommand(info)),
 		machine: emptyValue(sessionMachine(info)),
-		cwd:     emptyValue(shortCWD(info.CWD)),
+		cwd:     emptyValue(sessionCWD(info.CWD)),
 		age:     sessionAge(info.StartedAt, now),
 	}
 }
@@ -134,17 +135,12 @@ func sessionMachine(info protocol.SessionInfo) string {
 	}
 }
 
-func shortCWD(cwd string) string {
+func sessionCWD(cwd string) string {
 	cwd = strings.TrimSpace(cwd)
 	if cwd == "" {
 		return ""
 	}
-	parent := filepath.Base(filepath.Dir(cwd))
-	base := filepath.Base(cwd)
-	if parent == "." || parent == string(filepath.Separator) || parent == "" {
-		return base
-	}
-	return parent + "/" + base
+	return truncateMiddleCell(cwd, sessionCWDColumnWidth)
 }
 
 func sessionAge(startedAt int, now time.Time) string {
@@ -210,6 +206,24 @@ func truncateCell(value string, width int) string {
 		return string(runes[:width])
 	}
 	return string(runes[:width-3]) + "..."
+}
+
+func truncateMiddleCell(value string, width int) string {
+	value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+	if value == "" {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= width {
+		return value
+	}
+	if width <= 3 {
+		return string(runes[:width])
+	}
+	remaining := width - 3
+	left := (remaining + 1) / 2
+	right := remaining - left
+	return string(runes[:left]) + "..." + string(runes[len(runes)-right:])
 }
 
 func emptyValue(value string) string {

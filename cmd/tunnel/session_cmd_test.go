@@ -79,3 +79,25 @@ func TestRunSessionStopCallsStopEndpoint(t *testing.T) {
 		t.Fatalf("stdout = %q, want stopped message", got)
 	}
 }
+
+func TestSessionCWDUsesMiddleTruncation(t *testing.T) {
+	got := sessionCWD("/Users/alice/workspace/github.com/example/repo")
+	if len([]rune(got)) != sessionCWDColumnWidth {
+		t.Fatalf("len(%q) = %d, want %d", got, len([]rune(got)), sessionCWDColumnWidth)
+	}
+	if !strings.HasPrefix(got, "/Users/alice/") {
+		t.Fatalf("sessionCWD = %q, want leading path context", got)
+	}
+	if !strings.HasSuffix(got, "example/repo") {
+		t.Fatalf("sessionCWD = %q, want final directory context", got)
+	}
+	if !strings.Contains(got, "...") {
+		t.Fatalf("sessionCWD = %q, want middle truncation marker", got)
+	}
+}
+
+func TestSessionCWDLeavesShortPathUnchanged(t *testing.T) {
+	if got := sessionCWD("~/repo"); got != "~/repo" {
+		t.Fatalf("sessionCWD = %q, want ~/repo", got)
+	}
+}
