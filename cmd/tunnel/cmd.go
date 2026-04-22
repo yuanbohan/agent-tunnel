@@ -283,6 +283,16 @@ func newDaemonCmd() *cobra.Command {
 		},
 	})
 	cmd.AddCommand(&cobra.Command{
+		Use:           "close",
+		Short:         "Close one open daemon tmux workspace view",
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runDaemonClose(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
 		Use:           "sessions",
 		Short:         "List daemon tmux sessions",
 		Args:          cobra.NoArgs,

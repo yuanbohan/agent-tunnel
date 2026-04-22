@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -16,6 +17,8 @@ const workspaceBackendTmux = "tmux"
 
 var ErrTmuxNotFound = errors.New("tmux is not installed")
 var ErrNoWorkspaceSessions = errors.New("no daemon-managed workspace sessions")
+var ErrNoOpenWorkspace = errors.New("no open daemon workspace")
+var ErrWorkspaceSessionNotFound = errors.New("daemon workspace session not found")
 
 type WorkspaceSession struct {
 	Name     string
@@ -90,6 +93,27 @@ func OpenWorkspace(ctx context.Context, paths Paths, stdin io.Reader, stdout, st
 	return runTmuxInteractive(ctx, paths, stdin, stdout, stderr, "attach-session")
 }
 
+func CloseWorkspace(ctx context.Context, paths Paths) error {
+	if err := EnsureTmuxAvailable(); err != nil {
+		return err
+	}
+	output, err := runTmuxOutput(ctx, paths, "list-clients", "-F", "#{client_name}")
+	if err != nil {
+		if isTmuxNoServerError(err) {
+			return ErrNoOpenWorkspace
+		}
+		return err
+	}
+	clientName := firstSortedNonEmptyLine(output)
+	if clientName == "" {
+		return ErrNoOpenWorkspace
+	}
+	if _, err := runTmuxOutput(ctx, paths, "detach-client", "-t", clientName); err != nil {
+		return err
+	}
+	return nil
+}
+
 func CreateLaunchSession(ctx context.Context, paths Paths, cwd, command string) (string, error) {
 	if err := EnsureTmuxAvailable(); err != nil {
 		return "", err
@@ -107,6 +131,23 @@ func CreateLaunchSession(ctx context.Context, paths Paths, cwd, command string) 
 		return "", err
 	}
 	return sessionName, nil
+}
+
+func TerminateWorkspaceSession(ctx context.Context, paths Paths, sessionName string) error {
+	if err := EnsureTmuxAvailable(); err != nil {
+		return err
+	}
+	sessionName = strings.TrimSpace(sessionName)
+	if sessionName == "" {
+		return ErrWorkspaceSessionNotFound
+	}
+	if _, err := runTmuxOutput(ctx, paths, "kill-session", "-t", sessionName); err != nil {
+		if isTmuxNoServerError(err) || isTmuxMissingTargetError(err) {
+			return ErrWorkspaceSessionNotFound
+		}
+		return err
+	}
+	return nil
 }
 
 func defaultWorkspaceSessionName() (string, error) {
@@ -162,4 +203,29 @@ func isTmuxNoServerError(err error) bool {
 	return strings.Contains(lower, "no server running") ||
 		strings.Contains(lower, "error connecting to") ||
 		strings.Contains(lower, "no such file or directory")
+}
+
+func isTmuxMissingTargetError(err error) bool {
+	if err == nil {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "can't find session") ||
+		strings.Contains(lower, "can't find window") ||
+		strings.Contains(lower, "can't find pane")
+}
+
+func firstSortedNonEmptyLine(output string) string {
+	var lines []string
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+	sort.Strings(lines)
+	if len(lines) == 0 {
+		return ""
+	}
+	return lines[0]
 }

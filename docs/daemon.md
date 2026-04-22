@@ -21,8 +21,9 @@ The daemon does not replace `tunnel run`. Direct local sessions still start thro
 - The daemon must not require or automate GUI terminal applications.
 - The daemon must not manage long-lived PTYs directly for remote launch. Tmux owns local session survival across daemon stop, crash, and restart.
 - The relay must stay live-only for devices. It stores currently connected device metadata and in-flight launch correlation only.
-- The relay must not own tmux state, terminal state, transcript history, launch history, last failures, or offline device inventory.
+- The relay must not own tmux state, terminal state, transcript history, launch history, last failures, terminate history, or offline device inventory.
 - `tunnel daemon open` and `tunnel daemon sessions` must target the tmux workspace directly and must not require the daemon control socket to be online.
+- `tunnel daemon close` must only detach one open local view of the daemon tmux workspace. It must not stop the daemon, kill tmux, or terminate a launched session.
 - A device may have at most one in-flight launch request. Concurrent launch attempts must fail with `busy` rather than queue.
 - Windows support is out of scope for the current daemon implementation.
 
@@ -35,9 +36,10 @@ The daemon surface is explicit and lives under `tunnel daemon ...`:
 - `stop`: stop the daemon process and remove the device from online relay discovery, without killing tmux sessions.
 - `doctor`: actively inspect daemon readiness, auth availability, relay reachability, tmux availability, workspace reachability, config readability, and recent launch failure state.
 - `open`: attach to an existing daemon-managed tmux session from the current terminal. If no daemon-managed sessions exist, do not open tmux; tell the user there are no sessions to open.
+- `close`: detach one currently open client from the daemon tmux workspace. If no workspace view is open, report that there is no open workspace to close and exit successfully.
 - `sessions`: list sessions in the dedicated tmux workspace without adding custom session management.
 
-Do not add daemon commands that create a custom tmux dashboard, picker, alias system, per-session close/open workflow, or terminal-recipe workflow unless the product scope is explicitly changed first.
+Do not add daemon commands that create a custom tmux dashboard, picker, alias system, per-session close/open workflow, or terminal-recipe workflow unless the product scope is explicitly changed first. Use `terminate` for destructive daemon-created session shutdown; keep `close` reserved for the local workspace view lifecycle.
 
 ## Local State
 
@@ -59,6 +61,7 @@ Expected tmux behavior:
 
 - `start` counts existing sessions and preserves them.
 - `open` attaches when daemon-managed sessions exist and reports a no-session message when none exist.
+- `close` detaches one attached tmux client from the dedicated daemon socket when one exists. It does not kill the tmux server, a tmux window, or any tmux session.
 - `sessions` lists only sessions on the dedicated daemon socket.
 - Each remote launch creates one detached tmux session with an opaque session name.
 - The requested `cwd` is passed as the tmux session working directory.
@@ -82,6 +85,19 @@ After `accepted`, the relay waits for the launched `tunnel run` process to regis
 
 The mobile/API launch flow must not auto-attach to the new session. Clients may use normal session discovery and attach APIs after launch completes.
 
+## Terminate Flow
+
+Mobile session termination is a separate destructive operation from local workspace close.
+
+1. The daemon includes the opaque tmux workspace session name in the accepted launch result.
+2. The relay binds that live-only terminate target to the later `/agent/ws` registration that carries the matching `launch_request_id`.
+3. `GET /api/sessions` exposes only `terminate_supported: true` for eligible daemon-created sessions; it does not expose raw tmux target names.
+4. `POST /api/sessions/:sessionID/terminate` routes one `terminate_request` to the online owning daemon over `/device/ws`.
+5. The daemon kills only the requested tmux workspace session on the dedicated daemon socket and returns `terminated` or a structured failure.
+6. After `terminated`, the relay removes the live session from discovery and closes active attaches. Routed failures leave the live session discoverable.
+
+Direct local `tunnel run` sessions are not terminable through this path, even when they report a `device_id`. `device_id` identifies the machine daemon identity, not proof that the session was daemon-launched.
+
 ## Failure Reasons
 
 Structured failure reasons are part of the client-visible contract. Keep them stable and specific:
@@ -94,6 +110,9 @@ Structured failure reasons are part of the client-visible contract. Keep them st
 - `tunnel_not_found`: the daemon launch environment cannot find `tunnel`.
 - `session_start_failed`: tmux session creation failed after validation.
 - `launch_timeout`: the relay did not observe matching `session_ready` registration before the launch wait expired.
+- `terminate_timeout`: the relay did not observe a daemon terminate result before the terminate wait expired.
+- `session_not_found`: the daemon could not find the requested workspace session to terminate.
+- `session_terminate_failed`: tmux session termination failed after validation.
 
 Do not collapse these into generic errors. If a new failure mode becomes client-visible, update `docs/api.md`, `docs/protocol.md`, and this document together.
 
