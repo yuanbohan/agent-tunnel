@@ -1,4 +1,22 @@
 ---
+- name: Validate PostgreSQL host OS support
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] == 'Debian'
+    fail_msg: "PostgreSQL role is currently supported only on Debian-family hosts"
+  tags:
+    - postgres
+
+- name: Install PostgreSQL package for legacy database role
+  ansible.builtin.apt:
+    name: postgresql
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  when: ansible_facts['os_family'] == 'Debian'
+  tags:
+    - postgres
+
 - name: Ensure PostgreSQL service is enabled
   ansible.builtin.systemd:
     name: postgresql

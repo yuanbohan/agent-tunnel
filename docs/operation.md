@@ -1,242 +1,124 @@
 # Relay Operations
 
-This guide is for commands run on the VPS after SSH login.
-For deploys started from your local checkout with `make` plus Ansible, use [deploy.md](./deploy.md).
+This guide is for commands run on the VPS after SSH login. For deploys started from your local checkout, use [deploy.md](./deploy.md).
 
-This guide covers the day-to-day relay CLI commands introduced for PostgreSQL-backed auth, invite-code management, operator maintenance, and explicit schema migrations.
+For the complete Docker Compose operating guide, including all remote paths and environment files, use [docker-operation.md](./docker-operation.md).
 
-The commands here use the `relay` and `relay-migrate` binaries from this repository.
-`relay-migrate` requires an explicit `--schema-dir` so it never guesses where SQL files live, and cobra enforces that requirement before execution.
-Remote install and deploy now run through Ansible inventories under `ansible/inventories/` plus per-environment secrets in `ansible/host_vars/dev/relay-secrets.yml` and `ansible/host_vars/prod/relay-secrets.yml`. Local commands such as `make migrate` and `make start` read the current shell environment only.
+The primary relay operations model is Docker Compose. Relay and PostgreSQL run as services in `deploy/compose/compose.yaml`, with secrets stored in the remote `.env`.
 
-## Environment Variables
+## Environment File
 
-These are the relay-side environment variables that matter now:
-
-| Variable | Required for | Purpose |
-|----------|--------------|---------|
-| `RELAY_DATABASE_URL` | `relay-migrate`, `relay serve` | PostgreSQL DSN for durable auth state |
-| `RELAY_APP_SECRET` | `relay serve` | HMAC secret used for token and agent-token digests |
-| `RELAY_OPERATOR_TOKEN` | `relay serve`, `relay invite ...`, `relay user delete` | Fixed bearer token for the local-only operator control path |
-| `RELAY_LISTEN_ADDR` | optional | Relay listen address; defaults to `127.0.0.1:8586` |
-| `RELAY_LOG_FILE` | optional | Append structured relay logs to this file instead of stderr |
-
-Notes:
-
-- Operator commands call the running relay over a local-only operator API outside `/api/`. They must run on the relay host, or through an SSH tunnel that lands on the relay host loopback interface.
-- nginx should serve the public website on `/`, proxy `/api/`, `/agent/ws`, `/device/ws`, and `/healthz`, and keep the operator routes off the public surface.
-- Operator commands call the running relay. That means `relay serve` must already be running when you execute `relay invite ...` or `relay user delete`.
-- `RELAY_LISTEN_ADDR` is shared by `relay serve` and the operator commands. If you start the relay on a different local address, set the same value before running invite or user commands.
-- Operator commands are intentionally local-only. They do not accept a relay-address flag. `relay invite disable` requires `--code`, and `relay user delete` requires `--username`.
-- On a systemd-managed host, the usual source of truth is `/etc/agentunnel/relay.env`. `make env-dev` or `make env-prod` renders that file from the selected inventory plus the matching host secret file. You can source that file before running relay commands, or pass it directly to `relay-migrate --env-file /etc/agentunnel/relay.env`.
-
-## Command Summary
-
-| Command | Purpose |
-|---------|---------|
-| `relay-migrate --schema-dir <dir>` | Apply PostgreSQL schema migrations from an explicit schema directory |
-| `relay-migrate --env-file <path> --schema-dir <dir>` | Apply migrations using literal `KEY=VALUE` pairs loaded from an env file |
-| `relay-migrate --env-file <path> --schema-dir <dir> --baseline <version>` | Mark migrations through a known version as already applied |
-| `relay serve` | Start the relay HTTP and WebSocket service |
-| `relay invite create` | Create one or more invite codes |
-| `relay invite disable --code <code>` | Disable an existing invite code |
-| `relay invite list` | List all invite codes with status and current binding |
-| `relay user delete --username <name>` | Delete a user account and free the username |
-| `make install` / `make install-local` | Build and install the local `tunnel`, `relay`, and `relay-migrate` binaries into `$(INSTALL_DIR)` without creating or pushing git tags |
-| `make init-dev` / `make init-prod` | Fresh-host bootstrap: install base packages, create the relay PostgreSQL user and database, render nginx, and (prod only) issue the Let's Encrypt cert and switch nginx to TLS |
-| `make install-dev` | Install base packages on the dev host and sync the HTTP nginx site that fronts the relay |
-| `make install-prod` | Install base packages on the prod host plus `certbot`, certificate issuance/renewal wiring, and the HTTPS nginx site (assumes the cert already exists) |
-| `make migrate` | Apply local schema migrations using the current shell environment |
-| `make migrator-dev` / `make migrator-prod` | Build `relay-migrate` locally and install it on the target host |
-| `make relay-bin-dev` / `make relay-bin-prod` | Build `relay` locally and install it on the target host |
-| `make env-dev` / `make env-prod` | Render `/etc/agentunnel/relay.env` from the selected inventory and Ansible secrets |
-| `make deploy-dev` / `make deploy-prod` | Build Linux binaries, sync schema, rerun migrations, update relay env and systemd, then restart the relay |
-| `make deploy-website-dev` / `make deploy-website-prod` | Build `../agent-tunnel-website` and publish an atomic website release on the remote host |
-| `make deps-dev` / `make deps-prod` / `make certbot-dev` / `make certbot-prod` / `make nginx-dev` / `make nginx-prod` / `make postgres-dev` / `make postgres-prod` / `make relay-dev` / `make relay-prod` | Run one isolated Ansible slice for lower-risk operational changes |
-
-Ansible controls:
-
-- `ANSIBLE_DRY_RUN=1` runs playbooks in check mode.
-- `ANSIBLE_EXTRA_VARS_FILE=<path>` layers an additional vars file on top of the selected inventory.
-- `make install-prod` requires `relay_certbot_email` to be set in `ansible/host_vars/prod/relay-secrets.yml`.
-- Relay deploy manages relay artifacts only: binaries, schema files, `/etc/agentunnel/relay.env`, the systemd unit, and the `agentunnel-relay` service restart.
-- `make migrate-dev` and `make migrate-prod` no longer install `relay-migrate`; they assume the remote migrator binary already exists. Run `make migrator-dev` or `make migrator-prod` first when you change migrator code or bootstrap a fresh host.
-- `make relay-dev` and `make relay-prod` no longer install `relay`; they assume the remote relay binary already exists. Run `make relay-bin-dev` or `make relay-bin-prod` first when you change relay code or bootstrap a fresh host.
-- Website deploy manages the static website bundle only: it runs `npm ci`, builds `../agent-tunnel-website`, rejects bundle symlinks, uploads a release under `/var/www/agentunnel-website/releases`, and atomically repoints `/var/www/agentunnel-website/current`.
-- Package installation, cert issuance, nginx config, PostgreSQL config, relay deploy, and website deploy can all be run independently through dedicated targets.
-
-## Start the Relay
-
-Example:
-
-```bash
-export RELAY_DATABASE_URL=postgres://relay_user:change-me-db-password@localhost/agent_tunnel?sslmode=disable
-export RELAY_APP_SECRET=change-me
-export RELAY_OPERATOR_TOKEN=change-me-operator-token
-
-relay-migrate --schema-dir ./schema
-relay serve --listen-addr 127.0.0.1:8586
-```
-
-`relay serve` requires:
-
-- `RELAY_DATABASE_URL`
-- `RELAY_APP_SECRET`
-- `RELAY_OPERATOR_TOKEN`
-
-## Run Schema Migrations
-
-Apply all unapplied SQL files from `schema/`:
-
-```bash
-export RELAY_DATABASE_URL=postgres://relay_user:change-me-db-password@localhost/agent_tunnel?sslmode=disable
-
-relay-migrate --schema-dir ./schema
-```
-
-On a systemd-managed relay host:
-
-```bash
-relay-migrate --env-file /etc/agentunnel/relay.env --schema-dir /etc/agentunnel/schema
-```
-
-Baseline an existing database that already matches migrations through `0002_operator_audit.sql`:
-
-```bash
-export RELAY_DATABASE_URL=postgres://relay_user:change-me-db-password@localhost/agent_tunnel?sslmode=disable
-
-relay-migrate --schema-dir ./schema --baseline 0002_operator_audit.sql
-```
-
-Notes:
-
-- `--baseline` records migrations up to and including the specified file as applied without executing their SQL.
-- `--schema-dir` is required. In a checked-out repo that is usually `./schema`; on a deployed host it is usually `/etc/agentunnel/schema`.
-- Use baseline only once when adopting migration tracking for an already-initialized database.
-- Regular schema updates should use `relay-migrate --schema-dir ...` with no baseline flag.
-
-## Create Invite Codes
-
-Create three invite codes that expire after seven days:
-
-```bash
-export RELAY_OPERATOR_TOKEN=change-me-operator-token
-export RELAY_LISTEN_ADDR=127.0.0.1:8586
-
-relay invite create --count 3 --expires-in 7d
-```
-
-Example output:
+The remote env file usually lives at:
 
 ```text
-AB2C3D
-EF4G5H
-JK7M8N
+/opt/agentunnel/compose/.env
 ```
 
-Notes:
+It contains:
 
-- `--count` defaults to `1`.
-- `--expires-in` defaults to `7d`.
-- `--expires-in` only supports whole days, for example `1d` or `7d`.
-- Invite codes are six characters, case-insensitive for user input, and chosen to be easy to type manually.
+| Variable | Purpose |
+| --- | --- |
+| `RELAY_IMAGE_TAG` | Immutable Relay image tag, for example `v0.1.0` |
+| `RELAY_HOST_BIND` | Host bind address, usually `127.0.0.1` |
+| `RELAY_HOST_PORT` | Host port proxied by nginx, usually `8586` |
+| `POSTGRES_DB` | PostgreSQL database name |
+| `POSTGRES_USER` | PostgreSQL role used by Relay |
+| `POSTGRES_PASSWORD` | PostgreSQL password; keep URL-safe unless the DSN is customized |
+| `RELAY_APP_SECRET` | HMAC secret used for token and agent-token digests |
+| `RELAY_OPERATOR_TOKEN` | Fixed bearer token for local-only operator commands |
+| `RELAY_POSTGRES_VOLUME` | Docker named volume for PostgreSQL data, usually `relay-postgres-data` |
 
-## Disable an Invite Code
+Keep this file mode `0600`. Do not commit real `.env` files.
 
-Disable an invite code before it is consumed:
+## Service Lifecycle
+
+Run from the Compose directory:
 
 ```bash
-export RELAY_OPERATOR_TOKEN=change-me-operator-token
-export RELAY_LISTEN_ADDR=127.0.0.1:8586
-
-relay invite disable --code AB2C3D
+cd /opt/agentunnel/compose
+sudo docker compose --env-file .env pull
+sudo docker compose --env-file .env up -d
+sudo docker compose --env-file .env ps
 ```
 
-Example output:
+Stop or start services:
+
+```bash
+sudo docker compose --env-file .env stop
+sudo docker compose --env-file .env start
+```
+
+Remove containers while keeping the named PostgreSQL volume:
+
+```bash
+sudo docker compose --env-file .env down
+```
+
+Do not remove the configured PostgreSQL volume, usually `relay-postgres-data`, unless you intentionally want to destroy the database and reinitialize from `latest.sql`.
+
+Relay also writes structured logs to the host at:
 
 ```text
-disabled AB2C3D
+/opt/agentunnel/logs/relay/relay.log
 ```
 
-The code is normalized case-insensitively, so `ab2c3d` and `AB2C3D` behave the same.
-
-## List Invite Codes
-
-Check current invite codes and whether they are still available:
+## Health and Logs
 
 ```bash
-export RELAY_OPERATOR_TOKEN=change-me-operator-token
-export RELAY_LISTEN_ADDR=127.0.0.1:8586
-
-relay invite list
+curl -fsS http://127.0.0.1:8586/healthz
+sudo docker compose --env-file .env logs --tail 100 relay
+sudo docker compose --env-file .env logs --tail 100 postgres
+sudo tail -f /opt/agentunnel/logs/relay/relay.log
 ```
 
-Example output:
+Healthy `healthz` output should include `"status":"ok"`.
+
+## Operator Commands
+
+Operator commands run against the local-only operator API from inside the Relay container:
+
+```bash
+sudo docker compose --env-file .env exec relay relay invite create --count 3 --expires-in 7d
+sudo docker compose --env-file .env exec relay relay invite list
+sudo docker compose --env-file .env exec relay relay invite disable --code AB2C3D
+sudo docker compose --env-file .env exec relay relay user delete --username alice
+```
+
+The operator routes remain outside the public `/api/` namespace and should not be exposed through nginx.
+
+## Schema Changes
+
+Fresh PostgreSQL volumes are initialized from:
 
 ```text
-CODE      STATUS    CONSUMED_BY  DISABLED_BY  EXPIRES_AT
-AB2C3D    available -           -            2026-04-18T09:00:00Z
-EF4G5H    consumed  alice       -            2026-04-18T09:00:00Z
-JK7M8N    disabled  -           operator     2026-04-18T09:00:00Z
+/opt/agentunnel/postgres/latest.sql
 ```
 
-Use this to verify whether a code is already used and by which user before reusing a batch.
+The PostgreSQL image runs that file only when the data volume is empty. Existing databases are never automatically migrated by Compose.
 
-## Delete a User
+When a release needs a database schema change:
 
-Delete an account and free the username for reuse:
+1. Confirm the repository change updated `deploy/postgres/latest.sql`.
+2. Review the manual SQL required for the existing database.
+3. Back up the database.
+4. Execute the SQL intentionally on the server, for example with `psql`.
+5. Deploy the compatible Relay image tag.
+
+Example `psql` session:
 
 ```bash
-export RELAY_OPERATOR_TOKEN=change-me-operator-token
-export RELAY_LISTEN_ADDR=127.0.0.1:8586
-
-relay user delete --username alice
+cd /opt/agentunnel/compose
+sudo docker compose --env-file .env exec postgres sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 ```
 
-Example output:
-
-```text
-deleted alice
-```
-
-Notes:
-
-- The username is normalized case-insensitively.
-- User deletion is audited as an operator action.
-- Any live relay sessions owned by that user are disconnected immediately.
-
-## Typical Operator Sequence
-
-Bring up a new relay, create invites, and later clean up an abandoned account:
-
-```bash
-export RELAY_DATABASE_URL=postgres://relay_user:change-me-db-password@localhost/agent_tunnel?sslmode=disable
-export RELAY_APP_SECRET=change-me
-export RELAY_OPERATOR_TOKEN=change-me-operator-token
-export RELAY_LISTEN_ADDR=127.0.0.1:8586
-
-relay-migrate --schema-dir ./schema
-relay serve --listen-addr "$RELAY_LISTEN_ADDR"
-
-# In another shell on the same host:
-relay invite create --count 5 --expires-in 7d
-relay invite disable --code AB2C3D
-relay user delete --username alice
-```
+The legacy `relay-migrate` binary may still exist on older hosts for local or legacy workflows, but it is not part of the Docker Compose deployment path.
 
 ## Troubleshooting
 
-If an operator command fails:
+If Relay is unhealthy:
 
-1. Confirm the relay service is running.
-2. Confirm `RELAY_OPERATOR_TOKEN` matches the value used by `relay serve`.
-3. Confirm `RELAY_LISTEN_ADDR` points at the same local address used by `relay serve`.
-4. Confirm the relay can still reach PostgreSQL.
-5. Confirm you are talking to the relay directly on the host, not through public nginx.
-
-Useful checks:
-
-```bash
-curl http://127.0.0.1:8586/healthz
-ss -lntp | grep 8586
-```
+1. Confirm PostgreSQL is healthy with `docker compose ps`.
+2. Confirm `.env` contains `RELAY_APP_SECRET`, `RELAY_OPERATOR_TOKEN`, and URL-safe PostgreSQL credentials.
+3. Confirm Relay is listening on the host-local port: `curl http://127.0.0.1:8586/healthz`.
+4. Confirm nginx proxies `/api/`, `/agent/ws`, `/device/ws`, and `/healthz` to the same local port.
+5. Inspect Relay logs with `docker compose logs relay` or `/opt/agentunnel/logs/relay/relay.log`.

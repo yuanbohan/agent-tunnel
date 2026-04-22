@@ -1,0 +1,133 @@
+---
+- name: Ensure relay Compose root exists
+  ansible.builtin.file:
+    path: "{{ relay_compose_root }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  tags:
+    - relay-compose
+
+- name: Ensure relay Compose directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ relay_compose_dir }}"
+    - "{{ relay_compose_postgres_dir }}"
+    - "{{ relay_compose_log_dir }}"
+  tags:
+    - relay-compose
+
+- name: Sync relay Compose file
+  ansible.builtin.copy:
+    src: "{{ relay_local_compose_dir }}/compose.yaml"
+    dest: "{{ relay_compose_dir }}/compose.yaml"
+    owner: root
+    group: root
+    mode: "0644"
+  tags:
+    - relay-compose
+
+- name: Sync relay Compose example env
+  ansible.builtin.copy:
+    src: "{{ relay_local_compose_dir }}/.env.example"
+    dest: "{{ relay_compose_dir }}/.env.example"
+    owner: root
+    group: root
+    mode: "0644"
+  tags:
+    - relay-compose
+
+- name: Sync relay Compose README
+  ansible.builtin.copy:
+    src: "{{ relay_local_compose_dir }}/README.md"
+    dest: "{{ relay_compose_dir }}/README.md"
+    owner: root
+    group: root
+    mode: "0644"
+  tags:
+    - relay-compose
+
+- name: Sync relay PostgreSQL initialization files
+  ansible.builtin.copy:
+    src: "{{ relay_local_postgres_dir }}/"
+    dest: "{{ relay_compose_postgres_dir }}/"
+    owner: root
+    group: root
+    mode: preserve
+  tags:
+    - relay-compose
+
+- name: Check relay Compose env file
+  ansible.builtin.stat:
+    path: "{{ relay_compose_env_file }}"
+  register: relay_compose_env_stat
+  tags:
+    - relay-compose
+
+- name: Require relay Compose env file for lifecycle actions
+  ansible.builtin.fail:
+    msg: "Missing {{ relay_compose_env_file }}. Copy {{ relay_compose_dir }}/.env.example to .env on the host and fill in secrets before running relay Compose lifecycle actions."
+  when:
+    - relay_compose_action | default('sync') != 'sync'
+    - not relay_compose_env_stat.stat.exists
+  tags:
+    - relay-compose
+
+- name: Log in to GHCR for private Relay images
+  ansible.builtin.command:
+    cmd: docker login ghcr.io --username yuanbohan --password-stdin
+    stdin: "{{ relay_ghcr_token }}"
+  no_log: true
+  changed_when: false
+  when:
+    - relay_compose_action | default('sync') in ['pull', 'up']
+    - relay_ghcr_token is defined
+    - relay_ghcr_token | length > 0
+  tags:
+    - relay-compose
+
+- name: Pull relay Compose images
+  ansible.builtin.command:
+    cmd: docker compose --env-file "{{ relay_compose_env_file }}" -f "{{ relay_compose_file }}" pull
+    chdir: "{{ relay_compose_dir }}"
+  when: relay_compose_action | default('sync') in ['pull', 'up']
+  tags:
+    - relay-compose
+
+- name: Start relay Compose stack
+  ansible.builtin.command:
+    cmd: docker compose --env-file "{{ relay_compose_env_file }}" -f "{{ relay_compose_file }}" up -d
+    chdir: "{{ relay_compose_dir }}"
+  when: relay_compose_action | default('sync') == 'up'
+  tags:
+    - relay-compose
+
+- name: Start existing relay Compose services
+  ansible.builtin.command:
+    cmd: docker compose --env-file "{{ relay_compose_env_file }}" -f "{{ relay_compose_file }}" start
+    chdir: "{{ relay_compose_dir }}"
+  when: relay_compose_action | default('sync') == 'start'
+  tags:
+    - relay-compose
+
+- name: Stop relay Compose services
+  ansible.builtin.command:
+    cmd: docker compose --env-file "{{ relay_compose_env_file }}" -f "{{ relay_compose_file }}" stop
+    chdir: "{{ relay_compose_dir }}"
+  when: relay_compose_action | default('sync') == 'stop'
+  tags:
+    - relay-compose
+
+- name: Stop and remove relay Compose services
+  ansible.builtin.command:
+    cmd: docker compose --env-file "{{ relay_compose_env_file }}" -f "{{ relay_compose_file }}" down
+    chdir: "{{ relay_compose_dir }}"
+  when: relay_compose_action | default('sync') == 'down'
+  tags:
+    - relay-compose

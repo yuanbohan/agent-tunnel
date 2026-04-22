@@ -10,7 +10,6 @@ all:
         agentunnel_environment: dev
         relay_base_packages:
           - nginx
-          - postgresql
         relay_upstream_addr: 127.0.0.1:8586
         relay_site_server_names:
           - _
@@ -27,6 +26,12 @@ all:
         relay_database_name: agent_tunnel
         relay_database_user: relay_user
         relay_schema_dir: /etc/agentunnel/schema
+        relay_compose_root: /opt/agentunnel
+        relay_compose_dir: /opt/agentunnel/compose
+        relay_compose_postgres_dir: /opt/agentunnel/postgres
+        relay_compose_log_dir: /opt/agentunnel/logs/relay
+        relay_compose_env_file: /opt/agentunnel/compose/.env
+        relay_compose_file: /opt/agentunnel/compose/compose.yaml
         relay_env_file: /etc/agentunnel/relay.env
         relay_install_root: /usr/local/bin
         relay_service_name: agentunnel-relay
