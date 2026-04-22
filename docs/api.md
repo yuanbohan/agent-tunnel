@@ -29,9 +29,9 @@ The relay currently uses three token classes:
 
 | Token | Used By | Where It Goes |
 |-------|---------|---------------|
-| App access token | mobile/web/native app clients | `Authorization: Bearer <access-token>` on `/api/...` and `GET /api/sessions/:sessionID/attach/ws` |
+| App access token | mobile/web/native app clients | `Authorization: Bearer <access-token>` on app-facing `/api/...` routes and `GET /api/sessions/:sessionID/attach/ws` |
 | App refresh token | app clients | JSON body for `POST /api/auth/refresh` |
-| Agent token | created by app clients, used later by `tunnel` | returned by `POST /api/agent-tokens`; not used by mobile clients for their own relay session |
+| Agent token | created by app clients, used later by `tunnel` | returned by `POST /api/agent-tokens`; used by `/agent/ws`, `/device/ws`, `GET /api/sessions`, and `POST /api/sessions/:sessionID/stop` |
 
 ### JSON Request Rules
 
@@ -90,7 +90,6 @@ Code map (excerpt):
 | `1017` | `The request is forbidden.` |
 | `1018` | `The requested endpoint was not found.` |
 | `1019` | `The HTTP method is not allowed for this endpoint.` |
-| `1020` | `This session cannot be terminated from the daemon.` |
 | `2001` | `The service is temporarily unavailable.` |
 | `2002` | `An unexpected internal error occurred.` |
 
@@ -101,8 +100,9 @@ Code map (excerpt):
 - user-scoped discovery and attach authorization are a hard multi-tenant guarantee for hosted relay deployments
 - a missing session can mean "offline now", not just "never existed"
 - a session can disappear and later reappear with the same `session_id` if the same running `tunnel` process reconnects
-- session metadata now includes best-effort Git branch for the startup `cwd`, optional daemon identity through `device_id`, and best-effort machine identity fields for UI display: `platform_family`, `platform_id`, and `computer_name`
-- daemon-created sessions may include `terminate_supported: true`; direct local sessions are not terminable through the daemon even when they have a `device_id`
+- session metadata now includes best-effort Git branch for the startup `cwd`, optional daemon identity through `device_id`, relay-controlled `launch_source`, and best-effort machine identity fields for UI display: `platform_family`, `platform_id`, and `computer_name`
+- `launch_source` is `local` for direct local `tunnel run` sessions and `mobile` for sessions whose registration is correlated with a mobile/device launch request
+- clients should treat missing, empty, or unknown `launch_source` values as `local`
 - `git_branch` is the Git branch for the registered startup `cwd` when that directory is on a symbolic branch; otherwise it is an empty string
 - `device_id` is copied from the registering session when that local `tunnel run` can read an existing daemon identity; otherwise it is an empty string
 - `computer_name` is already normalized by the agent before registration: prefer local display name when available, otherwise fall back to hostname
@@ -115,7 +115,7 @@ Code map (excerpt):
 - device identity is stable through `device_id`; display metadata such as `display_name`, `platform_family`, and `platform_id` are refreshed when the daemon re-registers
 - device presence is live-only; there is no offline or historical device list in this API revision
 - `POST /api/devices/:deviceID/launch` reports `session_ready` or a structured launch failure and does not auto-attach to the later session
-- `POST /api/sessions/:sessionID/terminate` can terminate only sessions that were created by a daemon launch and still have live daemon terminate metadata
+- `POST /api/sessions/:sessionID/stop` can stop any live session owned by the authenticated user
 
 ## Public HTTP API
 
@@ -697,7 +697,7 @@ Response:
       "platform_family": "linux",
       "platform_id": "ubuntu",
       "computer_name": "Office Linux",
-      "terminate_supported": true
+      "launch_source": "mobile"
     }
   ]
 }
@@ -712,7 +712,8 @@ Notes:
 - `git_branch` is the best-effort Git branch for `cwd`; when the startup directory is not on a symbolic branch it is returned as an empty string
 - `device_id` is copied from the registering session when the local `tunnel run` can read an existing daemon identity; otherwise it is an empty string
 - when `device_id` is non-empty and the daemon is currently online, clients can use it to correlate with `GET /api/devices[].device_id`; the relay does not validate that relationship during session registration
-- `terminate_supported` is true only when the relay has live daemon-launch metadata for the session; clients must not infer terminate support from `device_id` alone
+- `launch_source` is controlled by relay launch correlation; clients should not infer mobile launch from `device_id` alone
+- missing, empty, or unknown `launch_source` values should be treated as `local` for display
 - `platform_family`, `platform_id`, and `computer_name` are stable keys in the session payload; when metadata is unavailable they are returned as empty strings rather than omitted
 - `platform_family` is the coarse fallback field for session device identity, currently `macos` or `linux`
 - `platform_id` is the best-effort specific platform identifier for client icon mapping, for example `macos`, `ubuntu`, `debian`, `arch`, or `fedora`
@@ -722,78 +723,51 @@ Error responses:
 
 | Status | Body | Meaning |
 |--------|------|---------|
-| `401` | `{"code":1016,"message":"The request is unauthorized.","body":null}` | missing or invalid app bearer token |
+| `401` | `{"code":1016,"message":"The request is unauthorized.","body":null}` | missing or invalid app or agent bearer token |
 | `500` | `{"code":2002,"message":"An unexpected internal error occurred.","body":null}` | unexpected server failure |
 
-### `POST /api/sessions/:sessionID/terminate`
+### `POST /api/sessions/:sessionID/stop`
 
-Ask the owning online device daemon to terminate one daemon-created session.
+Ask the owning online `tunnel run` process to stop one live session.
 
-Auth: app access token
+Auth: app access token or agent token
 
 Headers:
 
 ```text
-Authorization: Bearer <access-token>
+Authorization: Bearer <access-token-or-agent-token>
 ```
 
 Request body: none
 
-Success response always uses the standard success envelope. The terminate result is carried in `body`.
-
-Successful body:
+Success response:
 
 ```json
 {
   "code": 0,
   "message": "success",
   "body": {
-    "request_id": "dev_abcd1234-terminate-150405.000000000",
-    "status": "terminated"
+    "session_id": "sess-1",
+    "status": "stopped"
   }
 }
 ```
-
-Routed failure body:
-
-```json
-{
-  "code": 0,
-  "message": "success",
-  "body": {
-    "request_id": "dev_abcd1234-terminate-150405.000000000",
-    "status": "failed",
-    "reason": "device_offline"
-  }
-}
-```
-
-Known routed failure `reason` values in this revision:
-
-- `device_offline`
-- `terminate_timeout`
-- `session_not_found`
-- `tmux_not_found`
-- `session_terminate_failed`
 
 Notes:
 
-- this is destructive session termination, not the local `tunnel daemon close` workspace-view action
-- only daemon-launched sessions with `terminate_supported: true` are eligible
-- direct local `tunnel run` sessions are rejected even when they report a `device_id`
-- the relay routes the request through `/device/ws`; the daemon owns tmux state and performs the actual tmux session termination
-- after `status: "terminated"`, the relay removes the live session from discovery and closes active attaches with the existing session-offline behavior
-- routed failures leave the live session discoverable
+- this is destructive session shutdown, not the local `tunnel daemon close` workspace-view action
+- local-launched and mobile-launched sessions use the same stop path
+- the relay sends `stop_session` to the owning `/agent/ws` connection, removes the live session from discovery, and closes active attaches with `session_stopped`
+- the owning `tunnel run` process exits after receiving `stop_session`
 
 Error responses:
 
 | Status | Body | Meaning |
 |--------|------|---------|
-| `401` | `{"code":1016,"message":"The request is unauthorized.","body":null}` | missing or invalid app bearer token |
+| `401` | `{"code":1016,"message":"The request is unauthorized.","body":null}` | missing or invalid app or agent bearer token |
 | `404` | `{"code":1015,"message":"The session was not found or is offline.","body":null}` | session is unknown, belongs to another user, or is currently offline |
-| `409` | `{"code":1020,"message":"This session cannot be terminated from the daemon.","body":null}` | session is live but was not created with daemon terminate metadata |
 | `500` | `{"code":2002,"message":"An unexpected internal error occurred.","body":null}` | unexpected server failure |
-| `503` | `{"code":2001,"message":"The service is temporarily unavailable.","body":null}` | session or device registry unavailable |
+| `503` | `{"code":2001,"message":"The service is temporarily unavailable.","body":null}` | session registry unavailable |
 
 ## Client Attach WebSocket
 

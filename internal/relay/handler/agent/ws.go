@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -79,20 +80,22 @@ func Handle(registry *session.Registry, deviceRegistry *relaydevice.Registry) gi
 			UserID:       authenticated.User.ID,
 			AgentTokenID: authenticated.Token.ID,
 		}
-		var terminateTarget session.TerminateTarget
-		if deviceRegistry != nil && register.LaunchRequestID != "" {
+		sessionInfo := *register.Session
+		sessionInfo.LaunchSource = protocol.SessionLaunchSourceLocal
+		launchRequestID := ""
+		if register.LaunchContext != nil && register.LaunchContext.Source == protocol.SessionLaunchSourceMobile {
+			launchRequestID = strings.TrimSpace(register.LaunchContext.RequestID)
+		}
+		if deviceRegistry != nil && launchRequestID != "" {
 			deviceOwner := relaydevice.DeviceOwner{
 				UserID:       authenticated.User.ID,
 				AgentTokenID: authenticated.Token.ID,
 			}
-			if target, ok := deviceRegistry.CompleteLaunchIfOwner(register.LaunchRequestID, deviceOwner, register.Session.SessionID); ok {
-				terminateTarget = session.TerminateTarget{
-					DeviceID:         target.DeviceID,
-					WorkspaceSession: target.WorkspaceSession,
-				}
+			if _, ok := deviceRegistry.CompleteLaunchIfOwner(launchRequestID, deviceOwner, register.Session.SessionID); ok {
+				sessionInfo.LaunchSource = protocol.SessionLaunchSourceMobile
 			}
 		}
-		registry.RegisterOwnedWithTerminateTarget(*register.Session, sessionOwner, peer, terminateTarget)
+		registry.RegisterOwned(sessionInfo, sessionOwner, peer)
 		defer registry.DisconnectIfOwner(register.Session.SessionID, peer)
 
 		tracker.SetSessionID(register.Session.SessionID)
@@ -101,7 +104,7 @@ func Handle(registry *session.Registry, deviceRegistry *relaydevice.Registry) gi
 			logx.String("launcher", register.Session.Launcher),
 			logx.String("label", register.Session.Label),
 			logx.String("cwd", register.Session.CWD),
-			logx.String("launch_request_id", register.LaunchRequestID),
+			logx.String("launch_request_id", launchRequestID),
 			logx.Int64("user_id", authenticated.User.ID),
 			logx.String("agent_token_id", authenticated.Token.ID),
 		}

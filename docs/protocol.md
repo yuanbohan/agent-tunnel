@@ -31,7 +31,7 @@ All protocol timestamps are Unix timestamps represented as JSON integers in seco
 | `GET /api/devices` | Client | Bearer | HTTP | Current live device snapshot for the authenticated user |
 | `POST /api/devices/:deviceID/launch` | Client | Bearer | HTTP | Ask one currently online device daemon to launch `tunnel run <command>` and wait for the resulting session to become `session_ready` |
 | `GET /api/sessions` | Client | Bearer | HTTP | Current live session snapshot for the authenticated user |
-| `POST /api/sessions/:id/terminate` | Client | Bearer | HTTP | Ask the owning online device daemon to terminate one daemon-created live session |
+| `POST /api/sessions/:id/stop` | Client | Bearer | HTTP | Ask the owning online agent to stop one live session |
 | `GET /api/sessions/:id/attach/ws` | Client | Bearer | WebSocket | Attach to one live session owned by the authenticated user for snapshot, live bytes, resize events, and session-scoped structured input |
 | `GET /agent/ws` | Agent | Bearer | WebSocket | Agent registration, attach control, resize metadata, structured input forwarding, and client-routed terminal byte delivery |
 | `GET /device/ws` | Device daemon | Bearer | WebSocket | Device registration plus launch request/result routing for one online machine |
@@ -79,7 +79,7 @@ WebSocket attach notes:
   "platform_family": "linux",
   "platform_id": "ubuntu",
   "computer_name": "Office Linux",
-  "terminate_supported": true
+  "launch_source": "mobile"
 }
 ```
 
@@ -93,7 +93,8 @@ Notes:
 - `platform_family` is the coarse fallback field for session device identity, currently `macos` or `linux`
 - `platform_id` is a best-effort specific identifier for client-side icon mapping
 - `computer_name` is the user-facing machine name chosen by the agent: display name first, hostname as fallback
-- `terminate_supported` is true only for live sessions whose daemon-launch correlation produced an internal tmux workspace target; clients must not infer terminate support from `device_id` alone
+- `launch_source` is `local` or `mobile`; the relay sets `mobile` only when session registration is correlated with a mobile/device launch request
+- clients should treat missing, empty, or unknown `launch_source` values as `local`
 - every returned session currently has an owning agent websocket and is attachable
 
 `GET /api/devices` returns the standard API envelope whose `body` is an array of `DeviceInfo` objects:
@@ -382,48 +383,9 @@ Notes:
 
 - `request_id` is relay-scoped and correlates one launch request with one result
 - `status: "accepted"` means the daemon validated the request and successfully created the local tmux-backed launch session
-- accepted launch results may include `workspace_session`, an opaque daemon-local tmux session name used only for later terminate routing
-- `status: "accepted"` still does not complete the client-visible launch flow; the relay waits for a later `/agent/ws` registration carrying the same launch request correlation
+- accepted launch results may include `workspace_session` as daemon-local metadata, but session stop is routed to the owning agent through `/agent/ws`
+- `status: "accepted"` still does not complete the client-visible launch flow; the relay waits for a later `/agent/ws` registration carrying a matching launch context
 - the relay keeps only transient online-device routing state; device health, last failure, and tmux workspace details remain local to the daemon
-
-Terminate request relay-to-device:
-
-```json
-{
-  "type": "terminate_request",
-  "request_id": "dev_abcd1234-terminate-150405.000000000",
-  "session_id": "sess-1",
-  "workspace_session": "launch_abcd1234"
-}
-```
-
-Terminate result device-to-relay:
-
-```json
-{
-  "type": "terminate_result",
-  "request_id": "dev_abcd1234-terminate-150405.000000000",
-  "status": "terminated"
-}
-```
-
-or
-
-```json
-{
-  "type": "terminate_result",
-  "request_id": "dev_abcd1234-terminate-150405.000000000",
-  "status": "failed",
-  "reason": "session_not_found"
-}
-```
-
-Notes:
-
-- terminate is distinct from `tunnel daemon close`; terminate kills the daemon-created tmux session backing one launched `tunnel run`, while close only detaches a local workspace view
-- `workspace_session` is relay/device internal metadata and is not exposed through session discovery
-- `status: "terminated"` is the only successful terminate state
-- known failure reasons include `session_not_found`, `tmux_not_found`, and `session_terminate_failed`; relay-side routing may also produce `device_offline` or `terminate_timeout`
 
 ## Agent WebSocket
 
@@ -441,7 +403,10 @@ It is a mixed websocket:
 ```json
 {
   "type": "register",
-  "launch_request_id": "dev_abcd1234-150405.000000000",
+  "launch_context": {
+    "source": "mobile",
+    "request_id": "dev_abcd1234-150405.000000000"
+  },
   "session": {
     "session_id": "sess-1",
     "device_id": "dev_abcd1234",
@@ -462,9 +427,12 @@ Notes:
 
 - `register` must be the first agent control frame on the websocket
 - the relay treats that websocket as the owner of the live session
-- `launch_request_id` is optional; it is present only when this session was created from `POST /api/devices/:deviceID/launch`
+- `launch_context` is optional; it is present only when this session was created from `POST /api/devices/:deviceID/launch`
+- `launch_context.source` describes the launch source claimed by the registering `tunnel run`; currently the only non-local value is `mobile`
+- `launch_context.request_id` is the relay-issued launch correlation id, not user-visible source metadata
 - the relay stores `session.device_id` from the registration payload without launch-request validation; agents send an empty string when local daemon identity is unavailable
-- when `launch_request_id` is present, the relay may use it to complete one pending launch request as `session_ready` with the new `session_id` and bind live-only terminate metadata to that session
+- the relay marks a live session with `launch_source: "mobile"` only when `launch_context.source` is `mobile` and `launch_context.request_id` matches a pending launch request owned by the same user and agent token
+- missing, empty, unknown, or unmatched launch context values are treated as local launch source
 - session metadata is self-contained on registration; clients should not infer session platform identity by correlating later launch state or online device listings
 
 ### `resize`
@@ -516,7 +484,7 @@ Notes:
 
 ```json
 {
-  "type": "attach_close",
+ "type": "attach_close",
   "client_id": "4d2c6ec8-787a-49c9-b9a0-5dbd8d31b7b1",
   "reason": "slow_client"
 }
@@ -558,6 +526,20 @@ Notes:
 
 - the relay sends this when the attached client socket closes or is no longer usable
 - known reasons include `client_closed`, `slow_client`, `logged_out`, `password_changed`, `agent_token_revoked`, and `account_deleted`
+
+### `stop_session`
+
+```json
+{
+  "type": "stop_session"
+}
+```
+
+Notes:
+
+- the relay sends this to the owning `/agent/ws` connection after `POST /api/sessions/:id/stop` is accepted
+- the agent should stop the local `tunnel run` session and exit
+- the relay removes the session from discovery and closes active attaches with `session_stopped`
 
 ### `input_text`
 

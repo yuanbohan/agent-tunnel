@@ -19,24 +19,30 @@ type statusHandler func(context.Context, io.Writer) error
 type updateHandler func(context.Context, io.Writer, io.Writer) error
 
 type rollbackHandler func(context.Context, io.Writer, io.Writer) error
+type sessionListHandler func(context.Context, sessionCommandArgs, io.Writer, io.Writer) error
+type sessionStopHandler func(context.Context, sessionCommandArgs, string, io.Writer, io.Writer) error
 
 type commandHandlers struct {
-	run      runHandler
-	login    loginHandler
-	logout   logoutHandler
-	status   statusHandler
-	update   updateHandler
-	rollback rollbackHandler
+	run         runHandler
+	login       loginHandler
+	logout      logoutHandler
+	status      statusHandler
+	update      updateHandler
+	rollback    rollbackHandler
+	sessionList sessionListHandler
+	sessionStop sessionStopHandler
 }
 
 func defaultCommandHandlers() commandHandlers {
 	return commandHandlers{
-		run:      runTunnelSession,
-		login:    runAuthLogin,
-		logout:   runAuthLogout,
-		status:   runAuthStatus,
-		update:   runManualUpdate,
-		rollback: runManualRollback,
+		run:         runTunnelSession,
+		login:       runAuthLogin,
+		logout:      runAuthLogout,
+		status:      runAuthStatus,
+		update:      runManualUpdate,
+		rollback:    runManualRollback,
+		sessionList: runSessionList,
+		sessionStop: runSessionStop,
 	}
 }
 
@@ -65,6 +71,7 @@ func newRootCmd(handlers commandHandlers) *cobra.Command {
 	root.CompletionOptions.DisableDefaultCmd = true
 	root.AddCommand(newRunCmd(handlers.run))
 	root.AddCommand(newAuthCmd(handlers))
+	root.AddCommand(newSessionCmd(handlers))
 	root.AddCommand(newDaemonCmd())
 	root.AddCommand(newUpdateCmd(handlers.update))
 	root.AddCommand(newRollbackCmd(handlers.rollback))
@@ -74,9 +81,11 @@ func newRootCmd(handlers commandHandlers) *cobra.Command {
 
 func newRunCmd(runFn runHandler) *cobra.Command {
 	var (
-		verbose bool
-		label   string
-		baseURL string
+		verbose         bool
+		label           string
+		baseURL         string
+		launchSource    string
+		launchRequestID string
 	)
 
 	cmd := &cobra.Command{
@@ -95,17 +104,23 @@ func newRunCmd(runFn runHandler) *cobra.Command {
 			}
 
 			return runFn(cmd.Context(), cmd.InOrStdin(), runArgs{
-				Verbose:      verbose,
-				Label:        label,
-				BaseURL:      resolved,
-				Launcher:     args[0],
-				LauncherArgs: append([]string(nil), args[1:]...),
+				Verbose:         verbose,
+				Label:           label,
+				BaseURL:         resolved,
+				LaunchSource:    launchSource,
+				LaunchRequestID: launchRequestID,
+				Launcher:        args[0],
+				LauncherArgs:    append([]string(nil), args[1:]...),
 			}, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "print relay connection status on successful startup")
 	cmd.Flags().StringVarP(&label, "label", "l", "", "optional session label for relay clients")
 	cmd.Flags().StringVar(&baseURL, "base-url", "", "relay base URL")
+	cmd.Flags().StringVar(&launchSource, "launch-source", "", "internal launch source metadata")
+	cmd.Flags().StringVar(&launchRequestID, "launch-request-id", "", "internal launch request correlation id")
+	_ = cmd.Flags().MarkHidden("launch-source")
+	_ = cmd.Flags().MarkHidden("launch-request-id")
 	cmd.Flags().SetInterspersed(false)
 	cmd.SetHelpFunc(func(cmd *cobra.Command, _ []string) {
 		_, _ = io.WriteString(cmd.OutOrStdout(), runHelpText())
@@ -137,6 +152,79 @@ func newAuthCmd(handlers commandHandlers) *cobra.Command {
 	authCmd.AddCommand(newAuthLogoutCmd(handlers.logout))
 	authCmd.AddCommand(newAuthStatusCmd(handlers.status))
 	return authCmd
+}
+
+func newSessionCmd(handlers commandHandlers) *cobra.Command {
+	var baseURL string
+
+	cmd := &cobra.Command{
+		Use:           "session",
+		Short:         "List and stop live tunnel sessions",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		Args:          cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return cmd.Help()
+		},
+	}
+	cmd.PersistentFlags().StringVar(&baseURL, "base-url", "", "relay base URL")
+	cmd.SetHelpFunc(func(cmd *cobra.Command, _ []string) {
+		_, _ = io.WriteString(cmd.OutOrStdout(), sessionHelpText())
+	})
+	cmd.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
+		return usageWithHelp(sessionHelpText(), "%v", err)
+	})
+
+	listCmd := &cobra.Command{
+		Use:           "list",
+		Short:         "List live sessions",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		Args:          cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			resolved, err := resolveBaseURL(baseURL, osEnv)
+			if err != nil {
+				return err
+			}
+			return handlers.sessionList(cmd.Context(), sessionCommandArgs{BaseURL: resolved}, cmd.OutOrStdout(), cmd.ErrOrStderr())
+		},
+	}
+	listCmd.SetHelpFunc(func(cmd *cobra.Command, _ []string) {
+		_, _ = io.WriteString(cmd.OutOrStdout(), sessionListHelpText())
+	})
+	listCmd.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
+		return usageWithHelp(sessionListHelpText(), "%v", err)
+	})
+
+	stopCmd := &cobra.Command{
+		Use:           "stop <session-id>",
+		Short:         "Stop a live session",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) != 1 {
+				return usageWithHelp(sessionStopHelpText(), "expected exactly one session id")
+			}
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resolved, err := resolveBaseURL(baseURL, osEnv)
+			if err != nil {
+				return err
+			}
+			return handlers.sessionStop(cmd.Context(), sessionCommandArgs{BaseURL: resolved}, args[0], cmd.OutOrStdout(), cmd.ErrOrStderr())
+		},
+	}
+	stopCmd.SetHelpFunc(func(cmd *cobra.Command, _ []string) {
+		_, _ = io.WriteString(cmd.OutOrStdout(), sessionStopHelpText())
+	})
+	stopCmd.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
+		return usageWithHelp(sessionStopHelpText(), "%v", err)
+	})
+
+	cmd.AddCommand(listCmd)
+	cmd.AddCommand(stopCmd)
+	return cmd
 }
 
 func newVersionCmd() *cobra.Command {

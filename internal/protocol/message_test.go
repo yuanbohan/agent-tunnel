@@ -8,7 +8,7 @@ import (
 
 func TestRegisterFrameRoundTrip(t *testing.T) {
 	started := 1775131200
-	frame := RegisterFrameWithLaunchRequest(SessionInfo{
+	frame := RegisterFrameWithLaunchContext(SessionInfo{
 		SessionID:      "sess-123",
 		DeviceID:       "dev-123",
 		Launcher:       "codex",
@@ -20,7 +20,8 @@ func TestRegisterFrameRoundTrip(t *testing.T) {
 		PlatformFamily: "linux",
 		PlatformID:     "ubuntu",
 		ComputerName:   "Office Linux",
-	}, "req-123")
+		LaunchSource:   "mobile",
+	}, LaunchContext{Source: SessionLaunchSourceMobile, RequestID: "req-123"})
 
 	raw, err := json.Marshal(frame)
 	if err != nil {
@@ -59,8 +60,24 @@ func TestRegisterFrameRoundTrip(t *testing.T) {
 	if decoded.Session.ComputerName != "Office Linux" {
 		t.Fatalf("ComputerName = %q, want Office Linux", decoded.Session.ComputerName)
 	}
-	if decoded.LaunchRequestID != "req-123" {
-		t.Fatalf("LaunchRequestID = %q, want req-123", decoded.LaunchRequestID)
+	if decoded.Session.LaunchSource != "mobile" {
+		t.Fatalf("LaunchSource = %q, want mobile", decoded.Session.LaunchSource)
+	}
+	if decoded.LaunchContext == nil {
+		t.Fatal("LaunchContext = nil, want context")
+	}
+	if decoded.LaunchContext.Source != SessionLaunchSourceMobile {
+		t.Fatalf("LaunchContext.Source = %q, want mobile", decoded.LaunchContext.Source)
+	}
+	if decoded.LaunchContext.RequestID != "req-123" {
+		t.Fatalf("LaunchContext.RequestID = %q, want req-123", decoded.LaunchContext.RequestID)
+	}
+}
+
+func TestStopSessionFrame(t *testing.T) {
+	frame := StopSessionFrame()
+	if frame.Type != "stop_session" {
+		t.Fatalf("Type = %q, want stop_session", frame.Type)
 	}
 }
 
@@ -112,6 +129,7 @@ func TestSessionSummaryJSONUsesStableFieldNames(t *testing.T) {
 		PlatformFamily: "macos",
 		PlatformID:     "macos",
 		ComputerName:   "Yuanbo's MacBook Pro",
+		LaunchSource:   SessionLaunchSourceLocal,
 	}
 
 	raw, err := json.Marshal(info)
@@ -131,6 +149,7 @@ func TestSessionSummaryJSONUsesStableFieldNames(t *testing.T) {
 		"platform_family",
 		"platform_id",
 		"computer_name",
+		"launch_source",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("json = %s, want field %q", got, want)
@@ -138,6 +157,12 @@ func TestSessionSummaryJSONUsesStableFieldNames(t *testing.T) {
 	}
 	if strings.Contains(got, "latest_seq") {
 		t.Fatalf("json = %s, did not expect latest_seq", got)
+	}
+	if strings.Contains(got, "terminate_supported") {
+		t.Fatalf("json = %s, did not expect terminate_supported", got)
+	}
+	if strings.Contains(got, `"origin"`) {
+		t.Fatalf("json = %s, did not expect legacy origin", got)
 	}
 }
 

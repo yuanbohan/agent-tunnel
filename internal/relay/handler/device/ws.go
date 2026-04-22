@@ -97,10 +97,7 @@ func Handle(registry *relaydevice.Registry, sessionRegistry *relaysession.Regist
 			switch frame.Type {
 			case "launch_result":
 				if completion, ok := registry.ResolveLaunchIfOwner(register.Device.DeviceID, peer, frame.RequestID, frame.Status, frame.Reason, frame.WorkspaceSession); ok && completion.SessionID != "" && sessionRegistry != nil {
-					sessionRegistry.SetTerminateTargetForUser(completion.SessionID, authenticated.User.ID, relaysession.TerminateTarget{
-						DeviceID:         completion.Target.DeviceID,
-						WorkspaceSession: completion.Target.WorkspaceSession,
-					})
+					sessionRegistry.SetLaunchSourceForUser(completion.SessionID, authenticated.User.ID, protocol.SessionLaunchSourceMobile)
 				}
 			case "terminate_result":
 				registry.ResolveTerminateIfOwner(register.Device.DeviceID, peer, frame.RequestID, frame.Status, frame.Reason)

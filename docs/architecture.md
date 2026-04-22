@@ -6,11 +6,11 @@ This document describes the current system shape for the attach-based protocol.
 
 `tunnel` owns the real local agent process, its PTY, and the authoritative current terminal state for that session. Built-in CLI commands own the top-level namespace, and local command launch happens only through `tunnel run <command>`. Every PATH-resolved launcher command follows the same path: one local PTY child, one session hub, one headless terminal mirror, one outbound relay connector, and no launcher-specific sidecar.
 
-Separately, `tunnel daemon` owns one explicit background device-launch runtime on a machine with local `tmux`. That daemon has its own local control socket, its own live relay connector on `/device/ws`, and its own dedicated tmux workspace used to create future `tunnel run <command>` sessions. The daemon is the state authority for device launch and terminate behavior; the relay only brokers currently online daemon connections plus the short-lived correlation needed to turn one launch request into one later `session_ready` result and the live-only metadata needed to route terminate for daemon-created sessions.
+Separately, `tunnel daemon` owns one explicit background device-launch runtime on a machine with local `tmux`. That daemon has its own local control socket, its own live relay connector on `/device/ws`, and its own dedicated tmux workspace used to create future `tunnel run <command>` sessions. The daemon is the state authority for device launch behavior; the relay only brokers currently online daemon connections plus the short-lived correlation needed to turn one launch request into one later `session_ready` result.
 
 `docs/daemon.md` is the daemon-specific implementation contract. Changes to daemon lifecycle, tmux workspace ownership, launch validation, health reporting, or failure reasons must keep that contract aligned with this architecture document and the public API/protocol docs.
 
-The relay exposes authenticated APIs so external clients can register accounts, log in, manage agent tokens, discover live sessions, discover live devices, attach to one online session, request that one online device daemon create a new session, and request termination of eligible daemon-created sessions. Operator maintenance routes stay outside the public `/api/` namespace and are intended for host-local use only. PostgreSQL is the durable source of truth for users, invite codes, app sessions, agent tokens, and operator audit records. App auth uses opaque bearer access tokens with a nominal 24-hour lifetime, rotating refresh tokens with a 30-day sliding lifetime, and a 90-day absolute session lifetime anchored at the original login. The relay is not the terminal-state authority and it does not retain transcript history. Live session discovery includes best-effort Git branch metadata for the startup `cwd`, optional local daemon identity through `device_id`, device identity metadata such as `platform_family`, `platform_id`, and normalized `computer_name`, and a `terminate_supported` marker for sessions with live daemon terminate metadata.
+The relay exposes authenticated APIs so external clients can register accounts, log in, manage agent tokens, discover live sessions, discover live devices, attach to one online session, request that one online device daemon create a new session, and stop any owned live session. Operator maintenance routes stay outside the public `/api/` namespace and are intended for host-local use only. PostgreSQL is the durable source of truth for users, invite codes, app sessions, agent tokens, and operator audit records. App auth uses opaque bearer access tokens with a nominal 24-hour lifetime, rotating refresh tokens with a 30-day sliding lifetime, and a 90-day absolute session lifetime anchored at the original login. The relay is not the terminal-state authority and it does not retain transcript history. Live session discovery includes best-effort Git branch metadata for the startup `cwd`, optional local daemon identity through `device_id`, relay-controlled `launch_source`, and device identity metadata such as `platform_family`, `platform_id`, and normalized `computer_name`.
 
 For hosted deployments, the security invariant is strict user scoping: the user who owns the agent token also owns the live session, `GET /api/sessions` returns only that user's sessions, and cross-user attach attempts resolve as not found.
 
@@ -110,7 +110,7 @@ It owns:
 - closing active attaches promptly when the owning agent disappears
 - synchronously evicting live sessions when a user is deleted or an agent token is revoked
 - closing affected app-side attaches when an app session logs out or a password change revokes app sessions, without disconnecting the owning agent
-- tracking only currently online `/device/ws` connections, the transient request-correlation state needed to turn one launch request into one `session_ready` result or timeout, and live-only terminate targets for daemon-created sessions
+- tracking only currently online `/device/ws` connections and the transient request-correlation state needed to turn one launch request into one `session_ready` result or timeout
 
 The relay does not own:
 
@@ -123,7 +123,7 @@ The relay does not own:
 - end-to-end guarantees that a remote client observed every PTY byte
 - creation or ownership of local tmux workspace sessions on device daemons
 - offline device inventory
-- daemon health, last launch failure, terminate history, or tmux-workspace state
+- daemon health, last launch failure, stop history, or tmux-workspace state
 
 ### Client
 
@@ -244,9 +244,9 @@ The device-launch lifecycle is separate from session attach:
 5. The daemon decides locally whether the request is allowed, whether it is already busy, whether the requested `cwd` is valid, and whether a new tmux-backed session can be created.
 6. If the daemon accepts the launch locally, it starts a new tmux session running `tunnel run <command>` with the requested cwd and optional label, and it passes the launch correlation forward.
 7. The later `tunnel run <command>` process registers a normal session on `/agent/ws`, includes that launch correlation, and supplies its own platform and computer identity metadata as part of the session registration.
-8. The relay completes the pending mobile launch request as `session_ready` when it sees the matching session registration, binds any daemon terminate target from the accepted launch result to that live session, or returns a structured timeout failure if that registration does not arrive in time.
+8. The relay completes the pending mobile launch request as `session_ready` when it sees the matching session registration, marks the live session with `launch_source: "mobile"`, or returns a structured timeout failure if that registration does not arrive in time.
 9. Session discovery and attach then proceed through the unchanged session APIs, with device identity coming from the session itself rather than from launch correlation.
-10. If a client later calls `POST /api/sessions/:id/terminate` for a session with terminate support, the relay routes one terminate request to the online owning daemon, removes the live session only after a `terminated` result, and leaves the session discoverable on routed failures.
+10. If a client later calls `POST /api/sessions/:id/stop`, the relay sends `stop_session` to the owning agent, removes the live session from discovery, and closes active attaches with `session_stopped`.
 
 ## Package Map
 
@@ -259,12 +259,12 @@ The device-launch lifecycle is separate from session attach:
 - `internal/logx/`: global structured logging setup and helpers
 - `internal/relay/auth/`: invite code rules, username/password normalization, app-session flows, and agent-token flows
 - `internal/relay/operator/`: operator invite and user-maintenance services
-- `internal/relay/device/`: transient online-device routing, owner metadata, launch-request coordination, and terminate-request routing
-- `internal/relay/session/`: live session registry, owner metadata, live daemon terminate targets, and attach-session indexing
+- `internal/relay/device/`: transient online-device routing, owner metadata, and launch-request coordination
+- `internal/relay/session/`: live session registry, owner metadata, stop control routing, and attach-session indexing
 - `internal/relay/handler/`: Gin router assembly plus subpackages for middleware, REST API, agent WebSocket flows, device WebSocket flows, attach WebSocket flows, shared request helpers, and HTTP DTOs
 - `internal/migration/`: relay schema migration runner and `schema_migrations` tracking
 - `internal/relay/store/postgres/`: PostgreSQL-backed auth and operator persistence
-- `internal/protocol/`: shared session-attach, device-launch, and device-terminate wire types
+- `internal/protocol/`: shared session-attach, device-launch, and session-stop wire types
 
 ## Related Documents
 

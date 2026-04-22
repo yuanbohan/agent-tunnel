@@ -11,10 +11,9 @@ import (
 )
 
 var (
-	ErrSessionNotFound             = errors.New("relay session not found")
-	ErrSessionOffline              = errors.New("relay session offline")
-	ErrAgentPeerInactive           = errors.New("agent peer inactive")
-	ErrSessionTerminateUnsupported = errors.New("relay session terminate unsupported")
+	ErrSessionNotFound   = errors.New("relay session not found")
+	ErrSessionOffline    = errors.New("relay session offline")
+	ErrAgentPeerInactive = errors.New("agent peer inactive")
 )
 
 type AgentPeer interface {
@@ -42,16 +41,11 @@ type SessionOwner struct {
 	AgentTokenID string
 }
 
-type TerminateTarget struct {
-	DeviceID         string
-	WorkspaceSession string
-}
-
 type liveSession struct {
 	info            protocol.SessionInfo
 	owner           SessionOwner
 	peer            AgentPeer
-	terminateTarget TerminateTarget
+	stopping        bool
 	pendingAttached map[string]AttachPeer
 	attached        map[string]AttachPeer
 }
@@ -67,30 +61,21 @@ func (r *Registry) Register(info protocol.SessionInfo, peer AgentPeer) {
 }
 
 func (r *Registry) RegisterOwned(info protocol.SessionInfo, owner SessionOwner, peer AgentPeer) {
-	r.RegisterOwnedWithTerminateTarget(info, owner, peer, TerminateTarget{})
-}
-
-func (r *Registry) RegisterOwnedWithTerminateTarget(info protocol.SessionInfo, owner SessionOwner, peer AgentPeer, terminateTarget TerminateTarget) {
 	r.mu.Lock()
 	old := r.sessions[info.SessionID]
 	var attached []AttachPeer
-	normalizedTarget := normalizedTerminateTarget(terminateTarget)
 
 	if old != nil {
 		if old.peer != peer {
 			deactivateAgentPeer(old.peer)
 		}
 		attached = takeAllAttachedLocked(old)
-		if !hasTerminateTarget(normalizedTarget) && old.owner == owner {
-			normalizedTarget = old.terminateTarget
-		}
 	}
 
 	r.sessions[info.SessionID] = &liveSession{
 		info:            info,
 		owner:           owner,
 		peer:            peer,
-		terminateTarget: normalizedTarget,
 		pendingAttached: make(map[string]AttachPeer),
 		attached:        make(map[string]AttachPeer),
 	}
@@ -150,9 +135,13 @@ func (r *Registry) DisconnectIfOwner(sessionID string, owner AgentPeer) bool {
 	delete(r.sessions, sessionID)
 	deactivateAgentPeer(owner)
 	attached := takeAllAttachedLocked(live)
+	reason := "session_offline"
+	if live.stopping {
+		reason = "session_stopped"
+	}
 	r.mu.Unlock()
 
-	closeAttachedPeers(attached, "session_offline")
+	closeAttachedPeers(attached, reason)
 	_ = owner.Close()
 	return true
 }
@@ -228,24 +217,58 @@ func (r *Registry) SessionForUser(sessionID string, userID int64) (protocol.Sess
 	return live.snapshot(), true
 }
 
-func (r *Registry) TerminateTargetForUser(sessionID string, userID int64) (TerminateTarget, error) {
+func (r *Registry) StopForUser(sessionID string, userID int64) error {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
-
 	live, ok := r.sessions[sessionID]
 	if !ok || live.owner.UserID != userID {
-		return TerminateTarget{}, ErrSessionNotFound
+		r.mu.RUnlock()
+		return ErrSessionNotFound
 	}
-	target := live.terminateTarget
-	if strings.TrimSpace(target.DeviceID) == "" || strings.TrimSpace(target.WorkspaceSession) == "" {
-		return TerminateTarget{}, ErrSessionTerminateUnsupported
+	peer := live.peer
+	r.mu.RUnlock()
+
+	if peer == nil {
+		return ErrSessionOffline
 	}
-	return target, nil
+
+	r.mu.Lock()
+	live, ok = r.sessions[sessionID]
+	if !ok || live.owner.UserID != userID || live.peer != peer {
+		r.mu.Unlock()
+		return ErrSessionNotFound
+	}
+	live.stopping = true
+	r.mu.Unlock()
+
+	if err := peer.SendJSON(protocol.StopSessionFrame()); err != nil {
+		r.mu.Lock()
+		if live, ok := r.sessions[sessionID]; ok && live.owner.UserID == userID && live.peer == peer {
+			live.stopping = false
+		}
+		r.mu.Unlock()
+		if errors.Is(err, ErrAgentPeerInactive) {
+			return ErrSessionOffline
+		}
+		return err
+	}
+
+	r.mu.Lock()
+	live, ok = r.sessions[sessionID]
+	if !ok || live.owner.UserID != userID || live.peer != peer {
+		r.mu.Unlock()
+		return nil
+	}
+	delete(r.sessions, sessionID)
+	attached := takeAllAttachedLocked(live)
+	r.mu.Unlock()
+
+	closeAttachedPeers(attached, "session_stopped")
+	return nil
 }
 
-func (r *Registry) SetTerminateTargetForUser(sessionID string, userID int64, target TerminateTarget) bool {
-	target = normalizedTerminateTarget(target)
-	if !hasTerminateTarget(target) {
+func (r *Registry) SetLaunchSourceForUser(sessionID string, userID int64, launchSource string) bool {
+	launchSource = strings.TrimSpace(launchSource)
+	if launchSource == "" {
 		return false
 	}
 
@@ -256,7 +279,7 @@ func (r *Registry) SetTerminateTargetForUser(sessionID string, userID int64, tar
 	if !ok || live.owner.UserID != userID {
 		return false
 	}
-	live.terminateTarget = target
+	live.info.LaunchSource = launchSource
 	return true
 }
 
@@ -492,21 +515,7 @@ func closeAttachedPeers(peers []AttachPeer, reason string) {
 }
 
 func (s *liveSession) snapshot() protocol.SessionInfo {
-	info := s.info
-	info.TerminateSupported = hasTerminateTarget(s.terminateTarget)
-	return info
-}
-
-func normalizedTerminateTarget(target TerminateTarget) TerminateTarget {
-	return TerminateTarget{
-		DeviceID:         strings.TrimSpace(target.DeviceID),
-		WorkspaceSession: strings.TrimSpace(target.WorkspaceSession),
-	}
-}
-
-func hasTerminateTarget(target TerminateTarget) bool {
-	target = normalizedTerminateTarget(target)
-	return target.DeviceID != "" && target.WorkspaceSession != ""
+	return s.info
 }
 
 func deactivateAgentPeer(peer AgentPeer) {

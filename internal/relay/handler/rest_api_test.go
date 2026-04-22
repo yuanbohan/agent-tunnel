@@ -112,114 +112,70 @@ func TestHandlerLaunchDeviceWaitsForSessionReady(t *testing.T) {
 	<-done
 }
 
-func TestHandlerTerminatesDaemonCreatedSession(t *testing.T) {
+func TestHandlerStopsSessionWithAppToken(t *testing.T) {
 	env := newHandlerTestEnv(t)
 	env.addInvite(t, "AB2C3D")
 	user := env.registerUser(t, "alice", "password123", "AB2C3D")
 	issued := env.login(t, "alice", "password123")
-	peer := &blockingDevicePeer{sent: make(chan protocol.DeviceFrame, 1)}
-	env.deviceRegistry.RegisterOwned(protocol.DeviceInfo{DeviceID: "dev-1"}, relaydevice.DeviceOwner{UserID: user.ID}, peer)
-	env.registry.RegisterOwnedWithTerminateTarget(protocol.SessionInfo{
+	peer := &recordingAgentPeer{}
+	attachPeer := &recordingAttachPeer{}
+	env.registry.RegisterOwned(protocol.SessionInfo{
 		SessionID: "sess-1",
 		DeviceID:  "dev-1",
 		Launcher:  "codex",
-	}, relaysession.SessionOwner{UserID: user.ID}, fakeAgentPeer{}, relaysession.TerminateTarget{
-		DeviceID:         "dev-1",
-		WorkspaceSession: "launch_fixed",
-	})
+	}, relaysession.SessionOwner{UserID: user.ID}, peer)
+	if _, err := env.registry.StartAttachForUser("sess-1", "client-1", user.ID, attachPeer); err != nil {
+		t.Fatalf("StartAttachForUser returned error: %v", err)
+	}
 
 	handler := env.handler(nil)
 	rec := httptest.NewRecorder()
-	done := make(chan struct{})
-	requestIDCh := make(chan string, 1)
-	go func() {
-		frame := <-peer.sent
-		requestIDCh <- frame.RequestID
-		if frame.Type != "terminate_request" || frame.SessionID != "sess-1" || frame.WorkspaceSession != "launch_fixed" {
-			t.Errorf("frame = %#v, want terminate_request sess-1 launch_fixed", frame)
-			close(done)
-			return
-		}
-		env.deviceRegistry.ResolveTerminateIfOwner("dev-1", peer, frame.RequestID, relaydevice.TerminateStatusTerminated, "")
-		close(done)
-	}()
-
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-1/terminate", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-1/stop", nil)
 	req.Header.Set("Authorization", bearerAuth(issued.AccessToken))
 	handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	var response handlertypes.TerminateSessionResponse
+	var response handlertypes.StopSessionResponse
 	decodeAPIEnvelopeFromRecorder(t, rec, http.StatusOK, &response)
-	requestID := <-requestIDCh
-	if response.Status != relaydevice.TerminateStatusTerminated || response.RequestID != requestID || response.Reason != "" {
-		t.Fatalf("response = %#v, want terminated", response)
+	if response.Status != "stopped" || response.SessionID != "sess-1" {
+		t.Fatalf("response = %#v, want stopped sess-1", response)
 	}
 	if _, ok := env.registry.SessionForUser("sess-1", user.ID); ok {
-		t.Fatal("session still exists after successful terminate")
+		t.Fatal("session still exists after stop")
 	}
-	<-done
+	frames := peer.Frames()
+	if len(frames) != 1 || frames[0].Type != "stop_session" {
+		t.Fatalf("frames = %#v, want stop_session", frames)
+	}
+	if reasons := attachPeer.CloseReasons(); len(reasons) != 1 || reasons[0] != "session_stopped" {
+		t.Fatalf("close reasons = %#v, want [session_stopped]", reasons)
+	}
 }
 
-func TestHandlerRejectsTerminateForDirectSessionWithDeviceID(t *testing.T) {
+func TestHandlerStopsSessionWithAgentToken(t *testing.T) {
 	env := newHandlerTestEnv(t)
 	env.addInvite(t, "AB2C3D")
 	user := env.registerUser(t, "alice", "password123", "AB2C3D")
-	issued := env.login(t, "alice", "password123")
-	peer := &blockingDevicePeer{sent: make(chan protocol.DeviceFrame, 1)}
-	env.deviceRegistry.RegisterOwned(protocol.DeviceInfo{DeviceID: "dev-1"}, relaydevice.DeviceOwner{UserID: user.ID}, peer)
+	created := env.createAgentToken(t, user.ID, "Laptop")
+	peer := &recordingAgentPeer{}
 	env.registry.RegisterOwned(protocol.SessionInfo{
-		SessionID: "sess-direct",
-		DeviceID:  "dev-1",
-		Launcher:  "codex",
-	}, relaysession.SessionOwner{UserID: user.ID}, fakeAgentPeer{})
-
-	handler := env.handler(nil)
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-direct/terminate", nil)
-	req.Header.Set("Authorization", bearerAuth(issued.AccessToken))
-	handler.ServeHTTP(rec, req)
-
-	decodeAPIErrorEnvelopeFromRecorder(t, rec, http.StatusConflict, handlerresponse.CodeSessionTerminateUnsupported, "This session cannot be terminated from the daemon.")
-	select {
-	case frame := <-peer.sent:
-		t.Fatalf("unexpected device frame = %#v", frame)
-	default:
-	}
-}
-
-func TestHandlerTerminateFailureLeavesSessionDiscoverable(t *testing.T) {
-	env := newHandlerTestEnv(t)
-	env.addInvite(t, "AB2C3D")
-	user := env.registerUser(t, "alice", "password123", "AB2C3D")
-	issued := env.login(t, "alice", "password123")
-	env.registry.RegisterOwnedWithTerminateTarget(protocol.SessionInfo{
 		SessionID: "sess-1",
-		DeviceID:  "dev-1",
 		Launcher:  "codex",
-	}, relaysession.SessionOwner{UserID: user.ID}, fakeAgentPeer{}, relaysession.TerminateTarget{
-		DeviceID:         "dev-1",
-		WorkspaceSession: "launch_fixed",
-	})
+	}, relaysession.SessionOwner{UserID: user.ID, AgentTokenID: created.Record.ID}, peer)
 
 	handler := env.handler(nil)
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-1/terminate", nil)
-	req.Header.Set("Authorization", bearerAuth(issued.AccessToken))
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-1/stop", nil)
+	req.Header.Set("Authorization", bearerAuth(created.Plaintext))
 	handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	var response handlertypes.TerminateSessionResponse
-	decodeAPIEnvelopeFromRecorder(t, rec, http.StatusOK, &response)
-	if response.Status != relaydevice.TerminateStatusFailed || response.Reason != "device_offline" {
-		t.Fatalf("response = %#v, want failed device_offline", response)
-	}
-	if _, ok := env.registry.SessionForUser("sess-1", user.ID); !ok {
-		t.Fatal("session missing after failed terminate")
+	if _, ok := env.registry.SessionForUser("sess-1", user.ID); ok {
+		t.Fatal("session still exists after stop")
 	}
 }
 

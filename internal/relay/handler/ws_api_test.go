@@ -248,8 +248,8 @@ func TestDeviceWebSocketLaunchRequestRoundTrip(t *testing.T) {
 	defer sessionsResp.Body.Close()
 	var sessions []protocol.SessionInfo
 	decodeAPIEnvelopeFromResponse(t, sessionsResp, http.StatusOK, &sessions)
-	if len(sessions) != 1 || sessions[0].SessionID != "sess-1" || sessions[0].DeviceID != devices[0].DeviceID || !sessions[0].TerminateSupported {
-		t.Fatalf("sessions = %#v, want terminable sess-1 with device_id %q", sessions, devices[0].DeviceID)
+	if len(sessions) != 1 || sessions[0].SessionID != "sess-1" || sessions[0].DeviceID != devices[0].DeviceID || sessions[0].LaunchSource != protocol.SessionLaunchSourceMobile {
+		t.Fatalf("sessions = %#v, want mobile-launched sess-1 with device_id %q", sessions, devices[0].DeviceID)
 	}
 
 	attachConn := dialAttachClient(t, server.URL, issued.AccessToken, "sess-1")
@@ -271,45 +271,27 @@ func TestDeviceWebSocketLaunchRequestRoundTrip(t *testing.T) {
 		t.Fatalf("snapshot_done = %#v, want snapshot_done", done)
 	}
 
-	terminateDone := make(chan struct{})
-	terminateRequestIDCh := make(chan string, 1)
-	go func() {
-		defer close(terminateDone)
-		var frame protocol.DeviceFrame
-		if err := deviceConn.ReadJSON(&frame); err != nil {
-			t.Errorf("ReadJSON terminate returned error: %v", err)
-			return
-		}
-		terminateRequestIDCh <- frame.RequestID
-		if frame.Type != "terminate_request" || frame.SessionID != "sess-1" || frame.WorkspaceSession != "launch_fixed" {
-			t.Errorf("frame = %#v, want terminate_request sess-1 launch_fixed", frame)
-			return
-		}
-		if err := deviceConn.WriteJSON(protocol.DeviceTerminateResultFrame(frame.RequestID, "terminated", "")); err != nil {
-			t.Errorf("WriteJSON terminate returned error: %v", err)
-			return
-		}
-	}()
-
-	terminateResp := doBearerPOST(t, server.URL+"/api/sessions/sess-1/terminate", issued.AccessToken, ``)
-	defer terminateResp.Body.Close()
-	var terminate handlertypes.TerminateSessionResponse
-	decodeAPIEnvelopeFromResponse(t, terminateResp, http.StatusOK, &terminate)
-	terminateRequestID := <-terminateRequestIDCh
-	if terminate.Status != "terminated" || terminate.RequestID != terminateRequestID || terminate.Reason != "" {
-		t.Fatalf("terminate = %#v, want terminated", terminate)
+	stopResp := doBearerPOST(t, server.URL+"/api/sessions/sess-1/stop", issued.AccessToken, ``)
+	defer stopResp.Body.Close()
+	var stopped handlertypes.StopSessionResponse
+	decodeAPIEnvelopeFromResponse(t, stopResp, http.StatusOK, &stopped)
+	if stopped.Status != "stopped" || stopped.SessionID != "sess-1" {
+		t.Fatalf("stop = %#v, want stopped sess-1", stopped)
 	}
-	<-terminateDone
-	if closing := readAttachControl(t, attachConn); closing.Type != "closing" || closing.Reason != "session_offline" {
-		t.Fatalf("closing = %#v, want closing session_offline", closing)
+	stopFrame := readAgentFrame(t, agentConn)
+	if stopFrame.Type != "stop_session" {
+		t.Fatalf("stop frame = %#v, want stop_session", stopFrame)
+	}
+	if closing := readAttachControl(t, attachConn); closing.Type != "closing" || closing.Reason != "session_stopped" {
+		t.Fatalf("closing = %#v, want closing session_stopped", closing)
 	}
 
-	afterTerminateResp := doBearerGET(t, server.URL+"/api/sessions", issued.AccessToken)
-	defer afterTerminateResp.Body.Close()
-	var afterTerminate []protocol.SessionInfo
-	decodeAPIEnvelopeFromResponse(t, afterTerminateResp, http.StatusOK, &afterTerminate)
-	if len(afterTerminate) != 0 {
-		t.Fatalf("sessions after terminate = %#v, want none", afterTerminate)
+	afterStopResp := doBearerGET(t, server.URL+"/api/sessions", issued.AccessToken)
+	defer afterStopResp.Body.Close()
+	var afterStop []protocol.SessionInfo
+	decodeAPIEnvelopeFromResponse(t, afterStopResp, http.StatusOK, &afterStop)
+	if len(afterStop) != 0 {
+		t.Fatalf("sessions after stop = %#v, want none", afterStop)
 	}
 
 	if err := agentConn.Close(); err != nil {
@@ -318,7 +300,7 @@ func TestDeviceWebSocketLaunchRequestRoundTrip(t *testing.T) {
 	<-done
 }
 
-func TestDeviceWebSocketLateAcceptedLaunchBackfillsTerminateSupport(t *testing.T) {
+func TestDeviceWebSocketLateAcceptedLaunchBackfillsMobileSource(t *testing.T) {
 	env := newHandlerTestEnv(t)
 	env.addInvite(t, "AB2C3D")
 	user := env.registerUser(t, "alice", "password123", "AB2C3D")
@@ -361,8 +343,8 @@ func TestDeviceWebSocketLateAcceptedLaunchBackfillsTerminateSupport(t *testing.T
 	defer beforeAcceptedResp.Body.Close()
 	var beforeAccepted []protocol.SessionInfo
 	decodeAPIEnvelopeFromResponse(t, beforeAcceptedResp, http.StatusOK, &beforeAccepted)
-	if len(beforeAccepted) != 1 || beforeAccepted[0].TerminateSupported {
-		t.Fatalf("sessions before accepted = %#v, want one non-terminable session", beforeAccepted)
+	if len(beforeAccepted) != 1 || beforeAccepted[0].LaunchSource == protocol.SessionLaunchSourceMobile {
+		t.Fatalf("sessions before accepted = %#v, want one non-mobile-source session", beforeAccepted)
 	}
 
 	if err := deviceConn.WriteJSON(protocol.DeviceLaunchResultFrameWithWorkspace(frame.RequestID, "accepted", "", "launch_fixed")); err != nil {
@@ -384,11 +366,11 @@ func TestDeviceWebSocketLateAcceptedLaunchBackfillsTerminateSupport(t *testing.T
 		var sessions []protocol.SessionInfo
 		decodeAPIEnvelopeFromResponse(t, sessionsResp, http.StatusOK, &sessions)
 		sessionsResp.Body.Close()
-		if len(sessions) == 1 && sessions[0].SessionID == "sess-1" && sessions[0].TerminateSupported {
+		if len(sessions) == 1 && sessions[0].SessionID == "sess-1" && sessions[0].LaunchSource == protocol.SessionLaunchSourceMobile {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for terminate support after late accepted result")
+			t.Fatalf("timed out waiting for mobile source after late accepted result")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -404,8 +386,23 @@ func TestAgentRegistrationWithoutLaunchPreservesDeviceID(t *testing.T) {
 	server := httptest.NewServer(env.handler(nil))
 	defer server.Close()
 
-	agentConn := dialAndRegisterAgentWithLaunchRequestAndDeviceID(t, server.URL, agentToken.Plaintext, "sess-direct", "", "dev-existing")
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/agent/ws"
+	headers := http.Header{}
+	headers.Set("Authorization", bearerAuth(agentToken.Plaintext))
+	agentConn, _, err := websocket.DefaultDialer.Dial(wsURL, headers)
+	if err != nil {
+		t.Fatalf("Dial agent websocket returned error: %v", err)
+	}
 	defer agentConn.Close()
+	if err := agentConn.WriteJSON(protocol.RegisterFrame(protocol.SessionInfo{
+		SessionID:    "sess-direct",
+		DeviceID:     "dev-existing",
+		Launcher:     "codex",
+		CWD:          "/tmp/project",
+		LaunchSource: protocol.SessionLaunchSourceMobile,
+	})); err != nil {
+		t.Fatalf("WriteJSON register returned error: %v", err)
+	}
 
 	resp := doBearerGET(t, server.URL+"/api/sessions", issued.AccessToken)
 	defer resp.Body.Close()
@@ -417,8 +414,8 @@ func TestAgentRegistrationWithoutLaunchPreservesDeviceID(t *testing.T) {
 	if sessions[0].DeviceID != "dev-existing" {
 		t.Fatalf("DeviceID = %q, want dev-existing", sessions[0].DeviceID)
 	}
-	if sessions[0].TerminateSupported {
-		t.Fatal("TerminateSupported = true for direct session, want false")
+	if sessions[0].LaunchSource != protocol.SessionLaunchSourceLocal {
+		t.Fatalf("LaunchSource = %q, want local", sessions[0].LaunchSource)
 	}
 }
 

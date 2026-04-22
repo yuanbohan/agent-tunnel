@@ -85,9 +85,12 @@ func newRouter(
 	appRoutes.DELETE("/api/agent-tokens/:tokenID", api.RevokeAgentToken(agentTokens, registry, deviceRegistry))
 	appRoutes.GET("/api/devices", api.ListDevices(deviceRegistry))
 	appRoutes.POST("/api/devices/:deviceID/launch", api.LaunchDevice(deviceRegistry))
-	appRoutes.GET("/api/sessions", api.ListSessions(registry))
-	appRoutes.POST("/api/sessions/:sessionID/terminate", api.TerminateSession(registry, deviceRegistry))
 	appRoutes.GET("/api/sessions/:sessionID/attach/ws", attach.Handle(registry, attachSessions))
+
+	sessionRoutes := router.Group("/")
+	sessionRoutes.Use(middleware.SessionAuth(appAuth, agentTokens))
+	sessionRoutes.GET("/api/sessions", api.ListSessions(registry))
+	sessionRoutes.POST("/api/sessions/:sessionID/stop", api.StopSession(registry))
 
 	router.GET("/agent/ws", middleware.AgentAuth(agentTokens), agent.Handle(registry, deviceRegistry))
 	router.GET("/device/ws", middleware.AgentAuth(agentTokens), devicehandler.Handle(deviceRegistry, registry, agentTokens))

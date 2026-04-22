@@ -66,6 +66,28 @@ type fakeAgentPeer struct{}
 func (fakeAgentPeer) SendJSON(any) error { return nil }
 func (fakeAgentPeer) Close() error       { return nil }
 
+type recordingAgentPeer struct {
+	mu     sync.Mutex
+	frames []protocol.AgentFrame
+}
+
+func (p *recordingAgentPeer) SendJSON(msg any) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if frame, ok := msg.(protocol.AgentFrame); ok {
+		p.frames = append(p.frames, frame)
+	}
+	return nil
+}
+
+func (p *recordingAgentPeer) Close() error { return nil }
+
+func (p *recordingAgentPeer) Frames() []protocol.AgentFrame {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]protocol.AgentFrame(nil), p.frames...)
+}
+
 type recordingAttachPeer struct {
 	mu          sync.Mutex
 	controls    []protocol.AttachControlMessage
@@ -736,7 +758,15 @@ func dialAndRegisterAgentWithLaunchRequestAndDeviceID(t *testing.T, serverURL, a
 		t.Fatalf("Dial returned error: %v", err)
 	}
 
-	if err := conn.WriteJSON(protocol.RegisterFrameWithLaunchRequest(protocol.SessionInfo{
+	launchContext := protocol.LaunchContext{}
+	if strings.TrimSpace(launchRequestID) != "" {
+		launchContext = protocol.LaunchContext{
+			Source:    protocol.SessionLaunchSourceMobile,
+			RequestID: strings.TrimSpace(launchRequestID),
+		}
+	}
+
+	if err := conn.WriteJSON(protocol.RegisterFrameWithLaunchContext(protocol.SessionInfo{
 		SessionID:      sessionID,
 		DeviceID:       deviceID,
 		Launcher:       "codex",
@@ -747,7 +777,7 @@ func dialAndRegisterAgentWithLaunchRequestAndDeviceID(t *testing.T, serverURL, a
 		PlatformFamily: "linux",
 		PlatformID:     "ubuntu",
 		ComputerName:   "Office Linux",
-	}, launchRequestID)); err != nil {
+	}, launchContext)); err != nil {
 		t.Fatalf("WriteJSON register returned error: %v", err)
 	}
 

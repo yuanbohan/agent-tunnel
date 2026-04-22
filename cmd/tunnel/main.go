@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -40,7 +41,8 @@ type relayConnector interface {
 	session.OutputSink
 	SetInitialSize(cols, rows int)
 	SetInitialConnectTimeout(timeout time.Duration)
-	SetLaunchRequestID(launchRequestID string)
+	SetLaunchContext(protocol.LaunchContext)
+	SetStopHandler(func())
 	BindHub(hub *session.Hub)
 	Run(ctx context.Context)
 	WaitUntilConnected(ctx context.Context, timeout time.Duration) bool
@@ -158,13 +160,18 @@ func runTunnelSession(ctx context.Context, stdin io.Reader, parsed runArgs, stdo
 		return err
 	}
 
-	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+	ctx, stopSignals := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+	defer stopSignals()
 
 	commandPreview := strings.TrimSpace(strings.Join(append([]string{command.Name}, command.Args...), " "))
 	gitBranch := detectGitBranch(ctx, cwd)
 	sessionID := fmt.Sprintf("%d", time.Now().UnixNano())
 	platformFamily, platformID, computerName := sessionIdentityFromMetadata(collectSessionMetadata())
+	launchContext := launchContextFromRunArgs(parsed)
+	launchSource := protocol.SessionLaunchSourceLocal
+	if launchContext.Source == protocol.SessionLaunchSourceMobile {
+		launchSource = protocol.SessionLaunchSourceMobile
+	}
 	info := protocol.SessionInfo{
 		SessionID:      sessionID,
 		DeviceID:       sessionDeviceID(),
@@ -177,11 +184,28 @@ func runTunnelSession(ctx context.Context, stdin io.Reader, parsed runArgs, stdo
 		PlatformFamily: platformFamily,
 		PlatformID:     platformID,
 		ComputerName:   computerName,
+		LaunchSource:   launchSource,
 	}
 
 	relay := newConnector(relayURL, resolvedAuth.Token, info)
-	relay.SetLaunchRequestID(strings.TrimSpace(osEnv(tunnelLaunchRequestIDEnv)))
+	relay.SetLaunchContext(launchContext)
 	relay.SetInitialConnectTimeout(startupRelayWait)
+	var (
+		runningMu     sync.Mutex
+		running       *session.Running
+		stopRequested bool
+	)
+	relay.SetStopHandler(func() {
+		runningMu.Lock()
+		current := running
+		if current == nil {
+			stopRequested = true
+		}
+		runningMu.Unlock()
+		if current != nil {
+			_ = current.Close()
+		}
+	})
 	go relay.Run(ctx)
 	if !relay.WaitUntilConnected(ctx, startupRelayWait) {
 		if ctx.Err() != nil {
@@ -208,26 +232,45 @@ func runTunnelSession(ctx context.Context, stdin io.Reader, parsed runArgs, stdo
 		"relay": relay,
 	}
 
-	running, err := startSession(ctx, command.Path, command.Args, initialSinks)
+	started, err := startSession(ctx, command.Path, command.Args, initialSinks)
 	if err != nil {
 		return err
 	}
-	defer running.Close()
+	runningMu.Lock()
+	running = started
+	shouldStop := stopRequested
+	runningMu.Unlock()
+	if shouldStop {
+		_ = started.Close()
+	}
+	defer started.Close()
 
-	relay.BindHub(running.Hub)
+	relay.BindHub(started.Hub)
 
 	if parsed.Verbose {
 		fmt.Fprint(stderr, startupBanner(command.Name, sessionID))
 	}
 
-	done := startLocalTerminal(ctx, local, running.Hub)
+	done := startLocalTerminal(ctx, local, started.Hub)
 
 	waitErr := make(chan error, 1)
 	go func() {
-		waitErr <- running.Wait()
+		waitErr <- started.Wait()
 	}()
 
 	return waitForExit(ctx, done, waitErr)
+}
+
+func launchContextFromRunArgs(parsed runArgs) protocol.LaunchContext {
+	source := strings.TrimSpace(parsed.LaunchSource)
+	requestID := strings.TrimSpace(parsed.LaunchRequestID)
+	if source != protocol.SessionLaunchSourceMobile || requestID == "" {
+		return protocol.LaunchContext{}
+	}
+	return protocol.LaunchContext{
+		Source:    protocol.SessionLaunchSourceMobile,
+		RequestID: requestID,
+	}
 }
 
 func sessionDeviceID() string {
@@ -272,7 +315,7 @@ func legacyLauncherCommand(args []string) string {
 		return ""
 	}
 	switch first {
-	case "run", "auth", "daemon", "update", "rollback", "help", "version":
+	case "run", "auth", "session", "daemon", "update", "rollback", "help", "version":
 		return ""
 	default:
 		return first

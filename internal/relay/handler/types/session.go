@@ -1,7 +1,6 @@
 package types
 
-type TerminateSessionResponse struct {
-	RequestID string `json:"request_id"`
+type StopSessionResponse struct {
+	SessionID string `json:"session_id"`
 	Status    string `json:"status"`
-	Reason    string `json:"reason,omitempty"`
 }

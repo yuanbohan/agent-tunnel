@@ -9,18 +9,23 @@ import (
 const defaultTunnelBaseURL = "https://diaro.me"
 
 const (
-	tunnelBaseURLEnv         = "TUNNEL_BASE_URL"
-	tunnelAuthTokenEnv       = "TUNNEL_AUTH_TOKEN"
-	tunnelLaunchRequestIDEnv = "TUNNEL_LAUNCH_REQUEST_ID"
-	tunnelUpdateDisabledEnv  = "TUNNEL_UPDATE_DISABLED"
+	tunnelBaseURLEnv        = "TUNNEL_BASE_URL"
+	tunnelAuthTokenEnv      = "TUNNEL_AUTH_TOKEN"
+	tunnelUpdateDisabledEnv = "TUNNEL_UPDATE_DISABLED"
 )
 
 type runArgs struct {
-	Verbose      bool
-	Label        string
-	BaseURL      string
-	Launcher     string
-	LauncherArgs []string
+	Verbose         bool
+	Label           string
+	BaseURL         string
+	LaunchSource    string
+	LaunchRequestID string
+	Launcher        string
+	LauncherArgs    []string
+}
+
+type sessionCommandArgs struct {
+	BaseURL string
 }
 
 type usageError struct {
@@ -60,6 +65,7 @@ func rootHelpText() string {
 	return fmt.Sprintf(`Usage:
   tunnel run [options] <command> [args...]
   tunnel auth <command>
+  tunnel session <command>
   tunnel daemon <command>
   tunnel update
   tunnel rollback
@@ -69,6 +75,7 @@ func rootHelpText() string {
 Commands:
   run         Launch a local command and connect it to the relay
   auth        Manage local tunnel authentication
+  session     List and stop live tunnel sessions
   daemon      Manage the background mobile-launch daemon
   update      Update tunnel to the latest official release
   rollback    Roll back tunnel to the previous official release
@@ -86,6 +93,8 @@ Environment:
 Examples:
   tunnel auth login
   tunnel auth status
+  tunnel session list
+  tunnel session stop 1700000000000000000
   tunnel daemon start
   tunnel daemon open
   tunnel daemon close
@@ -95,6 +104,46 @@ Examples:
   tunnel run claude
   tunnel run -l api-fix codex --profile prod
 `, tunnelAuthTokenEnv, tunnelBaseURLEnv, defaultTunnelBaseURL, tunnelUpdateDisabledEnv)
+}
+
+func sessionHelpText() string {
+	return fmt.Sprintf(`Usage:
+  tunnel session list [--base-url url]
+  tunnel session stop [--base-url url] <session-id>
+  tunnel session --help
+
+Commands:
+  list       List live sessions for the current account
+  stop       Stop one live session
+
+Flags:
+  -h, --help       Show this help message and exit
+      --base-url   Relay base URL (fallback: %s, default: %s)
+
+Examples:
+  tunnel session list
+  tunnel session stop 1700000000000000000
+`, tunnelBaseURLEnv, defaultTunnelBaseURL)
+}
+
+func sessionListHelpText() string {
+	return fmt.Sprintf(`Usage:
+  tunnel session list [--base-url url]
+
+Flags:
+  -h, --help       Show this help message and exit
+      --base-url   Relay base URL (fallback: %s, default: %s)
+`, tunnelBaseURLEnv, defaultTunnelBaseURL)
+}
+
+func sessionStopHelpText() string {
+	return fmt.Sprintf(`Usage:
+  tunnel session stop [--base-url url] <session-id>
+
+Flags:
+  -h, --help       Show this help message and exit
+      --base-url   Relay base URL (fallback: %s, default: %s)
+`, tunnelBaseURLEnv, defaultTunnelBaseURL)
 }
 
 func runHelpText() string {

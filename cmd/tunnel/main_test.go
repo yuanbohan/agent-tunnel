@@ -19,16 +19,17 @@ import (
 )
 
 type fakeRelayConnector struct {
-	waitConnected   bool
-	state           connector.State
-	runCalledCh     chan struct{}
-	runCalledOnce   sync.Once
-	boundHub        *session.Hub
-	initialCols     int
-	initialRows     int
-	connectTTL      time.Duration
-	launchRequestID string
-	stateCh         chan connector.State
+	waitConnected bool
+	state         connector.State
+	runCalledCh   chan struct{}
+	runCalledOnce sync.Once
+	boundHub      *session.Hub
+	initialCols   int
+	initialRows   int
+	connectTTL    time.Duration
+	launchContext protocol.LaunchContext
+	stopHandler   func()
+	stateCh       chan connector.State
 }
 
 func stubDetectGitBranch(t *testing.T, branch string) {
@@ -50,8 +51,12 @@ func (f *fakeRelayConnector) SetInitialConnectTimeout(timeout time.Duration) {
 	f.connectTTL = timeout
 }
 
-func (f *fakeRelayConnector) SetLaunchRequestID(launchRequestID string) {
-	f.launchRequestID = launchRequestID
+func (f *fakeRelayConnector) SetLaunchContext(launchContext protocol.LaunchContext) {
+	f.launchContext = launchContext
+}
+
+func (f *fakeRelayConnector) SetStopHandler(handler func()) {
+	f.stopHandler = handler
 }
 
 func (f *fakeRelayConnector) BindHub(hub *session.Hub) {
@@ -97,7 +102,6 @@ func setTestEnv(t *testing.T) {
 	for _, kv := range [][2]string{
 		{"TUNNEL_BASE_URL", "http://127.0.0.1:8586"},
 		{"TUNNEL_AUTH_TOKEN", "test-token"},
-		{"TUNNEL_LAUNCH_REQUEST_ID", ""},
 	} {
 		old, existed := os.LookupEnv(kv[0])
 		os.Setenv(kv[0], kv[1])
@@ -1378,7 +1382,7 @@ func TestRunWithArgsPreservesLiteralUnknownIdentityValues(t *testing.T) {
 	}
 }
 
-func TestRunWithArgsForwardsLaunchRequestIDFromEnv(t *testing.T) {
+func TestRunWithArgsForwardsLaunchContextFromInternalFlags(t *testing.T) {
 	setTestEnv(t)
 
 	oldResolve := resolveLauncher
@@ -1396,16 +1400,6 @@ func TestRunWithArgsForwardsLaunchRequestIDFromEnv(t *testing.T) {
 		newConnector = oldNewConnector
 	})
 	stubDetectGitBranch(t, "")
-
-	oldLaunchRequestID, hadLaunchRequestID := os.LookupEnv(tunnelLaunchRequestIDEnv)
-	os.Setenv(tunnelLaunchRequestIDEnv, "req-123")
-	t.Cleanup(func() {
-		if hadLaunchRequestID {
-			os.Setenv(tunnelLaunchRequestIDEnv, oldLaunchRequestID)
-		} else {
-			os.Unsetenv(tunnelLaunchRequestIDEnv)
-		}
-	})
 
 	resolveLauncher = func(name string, args []string) (launcher.Command, error) {
 		return launcher.Command{Name: name, Path: "/usr/bin/codex", Args: append([]string(nil), args...)}, nil
@@ -1427,12 +1421,15 @@ func TestRunWithArgsForwardsLaunchRequestIDFromEnv(t *testing.T) {
 		return nil
 	}
 
-	err := runWithArgs([]string{"tunnel", "run", "codex"}, io.Discard, io.Discard)
+	err := runWithArgs([]string{"tunnel", "run", "--launch-source", "mobile", "--launch-request-id", "req-123", "codex"}, io.Discard, io.Discard)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("runWithArgs error = %v, want %v", err, wantErr)
 	}
-	if fakeConnector.launchRequestID != "req-123" {
-		t.Fatalf("launchRequestID = %q, want req-123", fakeConnector.launchRequestID)
+	if fakeConnector.launchContext.Source != protocol.SessionLaunchSourceMobile {
+		t.Fatalf("launchContext.Source = %q, want mobile", fakeConnector.launchContext.Source)
+	}
+	if fakeConnector.launchContext.RequestID != "req-123" {
+		t.Fatalf("launchContext.RequestID = %q, want req-123", fakeConnector.launchContext.RequestID)
 	}
 }
 

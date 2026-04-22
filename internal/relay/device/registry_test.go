@@ -226,6 +226,53 @@ func TestRegistryLaunchWaitsForAcceptedAfterSessionReady(t *testing.T) {
 	}
 }
 
+func TestRegistryCompleteLaunchIfOwnerMarksLaunchWithoutWorkspaceTarget(t *testing.T) {
+	registry := NewRegistry()
+	peer := &fakeDevicePeer{}
+	owner := DeviceOwner{UserID: 1, AgentTokenID: "agt-1"}
+	registry.RegisterOwned(protocol.DeviceInfo{DeviceID: "dev-1"}, owner, peer)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	resultCh := make(chan LaunchResult, 1)
+	go func() {
+		resultCh <- registry.Launch(ctx, "dev-1", 1, "codex", "/repo", "")
+	}()
+
+	deadline := time.After(time.Second)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for peer.sentCount() < 1 {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for forwarded launch request")
+		case <-ticker.C:
+		}
+	}
+
+	frame := peer.sentFrame(0)
+	if _, ok := registry.ResolveLaunchIfOwner("dev-1", peer, frame.RequestID, LaunchStatusAccepted, "", ""); !ok {
+		t.Fatal("ResolveLaunchIfOwner returned false for accepted result")
+	}
+	target, ok := registry.CompleteLaunchIfOwner(frame.RequestID, owner, "sess-1")
+	if !ok {
+		t.Fatal("CompleteLaunchIfOwner returned false for accepted launch without workspace target")
+	}
+	if target.DeviceID != "dev-1" || target.WorkspaceSession != "" {
+		t.Fatalf("target = %#v, want dev-1 with empty workspace target", target)
+	}
+
+	select {
+	case result := <-resultCh:
+		if result.Status != LaunchStatusSessionReady || result.SessionID != "sess-1" || result.RequestID != frame.RequestID {
+			t.Fatalf("result = %#v, want session_ready sess-1", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for launch result")
+	}
+}
+
 func TestRegistryResolveLaunchIfOwnerDefaultsMissingFailureReason(t *testing.T) {
 	registry := NewRegistry()
 	peer := &fakeDevicePeer{}

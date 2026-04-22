@@ -85,7 +85,7 @@ func TestConnectorSendsRegisterBeforeStreamingOutput(t *testing.T) {
 	}
 }
 
-func TestConnectorIncludesLaunchRequestIDInRegisterFrame(t *testing.T) {
+func TestConnectorIncludesLaunchContextInRegisterFrame(t *testing.T) {
 	received := make(chan protocol.AgentFrame, 1)
 	upgrader := websocket.Upgrader{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -108,7 +108,7 @@ func TestConnectorIncludesLaunchRequestIDInRegisterFrame(t *testing.T) {
 		SessionID: "sess-1",
 		Launcher:  "codex",
 	})
-	c.SetLaunchRequestID("req-123")
+	c.SetLaunchContext(protocol.LaunchContext{Source: protocol.SessionLaunchSourceMobile, RequestID: "req-123"})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -116,8 +116,14 @@ func TestConnectorIncludesLaunchRequestIDInRegisterFrame(t *testing.T) {
 
 	select {
 	case frame := <-received:
-		if frame.LaunchRequestID != "req-123" {
-			t.Fatalf("LaunchRequestID = %q, want req-123", frame.LaunchRequestID)
+		if frame.LaunchContext == nil {
+			t.Fatal("LaunchContext = nil, want context")
+		}
+		if frame.LaunchContext.Source != protocol.SessionLaunchSourceMobile {
+			t.Fatalf("LaunchContext.Source = %q, want mobile", frame.LaunchContext.Source)
+		}
+		if frame.LaunchContext.RequestID != "req-123" {
+			t.Fatalf("LaunchContext.RequestID = %q, want req-123", frame.LaunchContext.RequestID)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for register frame")
@@ -169,6 +175,46 @@ func TestConnectorRoutesInputFrameIntoHub(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for input")
+	}
+}
+
+func TestConnectorRunsStopHandlerForStopSessionFrame(t *testing.T) {
+	stopped := make(chan struct{}, 1)
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("Upgrade returned error: %v", err)
+		}
+		defer conn.Close()
+
+		var register protocol.AgentFrame
+		if err := conn.ReadJSON(&register); err != nil {
+			t.Fatalf("ReadJSON returned error: %v", err)
+		}
+		if err := conn.WriteJSON(protocol.StopSessionFrame()); err != nil {
+			t.Fatalf("WriteJSON returned error: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	c := New(wsURL, "token", protocol.SessionInfo{
+		SessionID: "sess-1",
+		Launcher:  "codex",
+	})
+	c.SetStopHandler(func() {
+		stopped <- struct{}{}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Run(ctx)
+
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for stop handler")
 	}
 }
 
