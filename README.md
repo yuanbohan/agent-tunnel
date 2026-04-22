@@ -5,11 +5,11 @@ Launch a terminal agent locally and expose the running PTY through relay-backed 
 The remote contract now has two live-only surfaces:
 
 - session attach: clients discover live sessions with `GET /api/sessions`, then attach to one session with `GET /api/sessions/:id/attach/ws`
-- device launch: clients discover currently online devices with `GET /api/devices`, then ask one device daemon to launch `tunnel run <command>` with required `cwd`, optional `label`, and wait for `session_ready`; daemon-created sessions can later be terminated through `POST /api/sessions/:id/terminate` when `terminate_supported` is true
+- device launch: clients discover currently online devices with `GET /api/devices`, then ask one device daemon to launch `tunnel run <command>` with required `cwd`, optional `label`, and wait for `session_ready`; any live session can later be stopped through `POST /api/sessions/:id/stop`
 
 On attach, the owning `tunnel` process sends a fresh terminal-state snapshot, which may include bounded agent-local normal-buffer scrollback, and then continues streaming live PTY bytes on that same websocket.
 
-`tunnel` starts a real CLI command such as `claude`, `codex`, `gemini`, `qwen`, or `aider`, keeps the launching terminal interactive, and registers the session with a relay server. The relay is API-only: it authenticates app clients with user-scoped bearer tokens, authenticates agents with user-owned long-lived agent tokens, lists live sessions, lists currently online daemons, brokers session-scoped attaches, forwards structured input, and forwards device launch requests. Session discovery now includes best-effort Git branch metadata for the startup directory, optional local daemon identity through `device_id`, and best-effort machine identity metadata from the registering agent, including platform family, platform id, and normalized computer name. Operator maintenance routes stay host-local outside the public `/api/` namespace. It does not retain transcript history and it does not emulate the terminal.
+`tunnel` starts a real CLI command such as `claude`, `codex`, `gemini`, `qwen`, or `aider`, keeps the launching terminal interactive, and registers the session with a relay server. The relay is API-only: it authenticates app clients with user-scoped bearer tokens, authenticates agents with user-owned long-lived agent tokens, lists live sessions, lists currently online daemons, brokers session-scoped attaches, forwards structured input, forwards session stop control, and forwards device launch requests. Session discovery now includes best-effort Git branch metadata for the startup directory, optional local daemon identity through `device_id`, `launch_source` (`local` or `mobile`), and best-effort machine identity metadata from the registering agent, including platform family, platform id, and normalized computer name. Operator maintenance routes stay host-local outside the public `/api/` namespace. It does not retain transcript history and it does not emulate the terminal.
 
 On startup, `tunnel` must establish relay registration during the startup wait window. If registration does not succeed, startup exits with a relay connection error and does not launch the local terminal session.
 
@@ -249,7 +249,7 @@ Remote launch is explicit and tmux-backed:
 - when that launched `tunnel run <command>` exits, the tmux session stays available and returns to an interactive shell prompt
 - users can inspect or resume the local workspace from any terminal with `tunnel daemon open`, detach one open workspace view with `tunnel daemon close`, or list sessions with `tunnel daemon sessions`
 - `tunnel daemon close` is the inverse of `open`: it closes a local tmux workspace view if one is open, but it does not stop the daemon or terminate any session
-- mobile/API session shutdown uses `POST /api/sessions/:sessionID/terminate` and is intentionally named `terminate`; it is available only for daemon-created sessions with `terminate_supported: true`
+- mobile/API session shutdown uses `POST /api/sessions/:sessionID/stop`; it sends `stop_session` to the owning `tunnel run` process, so local-launched and mobile-launched sessions use the same shutdown path
 - the daemon owns local launch state such as allowlist, busy/not-busy, tmux workspace health, doctor output, and last failure
 - the relay only keeps transient online routing for connected daemons; if a daemon disconnects, it disappears from `GET /api/devices` immediately
 

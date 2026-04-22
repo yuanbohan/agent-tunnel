@@ -66,6 +66,28 @@ type fakeAgentPeer struct{}
 func (fakeAgentPeer) SendJSON(any) error { return nil }
 func (fakeAgentPeer) Close() error       { return nil }
 
+type recordingAgentPeer struct {
+	mu     sync.Mutex
+	frames []protocol.AgentFrame
+}
+
+func (p *recordingAgentPeer) SendJSON(msg any) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if frame, ok := msg.(protocol.AgentFrame); ok {
+		p.frames = append(p.frames, frame)
+	}
+	return nil
+}
+
+func (p *recordingAgentPeer) Close() error { return nil }
+
+func (p *recordingAgentPeer) Frames() []protocol.AgentFrame {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]protocol.AgentFrame(nil), p.frames...)
+}
+
 type recordingAttachPeer struct {
 	mu          sync.Mutex
 	controls    []protocol.AttachControlMessage

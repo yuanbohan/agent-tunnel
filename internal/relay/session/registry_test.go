@@ -34,6 +34,11 @@ type deactivatablePeer struct {
 	active bool
 }
 
+type disconnectingStopPeer struct {
+	reg       *Registry
+	sessionID string
+}
+
 func (p *recordingPeer) SendJSON(msg any) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -81,6 +86,13 @@ func (p *deactivatablePeer) Deactivate() {
 	defer p.mu.Unlock()
 	p.active = false
 }
+
+func (p *disconnectingStopPeer) SendJSON(any) error {
+	p.reg.DisconnectIfOwner(p.sessionID, p)
+	return nil
+}
+
+func (p *disconnectingStopPeer) Close() error { return nil }
 
 func (p *recordingPeer) Frames() []protocol.AgentFrame {
 	p.mu.Lock()
@@ -228,93 +240,79 @@ func TestRegistryListForUserReturnsOnlyOwnedSessions(t *testing.T) {
 	}
 }
 
-func TestRegistryTerminateTargetRequiresExplicitDaemonLaunchMetadata(t *testing.T) {
+func TestRegistryStopForUserSendsStopAndRemovesSession(t *testing.T) {
 	reg := NewRegistry()
+	owner := &recordingPeer{}
+	client := &recordingAttachPeer{}
 	reg.RegisterOwned(protocol.SessionInfo{
-		SessionID: "direct",
-		DeviceID:  "dev-1",
+		SessionID: "sess-1",
 		Launcher:  "codex",
-	}, SessionOwner{UserID: 1, AgentTokenID: "agt-1"}, fakeAgentPeer{})
-	reg.RegisterOwnedWithTerminateTarget(protocol.SessionInfo{
-		SessionID: "daemon",
-		DeviceID:  "dev-1",
-		Launcher:  "codex",
-	}, SessionOwner{UserID: 1, AgentTokenID: "agt-1"}, fakeAgentPeer{}, TerminateTarget{
-		DeviceID:         "dev-1",
-		WorkspaceSession: "launch_fixed",
-	})
-
-	target, err := reg.TerminateTargetForUser("daemon", 1)
-	if err != nil {
-		t.Fatalf("TerminateTargetForUser returned error: %v", err)
-	}
-	if target.DeviceID != "dev-1" || target.WorkspaceSession != "launch_fixed" {
-		t.Fatalf("target = %#v, want dev-1 launch_fixed", target)
-	}
-	if _, err := reg.TerminateTargetForUser("direct", 1); !errors.Is(err, ErrSessionTerminateUnsupported) {
-		t.Fatalf("direct terminate error = %v, want ErrSessionTerminateUnsupported", err)
+	}, SessionOwner{UserID: 1, AgentTokenID: "agt-1"}, owner)
+	if _, err := reg.StartAttach("sess-1", "client-1", client); err != nil {
+		t.Fatalf("StartAttach returned error: %v", err)
 	}
 
-	sessions := reg.ListForUser(1)
-	support := map[string]bool{}
-	for _, info := range sessions {
-		support[info.SessionID] = info.TerminateSupported
+	if err := reg.StopForUser("sess-1", 2); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("cross-user stop error = %v, want ErrSessionNotFound", err)
 	}
-	if support["direct"] {
-		t.Fatal("direct session TerminateSupported = true, want false")
+	if err := reg.StopForUser("sess-1", 1); err != nil {
+		t.Fatalf("StopForUser returned error: %v", err)
 	}
-	if !support["daemon"] {
-		t.Fatal("daemon session TerminateSupported = false, want true")
+	if _, ok := reg.Session("sess-1"); ok {
+		t.Fatal("session still exists after StopForUser")
+	}
+	frames := owner.Frames()
+	if len(frames) != 1 || frames[0].Type != "stop_session" {
+		t.Fatalf("frames = %#v, want one stop_session", frames)
+	}
+	if reasons := client.CloseReasons(); len(reasons) != 1 || reasons[0] != "session_stopped" {
+		t.Fatalf("close reasons = %#v, want [session_stopped]", reasons)
 	}
 }
 
-func TestRegistryPreservesTerminateTargetWhenSessionReregistersWithoutTarget(t *testing.T) {
+func TestRegistryStopForUserReturnsSuccessWhenAgentDisconnectsAfterStopDelivery(t *testing.T) {
 	reg := NewRegistry()
-	owner := SessionOwner{UserID: 1, AgentTokenID: "agt-1"}
-	reg.RegisterOwnedWithTerminateTarget(protocol.SessionInfo{
+	owner := &disconnectingStopPeer{reg: reg, sessionID: "sess-1"}
+	client := &recordingAttachPeer{}
+	reg.RegisterOwned(protocol.SessionInfo{
 		SessionID: "sess-1",
-		DeviceID:  "dev-1",
 		Launcher:  "codex",
-	}, owner, fakeAgentPeer{}, TerminateTarget{
-		DeviceID:         "dev-1",
-		WorkspaceSession: "launch_fixed",
-	})
-
-	reg.RegisterOwnedWithTerminateTarget(protocol.SessionInfo{
-		SessionID: "sess-1",
-		DeviceID:  "dev-1",
-		Launcher:  "codex",
-	}, owner, fakeAgentPeer{}, TerminateTarget{})
-
-	target, err := reg.TerminateTargetForUser("sess-1", 1)
-	if err != nil {
-		t.Fatalf("TerminateTargetForUser returned error: %v", err)
+	}, SessionOwner{UserID: 1, AgentTokenID: "agt-1"}, owner)
+	if _, err := reg.StartAttach("sess-1", "client-1", client); err != nil {
+		t.Fatalf("StartAttach returned error: %v", err)
 	}
-	if target.DeviceID != "dev-1" || target.WorkspaceSession != "launch_fixed" {
-		t.Fatalf("target = %#v, want preserved dev-1 launch_fixed", target)
+
+	if err := reg.StopForUser("sess-1", 1); err != nil {
+		t.Fatalf("StopForUser returned error: %v, want nil after delivered stop", err)
+	}
+	if _, ok := reg.Session("sess-1"); ok {
+		t.Fatal("session still exists after stop/disconnect")
+	}
+	if reasons := client.CloseReasons(); len(reasons) != 1 || reasons[0] != "session_stopped" {
+		t.Fatalf("close reasons = %#v, want [session_stopped]", reasons)
 	}
 }
 
-func TestRegistrySetTerminateTargetForUserBackfillsLiveSession(t *testing.T) {
+func TestRegistrySetLaunchSourceForUserBackfillsLiveSession(t *testing.T) {
 	reg := NewRegistry()
 	reg.RegisterOwned(protocol.SessionInfo{
-		SessionID: "sess-1",
-		DeviceID:  "dev-1",
-		Launcher:  "codex",
+		SessionID:    "sess-1",
+		Launcher:     "codex",
+		LaunchSource: protocol.SessionLaunchSourceLocal,
 	}, SessionOwner{UserID: 1, AgentTokenID: "agt-1"}, fakeAgentPeer{})
 
-	if ok := reg.SetTerminateTargetForUser("sess-1", 2, TerminateTarget{DeviceID: "dev-1", WorkspaceSession: "launch_fixed"}); ok {
-		t.Fatal("SetTerminateTargetForUser returned true for cross-user session")
+	if ok := reg.SetLaunchSourceForUser("sess-1", 2, protocol.SessionLaunchSourceMobile); ok {
+		t.Fatal("SetLaunchSourceForUser returned true for cross-user session")
 	}
-	if ok := reg.SetTerminateTargetForUser("sess-1", 1, TerminateTarget{DeviceID: "dev-1", WorkspaceSession: "launch_fixed"}); !ok {
-		t.Fatal("SetTerminateTargetForUser returned false for owned session")
+	if ok := reg.SetLaunchSourceForUser("sess-1", 1, protocol.SessionLaunchSourceMobile); !ok {
+		t.Fatal("SetLaunchSourceForUser returned false for owned session")
 	}
-	target, err := reg.TerminateTargetForUser("sess-1", 1)
-	if err != nil {
-		t.Fatalf("TerminateTargetForUser returned error: %v", err)
+	info, ok := reg.SessionForUser("sess-1", 1)
+	if !ok {
+		t.Fatal("SessionForUser returned false")
 	}
-	if target.DeviceID != "dev-1" || target.WorkspaceSession != "launch_fixed" {
-		t.Fatalf("target = %#v, want dev-1 launch_fixed", target)
+	if info.LaunchSource != protocol.SessionLaunchSourceMobile {
+		t.Fatalf("LaunchSource = %q, want mobile", info.LaunchSource)
 	}
 }
 

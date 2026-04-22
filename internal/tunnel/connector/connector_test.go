@@ -172,6 +172,46 @@ func TestConnectorRoutesInputFrameIntoHub(t *testing.T) {
 	}
 }
 
+func TestConnectorRunsStopHandlerForStopSessionFrame(t *testing.T) {
+	stopped := make(chan struct{}, 1)
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("Upgrade returned error: %v", err)
+		}
+		defer conn.Close()
+
+		var register protocol.AgentFrame
+		if err := conn.ReadJSON(&register); err != nil {
+			t.Fatalf("ReadJSON returned error: %v", err)
+		}
+		if err := conn.WriteJSON(protocol.StopSessionFrame()); err != nil {
+			t.Fatalf("WriteJSON returned error: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	c := New(wsURL, "token", protocol.SessionInfo{
+		SessionID: "sess-1",
+		Launcher:  "codex",
+	})
+	c.SetStopHandler(func() {
+		stopped <- struct{}{}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Run(ctx)
+
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for stop handler")
+	}
+}
+
 func TestConnectorIgnoresMalformedAndUnknownControlFrames(t *testing.T) {
 	inputCh := make(chan string, 1)
 	hub := session.NewHub(func(data []byte) error {

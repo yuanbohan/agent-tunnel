@@ -332,9 +332,9 @@ func (r *Registry) ResolveLaunchIfOwner(deviceID string, owner DevicePeer, reque
 			r.mu.Unlock()
 			return LaunchCompletion{}, true
 		}
-		completion, hasTarget := r.completeReadyLaunchLocked(requestID, request, sessionID)
+		completion, _ := r.completeReadyLaunchLocked(requestID, request, sessionID)
 		r.mu.Unlock()
-		return completion, hasTarget
+		return completion, true
 	case LaunchStatusFailed:
 		failureReason := strings.TrimSpace(reason)
 		if failureReason == "" {
@@ -364,16 +364,16 @@ func (r *Registry) CompleteLaunchIfOwner(requestID string, owner DeviceOwner, se
 			return TerminateTarget{}, false
 		}
 		r.mu.Unlock()
-		return completed.target, hasTerminateTarget(completed.target)
+		return completed.target, true
 	}
 	request.markSessionReady(sessionID)
 	if !request.isAccepted() {
 		r.mu.Unlock()
 		return TerminateTarget{}, false
 	}
-	completion, hasTarget := r.completeReadyLaunchLocked(requestID, request, sessionID)
+	completion, _ := r.completeReadyLaunchLocked(requestID, request, sessionID)
 	r.mu.Unlock()
-	return completion.Target, hasTarget
+	return completion.Target, true
 }
 
 func (r *Registry) Terminate(ctx context.Context, userID int64, sessionID string, target TerminateTarget) TerminateResult {

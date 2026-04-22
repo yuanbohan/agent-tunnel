@@ -12,29 +12,28 @@ type Envelope struct {
 }
 
 const (
-	CodeSuccess                     = 0
-	CodeInvalidRequest              = 1001
-	CodeRateLimited                 = 1002
-	CodeUsernameTaken               = 1003
-	CodePasswordTooShort            = 1004
-	CodeInvalidAccessCode           = 1005
-	CodeInviteCodeNotFound          = 1006
-	CodeInviteCodeExpired           = 1007
-	CodeInviteCodeDisabled          = 1008
-	CodeInviteCodeConsumed          = 1009
-	CodeInvalidUsername             = 1010
-	CodeInvalidCredentials          = 1011
-	CodeInvalidSession              = 1012
-	CodeAgentTokenNotFound          = 1013
-	CodeUserNotFound                = 1014
-	CodeSessionNotFound             = 1015
-	CodeUnauthorized                = 1016
-	CodeForbidden                   = 1017
-	CodeNotFound                    = 1018
-	CodeMethodNotAllowed            = 1019
-	CodeSessionTerminateUnsupported = 1020
-	CodeServiceUnavailable          = 2001
-	CodeInternalError               = 2002
+	CodeSuccess            = 0
+	CodeInvalidRequest     = 1001
+	CodeRateLimited        = 1002
+	CodeUsernameTaken      = 1003
+	CodePasswordTooShort   = 1004
+	CodeInvalidAccessCode  = 1005
+	CodeInviteCodeNotFound = 1006
+	CodeInviteCodeExpired  = 1007
+	CodeInviteCodeDisabled = 1008
+	CodeInviteCodeConsumed = 1009
+	CodeInvalidUsername    = 1010
+	CodeInvalidCredentials = 1011
+	CodeInvalidSession     = 1012
+	CodeAgentTokenNotFound = 1013
+	CodeUserNotFound       = 1014
+	CodeSessionNotFound    = 1015
+	CodeUnauthorized       = 1016
+	CodeForbidden          = 1017
+	CodeNotFound           = 1018
+	CodeMethodNotAllowed   = 1019
+	CodeServiceUnavailable = 2001
+	CodeInternalError      = 2002
 )
 
 type reasonInfo struct {
@@ -102,10 +101,6 @@ var reasonMap = map[string]reasonInfo{
 	"session_not_found": {
 		Code:    CodeSessionNotFound,
 		Message: "The session was not found or is offline.",
-	},
-	"session_terminate_unsupported": {
-		Code:    CodeSessionTerminateUnsupported,
-		Message: "This session cannot be terminated from the daemon.",
 	},
 	"unauthorized": {
 		Code:    CodeUnauthorized,

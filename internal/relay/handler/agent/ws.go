@@ -79,20 +79,18 @@ func Handle(registry *session.Registry, deviceRegistry *relaydevice.Registry) gi
 			UserID:       authenticated.User.ID,
 			AgentTokenID: authenticated.Token.ID,
 		}
-		var terminateTarget session.TerminateTarget
+		sessionInfo := *register.Session
+		sessionInfo.LaunchSource = protocol.SessionLaunchSourceLocal
 		if deviceRegistry != nil && register.LaunchRequestID != "" {
 			deviceOwner := relaydevice.DeviceOwner{
 				UserID:       authenticated.User.ID,
 				AgentTokenID: authenticated.Token.ID,
 			}
-			if target, ok := deviceRegistry.CompleteLaunchIfOwner(register.LaunchRequestID, deviceOwner, register.Session.SessionID); ok {
-				terminateTarget = session.TerminateTarget{
-					DeviceID:         target.DeviceID,
-					WorkspaceSession: target.WorkspaceSession,
-				}
+			if _, ok := deviceRegistry.CompleteLaunchIfOwner(register.LaunchRequestID, deviceOwner, register.Session.SessionID); ok {
+				sessionInfo.LaunchSource = protocol.SessionLaunchSourceMobile
 			}
 		}
-		registry.RegisterOwnedWithTerminateTarget(*register.Session, sessionOwner, peer, terminateTarget)
+		registry.RegisterOwned(sessionInfo, sessionOwner, peer)
 		defer registry.DisconnectIfOwner(register.Session.SessionID, peer)
 
 		tracker.SetSessionID(register.Session.SessionID)

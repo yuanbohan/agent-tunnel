@@ -66,6 +66,8 @@ type Connector struct {
 	reconnect   atomic.Bool
 	hubMu       sync.RWMutex
 	hub         *session.Hub
+	stopMu      sync.RWMutex
+	stopHandler func()
 	pendingIn   []protocol.AgentFrame
 	connectTTL  time.Duration
 
@@ -149,6 +151,12 @@ func (c *Connector) BindHub(hub *session.Hub) {
 	for _, frame := range pending {
 		c.deliverInputToHub(hub, frame)
 	}
+}
+
+func (c *Connector) SetStopHandler(handler func()) {
+	c.stopMu.Lock()
+	defer c.stopMu.Unlock()
+	c.stopHandler = handler
 }
 
 func (c *Connector) SetLaunchRequestID(launchRequestID string) {
@@ -398,8 +406,19 @@ func (c *Connector) handleInbound(conn *websocket.Conn, result readResult) error
 		c.handleAttachClose(result.control.ClientID)
 	case "input_text", "input_key":
 		c.routeInput(*result.control)
+	case "stop_session":
+		c.handleStopSession()
 	}
 	return nil
+}
+
+func (c *Connector) handleStopSession() {
+	c.stopMu.RLock()
+	handler := c.stopHandler
+	c.stopMu.RUnlock()
+	if handler != nil {
+		handler()
+	}
 }
 
 func (c *Connector) writeOutboundFrame(conn *websocket.Conn, frame outboundFrame) error {

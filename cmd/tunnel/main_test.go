@@ -28,6 +28,7 @@ type fakeRelayConnector struct {
 	initialRows     int
 	connectTTL      time.Duration
 	launchRequestID string
+	stopHandler     func()
 	stateCh         chan connector.State
 }
 
@@ -52,6 +53,10 @@ func (f *fakeRelayConnector) SetInitialConnectTimeout(timeout time.Duration) {
 
 func (f *fakeRelayConnector) SetLaunchRequestID(launchRequestID string) {
 	f.launchRequestID = launchRequestID
+}
+
+func (f *fakeRelayConnector) SetStopHandler(handler func()) {
+	f.stopHandler = handler
 }
 
 func (f *fakeRelayConnector) BindHub(hub *session.Hub) {
