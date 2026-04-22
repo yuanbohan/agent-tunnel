@@ -384,7 +384,7 @@ Notes:
 - `request_id` is relay-scoped and correlates one launch request with one result
 - `status: "accepted"` means the daemon validated the request and successfully created the local tmux-backed launch session
 - accepted launch results may include `workspace_session` as daemon-local metadata, but session stop is routed to the owning agent through `/agent/ws`
-- `status: "accepted"` still does not complete the client-visible launch flow; the relay waits for a later `/agent/ws` registration carrying the same launch request correlation
+- `status: "accepted"` still does not complete the client-visible launch flow; the relay waits for a later `/agent/ws` registration carrying a matching launch context
 - the relay keeps only transient online-device routing state; device health, last failure, and tmux workspace details remain local to the daemon
 
 ## Agent WebSocket
@@ -403,7 +403,10 @@ It is a mixed websocket:
 ```json
 {
   "type": "register",
-  "launch_request_id": "dev_abcd1234-150405.000000000",
+  "launch_context": {
+    "source": "mobile",
+    "request_id": "dev_abcd1234-150405.000000000"
+  },
   "session": {
     "session_id": "sess-1",
     "device_id": "dev_abcd1234",
@@ -424,9 +427,12 @@ Notes:
 
 - `register` must be the first agent control frame on the websocket
 - the relay treats that websocket as the owner of the live session
-- `launch_request_id` is optional; it is present only when this session was created from `POST /api/devices/:deviceID/launch`
+- `launch_context` is optional; it is present only when this session was created from `POST /api/devices/:deviceID/launch`
+- `launch_context.source` describes the launch source claimed by the registering `tunnel run`; currently the only non-local value is `mobile`
+- `launch_context.request_id` is the relay-issued launch correlation id, not user-visible source metadata
 - the relay stores `session.device_id` from the registration payload without launch-request validation; agents send an empty string when local daemon identity is unavailable
-- when `launch_request_id` is present, the relay may use it to complete one pending launch request as `session_ready` with the new `session_id` and mark that live session with `launch_source: "mobile"`
+- the relay marks a live session with `launch_source: "mobile"` only when `launch_context.source` is `mobile` and `launch_context.request_id` matches a pending launch request owned by the same user and agent token
+- missing, empty, unknown, or unmatched launch context values are treated as local launch source
 - session metadata is self-contained on registration; clients should not infer session platform identity by correlating later launch state or online device listings
 
 ### `resize`

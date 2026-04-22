@@ -81,9 +81,11 @@ func newRootCmd(handlers commandHandlers) *cobra.Command {
 
 func newRunCmd(runFn runHandler) *cobra.Command {
 	var (
-		verbose bool
-		label   string
-		baseURL string
+		verbose         bool
+		label           string
+		baseURL         string
+		launchSource    string
+		launchRequestID string
 	)
 
 	cmd := &cobra.Command{
@@ -102,17 +104,23 @@ func newRunCmd(runFn runHandler) *cobra.Command {
 			}
 
 			return runFn(cmd.Context(), cmd.InOrStdin(), runArgs{
-				Verbose:      verbose,
-				Label:        label,
-				BaseURL:      resolved,
-				Launcher:     args[0],
-				LauncherArgs: append([]string(nil), args[1:]...),
+				Verbose:         verbose,
+				Label:           label,
+				BaseURL:         resolved,
+				LaunchSource:    launchSource,
+				LaunchRequestID: launchRequestID,
+				Launcher:        args[0],
+				LauncherArgs:    append([]string(nil), args[1:]...),
 			}, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "print relay connection status on successful startup")
 	cmd.Flags().StringVarP(&label, "label", "l", "", "optional session label for relay clients")
 	cmd.Flags().StringVar(&baseURL, "base-url", "", "relay base URL")
+	cmd.Flags().StringVar(&launchSource, "launch-source", "", "internal launch source metadata")
+	cmd.Flags().StringVar(&launchRequestID, "launch-request-id", "", "internal launch request correlation id")
+	_ = cmd.Flags().MarkHidden("launch-source")
+	_ = cmd.Flags().MarkHidden("launch-request-id")
 	cmd.Flags().SetInterspersed(false)
 	cmd.SetHelpFunc(func(cmd *cobra.Command, _ []string) {
 		_, _ = io.WriteString(cmd.OutOrStdout(), runHelpText())

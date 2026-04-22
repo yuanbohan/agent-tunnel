@@ -85,7 +85,7 @@ func TestConnectorSendsRegisterBeforeStreamingOutput(t *testing.T) {
 	}
 }
 
-func TestConnectorIncludesLaunchRequestIDInRegisterFrame(t *testing.T) {
+func TestConnectorIncludesLaunchContextInRegisterFrame(t *testing.T) {
 	received := make(chan protocol.AgentFrame, 1)
 	upgrader := websocket.Upgrader{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -108,7 +108,7 @@ func TestConnectorIncludesLaunchRequestIDInRegisterFrame(t *testing.T) {
 		SessionID: "sess-1",
 		Launcher:  "codex",
 	})
-	c.SetLaunchRequestID("req-123")
+	c.SetLaunchContext(protocol.LaunchContext{Source: protocol.SessionLaunchSourceMobile, RequestID: "req-123"})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -116,8 +116,14 @@ func TestConnectorIncludesLaunchRequestIDInRegisterFrame(t *testing.T) {
 
 	select {
 	case frame := <-received:
-		if frame.LaunchRequestID != "req-123" {
-			t.Fatalf("LaunchRequestID = %q, want req-123", frame.LaunchRequestID)
+		if frame.LaunchContext == nil {
+			t.Fatal("LaunchContext = nil, want context")
+		}
+		if frame.LaunchContext.Source != protocol.SessionLaunchSourceMobile {
+			t.Fatalf("LaunchContext.Source = %q, want mobile", frame.LaunchContext.Source)
+		}
+		if frame.LaunchContext.RequestID != "req-123" {
+			t.Fatalf("LaunchContext.RequestID = %q, want req-123", frame.LaunchContext.RequestID)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for register frame")

@@ -41,7 +41,7 @@ type relayConnector interface {
 	session.OutputSink
 	SetInitialSize(cols, rows int)
 	SetInitialConnectTimeout(timeout time.Duration)
-	SetLaunchRequestID(launchRequestID string)
+	SetLaunchContext(protocol.LaunchContext)
 	SetStopHandler(func())
 	BindHub(hub *session.Hub)
 	Run(ctx context.Context)
@@ -167,9 +167,9 @@ func runTunnelSession(ctx context.Context, stdin io.Reader, parsed runArgs, stdo
 	gitBranch := detectGitBranch(ctx, cwd)
 	sessionID := fmt.Sprintf("%d", time.Now().UnixNano())
 	platformFamily, platformID, computerName := sessionIdentityFromMetadata(collectSessionMetadata())
-	launchRequestID := strings.TrimSpace(osEnv(tunnelLaunchRequestIDEnv))
+	launchContext := launchContextFromRunArgs(parsed)
 	launchSource := protocol.SessionLaunchSourceLocal
-	if launchRequestID != "" {
+	if launchContext.Source == protocol.SessionLaunchSourceMobile {
 		launchSource = protocol.SessionLaunchSourceMobile
 	}
 	info := protocol.SessionInfo{
@@ -188,7 +188,7 @@ func runTunnelSession(ctx context.Context, stdin io.Reader, parsed runArgs, stdo
 	}
 
 	relay := newConnector(relayURL, resolvedAuth.Token, info)
-	relay.SetLaunchRequestID(launchRequestID)
+	relay.SetLaunchContext(launchContext)
 	relay.SetInitialConnectTimeout(startupRelayWait)
 	var (
 		runningMu     sync.Mutex
@@ -259,6 +259,18 @@ func runTunnelSession(ctx context.Context, stdin io.Reader, parsed runArgs, stdo
 	}()
 
 	return waitForExit(ctx, done, waitErr)
+}
+
+func launchContextFromRunArgs(parsed runArgs) protocol.LaunchContext {
+	source := strings.TrimSpace(parsed.LaunchSource)
+	requestID := strings.TrimSpace(parsed.LaunchRequestID)
+	if source != protocol.SessionLaunchSourceMobile || requestID == "" {
+		return protocol.LaunchContext{}
+	}
+	return protocol.LaunchContext{
+		Source:    protocol.SessionLaunchSourceMobile,
+		RequestID: requestID,
+	}
 }
 
 func sessionDeviceID() string {

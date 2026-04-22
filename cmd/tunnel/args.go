@@ -9,18 +9,19 @@ import (
 const defaultTunnelBaseURL = "https://diaro.me"
 
 const (
-	tunnelBaseURLEnv         = "TUNNEL_BASE_URL"
-	tunnelAuthTokenEnv       = "TUNNEL_AUTH_TOKEN"
-	tunnelLaunchRequestIDEnv = "TUNNEL_LAUNCH_REQUEST_ID"
-	tunnelUpdateDisabledEnv  = "TUNNEL_UPDATE_DISABLED"
+	tunnelBaseURLEnv        = "TUNNEL_BASE_URL"
+	tunnelAuthTokenEnv      = "TUNNEL_AUTH_TOKEN"
+	tunnelUpdateDisabledEnv = "TUNNEL_UPDATE_DISABLED"
 )
 
 type runArgs struct {
-	Verbose      bool
-	Label        string
-	BaseURL      string
-	Launcher     string
-	LauncherArgs []string
+	Verbose         bool
+	Label           string
+	BaseURL         string
+	LaunchSource    string
+	LaunchRequestID string
+	Launcher        string
+	LauncherArgs    []string
 }
 
 type sessionCommandArgs struct {

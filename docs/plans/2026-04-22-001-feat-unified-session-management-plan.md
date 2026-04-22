@@ -33,7 +33,7 @@ The current code already has account-scoped live session discovery in the relay,
 - R6. De-emphasize `tunnel daemon sessions` because it lists tmux workspace sessions, not account-level Tunnel sessions.
 - R7. `tunnel session list` lists all currently online sessions for the authenticated account, including other machines.
 - R8. The list distinguishes current-machine sessions from sessions on other machines when reliable local identity exists.
-- R9. The list distinguishes direct `tunnel run` sessions from daemon-launched sessions.
+- R9. The list distinguishes local-created `tunnel run` sessions from mobile-created sessions.
 - R10. The list uses `label`; it does not introduce `name`.
 - R11-R21. The default table is bordered, emoji-free, fixed-width, omits `platform_id`, and truncates long values predictably.
 - R22-R24. Session stop targets the live `tunnel run` session and does not stop the daemon or kill the daemon tmux workspace.
@@ -63,7 +63,7 @@ The current code already has account-scoped live session discovery in the relay,
 - `cmd/tunnel/auth_store.go` stores the local agent token used by `tunnel run` and `tunnel daemon start`. CLI session management should use this existing local auth path instead of requiring a separate app access token.
 - `cmd/tunnel/auth_api.go` already has a small JSON-envelope HTTP client pattern that can be reused or split for session-management calls.
 - `cmd/tunnel/main.go` owns `runTunnelSession`, current session metadata assembly, daemon identity lookup, and user-facing daemon command behavior.
-- `internal/protocol/message.go` defines `SessionInfo` and `AgentFrame`, the right place for session origin metadata and the new agent stop control frame.
+- `internal/protocol/message.go` defines `SessionInfo`, launch context, and `AgentFrame`, the right place for session launch-source metadata and the new agent stop control frame.
 - `internal/tunnel/connector/connector.go` receives relay-to-agent control frames and routes them into local runtime behavior. It currently handles attach/input/resize-related frames but not stop.
 - `internal/tunnel/session/process.go` already exposes `Running.Close()`, which kills and reaps the child process and treats expected signaled exits as clean shutdown.
 - `internal/relay/session/registry.go` owns live session lookup, owner websocket routing, attach cleanup, and user-scoped list behavior. It already has a generic owner-send path that can become the basis for stop.
@@ -83,7 +83,8 @@ The current code already has account-scoped live session discovery in the relay,
 
 - **Use relay-mediated stop for both CLI and mobile:** This preserves one authorization model, one account-wide session list, and one stop behavior across local and remote sessions.
 - **Stop the owning agent, not the daemon tmux session:** `session stop` should stop the live `tunnel run` process. For daemon-launched sessions, the surrounding tmux workspace can remain and return to shell according to the existing daemon wrapper behavior.
-- **Add explicit session origin metadata:** Add a relay-controlled origin value such as `run`, `daemon`, or `unknown` to session snapshots so CLI and clients do not infer origin from `device_id` or terminate support.
+- **Add explicit session launch-source metadata:** Expose relay-controlled `launch_source` values of `local` or `mobile` in session snapshots so CLI and clients do not infer source from `device_id`, terminate support, or launch request correlation.
+- **Use launch context for mobile launch correlation:** Daemon-created `tunnel run` processes pass hidden internal flags `--launch-source mobile --launch-request-id <id>`, then the agent registration carries `launch_context`. The relay sets `launch_source: "mobile"` only when the context source is `mobile` and the request id matches a pending launch owned by the same user and agent token.
 - **Classify local scope only when reliable:** Use the current machine's daemon `device_id` when available. If the current machine has no readable daemon identity or the session lacks comparable identity, render `Scope` as `unknown` rather than guessing from hostname.
 - **Allow agent-token auth only for session list/stop:** The local CLI already stores an agent token. Add or refactor middleware so `GET /api/sessions` and `POST /api/sessions/:id/stop` can authenticate either an app access token or an agent token, while keeping sensitive app/session-management routes on their existing auth model.
 - **Remove `/api/sessions/:id/terminate` from the active contract:** The terminate route was added recently and has not shipped, so the simpler path is to replace it with `/api/sessions/:id/stop` rather than carry a compatibility alias.
@@ -99,7 +100,7 @@ The current code already has account-scoped live session discovery in the relay,
 - **Should `tunnel session start` exist?** No. Local creation stays with `tunnel run`; daemon/device creation stays a mobile/API launch concern.
 - **Should default list include remote machines?** Yes. It should mirror account-level live session discovery.
 - **Should `platform_id` display in the table?** No. Use the best machine name only.
-- **Should origin be inferred from `terminate_supported`?** No. Stop will be supported for all live sessions, so origin needs its own metadata.
+- **Should launch source be inferred from `terminate_supported`, `device_id`, or request id presence?** No. Stop will be supported for all live sessions, and launch request ids are correlation data, so launch source needs explicit metadata validated by the relay.
 - **Should `/api/sessions/:id/terminate` remain for compatibility?** No. It has not shipped, and keeping it would add unnecessary lifecycle ambiguity.
 - **Should this plan implement single-connection multiplexing?** No. This plan should avoid blocking that refactor, but multiplexing is a separate follow-up.
 
@@ -139,7 +140,7 @@ The `stop_session` frame is intentionally session-addressed. In the current impl
 
 - [ ] **Unit 1: Add protocol metadata and stop control**
 
-**Goal:** Extend shared protocol types so session snapshots expose origin and relay can send an agent stop control frame.
+**Goal:** Extend shared protocol types so session snapshots expose launch source, mobile launches can carry explicit context, and relay can send an agent stop control frame.
 
 **Requirements:** R8, R9, R22-R24
 
@@ -150,23 +151,25 @@ The `stop_session` frame is intentionally session-addressed. In the current impl
 - Test: `internal/protocol/message_test.go`
 
 **Approach:**
-- Add a session origin field to `SessionInfo`, with expected public values `run`, `daemon`, and `unknown`.
+- Add a session launch-source field to `SessionInfo`, with expected public values `local` and `mobile`.
+- Add a launch-context registration field that carries `source` and `request_id` for mobile-created sessions. This is relay validation input, not the public source field.
 - Add a helper for the relay-to-agent stop control frame, using a clear frame type such as `stop_session`.
-- Keep origin assignment relay-controlled. Agents can register their existing metadata, but the relay should decide whether a session is direct or daemon-launched based on launch correlation.
+- Keep public launch-source assignment relay-controlled. Agents can register launch context, but the relay decides whether a session is local-created or mobile-created based on explicit context plus launch correlation.
 - Remove or stop exposing `terminate_supported` from the active public contract once unified stop is in place. Stop support should follow live session ownership, not daemon terminate metadata.
 
 **Patterns to follow:**
-- `RegisterFrameWithLaunchRequest`, `AttachOpenFrame`, and input frame helpers in `internal/protocol/message.go`.
+- `RegisterFrameWithLaunchContext`, `AttachOpenFrame`, and input frame helpers in `internal/protocol/message.go`.
 - JSON field coverage in `internal/protocol/message_test.go`.
 
 **Test scenarios:**
-- Happy path: marshaling a `SessionInfo` with origin `daemon` includes the origin field.
+- Happy path: marshaling a `SessionInfo` with `launch_source: "mobile"` includes the launch source field.
+- Happy path: marshaling a register frame with launch context includes `launch_context.source` and `launch_context.request_id`.
 - Happy path: `StopSessionFrame` produces a frame with only the expected stop type.
-- Edge case: origin omitted or empty decodes without breaking existing session snapshots and can be rendered as `unknown` by consumers.
+- Edge case: launch source omitted, empty, or unknown decodes without breaking existing session snapshots and can be rendered as `local` by consumers.
 - Regression: existing register, attach, resize, input, and snapshot frame tests continue to pass except where `terminate_supported` expectations are deliberately replaced by unified stop/origin expectations.
 
 **Verification:**
-- Protocol types can represent session origin and stop control without changing attach packet behavior.
+- Protocol types can represent session launch source, mobile launch context, and stop control without changing attach packet behavior.
 
 - [ ] **Unit 2: Implement relay-side unified session stop**
 
@@ -257,9 +260,9 @@ The `stop_session` frame is intentionally session-addressed. In the current impl
 **Verification:**
 - A relay stop frame can terminate a local `tunnel run` session without daemon involvement.
 
-- [ ] **Unit 4: Track origin and local scope for session listing**
+- [ ] **Unit 4: Track launch source and local scope for session listing**
 
-**Goal:** Populate session origin in relay snapshots and provide CLI-side local/remote classification using reliable local identity only.
+**Goal:** Populate session launch source in relay snapshots and provide CLI-side local/remote classification using reliable local identity only.
 
 **Requirements:** R7-R10, R14-R16
 
@@ -275,10 +278,10 @@ The `stop_session` frame is intentionally session-addressed. In the current impl
 - Test: `cmd/tunnel/main_test.go`
 
 **Approach:**
-- Mark normal agent registrations as origin `run` by default.
-- When a valid daemon launch correlation completes for a registering session, mark origin `daemon`.
-- Handle late accepted launch results by backfilling origin using the existing late-launch completion pattern.
-- Do not let an agent self-assert daemon origin merely by sending a `device_id` or launch-like field.
+- Mark normal agent registrations as `launch_source: "local"` by default.
+- When explicit mobile launch context matches a pending launch correlation for the same owner, mark `launch_source: "mobile"`.
+- Handle late accepted launch results by backfilling `launch_source: "mobile"` using the existing late-launch completion pattern.
+- Do not let an agent self-assert mobile launch source merely by sending a `device_id`, request id, or arbitrary `launch_source`.
 - For CLI display, classify `local` only when the current machine has a readable daemon identity and the session's `device_id` matches it. Classify sessions with another non-empty `device_id` as `remote`. Use `unknown` when reliable comparison is unavailable.
 
 **Patterns to follow:**
@@ -287,15 +290,15 @@ The `stop_session` frame is intentionally session-addressed. In the current impl
 - Local daemon identity lookup through `sessionDeviceID()` and `readSessionDeviceIdentity`.
 
 **Test scenarios:**
-- Happy path: direct agent registration without launch correlation lists origin `run`.
-- Happy path: daemon launch registration with matching launch request lists origin `daemon`.
-- Edge case: direct registration with `device_id` but no launch correlation remains origin `run`.
-- Edge case: late launch accepted result backfills origin `daemon`.
+- Happy path: direct agent registration without launch context lists `launch_source: "local"`.
+- Happy path: mobile launch registration with matching launch context lists `launch_source: "mobile"`.
+- Edge case: direct registration with `device_id` but no launch context remains `launch_source: "local"`.
+- Edge case: late launch accepted result backfills `launch_source: "mobile"`.
 - Edge case: CLI scope classification returns `unknown` when no local daemon identity is readable.
 - Edge case: CLI scope classification returns `local` only for matching non-empty device ids.
 
 **Verification:**
-- Session list consumers can display origin and scope without inferring source from removed terminate metadata.
+- Session list consumers can display launch source and scope without inferring source from removed terminate metadata.
 
 - [ ] **Unit 5: Add `tunnel session` CLI commands and table rendering**
 
@@ -320,7 +323,7 @@ The `stop_session` frame is intentionally session-addressed. In the current impl
 - Resolve auth through the existing runtime auth precedence: `TUNNEL_AUTH_TOKEN` first, then `~/.tunnel/auth.json`.
 - Resolve relay base URL like other CLI relay operations, using explicit `--base-url` only if added as a standard connection flag, otherwise `TUNNEL_BASE_URL` and the default. Do not add filtering flags.
 - Add a small session API client for `GET /api/sessions` and `POST /api/sessions/:id/stop`, reusing JSON envelope behavior from `relayAuthAPI`.
-- Render a bordered table with columns `Scope`, `Origin`, `Session`, `Label`, `Command`, `Machine`, `CWD`, and `Age`.
+- Render a bordered table with columns `Scope`, `Source`, `Session`, `Label`, `Command`, `Machine`, `CWD`, and `Age`.
 - Use fixed column widths. Tail-truncate `Label`, `Command`, and `Machine`; middle-truncate `CWD`; render empty labels as `-`.
 - Render `Machine` as `This machine` for local rows, otherwise best available `computer_name`, with a fallback such as `-`.
 - For `stop`, fetch or use returned session context so success output includes session id and machine context, for example `Stopped session 1839012 on Office Linux`.
@@ -331,7 +334,7 @@ The `stop_session` frame is intentionally session-addressed. In the current impl
 - Auth store and HTTP client patterns in `cmd/tunnel/auth_store.go` and `cmd/tunnel/auth_api.go`.
 
 **Test scenarios:**
-- Happy path: `tunnel session list` renders the exact bordered table for mixed local, remote, daemon, and direct sessions.
+- Happy path: `tunnel session list` renders the exact bordered table for mixed local, remote, mobile-created, and local-created sessions.
 - Happy path: `tunnel session stop sess-1` sends the stop request and prints stopped session output with machine context.
 - Edge case: empty session list prints a concise empty-state message rather than an empty table if that is the chosen UI.
 - Edge case: long `Label`, `Command`, and `Machine` values are tail-truncated without breaking borders.
@@ -369,7 +372,7 @@ The `stop_session` frame is intentionally session-addressed. In the current impl
 - Reword daemon docs so `daemon open/close/start/stop` remain workspace and daemon lifecycle operations.
 - De-emphasize `tunnel daemon sessions` and clarify that it is a tmux workspace inspection command, not the account-level Tunnel session list.
 - Update API docs for `POST /api/sessions/:id/stop`, dual app/agent-token auth if implemented, stop response shape, and stop-specific attach closing reason.
-- Update protocol docs for `SessionInfo.origin` and relay-to-agent `stop_session`.
+- Update protocol docs for `SessionInfo.launch_source`, agent registration `launch_context`, and relay-to-agent `stop_session`.
 - Update architecture docs to say stop routes through the owning agent, not device terminate, and does not kill daemon tmux workspace sessions.
 - Remove `/api/sessions/:id/terminate` from the documented active API and document `/api/sessions/:id/stop` as the only session shutdown route.
 - Add a short note that this revision does not implement single-connection multiplexing, but `stop_session` is a session control message intended to survive that transport refactor.

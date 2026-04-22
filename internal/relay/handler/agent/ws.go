@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -81,12 +82,16 @@ func Handle(registry *session.Registry, deviceRegistry *relaydevice.Registry) gi
 		}
 		sessionInfo := *register.Session
 		sessionInfo.LaunchSource = protocol.SessionLaunchSourceLocal
-		if deviceRegistry != nil && register.LaunchRequestID != "" {
+		launchRequestID := ""
+		if register.LaunchContext != nil && register.LaunchContext.Source == protocol.SessionLaunchSourceMobile {
+			launchRequestID = strings.TrimSpace(register.LaunchContext.RequestID)
+		}
+		if deviceRegistry != nil && launchRequestID != "" {
 			deviceOwner := relaydevice.DeviceOwner{
 				UserID:       authenticated.User.ID,
 				AgentTokenID: authenticated.Token.ID,
 			}
-			if _, ok := deviceRegistry.CompleteLaunchIfOwner(register.LaunchRequestID, deviceOwner, register.Session.SessionID); ok {
+			if _, ok := deviceRegistry.CompleteLaunchIfOwner(launchRequestID, deviceOwner, register.Session.SessionID); ok {
 				sessionInfo.LaunchSource = protocol.SessionLaunchSourceMobile
 			}
 		}
@@ -99,7 +104,7 @@ func Handle(registry *session.Registry, deviceRegistry *relaydevice.Registry) gi
 			logx.String("launcher", register.Session.Launcher),
 			logx.String("label", register.Session.Label),
 			logx.String("cwd", register.Session.CWD),
-			logx.String("launch_request_id", register.LaunchRequestID),
+			logx.String("launch_request_id", launchRequestID),
 			logx.Int64("user_id", authenticated.User.ID),
 			logx.String("agent_token_id", authenticated.Token.ID),
 		}

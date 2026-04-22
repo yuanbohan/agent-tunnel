@@ -52,11 +52,11 @@ var errOutboundBackpressure = errors.New("connector outbound backpressure")
 // Reverse data path:
 // - relay input frames come back through handleInbound() into the bound Hub
 type Connector struct {
-	url             string
-	token           string
-	info            protocol.SessionInfo
-	launchRequestID string
-	infoMu          sync.RWMutex
+	url           string
+	token         string
+	info          protocol.SessionInfo
+	launchContext protocol.LaunchContext
+	infoMu        sync.RWMutex
 
 	initialCols int
 	initialRows int
@@ -159,10 +159,10 @@ func (c *Connector) SetStopHandler(handler func()) {
 	c.stopHandler = handler
 }
 
-func (c *Connector) SetLaunchRequestID(launchRequestID string) {
+func (c *Connector) SetLaunchContext(launchContext protocol.LaunchContext) {
 	c.infoMu.Lock()
 	defer c.infoMu.Unlock()
-	c.launchRequestID = launchRequestID
+	c.launchContext = launchContext
 }
 
 func (c *Connector) SetInitialSize(cols, rows int) {
@@ -311,8 +311,8 @@ func (c *Connector) runOnce(ctx context.Context, connectTimeout time.Duration) (
 		return false, err
 	}
 
-	info, launchRequestID := c.infoSnapshot()
-	if err := c.writeJSON(conn, protocol.RegisterFrameWithLaunchRequest(info, launchRequestID)); err != nil {
+	info, launchContext := c.infoSnapshot()
+	if err := c.writeJSON(conn, protocol.RegisterFrameWithLaunchContext(info, launchContext)); err != nil {
 		_ = conn.Close()
 		return false, err
 	}
@@ -431,10 +431,10 @@ func (c *Connector) writeOutboundFrame(conn *websocket.Conn, frame outboundFrame
 	return c.writeJSON(conn, frame.json)
 }
 
-func (c *Connector) infoSnapshot() (protocol.SessionInfo, string) {
+func (c *Connector) infoSnapshot() (protocol.SessionInfo, protocol.LaunchContext) {
 	c.infoMu.RLock()
 	defer c.infoMu.RUnlock()
-	return c.info, c.launchRequestID
+	return c.info, c.launchContext
 }
 
 func (c *Connector) initialConnectTimeout(attempt int) time.Duration {

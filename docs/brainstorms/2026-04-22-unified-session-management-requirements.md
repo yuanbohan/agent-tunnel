@@ -24,16 +24,16 @@ The desired product model is simpler: `tunnel run` remains the only local sessio
 **Session Listing**
 - R7. `tunnel session list` lists all currently online Tunnel sessions visible to the authenticated account, including sessions on other machines.
 - R8. The list must distinguish current-machine sessions from sessions running on other machines.
-- R9. The list must distinguish direct `tunnel run` sessions from daemon-launched sessions.
+- R9. The list must distinguish local-created sessions from mobile-created sessions.
 - R10. The list must use the existing session `label` concept for user-provided session naming; do not introduce a separate `name` concept.
 - R11. The default list output must use a bordered table so dense session metadata remains readable and rows can be matched to columns.
 - R12. The default table must not use emoji because terminal width handling can break table alignment.
 - R13. The default table must omit `platform_id`; remote machine display should use the best available machine name without appending platform details.
 
 **Table Shape**
-- R14. The default table columns are `Scope`, `Origin`, `Session`, `Label`, `Command`, `Machine`, `CWD`, and `Age`.
+- R14. The default table columns are `Scope`, `Source`, `Session`, `Label`, `Command`, `Machine`, `CWD`, and `Age`.
 - R15. `Scope` values are `local`, `remote`, or `unknown`.
-- R16. `Origin` values are `run`, `daemon`, or `unknown`.
+- R16. `Source` values are `local` or `mobile`, with missing or unknown metadata displayed as `local`.
 - R17. `Session` must remain copyable and should not be truncated under normal terminal widths.
 - R18. Empty `Label` values display as `-`.
 - R19. Long `Label`, `Command`, and `Machine` values use fixed maximum widths and tail truncation.
@@ -44,12 +44,12 @@ Example default shape:
 
 ```text
 ┌────────┬────────┬──────────────┬──────────────┬──────────────┬──────────────────────┬──────────────────────────────┬──────┐
-│ Scope  │ Origin │ Session      │ Label        │ Command      │ Machine              │ CWD                          │ Age  │
+│ Scope  │ Source │ Session      │ Label        │ Command      │ Machine              │ CWD                          │ Age  │
 ├────────┼────────┼──────────────┼──────────────┼──────────────┼──────────────────────┼──────────────────────────────┼──────┤
-│ local  │ run    │ 1839201      │ api-fix      │ codex        │ This machine         │ ~/repo                       │ 12m  │
-│ local  │ daemon │ 1839455      │ mobile-task  │ claude       │ This machine         │ ~/work/agent-tunnel          │ 4m   │
-│ remote │ run    │ 1839012      │ review       │ codex        │ Office Linux         │ /home/yuanbo/work/.../api    │ 1h   │
-│ remote │ daemon │ 1838777      │ deploy       │ claude       │ Yuanbo MacBook Pro   │ /Users/yuanbo/.../frontend   │ 2h   │
+│ local  │ local  │ 1839201      │ api-fix      │ codex        │ This machine         │ ~/repo                       │ 12m  │
+│ local  │ mobile │ 1839455      │ mobile-task  │ claude       │ This machine         │ ~/work/agent-tunnel          │ 4m   │
+│ remote │ local  │ 1839012      │ review       │ codex        │ Office Linux         │ /home/yuanbo/work/.../api    │ 1h   │
+│ remote │ mobile │ 1838777      │ deploy       │ claude       │ Yuanbo MacBook Pro   │ /Users/yuanbo/.../frontend   │ 2h   │
 └────────┴────────┴──────────────┴──────────────┴──────────────┴──────────────────────┴──────────────────────────────┴──────┘
 ```
 
@@ -69,7 +69,7 @@ Example default shape:
 
 - A user can run `tunnel session list` and see all online sessions for their account in a stable bordered table.
 - The table clearly shows whether each session is local or remote.
-- The table clearly shows whether each session was created by direct `tunnel run` or daemon launch.
+- The table clearly shows whether each session was created locally or from mobile.
 - A user can stop any listed online session with `tunnel session stop <session-id>`.
 - Mobile stop and local CLI stop behave consistently because both target the live `tunnel run` session through the relay.
 - Daemon commands remain understandable as daemon/workspace lifecycle commands rather than general session management commands.
@@ -98,7 +98,7 @@ Example default shape:
 ## Dependencies / Assumptions
 
 - The relay remains the account-wide live session authority.
-- The session metadata model can reliably expose whether a session was created directly by `tunnel run` or by daemon launch.
+- The session metadata model can reliably expose whether a session was created locally or from mobile.
 - The CLI can authenticate to the relay for account-level session list and stop operations using an appropriate local credential path.
 - Current-machine detection needs a reliable local identity comparison; when that cannot be determined, `Scope` should be `unknown` rather than guessed.
 
@@ -111,7 +111,7 @@ Example default shape:
 ### Deferred to Planning
 
 - [Affects R8][Technical] What exact local identity should `tunnel session list` compare against relay session metadata to classify `local` versus `remote`?
-- [Affects R9][Technical] What explicit metadata field should represent direct `run` versus daemon launch so the CLI does not infer origin from legacy daemon terminate metadata?
+- [Affects R9][Technical] What explicit metadata field should represent local-created versus mobile-created launch source so the CLI does not infer source from legacy daemon terminate metadata or launch request correlation?
 - [Affects R25][Technical] Should the relay expose CLI session list/stop through existing app-facing APIs, agent-token-compatible APIs, or a dedicated CLI-oriented auth path?
 - [Affects R22-R24][Technical] What agent-side stop control message and shutdown behavior cleanly stop a `tunnel run` session without conflating session stop with daemon tmux workspace termination?
 

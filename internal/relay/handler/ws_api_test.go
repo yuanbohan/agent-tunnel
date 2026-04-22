@@ -386,8 +386,23 @@ func TestAgentRegistrationWithoutLaunchPreservesDeviceID(t *testing.T) {
 	server := httptest.NewServer(env.handler(nil))
 	defer server.Close()
 
-	agentConn := dialAndRegisterAgentWithLaunchRequestAndDeviceID(t, server.URL, agentToken.Plaintext, "sess-direct", "", "dev-existing")
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/agent/ws"
+	headers := http.Header{}
+	headers.Set("Authorization", bearerAuth(agentToken.Plaintext))
+	agentConn, _, err := websocket.DefaultDialer.Dial(wsURL, headers)
+	if err != nil {
+		t.Fatalf("Dial agent websocket returned error: %v", err)
+	}
 	defer agentConn.Close()
+	if err := agentConn.WriteJSON(protocol.RegisterFrame(protocol.SessionInfo{
+		SessionID:    "sess-direct",
+		DeviceID:     "dev-existing",
+		Launcher:     "codex",
+		CWD:          "/tmp/project",
+		LaunchSource: protocol.SessionLaunchSourceMobile,
+	})); err != nil {
+		t.Fatalf("WriteJSON register returned error: %v", err)
+	}
 
 	resp := doBearerGET(t, server.URL+"/api/sessions", issued.AccessToken)
 	defer resp.Body.Close()

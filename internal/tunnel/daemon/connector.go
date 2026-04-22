@@ -264,10 +264,8 @@ func buildShellWrapper(baseURL, authToken, launchRequestID, cwd, label string, a
 	parts = append(parts, `__tunnel_prev_auth="$TUNNEL_AUTH_TOKEN"`)
 	parts = append(parts, `__tunnel_had_base="${TUNNEL_BASE_URL+1}"`)
 	parts = append(parts, `__tunnel_prev_base="$TUNNEL_BASE_URL"`)
-	parts = append(parts, `__tunnel_had_launch_request="${TUNNEL_LAUNCH_REQUEST_ID+1}"`)
-	parts = append(parts, `__tunnel_prev_launch_request="$TUNNEL_LAUNCH_REQUEST_ID"`)
 
-	runArgs := []string{"tunnel", "run"}
+	runArgs := []string{"tunnel", "run", "--launch-source", protocol.SessionLaunchSourceMobile, "--launch-request-id", launchRequestID}
 	if label != "" {
 		runArgs = append(runArgs, "--label", label)
 	}
@@ -277,12 +275,10 @@ func buildShellWrapper(baseURL, authToken, launchRequestID, cwd, label string, a
 		"cd "+shellquote.Join(cwd)+
 			" && TUNNEL_BASE_URL="+shellquote.Join(baseURL)+
 			" TUNNEL_AUTH_TOKEN="+shellquote.Join(authToken)+
-			" TUNNEL_LAUNCH_REQUEST_ID="+shellquote.Join(launchRequestID)+
 			" "+shellquote.Join(runArgs...))
 	parts = append(parts, `if [ -n "$__tunnel_had_auth" ]; then export TUNNEL_AUTH_TOKEN="$__tunnel_prev_auth"; else unset TUNNEL_AUTH_TOKEN; fi`)
 	parts = append(parts, `if [ -n "$__tunnel_had_base" ]; then export TUNNEL_BASE_URL="$__tunnel_prev_base"; else unset TUNNEL_BASE_URL; fi`)
-	parts = append(parts, `if [ -n "$__tunnel_had_launch_request" ]; then export TUNNEL_LAUNCH_REQUEST_ID="$__tunnel_prev_launch_request"; else unset TUNNEL_LAUNCH_REQUEST_ID; fi`)
-	parts = append(parts, `unset __tunnel_had_auth __tunnel_prev_auth __tunnel_had_base __tunnel_prev_base __tunnel_had_launch_request __tunnel_prev_launch_request`)
+	parts = append(parts, `unset __tunnel_had_auth __tunnel_prev_auth __tunnel_had_base __tunnel_prev_base`)
 	parts = append(parts, `exec "${SHELL:-/bin/sh}" -l`)
 	return strings.Join(parts, "; ")
 }

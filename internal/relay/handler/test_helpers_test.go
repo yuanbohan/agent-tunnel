@@ -758,7 +758,15 @@ func dialAndRegisterAgentWithLaunchRequestAndDeviceID(t *testing.T, serverURL, a
 		t.Fatalf("Dial returned error: %v", err)
 	}
 
-	if err := conn.WriteJSON(protocol.RegisterFrameWithLaunchRequest(protocol.SessionInfo{
+	launchContext := protocol.LaunchContext{}
+	if strings.TrimSpace(launchRequestID) != "" {
+		launchContext = protocol.LaunchContext{
+			Source:    protocol.SessionLaunchSourceMobile,
+			RequestID: strings.TrimSpace(launchRequestID),
+		}
+	}
+
+	if err := conn.WriteJSON(protocol.RegisterFrameWithLaunchContext(protocol.SessionInfo{
 		SessionID:      sessionID,
 		DeviceID:       deviceID,
 		Launcher:       "codex",
@@ -769,7 +777,7 @@ func dialAndRegisterAgentWithLaunchRequestAndDeviceID(t *testing.T, serverURL, a
 		PlatformFamily: "linux",
 		PlatformID:     "ubuntu",
 		ComputerName:   "Office Linux",
-	}, launchRequestID)); err != nil {
+	}, launchContext)); err != nil {
 		t.Fatalf("WriteJSON register returned error: %v", err)
 	}
 

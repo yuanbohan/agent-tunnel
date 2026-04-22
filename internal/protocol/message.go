@@ -30,31 +30,42 @@ type SessionInfo struct {
 	LaunchSource   string `json:"launch_source,omitempty"`
 }
 
+// LaunchContext carries relay launch correlation for sessions created through
+// a remote device launch request. The relay validates it before exposing
+// SessionInfo.LaunchSource to clients.
+type LaunchContext struct {
+	Source    string `json:"source,omitempty"`
+	RequestID string `json:"request_id,omitempty"`
+}
+
 // AgentFrame is the JSON envelope sent over the agent WebSocket to the relay.
 type AgentFrame struct {
-	Type            string       `json:"type"`
-	Session         *SessionInfo `json:"session,omitempty"`
-	LaunchRequestID string       `json:"launch_request_id,omitempty"`
-	ClientID        string       `json:"client_id,omitempty"`
-	Reason          string       `json:"reason,omitempty"`
-	Text            string       `json:"text,omitempty"`
-	Submit          bool         `json:"submit,omitempty"`
-	Key             string       `json:"key,omitempty"`
-	Cols            int          `json:"cols,omitempty"`
-	Rows            int          `json:"rows,omitempty"`
+	Type          string         `json:"type"`
+	Session       *SessionInfo   `json:"session,omitempty"`
+	LaunchContext *LaunchContext `json:"launch_context,omitempty"`
+	ClientID      string         `json:"client_id,omitempty"`
+	Reason        string         `json:"reason,omitempty"`
+	Text          string         `json:"text,omitempty"`
+	Submit        bool           `json:"submit,omitempty"`
+	Key           string         `json:"key,omitempty"`
+	Cols          int            `json:"cols,omitempty"`
+	Rows          int            `json:"rows,omitempty"`
 }
 
 // RegisterFrame builds an AgentFrame of type "register".
 func RegisterFrame(info SessionInfo) AgentFrame {
-	return RegisterFrameWithLaunchRequest(info, "")
+	return RegisterFrameWithLaunchContext(info, LaunchContext{})
 }
 
-func RegisterFrameWithLaunchRequest(info SessionInfo, launchRequestID string) AgentFrame {
-	return AgentFrame{
-		Type:            "register",
-		Session:         &info,
-		LaunchRequestID: launchRequestID,
+func RegisterFrameWithLaunchContext(info SessionInfo, launchContext LaunchContext) AgentFrame {
+	frame := AgentFrame{
+		Type:    "register",
+		Session: &info,
 	}
+	if launchContext.Source != "" || launchContext.RequestID != "" {
+		frame.LaunchContext = &launchContext
+	}
+	return frame
 }
 
 func ResizeFrame(cols, rows int) AgentFrame {

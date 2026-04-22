@@ -78,10 +78,12 @@ The daemon-side launch handler owns immediate local validation:
 3. Parse the command string and validate the first token against the daemon allowlist.
 4. Resolve and validate the per-request `cwd`.
 5. Require the `tunnel` executable to be available in the daemon launch environment.
-6. Create one tmux-backed launch session with `TUNNEL_BASE_URL`, `TUNNEL_AUTH_TOKEN`, `TUNNEL_LAUNCH_REQUEST_ID`, optional `--label`, and the requested command.
+6. Create one tmux-backed launch session with scoped `TUNNEL_BASE_URL` and `TUNNEL_AUTH_TOKEN`, hidden `tunnel run --launch-source mobile --launch-request-id <id>` metadata, optional `--label`, and the requested command.
 7. Return `accepted` only after the tmux session is created.
 
-After `accepted`, the relay waits for the launched `tunnel run` process to register through `/agent/ws` with the same `launch_request_id`. The relay returns `session_ready` only when that registration supplies the new `session_id`.
+After `accepted`, the relay waits for the launched `tunnel run` process to register through `/agent/ws` with a `launch_context` containing `source: "mobile"` and the same request id. The relay returns `session_ready` only when that registration supplies the new `session_id`.
+
+Launch source metadata must not be passed through environment variables. It is carried as internal `tunnel run` flags and then as the agent registration `launch_context`; the relay validates the context before exposing `launch_source: "mobile"` to clients.
 
 The mobile/API launch flow must not auto-attach to the new session. Clients may use normal session discovery and attach APIs after launch completes.
 

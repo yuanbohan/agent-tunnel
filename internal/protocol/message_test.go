@@ -8,7 +8,7 @@ import (
 
 func TestRegisterFrameRoundTrip(t *testing.T) {
 	started := 1775131200
-	frame := RegisterFrameWithLaunchRequest(SessionInfo{
+	frame := RegisterFrameWithLaunchContext(SessionInfo{
 		SessionID:      "sess-123",
 		DeviceID:       "dev-123",
 		Launcher:       "codex",
@@ -21,7 +21,7 @@ func TestRegisterFrameRoundTrip(t *testing.T) {
 		PlatformID:     "ubuntu",
 		ComputerName:   "Office Linux",
 		LaunchSource:   "mobile",
-	}, "req-123")
+	}, LaunchContext{Source: SessionLaunchSourceMobile, RequestID: "req-123"})
 
 	raw, err := json.Marshal(frame)
 	if err != nil {
@@ -63,8 +63,14 @@ func TestRegisterFrameRoundTrip(t *testing.T) {
 	if decoded.Session.LaunchSource != "mobile" {
 		t.Fatalf("LaunchSource = %q, want mobile", decoded.Session.LaunchSource)
 	}
-	if decoded.LaunchRequestID != "req-123" {
-		t.Fatalf("LaunchRequestID = %q, want req-123", decoded.LaunchRequestID)
+	if decoded.LaunchContext == nil {
+		t.Fatal("LaunchContext = nil, want context")
+	}
+	if decoded.LaunchContext.Source != SessionLaunchSourceMobile {
+		t.Fatalf("LaunchContext.Source = %q, want mobile", decoded.LaunchContext.Source)
+	}
+	if decoded.LaunchContext.RequestID != "req-123" {
+		t.Fatalf("LaunchContext.RequestID = %q, want req-123", decoded.LaunchContext.RequestID)
 	}
 }
 
