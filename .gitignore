@@ -50,3 +50,4 @@ bin/
 # Ansible secrets
 ansible/host_vars/dev/relay-secrets.yml
 ansible/host_vars/prod/relay-secrets.yml
+ansible/host_vars/cn/relay-secrets.yml
