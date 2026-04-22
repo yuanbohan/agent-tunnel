@@ -26,6 +26,14 @@ type fakeStartupUpdater struct {
 	onReplaceFailure   func(tunnelupdate.InstallResult) error
 }
 
+type errorWriter struct {
+	err error
+}
+
+func (w errorWriter) Write([]byte) (int, error) {
+	return 0, w.err
+}
+
 func (f *fakeStartupUpdater) UpdateAvailable(context.Context) (tunnelupdate.LatestManifest, bool, error) {
 	return f.manifest, f.available, f.updateAvailableErr
 }
@@ -42,6 +50,40 @@ func (f *fakeStartupUpdater) InstallVersion(_ context.Context, version string) (
 		}
 	}
 	return f.installResult, f.installErr
+}
+
+func TestRenderStartupUpdatePromptUsesRawTerminalLineBreaks(t *testing.T) {
+	var stdout bytes.Buffer
+	if err := renderStartupUpdatePrompt(&stdout, "v0.1.5", "v0.1.6", 0); err != nil {
+		t.Fatalf("renderStartupUpdatePrompt returned error: %v", err)
+	}
+
+	got := stdout.String()
+	want := "\rA new Tunnel version is available\r\n\r\nCurrent: v0.1.5\r\nLatest:  v0.1.6\r\n\r\n? Update Tunnel now?\r\n\r\x1b[2K> Update now\r\n\r\x1b[2K  Skip and continue\r\n"
+	if got != want {
+		t.Fatalf("prompt render = %q, want %q", got, want)
+	}
+}
+
+func TestRenderStartupUpdatePromptPropagatesWriterErrors(t *testing.T) {
+	errBoom := errors.New("write failed")
+	err := renderStartupUpdatePrompt(errorWriter{err: errBoom}, "v0.1.5", "v0.1.6", 0)
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("renderStartupUpdatePrompt error = %v, want %v", err, errBoom)
+	}
+}
+
+func TestRenderStartupUpdateOptionsRerenderStartsFromColumnZero(t *testing.T) {
+	var stdout bytes.Buffer
+	if err := renderStartupUpdateOptions(&stdout, 1, true); err != nil {
+		t.Fatalf("renderStartupUpdateOptions returned error: %v", err)
+	}
+
+	got := stdout.String()
+	want := "\x1b[2F\r\x1b[2K  Update now\r\n\r\x1b[2K> Skip and continue\r\n"
+	if got != want {
+		t.Fatalf("option rerender = %q, want %q", got, want)
+	}
 }
 
 func TestMaybeHandleStartupUpdateSkipsWhenDisabledViaSettings(t *testing.T) {

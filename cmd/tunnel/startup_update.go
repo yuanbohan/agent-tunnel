@@ -131,14 +131,7 @@ func promptStartupUpdate(stdin io.Reader, stdout io.Writer, currentVersion, late
 	defer term.Restore(fd, oldState)
 
 	selection := 0
-	if _, err := fmt.Fprintf(stdout,
-		"A new Tunnel version is available\n\nCurrent: %s\nLatest:  %s\n\n? Update Tunnel now?\n",
-		currentVersion,
-		latestVersion,
-	); err != nil {
-		return false, err
-	}
-	if err := renderStartupUpdateOptions(stdout, selection, false); err != nil {
+	if err := renderStartupUpdatePrompt(stdout, currentVersion, latestVersion, selection); err != nil {
 		return false, err
 	}
 
@@ -154,7 +147,7 @@ func promptStartupUpdate(stdin io.Reader, stdout io.Writer, currentVersion, late
 
 		switch input[0] {
 		case '\r', '\n':
-			_, _ = io.WriteString(stdout, "\n")
+			_, _ = io.WriteString(stdout, "\r\n")
 			return selection == 0, nil
 		case 3:
 			return false, exitError{code: 130}
@@ -177,6 +170,17 @@ func promptStartupUpdate(stdin io.Reader, stdout io.Writer, currentVersion, late
 	}
 }
 
+func renderStartupUpdatePrompt(stdout io.Writer, currentVersion, latestVersion string, selection int) error {
+	if _, err := fmt.Fprintf(stdout,
+		"\rA new Tunnel version is available\r\n\r\nCurrent: %s\r\nLatest:  %s\r\n\r\n? Update Tunnel now?\r\n",
+		currentVersion,
+		latestVersion,
+	); err != nil {
+		return err
+	}
+	return renderStartupUpdateOptions(stdout, selection, false)
+}
+
 func renderStartupUpdateOptions(stdout io.Writer, selection int, rerender bool) error {
 	if rerender {
 		if _, err := io.WriteString(stdout, "\x1b[2F"); err != nil {
@@ -189,7 +193,7 @@ func renderStartupUpdateOptions(stdout io.Writer, selection int, rerender bool) 
 		if index == selection {
 			prefix = "> "
 		}
-		if _, err := fmt.Fprintf(stdout, "\x1b[2K%s%s\n", prefix, option); err != nil {
+		if _, err := fmt.Fprintf(stdout, "\r\x1b[2K%s%s\r\n", prefix, option); err != nil {
 			return err
 		}
 	}
