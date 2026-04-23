@@ -5,6 +5,8 @@ topic: relay-docker-deployment
 
 # Relay Docker Deployment
 
+> Superseded release-trigger note, 2026-04-23: Relay image publication no longer uses pushed bare semver tags. The current release model is manual dispatch through `.github/workflows/release.yml`, selecting `relay`, entering a plain version such as `v0.1.0`, recording source tag `relay-v0.1.0`, and publishing GHCR image tag `v0.1.0`. See `docs/brainstorms/2026-04-23-release-channel-disambiguation-requirements.md`.
+
 ## Problem Frame
 
 Relay deployment currently depends on locally built binaries, Ansible syncing those binaries, systemd, host PostgreSQL provisioning, and the `relay-migrate` schema runner. The desired operational model is simpler: build a Relay container image from tagged source, publish it to GitHub Container Registry, deploy Relay and PostgreSQL with Docker Compose, and let Ansible only synchronize Compose/runtime configuration and start or stop services.
@@ -66,7 +68,7 @@ The database workflow also changes. Docker/PostgreSQL bootstrap should use a com
 
 **GitHub Container Registry Release**
 
-- R5. Add a GitHub Actions workflow triggered by pushed semver tags such as `v0.1.0`; workflow dispatch may exist as a manual fallback, but tag push is the release path.
+- R5. Add a GitHub Actions workflow triggered by manual release dispatch for Relay. The workflow records source tags such as `relay-v0.1.0` while publishing GHCR image tags such as `v0.1.0`.
 - R6. The workflow must run the relevant Go tests before pushing an image.
 - R7. The workflow must push the Relay image to GHCR with an image tag exactly matching the git tag, for example `v0.1.0`.
 - R8. The workflow must use GitHub's package publishing permission path (`packages: write`) and avoid introducing a custom registry token unless GitHub requires it.
@@ -93,7 +95,7 @@ The database workflow also changes. Docker/PostgreSQL bootstrap should use a com
 
 - R21. Update `README.md` quick-start/deployment guidance to describe the Docker Compose deployment path, GHCR image tags, `.env`, PostgreSQL volume behavior, and manual schema-change responsibility.
 - R22. Update `docs/deploy.md` and `docs/operation.md` so the primary relay deployment path is Compose-based, while any remaining Ansible content describes syncing Compose files and running Compose lifecycle commands.
-- R23. Update `docs/release-distribution.md` or a dedicated deployment release doc to explain that the `Release Tunnel` workflow remains for public CLI binaries, while the new Relay workflow publishes the Relay image to GHCR.
+- R23. Update `docs/release-distribution.md` or a dedicated deployment release doc to explain that the unified `Release` workflow publishes public Tunnel CLI binaries when `tunnel` is selected and Relay images when `relay` is selected.
 - R24. Update `CLAUDE.md` and therefore `AGENTS.md` to state that `latest.sql` must always recreate the full current PostgreSQL schema and that existing-server schema changes are applied manually.
 
 ---

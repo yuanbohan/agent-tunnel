@@ -4,14 +4,19 @@ BUILD_TIME ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 LDFLAGS_BASE := -X yuanbohan/tunnel/internal/buildinfo.GitCommit=$(GIT_COMMIT) -X yuanbohan/tunnel/internal/buildinfo.GitBranch=$(GIT_BRANCH) -X yuanbohan/tunnel/internal/buildinfo.BuildTime=$(BUILD_TIME)
 
-.PHONY: all build build-linux docker-relay-image-test tag-version migrate clean vet test test-relay _resolve_version
+.PHONY: all build build-linux docker-relay-image-test migrate clean vet test test-relay _resolve_version
 
 all: build ## Build default local binaries.
 
 _resolve_version:
-	$(eval VERSION_VAL := $(shell ./scripts/git-version.sh "$(VERSION)"))
-	$(eval LDFLAGS := $(LDFLAGS_BASE) -X yuanbohan/tunnel/internal/buildinfo.Version=$(VERSION_VAL))
-	@printf '🚀 Building version: %s\n' "$(VERSION_VAL)"
+	$(eval LDFLAGS := $(LDFLAGS_BASE) $(if $(strip $(VERSION)),-X yuanbohan/tunnel/internal/buildinfo.Version=$(VERSION),))
+	@set -e; \
+	if [ -n "$(VERSION)" ]; then \
+		./scripts/render-latest-manifest.sh "$(VERSION)" >/dev/null; \
+		printf 'Building local binaries with version override: %s\n' "$(VERSION)"; \
+	else \
+		printf 'Building local development binaries with default version metadata\n'; \
+	fi
 
 build: _resolve_version ## Build local `tunnel`, `relay`, and `relay-migrate` binaries.
 	mkdir -p "$(BIN_DIR)"
@@ -28,11 +33,7 @@ build-linux: _resolve_version ## Build Linux binaries with stripped symbols.
 	@printf '✅ Linux binaries are ready in %s\n' "$(BIN_DIR)"
 
 docker-relay-image-test: ## Build the Relay Docker image and verify its embedded version metadata.
-	@VERSION="$(VERSION)" ./scripts/test-relay-docker-image.sh "$$(./scripts/git-version.sh "$(VERSION)")"
-
-tag-version: ## Resolve the next version, create the git tag if needed, and push it to origin.
-	@version=$$(./scripts/git-version.sh --push "$(VERSION)"); \
-	printf 'pushed version tag: %s\n' "$$version"
+	@./scripts/test-relay-docker-image.sh "$(if $(strip $(VERSION)),$(VERSION),v0.1.0)"
 
 migrate: ## Run relay schema migrations locally using the current shell environment.
 	$(GO) run $(MIGRATOR_PKG) --schema-dir ./schema $(MIGRATOR_ARGS)

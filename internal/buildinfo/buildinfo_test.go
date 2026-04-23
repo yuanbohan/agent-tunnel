@@ -80,3 +80,12 @@ func TestCompatibilityLineUsesPreOneMinorLine(t *testing.T) {
 		})
 	}
 }
+
+func TestCompatibilityLineUsesPlainProductVersions(t *testing.T) {
+	if got := CompatibilityLineOf("v0.4.1"); got != "0.4" {
+		t.Fatalf("CompatibilityLineOf(plain version) = %q, want 0.4", got)
+	}
+	if got := CompatibilityLineOf("relay-v0.4.1"); got == "0.4" {
+		t.Fatalf("CompatibilityLineOf(product-prefixed source tag) = %q, should not be treated as a plain product version", got)
+	}
+}

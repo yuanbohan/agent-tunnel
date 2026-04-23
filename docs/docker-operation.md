@@ -4,17 +4,12 @@ This document is the complete Docker Compose operating guide for the Relay servi
 
 ## Image
 
-The Relay image is published by GitHub Actions when a semver git tag is pushed:
-
-```bash
-git tag v0.1.0
-git push origin v0.1.0
-```
+The Relay image is published by GitHub Actions from a manual release dispatch. Open the private repo Actions tab, run `Release`, select `relay`, and enter a plain version such as `v0.1.0`. The workflow resolves source tag `relay-v0.1.0`, verifies the image, and only then creates or validates that source tag before push.
 
 The workflow is:
 
 ```text
-.github/workflows/release-relay-image.yml
+.github/workflows/release.yml
 ```
 
 It builds `Dockerfile.relay`, verifies `relay version`, and pushes:
@@ -92,7 +87,7 @@ Docker-related files in the repository:
 ```text
 Dockerfile.relay
 .dockerignore
-.github/workflows/release-relay-image.yml
+.github/workflows/release.yml
 deploy/compose/compose.yaml
 deploy/compose/.env.example
 deploy/compose/README.md
@@ -452,12 +447,7 @@ The legacy `relay-migrate` binary and numbered SQL migration files may still exi
 
 ## Release Update Checklist
 
-For a normal Relay-only update:
-
-```bash
-git tag v0.1.1
-git push origin v0.1.1
-```
+For a normal Relay-only update, run the private repo `Release` workflow, select `relay`, and enter `v0.1.1`. The workflow resolves source tag `relay-v0.1.1`, verifies the image, and then creates or validates that source tag before push.
 
 Wait for the GitHub Actions workflow to publish:
 
