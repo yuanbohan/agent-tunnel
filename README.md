@@ -114,17 +114,16 @@ or add it to `~/.tunnel/settings.json`:
 The relay now requires PostgreSQL, an application secret used for credential digests, and a fixed operator token for local maintenance commands:
 
 ```bash
-export RELAY_DATABASE_URL=postgres://relay_user:change-me-db-password@localhost/agent_tunnel?sslmode=disable
-export RELAY_APP_SECRET=change-me
-export RELAY_OPERATOR_TOKEN=change-me-operator-token
-go run ./cmd/migrate --schema-dir ./schema
-go run ./cmd/relay serve --listen-addr 127.0.0.1:8586
+cp deploy/compose/.env.example deploy/compose/.env
+$EDITOR deploy/compose/.env
+docker compose --env-file deploy/compose/.env -f deploy/compose/compose.yaml up -d
+curl -fsS http://127.0.0.1:8586/healthz
 ```
 
 Create one or more invite codes on the relay host:
 
 ```bash
-go run ./cmd/relay invite create --count 3 --expires-in 7d
+docker compose --env-file deploy/compose/.env -f deploy/compose/compose.yaml exec relay relay invite create --count 3 --expires-in 7d
 ```
 
 ### 2. Authenticate tunnel
@@ -263,23 +262,24 @@ See `docs/daemon.md` for the implementation contract that constrains daemon life
 
 ## VPS Deployment
 
-See [docs/deployment.md](docs/deployment.md) for the full deployment guide covering one-time host bootstrap (`nginx`, PostgreSQL, and optional `certbot`), systemd, the relay-specific nginx site config, automated deploys, and the operational runbook.
+See [docs/docker-operation.md](docs/docker-operation.md) for the full Docker Compose deployment and operation guide covering GitHub/GHCR setup, remote paths, environment files, Ansible commands, logs, and PostgreSQL schema handling. [docs/deployment.md](docs/deployment.md) redirects to the current deployment guide.
 
 Quick start on the remote host:
 
 ```bash
-sudo install -d -m 0755 /etc/agentunnel
-sudo tee /etc/agentunnel/relay.env >/dev/null <<'EOF'
-RELAY_DATABASE_URL=postgres://relay_user:change-me-db-password@localhost/agent_tunnel?sslmode=disable
-RELAY_APP_SECRET=<long-random-secret>
-RELAY_OPERATOR_TOKEN=<long-random-operator-token>
-EOF
-sudo chmod 600 /etc/agentunnel/relay.env
-sudo ./bin/relay-migrate --env-file /etc/agentunnel/relay.env --schema-dir ./schema
-sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && ./bin/relay serve --listen-addr 127.0.0.1:8586'
+sudo install -d -m 0755 /opt/agentunnel
+sudo cp -R deploy/compose deploy/postgres /opt/agentunnel/
+cd /opt/agentunnel/compose
+sudo cp .env.example .env
+sudo chmod 600 .env
+sudoedit .env
+sudo docker compose --env-file .env pull
+sudo docker compose --env-file .env up -d
+curl -fsS http://127.0.0.1:8586/healthz
 
 # in another shell on the same host
-sudo /bin/sh -lc 'set -a && . /etc/agentunnel/relay.env && set +a && ./bin/relay invite create --count 3 --expires-in 7d'
+cd /opt/agentunnel/compose
+sudo docker compose --env-file .env exec relay relay invite create --count 3 --expires-in 7d
 ```
 
 After the user registers in the app, on each developer machine:
@@ -290,7 +290,11 @@ export TUNNEL_BASE_URL=https://diaro.me
 ./bin/tunnel run --label "feature-branch" claude
 ```
 
-Keep deployment config in Ansible:
+Publish Relay images by pushing a semver git tag such as `v0.1.0`. The `Release Relay Image` workflow builds, verifies, and pushes `ghcr.io/yuanbohan/agent-tunnel-relay:v0.1.0`. Set `RELAY_IMAGE_TAG` in the remote `.env` to the exact version you want to run; do not deploy from a mutable `latest` tag.
+
+The GHCR package is private. Set `relay_ghcr_token` in the environment's Ansible secrets file so `make compose-up-*` can log in to GHCR as `yuanbohan` before pulling.
+
+Keep host/bootstrap config in Ansible:
 
 - `ansible/inventories/dev.yml` and `ansible/inventories/prod.yml` define hosts, domains, and non-secret defaults
 - `ansible/host_vars/dev/relay-secrets.yml` and `ansible/host_vars/prod/relay-secrets.yml` hold per-environment secrets
@@ -300,28 +304,30 @@ Bootstrap each host once:
 ```bash
 cp ansible/host_vars/dev/relay-secrets.example.yml ansible/host_vars/dev/relay-secrets.yml
 cp ansible/host_vars/prod/relay-secrets.example.yml ansible/host_vars/prod/relay-secrets.yml
-make init-dev          # dev: install nginx+postgresql, create relay DB, render HTTP nginx
-make init-prod         # prod: install nginx+postgresql+certbot, create relay DB, render HTTP nginx, issue TLS cert, switch nginx to TLS
+make init-dev          # dev: install nginx and render HTTP nginx
+make init-prod         # prod: install nginx+certbot, render HTTP nginx, issue TLS cert, switch nginx to TLS
+make compose-sync-prod # sync Compose assets before creating /opt/agentunnel/compose/.env
 ```
 
-Before running `make init-prod`, point the prod DNS records at the target host and set `relay_certbot_email` and `relay_database_password` in `ansible/host_vars/prod/relay-secrets.yml`; Let's Encrypt validates over HTTP-01 against the new host.
+Before running `make init-prod`, point the prod DNS records at the target host and set `relay_certbot_email` in `ansible/host_vars/prod/relay-secrets.yml`; Let's Encrypt validates over HTTP-01 against the new host.
 
-Deploy:
+Deploy or update the Compose stack:
 
 ```bash
-make deploy-prod            # prod relay
-make deploy-dev             # dev relay
+make compose-sync-prod      # sync Compose assets to prod
+make compose-up-prod        # pull images and start/update prod services
+make compose-stop-prod      # stop prod services without removing containers
 make deploy-website-prod    # prod website bundle from ../agent-tunnel-website
+make compose-sync-dev       # sync Compose assets to dev
+make compose-up-dev         # pull images and start/update dev services
 make deploy-website-dev     # dev website bundle from ../agent-tunnel-website
 ```
 
-`make init-prod` and `make install-prod` both read `relay_certbot_email` from `ansible/host_vars/prod/relay-secrets.yml`. `make init-dev` and `make install-dev` skip `certbot` and keep the dev relay on plain HTTP port 80. The nginx config they render serves `/` from the static website at `/var/www/agentunnel-website/current` and proxies `/api/`, `/agent/ws`, and `/device/ws` to the relay. None of them build or publish the website bundle. `make init-*` is the idempotent bootstrap target used on a fresh host: it installs packages, creates the relay PostgreSQL user and database, and (on prod) runs the nginx render both before and after certificate issuance so nginx ends up on TLS. `make install-*` is the narrower slice that only covers package installation, certbot wiring, and nginx rendering. `make install` remains the local binary install alias.
+The Compose role syncs `deploy/compose/` and `deploy/postgres/latest.sql`, but it does not overwrite the real remote `.env`. Create `/opt/agentunnel/compose/.env` from `.env.example` on the server and keep secrets there. The example intentionally leaves secrets blank so Compose fails until the values are filled in.
 
-Every relay deploy builds Linux binaries, syncs `schema/`, reruns the migrator, renders `/etc/agentunnel/relay.env` from Ansible variables, updates the systemd unit, and restarts the relay. Website deploy stays separate: `make deploy-website-*` runs `npm ci`, builds `../agent-tunnel-website`, rejects bundle symlinks, uploads a release under `/var/www/agentunnel-website/releases`, and atomically repoints `/var/www/agentunnel-website/current`.
+PostgreSQL data lives in the `RELAY_POSTGRES_VOLUME` Docker named volume, defaulting to `relay-postgres-data`. Relay structured logs are appended inside the container to `/var/log/agentunnel/relay.log`, which Compose persists on the host at `/opt/agentunnel/logs/relay/relay.log`. `deploy/postgres/latest.sql` initializes only an empty volume. Updating an existing database schema is a manual operator step: update `deploy/postgres/latest.sql` in the same code change, then run the required SQL on the server before deploying a Relay image that depends on it.
 
-For targeted relay maintenance, use the sliced deploy targets: `make migrator-dev` / `make migrator-prod` install only `relay-migrate`, `make relay-bin-dev` / `make relay-bin-prod` install only `relay`, `make migrate-dev` / `make migrate-prod` sync `schema/` and run migrations using the already-installed remote migrator, and `make relay-dev` / `make relay-prod` render relay env and systemd config, then restart the service using the already-installed remote relay binary.
-
-Deploy is intentionally narrower than install: it does not install packages, request certificates, or change PostgreSQL users and databases unless you run the dedicated Ansible-tagged targets for those steps.
+The legacy binary/systemd deploy targets remain available for now, but the Docker Compose path is the primary relay deployment flow. Website deploy stays separate: `make deploy-website-*` runs `npm ci`, builds `../agent-tunnel-website`, rejects bundle symlinks, uploads a release under `/var/www/agentunnel-website/releases`, and atomically repoints `/var/www/agentunnel-website/current`.
 
 Use `ANSIBLE_DRY_RUN=1` for a check-mode preview and `ANSIBLE_EXTRA_VARS_FILE=<path>` if you want to layer extra vars on top of the checked-in inventories.
 
@@ -364,6 +370,10 @@ make build             # builds bin/tunnel, bin/relay, and bin/relay-migrate
 make install           # installs local tunnel, relay, and relay-migrate builds to ~/.local/bin without tagging or pushing
 make install-dev       # installs packages and syncs the dev nginx config
 make install-prod      # installs packages, certbot, and syncs the prod nginx config
+make docker-relay-image-test # build the Relay Docker image and verify embedded version metadata
+make compose-sync-dev     # sync relay Compose assets to dev
+make compose-up-dev       # pull and start/update relay Compose services on dev
+make compose-stop-dev     # stop relay Compose services on dev
 make deploy-website-dev   # build ../agent-tunnel-website and publish it to the dev host
 make deploy-website-prod  # build ../agent-tunnel-website and publish it to the prod host
 make test              # go test ./...
@@ -374,7 +384,7 @@ make test-local-e2e-docker # start fixed-version Docker PostgreSQL and run local
 make test-local-e2e-clean  # reset DB, run local E2E, save output to tmp/local-e2e/latest.log, and fail on test or cleanup errors
 make tunnel LAUNCHER=claude       # run tunnel directly
 go run ./cmd/relay serve          # run relay server
-make migrate           # run relay schema migrations using the current shell environment
+make migrate           # legacy/local: run relay schema migrations using the current shell environment
 ```
 
 See [docs/local-e2e.md](docs/local-e2e.md) for the Docker-backed local E2E workflow, manual acceptance checklist, and database inspection queries.

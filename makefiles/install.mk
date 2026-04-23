@@ -13,6 +13,7 @@ ANSIBLE_OPTS := -i "$(ANSIBLE_INVENTORY)"
 ANSIBLE_OPTS += -e "project_root=$(ANSIBLE_PROJECT_ROOT)"
 ANSIBLE_OPTS += -e "website_repo_dir=$(ANSIBLE_WEBSITE_REPO_DIR)"
 ANSIBLE_OPTS += -e "website_build_dir=$(WEBSITE_BUILD_DIR)"
+ANSIBLE_OPTS += -e "relay_compose_action=$(RELAY_COMPOSE_ACTION)"
 
 ANSIBLE_OPTS += $(if $(strip $(ANSIBLE_LIMIT)),--limit "$(ANSIBLE_LIMIT)",)
 ANSIBLE_OPTS += $(if $(strip $(ANSIBLE_EXTRA_VARS_FILE)), -e "@$(ANSIBLE_EXTRA_VARS_FILE)",)

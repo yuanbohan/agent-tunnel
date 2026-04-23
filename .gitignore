@@ -44,6 +44,7 @@ bin/
 
 
 /logs
+/deploy/logs
 .superpowers
 .worktrees
 

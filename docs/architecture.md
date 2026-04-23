@@ -262,8 +262,10 @@ The device-launch lifecycle is separate from session attach:
 - `internal/relay/device/`: transient online-device routing, owner metadata, and launch-request coordination
 - `internal/relay/session/`: live session registry, owner metadata, stop control routing, and attach-session indexing
 - `internal/relay/handler/`: Gin router assembly plus subpackages for middleware, REST API, agent WebSocket flows, device WebSocket flows, attach WebSocket flows, shared request helpers, and HTTP DTOs
-- `internal/migration/`: relay schema migration runner and `schema_migrations` tracking
+- `internal/migration/`: relay schema migration runner and `schema_migrations` tracking for legacy/local workflows
 - `internal/relay/store/postgres/`: PostgreSQL-backed auth and operator persistence
+
+Docker Compose relay deployments initialize fresh PostgreSQL volumes from `deploy/postgres/latest.sql` and do not run automatic migrations against existing databases. Existing deployed databases require operator-run SQL for schema changes, and the full snapshot must stay current whenever the durable schema changes.
 - `internal/protocol/`: shared session-attach, device-launch, and session-stop wire types
 
 ## Related Documents

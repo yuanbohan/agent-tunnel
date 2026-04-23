@@ -51,6 +51,8 @@ ANSIBLE_DRY_RUN ?= 0
 DEPLOY_RETRY_COUNT ?= 3
 ## DEPLOY_RETRY_DELAY: Seconds to wait between retry attempts for relay binary upload targets.
 DEPLOY_RETRY_DELAY ?= 2
+## RELAY_COMPOSE_ACTION: Compose lifecycle action for compose-* deploy targets (`sync`, `pull`, `up`, `start`, `stop`, `down`).
+RELAY_COMPOSE_ACTION ?= sync
 
 export ANSIBLE_CONFIG ANSIBLE_ROLES_PATH ANSIBLE_STDOUT_CALLBACK ANSIBLE_CALLBACK_RESULT_FORMAT
 

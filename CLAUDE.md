@@ -9,7 +9,7 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 - The main product is the `tunnel` CLI with strict relay startup requirement and automatic reconnect with backoff after startup.
 - `cmd/tunnel` builds the `tunnel` CLI. It launches a PATH-resolved CLI command, keeps the local terminal interactive, and maintains the authoritative headless terminal mirror for the current PTY session.
 - `cmd/relay` is the standalone relay server. It exposes authenticated HTTP and WebSocket APIs for external clients, authenticates app clients with bearer app sessions, authenticates agents with user-owned bearer agent tokens, keeps operator maintenance routes local-only outside the public `/api/` namespace, persists accounts and auth state in PostgreSQL, and maintains live in-memory routing only for online sessions and online device daemons. It does not retain transcript history. It starts via explicit subcommands such as `serve`, `invite create`, `invite disable`, and `user delete`.
-- `cmd/migrate` builds the standalone relay schema migrator used for explicit PostgreSQL schema changes.
+- `cmd/migrate` builds the standalone relay schema migrator used by legacy/local PostgreSQL schema workflows. Docker Compose relay deployments do not run it automatically.
 - `internal/tunnel/session/` owns PTY lifecycle, Hub fanout, local terminal attach, resize/input forwarding, and the terminal mirror used for attach snapshots.
 - `internal/tunnel/daemon/` owns the explicit background daemon started by `tunnel daemon ...`, including the local control socket, persisted device identity, dedicated tmux workspace, doctor/status behavior, and device-side relay connector.
 - `internal/protocol/` defines attach-oriented wire types: agent registration, attach control, session info, structured input, and client-routed terminal-byte packets.
@@ -22,7 +22,7 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 - `internal/config/` owns relay process configuration loaded during relay startup.
 - `internal/logx/` owns the global structured logger setup used across the relay.
 - `internal/relay/handler/` owns the Gin router, HTTP middleware, REST handlers, and WebSocket transport split by API, agent, device, and attach concerns.
-- `internal/migration/` owns the relay schema migration runner and migration tracking logic.
+- `internal/migration/` owns the relay schema migration runner and migration tracking logic for legacy/local workflows.
 - `internal/relay/store/postgres/` owns PostgreSQL persistence for relay auth and operator state.
 - `internal/tunnel/launcher/` is the thin PATH resolution layer for the user-provided launcher command.
 - `internal/buildinfo/` owns shared tunnel/relay version metadata and compatibility-line helpers used by release builds, public manifests, and version reporting.
@@ -62,6 +62,9 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 - The relay does not ship a bundled frontend. Any UI or client experience is owned by external clients such as the mobile app.
 - Public `tunnel` binary distribution lives in `yuanbohan/tunnel`, which is a distribution-only repo with stable `install.sh`, `latest.json`, and GitHub Releases assets, including `checksums.txt` for native self-update integrity checks.
 - Persistent CLI-owned local state for Tunnel lives under `~/.tunnel/`: `auth.json` for saved auth fallback, `settings.json` for user-editable settings env overrides, and internal `updater.json` for cadence and rollback bookkeeping.
+- Docker Compose relay deployment uses the GHCR Relay image plus PostgreSQL in Compose. Compose initializes fresh PostgreSQL volumes from `deploy/postgres/latest.sql`, persists relay structured logs under `/opt/agentunnel/logs/relay/relay.log`, and does not run automatic migrations against existing databases.
+- `deploy/postgres/latest.sql` is the complete current PostgreSQL schema snapshot. Every PostgreSQL schema change must update this file so a fresh database can be fully recreated from it.
+- Existing deployed PostgreSQL databases are changed manually by an operator running the required SQL on the server. Do not document or implement automatic production schema migration in the Docker Compose deployment path unless the product boundary changes explicitly.
 - Tunnel and relay compatibility is guaranteed only within the same compatibility line. For `v1+`, that line is the semver major version. For pre-`v1`, that line is `0.minor`, so `v0.1.x` and `v0.2.x` are different compatibility lines.
 - Stronger delivery guarantees may be explored later, but do not document or imply them before they exist in code and protocol.
 
@@ -70,6 +73,7 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 - Keep `README.md`, `docs/api.md`, `docs/protocol.md`, `docs/daemon.md`, `docs/architecture.md`, `CLAUDE.md`, and `AGENTS.md` aligned with the active attach-based contract and current implementation status when behavior or scope changes.
 - If you change app-facing relay auth, public client endpoints, request or response shapes, app-visible error statuses or reasons, or client attach WebSocket message contracts, update `docs/api.md`.
 - If you change relay auth, relay lifecycle, client-facing endpoints, or PTY/input behavior, update `docs/architecture.md`.
+- If you change PostgreSQL schema, update `deploy/postgres/latest.sql` in the same change and document any manual SQL required for existing deployed databases.
 - If you change daemon lifecycle, tmux workspace ownership, workspace close behavior, launch validation, daemon health, local daemon state, or daemon failure reasons, update `docs/daemon.md`.
 - If you change attach lifecycle semantics, session-state semantics, `/api/sessions/:id/attach/ws`, or `/agent/ws` attach-control messages, update `README.md`, `docs/protocol.md`, `docs/architecture.md`, `CLAUDE.md`, and `AGENTS.md`.
 - If you change snapshot generation, live-byte delivery, resize ownership, or structured input semantics, update `README.md`, `docs/protocol.md`, `docs/architecture.md`, `CLAUDE.md`, and `AGENTS.md`.

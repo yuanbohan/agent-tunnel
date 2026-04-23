@@ -4,7 +4,7 @@ BUILD_TIME ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 LDFLAGS_BASE := -X yuanbohan/tunnel/internal/buildinfo.GitCommit=$(GIT_COMMIT) -X yuanbohan/tunnel/internal/buildinfo.GitBranch=$(GIT_BRANCH) -X yuanbohan/tunnel/internal/buildinfo.BuildTime=$(BUILD_TIME)
 
-.PHONY: all build build-linux tag-version migrate clean vet test test-relay _resolve_version
+.PHONY: all build build-linux docker-relay-image-test tag-version migrate clean vet test test-relay _resolve_version
 
 all: build ## Build default local binaries.
 
@@ -26,6 +26,9 @@ build-linux: _resolve_version ## Build Linux binaries with stripped symbols.
 	@GOOS=linux GOARCH=amd64 $(GO) build -ldflags="-s -w $(LDFLAGS)" -o "$(RELAY_BUILD_BIN)" $(RELAY_PKG)
 	@GOOS=linux GOARCH=amd64 $(GO) build -ldflags="-s -w $(LDFLAGS)" -o "$(MIGRATOR_BUILD_BIN)" $(MIGRATOR_PKG)
 	@printf '✅ Linux binaries are ready in %s\n' "$(BIN_DIR)"
+
+docker-relay-image-test: ## Build the Relay Docker image and verify its embedded version metadata.
+	@VERSION="$(VERSION)" ./scripts/test-relay-docker-image.sh "$$(./scripts/git-version.sh "$(VERSION)")"
 
 tag-version: ## Resolve the next version, create the git tag if needed, and push it to origin.
 	@version=$$(./scripts/git-version.sh --push "$(VERSION)"); \

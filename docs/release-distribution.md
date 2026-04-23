@@ -1,4 +1,4 @@
-# Tunnel Release Distribution
+# Tunnel and Relay Release Distribution
 
 This repo stays private and remains the source of truth. Public downloads live in `yuanbohan/tunnel`, which is treated as a distribution surface only.
 
@@ -34,6 +34,8 @@ Published `tunnel` binaries also embed their own release identity. Official rele
 
 The private-repo `Release Tunnel` workflow enforces that the requested `tunnel` release version stays within the current repo relay compatibility line. It does not publish a `relay` binary; it prevents a `tunnel` release from crossing into a new line until the repo's shared build metadata is updated first.
 
+Relay is distributed separately as a Docker image through GitHub Container Registry. The `Release Relay Image` workflow builds `cmd/relay` into `ghcr.io/yuanbohan/agent-tunnel-relay:<version>` from pushed semver tags.
+
 ## Token Setup
 
 The private source repo needs one secret:
@@ -49,6 +51,8 @@ Native `tunnel update` and `tunnel rollback` download `checksums.txt` before ver
 
 ## Release Flow
 
+### Tunnel CLI
+
 1. Open the private repo Actions tab.
 2. Run `Release Tunnel`.
 3. Enter a version such as `v0.1.2`.
@@ -63,6 +67,21 @@ Published outputs:
 - refreshed `latest.json`
 
 Those same public assets are the only source used by native `tunnel update` and `tunnel rollback`. The CLI does not shell out to `install.sh`; it consumes the published `latest.json`, release archives, and `checksums.txt` directly.
+
+### Relay Image
+
+1. Push a semver git tag such as `v0.1.2`.
+2. The `Release Relay Image` workflow runs `go test ./...`.
+3. The workflow builds `Dockerfile.relay` with release ldflags:
+   - `Version=<tag>`
+   - `DistributionMarker=official-release`
+   - `GitCommit=<sha>`
+   - `GitBranch=<tag>`
+   - `BuildTime=<timestamp>`
+4. The workflow runs `relay version` inside the image and requires the first line to report the tag.
+5. The workflow pushes `ghcr.io/yuanbohan/agent-tunnel-relay:<tag>`.
+
+Compose deployments pin `RELAY_IMAGE_TAG` to the desired semver tag. They should not track a mutable `latest` tag.
 
 ## Commit Messages
 
