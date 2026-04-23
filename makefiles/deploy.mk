@@ -192,19 +192,14 @@ compose-down-relay-cn: ## Stop and remove Docker Compose relay containers on the
 
 relay-cn-ops: ## Print the common Docker Compose operator commands for relay-cn.
 	@printf '%s\n' \
-	'Run these from your local checkout or copy the remote forms after SSHing into relay-cn:' \
-	'' \
-	'  make relay-cn-relay-version' \
+	'relay-cn quick ops (run from your Mac in this repo):' \
+	'  make relay-cn-relay-version                              # running relay version/build' \
 	'  make relay-cn-invite-create RELAY_CN_INVITE_COUNT=3 RELAY_CN_INVITE_EXPIRES_IN=7d' \
 	'  make relay-cn-invite-list' \
 	'  make relay-cn-invite-disable RELAY_CN_INVITE_CODE=AB2C3D' \
-	'  make relay-cn-user-delete RELAY_CN_USERNAME=alice' \
-	'  make relay-cn-psql' \
-	'' \
-	'Remote form:' \
-	'  ssh $(RELAY_CN_SSH_DEST)' \
-	'  cd $(RELAY_CN_COMPOSE_DIR)' \
-	'  sudo docker compose --env-file .env exec relay relay invite list'
+	'  make relay-cn-user-delete RELAY_CN_USERNAME=alice        # destructive' \
+	'  make relay-cn-psql                                       # open PostgreSQL shell' \
+	'  make relay-cn-status                                     # end-to-end health check'
 
 relay-cn-relay-version: ## Print the relay version from the running relay-cn container.
 	@ssh "$(RELAY_CN_SSH_DEST)" 'cd "$(RELAY_CN_COMPOSE_DIR)" && sudo docker compose --env-file .env exec relay relay version'
