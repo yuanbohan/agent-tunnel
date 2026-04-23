@@ -17,6 +17,7 @@
 	compose-start-dev compose-start-prod compose-start-relay-cn \
 	compose-stop-dev compose-stop-prod compose-stop-relay-cn \
 	compose-down-dev compose-down-prod compose-down-relay-cn \
+	relay-cn-ops relay-cn-relay-version relay-cn-invite-create relay-cn-invite-list relay-cn-invite-disable relay-cn-user-delete relay-cn-psql \
 	relay-cn-status \
 	restart-dev restart-prod \
 	relay-dev relay-prod
@@ -188,6 +189,48 @@ compose-down-prod: ## Stop and remove Docker Compose relay containers on the pro
 
 compose-down-relay-cn: ## Stop and remove Docker Compose relay containers on the relay-cn host while keeping named volumes.
 	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/relay-cn.yml ANSIBLE_TAGS="$(DEPLOY_COMPOSE_TAGS)" RELAY_COMPOSE_ACTION=down
+
+relay-cn-ops: ## Print the common Docker Compose operator commands for relay-cn.
+	@printf '%s\n' \
+	'Run these from your local checkout or copy the remote forms after SSHing into relay-cn:' \
+	'' \
+	'  make relay-cn-relay-version' \
+	'  make relay-cn-invite-create RELAY_CN_INVITE_COUNT=3 RELAY_CN_INVITE_EXPIRES_IN=7d' \
+	'  make relay-cn-invite-list' \
+	'  make relay-cn-invite-disable RELAY_CN_INVITE_CODE=AB2C3D' \
+	'  make relay-cn-user-delete RELAY_CN_USERNAME=alice' \
+	'  make relay-cn-psql' \
+	'' \
+	'Remote form:' \
+	'  ssh $(RELAY_CN_SSH_DEST)' \
+	'  cd $(RELAY_CN_COMPOSE_DIR)' \
+	'  sudo docker compose --env-file .env exec relay relay invite list'
+
+relay-cn-relay-version: ## Print the relay version from the running relay-cn container.
+	@ssh "$(RELAY_CN_SSH_DEST)" 'cd "$(RELAY_CN_COMPOSE_DIR)" && sudo docker compose --env-file .env exec relay relay version'
+
+relay-cn-invite-create: ## Create invite codes on relay-cn. Override RELAY_CN_INVITE_COUNT and RELAY_CN_INVITE_EXPIRES_IN as needed.
+	@ssh "$(RELAY_CN_SSH_DEST)" 'cd "$(RELAY_CN_COMPOSE_DIR)" && sudo docker compose --env-file .env exec relay relay invite create --count "$(RELAY_CN_INVITE_COUNT)" --expires-in "$(RELAY_CN_INVITE_EXPIRES_IN)"'
+
+relay-cn-invite-list: ## List invite codes on relay-cn.
+	@ssh "$(RELAY_CN_SSH_DEST)" 'cd "$(RELAY_CN_COMPOSE_DIR)" && sudo docker compose --env-file .env exec relay relay invite list'
+
+relay-cn-invite-disable: ## Disable one invite code on relay-cn. Set RELAY_CN_INVITE_CODE=<code>.
+	@if [ -z "$(RELAY_CN_INVITE_CODE)" ]; then \
+		printf 'RELAY_CN_INVITE_CODE is required\n' >&2; \
+		exit 1; \
+	fi
+	@ssh "$(RELAY_CN_SSH_DEST)" 'cd "$(RELAY_CN_COMPOSE_DIR)" && sudo docker compose --env-file .env exec relay relay invite disable --code "$(RELAY_CN_INVITE_CODE)"'
+
+relay-cn-user-delete: ## Delete one user on relay-cn. Set RELAY_CN_USERNAME=<username>.
+	@if [ -z "$(RELAY_CN_USERNAME)" ]; then \
+		printf 'RELAY_CN_USERNAME is required\n' >&2; \
+		exit 1; \
+	fi
+	@ssh "$(RELAY_CN_SSH_DEST)" 'cd "$(RELAY_CN_COMPOSE_DIR)" && sudo docker compose --env-file .env exec relay relay user delete --username "$(RELAY_CN_USERNAME)"'
+
+relay-cn-psql: ## Open a PostgreSQL shell on relay-cn using the Compose postgres service.
+	@ssh -t "$(RELAY_CN_SSH_DEST)" 'cd "$(RELAY_CN_COMPOSE_DIR)" && sudo docker compose --env-file .env exec postgres sh -lc '"'"'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"'"'"''
 
 relay-cn-status: ## Check relay-cn DNS, website, relay health, API auth paths, websocket auth paths, and Compose service state.
 	@./scripts/relay-cn-status.sh

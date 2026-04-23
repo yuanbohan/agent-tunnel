@@ -317,6 +317,8 @@ Deploy or update the Compose stack:
 make compose-sync-relay-cn  # sync Compose assets to relay-cn
 make compose-up-relay-cn    # pull images and start/update relay-cn services
 make compose-stop-relay-cn  # stop relay-cn services without removing containers
+make relay-cn-ops           # print the common relay-cn Docker operator commands
+make relay-cn-invite-list   # run `relay invite list` inside the relay-cn relay container
 make relay-cn-status        # check relay-cn website, relay health, API auth paths, websocket auth paths, and Compose state
 make deploy-website-relay-cn # relay-cn website bundle from ../agent-tunnel-website
 make compose-sync-dev       # sync Compose assets to dev

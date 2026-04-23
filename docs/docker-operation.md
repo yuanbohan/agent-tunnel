@@ -354,6 +354,17 @@ sudo docker compose --env-file .env exec relay relay user delete --username alic
 
 The operator routes are local maintenance routes and must stay outside the public `/api/` namespace. Do not expose them through nginx.
 
+If you prefer running these from your local checkout, the repo also exposes relay-cn-specific wrappers:
+
+```bash
+make relay-cn-relay-version
+make relay-cn-invite-create RELAY_CN_INVITE_COUNT=3 RELAY_CN_INVITE_EXPIRES_IN=7d
+make relay-cn-invite-list
+make relay-cn-invite-disable RELAY_CN_INVITE_CODE=AB2C3D
+make relay-cn-user-delete RELAY_CN_USERNAME=alice
+make relay-cn-psql
+```
+
 ## Logs
 
 Docker logs are available through Compose:

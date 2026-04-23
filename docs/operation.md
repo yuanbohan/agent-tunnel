@@ -81,6 +81,7 @@ Healthy `healthz` output should include `"status":"ok"`.
 Operator commands run against the local-only operator API from inside the Relay container:
 
 ```bash
+cd /opt/agentunnel/compose
 sudo docker compose --env-file .env exec relay relay invite create --count 3 --expires-in 7d
 sudo docker compose --env-file .env exec relay relay invite list
 sudo docker compose --env-file .env exec relay relay invite disable --code AB2C3D
@@ -88,6 +89,19 @@ sudo docker compose --env-file .env exec relay relay user delete --username alic
 ```
 
 The operator routes remain outside the public `/api/` namespace and should not be exposed through nginx.
+
+From the repo root, the same operations are wrapped as local Make targets for `relay-cn`:
+
+```bash
+make relay-cn-relay-version
+make relay-cn-invite-create RELAY_CN_INVITE_COUNT=3 RELAY_CN_INVITE_EXPIRES_IN=7d
+make relay-cn-invite-list
+make relay-cn-invite-disable RELAY_CN_INVITE_CODE=AB2C3D
+make relay-cn-user-delete RELAY_CN_USERNAME=alice
+make relay-cn-psql
+```
+
+Use these when the relay is Docker-managed and you want one remembered local entrypoint instead of retyping the `ssh` + `docker compose exec` form.
 
 ## Schema Changes
 
