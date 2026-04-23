@@ -121,6 +121,17 @@ if ! grep -q 'version must look like v0.1.0' "$tmpdir/invalid-version.err"; then
 	exit 1
 fi
 
+if GO="$go_bin" RELEASE_DIR="$release_root" "$script_dir/release-package.sh" "tunnel-$version" >/dev/null 2>"$tmpdir/prefixed-version.err"
+then
+	printf 'error: product-prefixed version unexpectedly packaged\n' >&2
+	exit 1
+fi
+
+if ! grep -q 'version must look like v0.1.0' "$tmpdir/prefixed-version.err"; then
+	printf 'error: product-prefixed version path did not explain failure\n' >&2
+	exit 1
+fi
+
 if GO="$go_bin" RELEASE_DIR="$release_root" "$script_dir/release-package.sh" "$incompatible_version" >/dev/null 2>"$tmpdir/compatibility.err"
 then
 	printf 'error: mismatched compatibility line unexpectedly packaged\n' >&2

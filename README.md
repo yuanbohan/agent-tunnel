@@ -76,7 +76,7 @@ Tunnel and Relay are guaranteed compatible within the same compatibility line:
 - for `v1+`, the compatibility line is the major version
 - for pre-`v1`, the compatibility line is `0.minor`, so `v0.1.x` and `v0.2.x` are different lines
 
-The `Release Tunnel` workflow enforces that a published `tunnel` version stays within the current repo relay compatibility line. It does not publish `relay` binaries.
+The `Release` workflow enforces that a published `tunnel` version stays within the current repo relay compatibility line when `tunnel` is selected. It records source tag `tunnel-vX.Y.Z` but publishes the public Tunnel version as plain `vX.Y.Z`. It does not publish `relay` binaries.
 
 Verify the installed version with `tunnel --version`.
 For CLI usage, flags, and examples, run `tunnel --help`. Local command launch now lives under `tunnel run <command>`. `tunnel run` supports `-v` and `-l` as short forms for `--verbose` and `--label`. `--base-url` remains long-form only.
@@ -290,7 +290,7 @@ export TUNNEL_BASE_URL=https://diaro.me
 ./bin/tunnel run --label "feature-branch" claude
 ```
 
-Publish Relay images by pushing a semver git tag such as `v0.1.0`. The `Release Relay Image` workflow builds, verifies, and pushes `ghcr.io/yuanbohan/agent-tunnel-relay:v0.1.0`. Set `RELAY_IMAGE_TAG` in the remote `.env` to the exact version you want to run; do not deploy from a mutable `latest` tag.
+Publish Relay images from the private repo Actions tab by running `Release`, selecting `relay`, and entering a plain version such as `v0.1.0`. The workflow resolves source tag `relay-v0.1.0`, builds and verifies the image, then creates or validates that source tag immediately before pushing `ghcr.io/yuanbohan/agent-tunnel-relay:v0.1.0`. Set `RELAY_IMAGE_TAG` in the remote `.env` to the exact plain version you want to run; do not deploy from a mutable `latest` tag.
 
 The GHCR package is private. Set `relay_ghcr_token` in the environment's Ansible secrets file so `make compose-up-*` can log in to GHCR as `yuanbohan` before pulling.
 
@@ -367,7 +367,7 @@ If `make deploy-*` or `make relay-bin-*` fails due to network instability (e.g.,
 
 ```bash
 make build             # builds bin/tunnel, bin/relay, and bin/relay-migrate
-make install           # installs local tunnel, relay, and relay-migrate builds to ~/.local/bin without tagging or pushing
+make install           # installs local development builds to ~/.local/bin without release versioning, tagging, or pushing
 make install-dev       # installs packages and syncs the dev nginx config
 make install-prod      # installs packages, certbot, and syncs the prod nginx config
 make docker-relay-image-test # build the Relay Docker image and verify embedded version metadata

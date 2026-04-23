@@ -21,6 +21,7 @@ Supported targets:
 
 The installer writes `tunnel` to `~/.local/bin/tunnel`.
 Official releases also publish `checksums.txt` used by native `tunnel update` and `tunnel rollback`.
+The public `yuanbohan/tunnel` repository is distribution-only; official releases are prepared from the private repo `Release` workflow and then published here as plain `vX.Y.Z` releases.
 
 Manual lifecycle commands:
 

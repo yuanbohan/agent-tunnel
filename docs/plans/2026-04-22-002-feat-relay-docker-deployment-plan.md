@@ -8,9 +8,11 @@ origin: docs/brainstorms/2026-04-22-relay-docker-deployment-requirements.md
 
 # feat: Add Relay Docker Compose deployment
 
+> Superseded release-trigger note, 2026-04-23: Relay image publication no longer uses pushed bare semver tags or `.github/workflows/release-relay-image.yml`. The current release model is manual dispatch through `.github/workflows/release.yml`, selecting `relay`, entering a plain version such as `v0.1.0`, recording source tag `relay-v0.1.0`, and publishing GHCR image tag `v0.1.0`. See `docs/plans/2026-04-23-001-refactor-release-channel-disambiguation-plan.md`.
+
 ## Overview
 
-Add a Docker-first Relay deployment path: a Relay-only container image published to private GHCR from semver tags, Docker Compose files that run Relay with PostgreSQL, a complete canonical `latest.sql` snapshot for fresh database initialization, persistent Relay logs on the VPS, and documentation/Ansible entrypoints that make Compose the preferred server operations surface.
+Add a Docker-first Relay deployment path: a Relay-only container image published to private GHCR from explicit release dispatch, Docker Compose files that run Relay with PostgreSQL, a complete canonical `latest.sql` snapshot for fresh database initialization, persistent Relay logs on the VPS, and documentation/Ansible entrypoints that make Compose the preferred server operations surface.
 
 This is additive. The existing `relay-migrate`, numbered SQL migrations, local E2E harness, and legacy binary/systemd Ansible flow stay working until a later cleanup deliberately removes them.
 
@@ -27,7 +29,7 @@ The plan therefore needs to connect four external surfaces without changing Rela
 ## Requirements Trace
 
 - R1-R4. Build a Relay-focused container that embeds release metadata, starts `relay serve`, listens correctly in Docker, and can be version-verified in CI.
-- R5-R9. Publish tagged Relay images to private GHCR from semver git tags using GitHub package permissions and immutable version tags.
+- R5-R9. Publish Relay images to private GHCR from manual release dispatch using GitHub package permissions, product-prefixed source tags, and immutable plain version image tags.
 - R10-R15. Provide Compose deployment for Relay and PostgreSQL with a remote `.env`, PostgreSQL health dependency, persistent Relay log bind mount, host nginx compatibility, and Ansible lifecycle support.
 - R16-R20. Add a complete `latest.sql` schema snapshot for fresh PostgreSQL initialization, keep future schema changes manual for existing servers, and preserve current migration tooling.
 - R21-R24. Update README, deployment/operations docs, release docs, and agent instructions to make the new deployment contract explicit.
@@ -87,8 +89,8 @@ The plan therefore needs to connect four external surfaces without changing Rela
 | Relay image name | Use `ghcr.io/yuanbohan/agent-tunnel-relay` | The suffix makes it clear this image is for the Relay service, not the public `tunnel` CLI distribution, and the owner is fixed for this project. |
 | Relay GHCR visibility | Treat the GHCR package as private | Remote deploys must log in before pulling; do not document a public-package fallback. |
 | Relay GHCR pull auth | Use fixed username `yuanbohan` plus `relay_ghcr_token` in Ansible secrets | Avoids a redundant username variable while keeping the token out of the repo and remote Compose `.env`. |
-| Relay workflow trigger | `push.tags: ["v*.*.*"]` only | Tags may be created locally or through the GitHub UI; either path creates a tag push event and keeps the git tag and image tag as one source of truth. |
-| Image tags | Publish the semver tag exactly, and do not rely on mutable `latest` for deploys | This preserves reproducible Compose deploys and satisfies AE1. |
+| Relay workflow trigger | Manual `Release` workflow dispatch with product `relay` | Dispatch makes the released product explicit. The source tag is `relay-vX.Y.Z`, while the image tag remains `vX.Y.Z`. |
+| Image tags | Publish the plain semver version exactly, and do not rely on mutable `latest` for deploys | This preserves reproducible Compose deploys and satisfies AE1. |
 | Build metadata injection | Reuse the existing ldflags names from `scripts/release-package.sh` | Keeps `relay version` and `/api/version` aligned with current buildinfo behavior. |
 | Container listen address | Set `RELAY_LISTEN_ADDR=0.0.0.0:8586` in the container environment | The Go default is loopback-only and would not be reachable through Docker port publishing. |
 | Compose database config | Build `RELAY_DATABASE_URL` from `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB` in Compose, and document password character constraints | This keeps the common case to one set of DB credentials while avoiding code changes to add separate DB env vars. |
@@ -120,7 +122,7 @@ The plan therefore needs to connect four external surfaces without changing Rela
 ## Output Structure
 
     .github/workflows/
-      release-relay-image.yml
+      release.yml
     deploy/
       compose/
         compose.yaml
@@ -148,7 +150,8 @@ The plan therefore needs to connect four external surfaces without changing Rela
 
 ```mermaid
 flowchart LR
-    Tag["git tag vX.Y.Z or GitHub UI tag"] --> Workflow["release-relay-image.yml"]
+    Dispatch["Release dispatch: relay + vX.Y.Z"] --> Workflow["release.yml"]
+    Workflow --> SourceTag["source tag relay-vX.Y.Z"]
     Workflow --> Test["go test ./..."]
     Workflow --> Build["Docker build with buildinfo ldflags"]
     Build --> Verify["relay version == vX.Y.Z"]
@@ -234,7 +237,7 @@ flowchart LR
 - existing Makefile include style in `makefiles/build.mk`
 
 **Test scenarios:**
-- Happy path: building with `VERSION=v0.1.0-test` produces an image whose `relay version` first line contains that version.
+- Happy path: building with `VERSION=v0.1.0` produces an image whose `relay version` first line contains that version.
 - Happy path: the image default command is `relay serve` and does not require a shell wrapper for normal execution.
 - Edge case: missing runtime secrets fail at container start through the existing Relay config validation, not during image build.
 - Regression: local `make build` continues to build `tunnel`, `relay`, and `relay-migrate` as before.
@@ -299,12 +302,12 @@ flowchart LR
 **Dependencies:** U2
 
 **Files:**
-- Create: `.github/workflows/release-relay-image.yml`
+- Create: `.github/workflows/release.yml`
 - Modify: `docs/release-distribution.md`
-- Test: `.github/workflows/release-relay-image.yml`
+- Test: `.github/workflows/release.yml`
 
 **Approach:**
-- Trigger only on pushed tags matching semver shape `v*.*.*`. Tags can be pushed from a local checkout or created through the GitHub UI.
+- Trigger only through manual workflow dispatch with product `relay` and plain version `vX.Y.Z`.
 - Set workflow permissions to at least `contents: read` and `packages: write`; include attestation permissions only if image provenance is implemented in this unit.
 - Use Docker's official GitHub Actions (`login-action`, `build-push-action`, and setup Buildx when needed).
 - Derive the release version from `github.ref_name`, validate it matches semver, and pass it as the Docker build `VERSION` arg.
@@ -398,12 +401,12 @@ flowchart LR
 
 **Approach:**
 - Replace the README VPS quick start with a Compose-first version that points to `deploy/compose/.env.example`, GHCR image tags, and `docker compose` lifecycle.
-- Add `docs/docker-operation.md` as the canonical Docker Compose operations guide, including GitHub UI tag creation, fixed GHCR image owner, required `relay_ghcr_token`, remote paths, `.env`, logs, schema changes, and troubleshooting.
+- Add `docs/docker-operation.md` as the canonical Docker Compose operations guide, including release dispatch, fixed GHCR image owner, required `relay_ghcr_token`, remote paths, `.env`, logs, schema changes, and troubleshooting.
 - Preserve legacy migrator/binary deployment as a secondary or legacy path where docs still mention it; do not present it as the primary new deployment model.
 - In `docs/operation.md`, show operator commands via `docker compose exec relay relay invite ...` or an equivalent host-local container invocation.
 - Explain that `latest.sql` initializes only fresh PostgreSQL volumes and is not a migration runner.
 - Add an explicit schema-change rule to README and `CLAUDE.md`: every schema change updates the full snapshot, and existing servers require manual SQL execution.
-- Clarify in `docs/release-distribution.md` that `Release Tunnel` remains for public CLI binaries while `release-relay-image.yml` publishes GHCR Relay images.
+- Clarify in `docs/release-distribution.md` that the unified `Release` workflow publishes public CLI binaries when `tunnel` is selected and GHCR Relay images when `relay` is selected.
 - Keep docs aligned with current product boundaries: Relay remains API-only, host nginx remains the public frontend/reverse proxy, and operator routes should not be exposed publicly.
 
 **Patterns to follow:**
@@ -414,7 +417,7 @@ flowchart LR
 **Test scenarios:**
 - Happy path: docs contain a complete fresh-host Compose bootstrap path from `.env` creation to health check.
 - Happy path: docs explain how to create the GitHub package-read token and where to put `relay_ghcr_token`.
-- Happy path: docs explain that GitHub UI tag creation triggers the same workflow as local tag push.
+- Happy path: docs explain that release dispatch with `relay` creates or validates source tag `relay-vX.Y.Z` and publishes image tag `vX.Y.Z`.
 - Happy path: docs contain a routine update path that changes `RELAY_IMAGE_TAG`, pulls, and restarts services.
 - Happy path: docs identify `/opt/agentunnel/logs/relay/relay.log` as the persistent Relay log path.
 - Covers AE4. Regression: docs explicitly say Compose deployment does not automatically mutate existing databases.

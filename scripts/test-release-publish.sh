@@ -35,6 +35,29 @@ if ! grep -q '^usage:' "$tmpdir/manifest-args.err"; then
 	exit 1
 fi
 
+if "$script_dir/render-latest-manifest.sh" "relay-$version" >/dev/null 2>"$tmpdir/manifest-prefixed.err"
+then
+	printf 'error: render-latest-manifest accepted product-prefixed version\n' >&2
+	exit 1
+fi
+
+if ! grep -q 'version must look like v0.1.0' "$tmpdir/manifest-prefixed.err"; then
+	printf 'error: manifest product-prefix path did not explain failure\n' >&2
+	exit 1
+fi
+
+if PUBLISH_DRY_RUN=1 RELEASE_DIR="$release_root" TUNNEL_DIST_REPO="yuanbohan/tunnel" \
+	"$script_dir/publish-tunnel-release.sh" "tunnel-$version" >/dev/null 2>"$tmpdir/publish-prefixed.err"
+then
+	printf 'error: publish-tunnel-release accepted product-prefixed version\n' >&2
+	exit 1
+fi
+
+if ! grep -q 'version must look like v0.1.0' "$tmpdir/publish-prefixed.err"; then
+	printf 'error: publish product-prefix path did not explain failure\n' >&2
+	exit 1
+fi
+
 output=$(
 	PUBLISH_DRY_RUN=1 \
 	RELEASE_DIR="$release_root" \

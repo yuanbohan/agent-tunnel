@@ -1,0 +1,190 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      product:
+        description: Product to release
+        required: true
+        type: choice
+        options:
+          - tunnel
+          - relay
+      version:
+        description: Release version in the form vX.Y.Z
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  RELEASE_PRODUCT: ${{ inputs.product }}
+  RELEASE_VERSION: ${{ inputs.version }}
+  TUNNEL_DIST_REPO: yuanbohan/tunnel
+  RELAY_IMAGE_NAME: ghcr.io/yuanbohan/agent-tunnel-relay
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure release git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Validate release inputs
+        run: ./scripts/release-source-tag.sh "$RELEASE_PRODUCT" "$RELEASE_VERSION" >/dev/null
+
+      - name: Resolve release source tag
+        id: source_tag
+        run: |
+          tag=$(./scripts/release-source-tag.sh "$RELEASE_PRODUCT" "$RELEASE_VERSION")
+          printf 'tag=%s\n' "$tag" >>"$GITHUB_OUTPUT"
+          printf 'resolved source tag: %s\n' "$tag"
+
+      - name: Resolve build time
+        id: build_time
+        run: printf 'value=%s\n' "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" >>"$GITHUB_OUTPUT"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run test suite
+        run: go test ./...
+
+      - name: Run release smoke tests
+        run: |
+          make test-release-source-tag
+          make test-local-build-version
+          make test-release-package
+          make test-release-installer
+          make test-release-publish
+
+      - name: Package Tunnel release artifacts
+        if: ${{ inputs.product == 'tunnel' }}
+        run: make release-package RELEASE_VERSION="$RELEASE_VERSION"
+
+      - name: Verify packaged Tunnel binary
+        if: ${{ inputs.product == 'tunnel' }}
+        run: |
+          archive="dist/releases/$RELEASE_VERSION/tunnel_${RELEASE_VERSION}_linux_amd64.tar.gz"
+          extract_dir=$(mktemp -d)
+          tar -xzf "$archive" -C "$extract_dir" tunnel
+          got=$("$extract_dir/tunnel" --version)
+          want="tunnel $RELEASE_VERSION"
+          if [ "$got" != "$want" ]; then
+            printf 'error: packaged binary reports %s, want %s\n' "$got" "$want" >&2
+            exit 1
+          fi
+          printf 'verified: %s\n' "$got"
+
+      - name: Require public distribution token
+        if: ${{ inputs.product == 'tunnel' }}
+        env:
+          TUNNEL_DIST_REPO_TOKEN: ${{ secrets.TUNNEL_DIST_REPO_TOKEN }}
+        run: |
+          if [ -z "$TUNNEL_DIST_REPO_TOKEN" ]; then
+            echo "error: TUNNEL_DIST_REPO_TOKEN is not configured" >&2
+            exit 1
+          fi
+
+      - name: Create Tunnel release source tag
+        if: ${{ inputs.product == 'tunnel' }}
+        run: ./scripts/release-source-tag.sh --push "$RELEASE_PRODUCT" "$RELEASE_VERSION" >/dev/null
+
+      - name: Publish public Tunnel release
+        if: ${{ inputs.product == 'tunnel' }}
+        env:
+          TUNNEL_DIST_REPO_TOKEN: ${{ secrets.TUNNEL_DIST_REPO_TOKEN }}
+        run: ./scripts/publish-tunnel-release.sh "$RELEASE_VERSION"
+
+      - name: Verify public Tunnel install
+        if: ${{ inputs.product == 'tunnel' }}
+        run: |
+          install_dir=$(mktemp -d)
+          for i in $(seq 1 12); do
+            manifest_version=$(curl -fsSL "https://raw.githubusercontent.com/$TUNNEL_DIST_REPO/main/latest.json" | grep -o '"version":"[^"]*"' | cut -d'"' -f4)
+            [ "$manifest_version" = "$RELEASE_VERSION" ] && break
+            printf 'latest.json shows %s, waiting for %s (attempt %s/12)...\n' "${manifest_version:-<empty>}" "$RELEASE_VERSION" "$i"
+            sleep 10
+          done
+          if [ "$manifest_version" != "$RELEASE_VERSION" ]; then
+            printf 'error: latest.json did not update to %s after 2 minutes\n' "$RELEASE_VERSION" >&2
+            exit 1
+          fi
+          curl -fsSL "https://raw.githubusercontent.com/$TUNNEL_DIST_REPO/main/install.sh" | \
+            TUNNEL_INSTALL_DIR="$install_dir" sh
+          got=$("$install_dir/tunnel" --version)
+          want="tunnel $RELEASE_VERSION"
+          if [ "$got" != "$want" ]; then
+            printf 'error: installed binary reports %s, want %s\n' "$got" "$want" >&2
+            exit 1
+          fi
+          printf 'verified: %s\n' "$got"
+
+      - name: Set up Docker Buildx
+        if: ${{ inputs.product == 'relay' }}
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Relay image
+        if: ${{ inputs.product == 'relay' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.relay
+          load: true
+          tags: ${{ env.RELAY_IMAGE_NAME }}:${{ env.RELEASE_VERSION }}
+          labels: |
+            org.opencontainers.image.title=agent-tunnel-relay
+            org.opencontainers.image.description=Agent Tunnel Relay service
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ env.RELEASE_VERSION }}
+          build-args: |
+            VERSION=${{ env.RELEASE_VERSION }}
+            DISTRIBUTION_MARKER=official-release
+            GIT_COMMIT=${{ github.sha }}
+            GIT_BRANCH=${{ steps.source_tag.outputs.tag }}
+            BUILD_TIME=${{ steps.build_time.outputs.value }}
+
+      - name: Verify Relay image version
+        if: ${{ inputs.product == 'relay' }}
+        run: |
+          version_line="$(docker run --rm "$RELAY_IMAGE_NAME:$RELEASE_VERSION" version | awk 'NR==1 {print $2}')"
+          branch_line="$(docker run --rm "$RELAY_IMAGE_NAME:$RELEASE_VERSION" version | awk 'NR==2 {print $2}')"
+          if [ "$version_line" != "$RELEASE_VERSION" ]; then
+            printf 'error: relay image reports version %s, want %s\n' "$version_line" "$RELEASE_VERSION" >&2
+            exit 1
+          fi
+          if [ "$branch_line" != "${{ steps.source_tag.outputs.tag }}" ]; then
+            printf 'error: relay image reports branch %s, want %s\n' "$branch_line" "${{ steps.source_tag.outputs.tag }}" >&2
+            exit 1
+          fi
+          printf 'verified relay image version: %s\n' "$version_line"
+          printf 'verified relay image branch: %s\n' "$branch_line"
+
+      - name: Log in to GitHub Container Registry
+        if: ${{ inputs.product == 'relay' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create Relay release source tag
+        if: ${{ inputs.product == 'relay' }}
+        run: ./scripts/release-source-tag.sh --push "$RELEASE_PRODUCT" "$RELEASE_VERSION" >/dev/null
+
+      - name: Push Relay image
+        if: ${{ inputs.product == 'relay' }}
+        run: docker push "$RELAY_IMAGE_NAME:$RELEASE_VERSION"

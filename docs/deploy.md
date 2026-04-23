@@ -9,7 +9,7 @@ For commands run after SSHing into the VPS, use [operation.md](./operation.md).
 ## Files That Matter
 
 - `Dockerfile.relay`
-- `.github/workflows/release-relay-image.yml`
+- `.github/workflows/release.yml`
 - `deploy/compose/compose.yaml`
 - `deploy/compose/.env.example`
 - `deploy/postgres/latest.sql`
@@ -18,14 +18,7 @@ For commands run after SSHing into the VPS, use [operation.md](./operation.md).
 
 ## Image Release
 
-Push a semver tag to publish a Relay image:
-
-```bash
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-The `Release Relay Image` workflow runs tests, builds the Relay image, verifies `relay version`, and pushes the verified image:
+Open the private repo Actions tab, run `Release`, select `relay`, and enter a plain version such as `v0.1.0`. The workflow resolves source tag `relay-v0.1.0`, runs tests, builds the Relay image, verifies `relay version`, creates or validates the source tag after Relay-specific validation succeeds, and then pushes the verified image:
 
 ```text
 ghcr.io/yuanbohan/agent-tunnel-relay:v0.1.0
