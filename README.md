@@ -297,7 +297,7 @@ The GHCR package is private. Set `relay_ghcr_token` in the environment's Ansible
 Keep host/bootstrap config in Ansible:
 
 - `ansible/inventories/dev.yml` and `ansible/inventories/prod.yml` define hosts, domains, and non-secret defaults
-- `ansible/host_vars/dev/relay-secrets.yml` and `ansible/host_vars/prod/relay-secrets.yml` hold per-environment secrets
+- `ansible/host_vars/dev/relay-secrets.yml` and `ansible/host_vars/prod/relay-secrets.yml` hold deploy-only secrets such as `relay_ghcr_token` and, for prod TLS bootstrapping, `relay_certbot_email`
 
 Bootstrap each host once:
 
@@ -325,39 +325,21 @@ make deploy-website-dev     # dev website bundle from ../agent-tunnel-website
 
 The Compose role syncs `deploy/compose/` and `deploy/postgres/latest.sql`, but it does not overwrite the real remote `.env`. Create `/opt/agentunnel/compose/.env` from `.env.example` on the server and keep secrets there. The example intentionally leaves secrets blank so Compose fails until the values are filled in.
 
-PostgreSQL data lives in the `RELAY_POSTGRES_VOLUME` Docker named volume, defaulting to `relay-postgres-data`. Relay structured logs are appended inside the container to `/var/log/agentunnel/relay.log`, which Compose persists on the host at `/opt/agentunnel/logs/relay/relay.log`. `deploy/postgres/latest.sql` initializes only an empty volume. Updating an existing database schema is a manual operator step: update `deploy/postgres/latest.sql` in the same code change, then run the required SQL on the server before deploying a Relay image that depends on it.
+For Docker Compose operations, the remote `/opt/agentunnel/compose/.env` is the runtime source of truth for Relay and PostgreSQL configuration. Do not maintain duplicate runtime secrets in local Ansible files.
 
-The legacy binary/systemd deploy targets remain available for now, but the Docker Compose path is the primary relay deployment flow. Website deploy stays separate: `make deploy-website-*` runs `npm ci`, builds `../agent-tunnel-website`, rejects bundle symlinks, uploads a release under `/var/www/agentunnel-website/releases`, and atomically repoints `/var/www/agentunnel-website/current`.
+The Compose file hardcodes the non-secret runtime defaults for production operations:
+
+- Relay listens in-container on `0.0.0.0:8586`
+- Docker publishes Relay to the host on `127.0.0.1:8586`
+- PostgreSQL uses database `agent_tunnel`
+- PostgreSQL uses role `relay_user`
+- PostgreSQL stores data in Docker volume `relay-postgres-data`
+
+PostgreSQL data lives in the fixed `relay-postgres-data` Docker named volume. Relay structured logs are appended inside the container to `/var/log/agentunnel/relay.log`, which Compose persists on the host at `/opt/agentunnel/logs/relay/relay.log`. `deploy/postgres/latest.sql` initializes only an empty volume. Updating an existing database schema is a manual operator step: update `deploy/postgres/latest.sql` in the same code change, then run the required SQL on the server before deploying a Relay image that depends on it.
+
+Relay production operations are Docker Compose only: update `/opt/agentunnel/compose/.env`, run `docker compose`, and execute operator commands inside the `relay` container. Legacy binary/systemd paths may remain in the repository during the transition, but they are not part of the current production operating model. Website deploy stays separate: `make deploy-website-*` runs `npm ci`, builds `../agent-tunnel-website`, rejects bundle symlinks, uploads a release under `/var/www/agentunnel-website/releases`, and atomically repoints `/var/www/agentunnel-website/current`.
 
 Use `ANSIBLE_DRY_RUN=1` for a check-mode preview and `ANSIBLE_EXTRA_VARS_FILE=<path>` if you want to layer extra vars on top of the checked-in inventories.
-
-### Manual Binary Deployment
-
-If `make deploy-*` or `make relay-bin-*` fails due to network instability (e.g., `rsync` connection reset, MTU issues, or large file transfer timeouts), you can manually install the binaries using `scp` with a rate limit:
-
-1.  **Build Linux binaries locally**:
-    ```bash
-    make build-linux
-    ```
-
-2.  **Upload to a temporary directory** (e.g., to `dev` with a 4Mbps limit):
-    ```bash
-    scp -l 4000 bin/relay ubuntu@1.12.249.160:/tmp/relay
-    scp -l 4000 bin/relay-migrate ubuntu@1.12.249.160:/tmp/relay-migrate
-    ```
-
-3.  **Install on the remote host**:
-    ```bash
-    ssh ubuntu@1.12.249.160 "sudo mv /tmp/relay /usr/local/bin/relay && \
-                             sudo mv /tmp/relay-migrate /usr/local/bin/relay-migrate && \
-                             sudo chown root:root /usr/local/bin/relay* && \
-                             sudo chmod 0755 /usr/local/bin/relay*"
-    ```
-
-4.  **Complete the configuration and restart**:
-    ```bash
-    make relay-dev   # or relay-prod
-    ```
 
 ## Launchers
 

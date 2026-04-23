@@ -13,6 +13,13 @@ Set `RELAY_IMAGE_TAG` to an immutable release tag such as `v0.1.0`. Do not use a
 
 `POSTGRES_PASSWORD` is interpolated into `RELAY_DATABASE_URL`, so use URL-safe characters for the password unless you replace the composed DSN with an explicitly encoded one in `compose.yaml`.
 The example leaves secrets blank intentionally; fill them before running `docker compose`.
+The Compose file fixes these non-secret runtime defaults:
+
+- Relay listens in-container on `0.0.0.0:8586`
+- Docker publishes Relay to the host as `127.0.0.1:8586`
+- PostgreSQL uses database `agent_tunnel`
+- PostgreSQL uses role `relay_user`
+- PostgreSQL stores data in Docker volume `relay-postgres-data`
 
 ## Start
 
@@ -20,10 +27,10 @@ The example leaves secrets blank intentionally; fill them before running `docker
 docker compose --env-file .env pull
 docker compose --env-file .env up -d
 docker compose --env-file .env ps
-curl -fsS http://127.0.0.1:${RELAY_HOST_PORT:-8586}/healthz
+curl -fsS http://127.0.0.1:8586/healthz
 ```
 
-PostgreSQL stores data in the `RELAY_POSTGRES_VOLUME` named volume, defaulting to `relay-postgres-data`. Relay structured logs are written to `../logs/relay/relay.log` on the host. `../postgres/latest.sql` is mounted into the official PostgreSQL init directory and runs only when that volume is empty.
+PostgreSQL stores data in the fixed `relay-postgres-data` named volume. Relay structured logs are written to `../logs/relay/relay.log` on the host. `../postgres/latest.sql` is mounted into the official PostgreSQL init directory and runs only when that volume is empty.
 
 ## Update
 

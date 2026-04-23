@@ -4,7 +4,7 @@ This guide is for commands run on the VPS after SSH login. For deploys started f
 
 For the complete Docker Compose operating guide, including all remote paths and environment files, use [docker-operation.md](./docker-operation.md).
 
-The primary relay operations model is Docker Compose. Relay and PostgreSQL run as services in `deploy/compose/compose.yaml`, with secrets stored in the remote `.env`.
+The primary relay operations model is Docker Compose. Relay and PostgreSQL run as services in `deploy/compose/compose.yaml`, with runtime secrets stored only in the remote `.env`.
 
 ## Environment File
 
@@ -19,16 +19,19 @@ It contains:
 | Variable | Purpose |
 | --- | --- |
 | `RELAY_IMAGE_TAG` | Immutable Relay image tag, for example `v0.1.0` |
-| `RELAY_HOST_BIND` | Host bind address, usually `127.0.0.1` |
-| `RELAY_HOST_PORT` | Host port proxied by nginx, usually `8586` |
-| `POSTGRES_DB` | PostgreSQL database name |
-| `POSTGRES_USER` | PostgreSQL role used by Relay |
 | `POSTGRES_PASSWORD` | PostgreSQL password; keep URL-safe unless the DSN is customized |
 | `RELAY_APP_SECRET` | HMAC secret used for token and agent-token digests |
 | `RELAY_OPERATOR_TOKEN` | Fixed bearer token for local-only operator commands |
-| `RELAY_POSTGRES_VOLUME` | Docker named volume for PostgreSQL data, usually `relay-postgres-data` |
 
 Keep this file mode `0600`. Do not commit real `.env` files.
+
+The Compose file fixes these non-secret runtime defaults:
+
+- Relay listens in-container on `0.0.0.0:8586`
+- Docker publishes Relay to the host on `127.0.0.1:8586`
+- PostgreSQL uses database `agent_tunnel`
+- PostgreSQL uses role `relay_user`
+- PostgreSQL stores data in Docker volume `relay-postgres-data`
 
 ## Service Lifecycle
 
@@ -111,7 +114,7 @@ cd /opt/agentunnel/compose
 sudo docker compose --env-file .env exec postgres sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 ```
 
-The legacy `relay-migrate` binary may still exist on older hosts for local or legacy workflows, but it is not part of the Docker Compose deployment path.
+The legacy `relay-migrate` binary may still exist on older hosts for local compatibility work, but it is not part of the Docker Compose deployment path.
 
 ## Troubleshooting
 

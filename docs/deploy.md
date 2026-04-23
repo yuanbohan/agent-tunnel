@@ -26,7 +26,7 @@ ghcr.io/yuanbohan/agent-tunnel-relay:v0.1.0
 
 Deploy Compose with explicit version tags. Do not use a mutable `latest` tag as the deployment source of truth.
 
-The GHCR package is private. Set `relay_ghcr_token` in `ansible/host_vars/<env>/relay-secrets.yml` before running `make compose-pull-*` or `make compose-up-*`. The Ansible role logs in to GHCR as `yuanbohan`, and the token only needs package read access.
+The GHCR package is private. Set `relay_ghcr_token` in `ansible/host_vars/<env>/relay-secrets.yml` before running `make compose-pull-*` or `make compose-up-*`. The Ansible role logs in to GHCR as `yuanbohan`, and the token only needs package read access. For prod, keep `relay_certbot_email` in the same local file for TLS bootstrap. Runtime Relay and PostgreSQL secrets belong only in the remote Compose `.env`.
 
 ## First Host Setup
 
@@ -49,14 +49,19 @@ sudoedit .env
 Set at least:
 
 - `RELAY_IMAGE_TAG`
-- `POSTGRES_DB`
-- `POSTGRES_USER`
 - `POSTGRES_PASSWORD`
 - `RELAY_APP_SECRET`
 - `RELAY_OPERATOR_TOKEN`
 
 `POSTGRES_PASSWORD` is interpolated into `RELAY_DATABASE_URL` by Compose, so use URL-safe characters unless you intentionally edit the Compose file to provide an encoded DSN.
-`RELAY_POSTGRES_VOLUME` defaults to `relay-postgres-data`; change it only when you intentionally want a separate database volume on the same Docker host.
+
+The Compose file fixes the non-secret runtime defaults for production operations:
+
+- Relay listens in-container on `0.0.0.0:8586`
+- Docker publishes Relay to the host on `127.0.0.1:8586`
+- PostgreSQL uses database `agent_tunnel`
+- PostgreSQL uses role `relay_user`
+- PostgreSQL stores data in Docker volume `relay-postgres-data`
 
 ## Ansible Compose Commands
 
@@ -96,7 +101,7 @@ The Compose deploy path does not run automatic migrations. When a release needs 
 3. Run that SQL on the server intentionally.
 4. Deploy the compatible Relay image tag.
 
-The legacy `relay-migrate` command and numbered SQL files remain available for local and legacy workflows, but they are not part of the Docker Compose production deploy path.
+The legacy `relay-migrate` command and numbered SQL files remain available for local compatibility work, but they are not part of the Docker Compose production deploy path.
 
 ## Verify Relay
 

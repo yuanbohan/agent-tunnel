@@ -145,27 +145,17 @@ cp ansible/host_vars/dev/relay-secrets.example.yml ansible/host_vars/dev/relay-s
 Required prod values:
 
 ```yaml
-relay_database_password: REPLACE_WITH_URL_SAFE_DB_PASSWORD
-relay_app_secret: REPLACE_WITH_LONG_RANDOM_SECRET
-relay_operator_token: REPLACE_WITH_LONG_RANDOM_TOKEN
+relay_ghcr_token: YOUR_READ_PACKAGES_TOKEN
 relay_certbot_email: you@example.com
 ```
 
 Required dev values:
 
 ```yaml
-relay_database_password: REPLACE_WITH_URL_SAFE_DB_PASSWORD
-relay_app_secret: REPLACE_WITH_LONG_RANDOM_SECRET
-relay_operator_token: REPLACE_WITH_LONG_RANDOM_TOKEN
-```
-
-Required private GHCR values:
-
-```yaml
 relay_ghcr_token: YOUR_READ_PACKAGES_TOKEN
 ```
 
-The Compose deployment path does not render this token into the remote Compose `.env`. It is used for required GHCR login. You still need to create `/opt/agentunnel/compose/.env` on the server.
+The Compose deployment path does not render this token into the remote Compose `.env`. It is used only for required GHCR login. Keep runtime Relay and PostgreSQL secrets only in `/opt/agentunnel/compose/.env` on the server so Compose remains the single operational source of truth.
 
 ## Remote Compose Environment
 
@@ -184,23 +174,23 @@ The file must contain:
 ```env
 RELAY_IMAGE_TAG=v0.1.0
 
-RELAY_HOST_BIND=127.0.0.1
-RELAY_HOST_PORT=8586
-RELAY_POSTGRES_VOLUME=relay-postgres-data
-
-POSTGRES_DB=agent_tunnel
-POSTGRES_USER=relay_user
 POSTGRES_PASSWORD=REPLACE_WITH_URL_SAFE_DB_PASSWORD
 
 RELAY_APP_SECRET=REPLACE_WITH_LONG_RANDOM_SECRET
 RELAY_OPERATOR_TOKEN=REPLACE_WITH_LONG_RANDOM_TOKEN
 ```
 
-Keep `RELAY_HOST_BIND=127.0.0.1` when nginx is the public entrypoint. This keeps the Relay container reachable from the host and nginx, but not directly exposed on the public network interface.
-
 `POSTGRES_PASSWORD` is interpolated into `RELAY_DATABASE_URL` by Compose. Use URL-safe characters unless you intentionally edit `compose.yaml` to use an encoded DSN.
 
-`RELAY_POSTGRES_VOLUME` defaults to `relay-postgres-data`. Change it only when intentionally running another isolated stack on the same Docker host.
+The Compose file fixes these non-secret runtime defaults:
+
+- Relay listens in-container on `0.0.0.0:8586`
+- Docker publishes Relay to the host on `127.0.0.1:8586`
+- PostgreSQL uses database `agent_tunnel`
+- PostgreSQL uses role `relay_user`
+- PostgreSQL stores data in Docker volume `relay-postgres-data`
+
+For production operations, treat this remote `.env` as the only runtime configuration source. Do not duplicate `POSTGRES_PASSWORD`, `RELAY_APP_SECRET`, or `RELAY_OPERATOR_TOKEN` into local Ansible secret files.
 
 ## First Host Setup
 
@@ -443,7 +433,7 @@ cd /opt/agentunnel/compose
 sudo docker compose --env-file .env exec postgres sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 ```
 
-The legacy `relay-migrate` binary and numbered SQL migration files may still exist for local or legacy workflows, but they are not part of the Docker Compose production deployment path.
+The legacy `relay-migrate` binary and numbered SQL migration files may still exist for local compatibility work, but they are not part of the Docker Compose production deployment path.
 
 ## Release Update Checklist
 
