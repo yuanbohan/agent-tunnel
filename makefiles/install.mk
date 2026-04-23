@@ -1,4 +1,4 @@
-.PHONY: ansible-run install install-local install-dev install-prod install-remote
+.PHONY: ansible-run install install-local install-dev install-prod install-relay-cn install-remote
 
 install: install-local ## Build and install local binaries into `$(INSTALL_DIR)` without tagging or pushing.
 
@@ -33,5 +33,8 @@ install-dev: ## Bootstrap the dev host (dependencies + nginx). Use on first mach
 
 install-prod: ## Bootstrap the prod host (dependencies + certbot/tls + nginx). Use on first machine bootstrap before relay or website deploys.
 	@$(MAKE) install-remote ANSIBLE_INVENTORY=ansible/inventories/prod.yml ANSIBLE_TAGS="deps,certbot,nginx"
+
+install-relay-cn: ## Bootstrap the relay-cn host (dependencies + certbot/tls + nginx). Use on first machine bootstrap before relay or website deploys.
+	@$(MAKE) install-remote ANSIBLE_INVENTORY=ansible/inventories/relay-cn.yml ANSIBLE_TAGS="deps,certbot,nginx"
 
 install-remote: ansible-run

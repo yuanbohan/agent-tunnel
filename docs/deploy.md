@@ -14,7 +14,7 @@ For commands run after SSHing into the VPS, use [operation.md](./operation.md).
 - `deploy/compose/.env.example`
 - `deploy/postgres/latest.sql`
 - `ansible/inventories/dev.yml`
-- `ansible/inventories/prod.yml`
+- `ansible/inventories/relay-cn.yml`
 
 ## Image Release
 
@@ -26,23 +26,22 @@ ghcr.io/yuanbohan/agent-tunnel-relay:v0.1.0
 
 Deploy Compose with explicit version tags. Do not use a mutable `latest` tag as the deployment source of truth.
 
-The GHCR package is private. Set `relay_ghcr_token` in `ansible/host_vars/<env>/relay-secrets.yml` before running `make compose-pull-*` or `make compose-up-*`. The Ansible role logs in to GHCR as `yuanbohan`, and the token only needs package read access. For prod, keep `relay_certbot_email` in the same local file for TLS bootstrap. Runtime Relay and PostgreSQL secrets belong only in the remote Compose `.env`.
+The GHCR package is private. Set `relay_ghcr_token` in `ansible/host_vars/<env>/relay-secrets.yml` before running `make compose-pull-*` or `make compose-up-*`. The Ansible role logs in to GHCR as `yuanbohan`, and the token only needs package read access. For `relay-cn`, keep `relay_certbot_email` in the same local file for TLS bootstrap. Runtime Relay and PostgreSQL secrets belong only in the remote Compose `.env`.
 
 ## First Host Setup
 
 Install Docker Engine and the Compose plugin on the host, then sync the Compose assets from your checkout:
 
 ```bash
-make compose-sync-prod   # or compose-sync-dev
+make compose-sync-relay-cn   # or compose-sync-dev
 ```
 
-Create the private remote env file from the checked-in example:
+Create the private remote env file on the host:
 
 ```bash
-ssh prod-host
+ssh relay-cn-host
 cd /opt/agentunnel/compose
-sudo cp .env.example .env
-sudo chmod 600 .env
+sudo install -m 600 /dev/null .env
 sudoedit .env
 ```
 
@@ -70,24 +69,24 @@ These targets sync Compose assets and run Docker Compose on the remote host. The
 | Command | What it does |
 | --- | --- |
 | `make compose-sync-dev` | Sync Compose files and `latest.sql` to dev |
-| `make compose-sync-prod` | Sync Compose files and `latest.sql` to prod |
+| `make compose-sync-relay-cn` | Sync Compose files and `latest.sql` to relay-cn |
 | `make compose-pull-dev` | Pull configured images on dev |
-| `make compose-pull-prod` | Pull configured images on prod |
+| `make compose-pull-relay-cn` | Pull configured images on relay-cn |
 | `make compose-up-dev` | Pull images and run `docker compose up -d` on dev |
-| `make compose-up-prod` | Pull images and run `docker compose up -d` on prod |
+| `make compose-up-relay-cn` | Pull images and run `docker compose up -d` on relay-cn |
 | `make compose-start-dev` | Start existing Compose services on dev |
-| `make compose-start-prod` | Start existing Compose services on prod |
+| `make compose-start-relay-cn` | Start existing Compose services on relay-cn |
 | `make compose-stop-dev` | Stop Compose services on dev without removing containers |
-| `make compose-stop-prod` | Stop Compose services on prod without removing containers |
+| `make compose-stop-relay-cn` | Stop Compose services on relay-cn without removing containers |
 | `make compose-down-dev` | Stop and remove Compose containers on dev while keeping named volumes |
-| `make compose-down-prod` | Stop and remove Compose containers on prod while keeping named volumes |
+| `make compose-down-relay-cn` | Stop and remove Compose containers on relay-cn while keeping named volumes |
 
-Typical prod update:
+Typical relay-cn update:
 
 ```bash
-make compose-sync-prod
-ssh prod-host 'sudoedit /opt/agentunnel/compose/.env'  # update RELAY_IMAGE_TAG
-make compose-up-prod
+make compose-sync-relay-cn
+ssh relay-cn-host 'sudoedit /opt/agentunnel/compose/.env'  # update RELAY_IMAGE_TAG
+make compose-up-relay-cn
 ```
 
 ## Schema Changes
@@ -123,7 +122,7 @@ Website deploy remains separate:
 
 ```bash
 make deploy-website-dev
-make deploy-website-prod
+make deploy-website-relay-cn
 ```
 
 Website deploy builds `../agent-tunnel-website`, uploads a release under `/var/www/agentunnel-website/releases`, and atomically repoints `/var/www/agentunnel-website/current`.
