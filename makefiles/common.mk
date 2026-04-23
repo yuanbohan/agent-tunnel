@@ -53,6 +53,18 @@ DEPLOY_RETRY_COUNT ?= 3
 DEPLOY_RETRY_DELAY ?= 2
 ## RELAY_COMPOSE_ACTION: Compose lifecycle action for compose-* deploy targets (`sync`, `pull`, `up`, `start`, `stop`, `down`).
 RELAY_COMPOSE_ACTION ?= sync
+## RELAY_CN_SSH_DEST: SSH destination used by relay-cn helper targets.
+RELAY_CN_SSH_DEST ?= ubuntu@8.133.195.191
+## RELAY_CN_COMPOSE_DIR: Remote Compose directory used by relay-cn helper targets.
+RELAY_CN_COMPOSE_DIR ?= /opt/agentunnel/compose
+## RELAY_CN_INVITE_COUNT: Invite count used by `make relay-cn-invite-create`.
+RELAY_CN_INVITE_COUNT ?= 3
+## RELAY_CN_INVITE_EXPIRES_IN: Invite expiry used by `make relay-cn-invite-create`.
+RELAY_CN_INVITE_EXPIRES_IN ?= 7d
+## RELAY_CN_INVITE_CODE: Invite code used by `make relay-cn-invite-disable`.
+RELAY_CN_INVITE_CODE ?=
+## RELAY_CN_USERNAME: Username used by `make relay-cn-user-delete`.
+RELAY_CN_USERNAME ?=
 
 export ANSIBLE_CONFIG ANSIBLE_ROLES_PATH ANSIBLE_STDOUT_CALLBACK ANSIBLE_CALLBACK_RESULT_FORMAT
 

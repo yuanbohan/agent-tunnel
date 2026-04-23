@@ -296,34 +296,37 @@ The GHCR package is private. Set `relay_ghcr_token` in the environment's Ansible
 
 Keep host/bootstrap config in Ansible:
 
-- `ansible/inventories/dev.yml` and `ansible/inventories/prod.yml` define hosts, domains, and non-secret defaults
-- `ansible/host_vars/dev/relay-secrets.yml` and `ansible/host_vars/prod/relay-secrets.yml` hold deploy-only secrets such as `relay_ghcr_token` and, for prod TLS bootstrapping, `relay_certbot_email`
+- `ansible/inventories/dev.yml` and `ansible/inventories/relay-cn.yml` define hosts, domains, and non-secret defaults
+- `ansible/host_vars/dev/relay-secrets.yml` and `ansible/host_vars/relay-cn/relay-secrets.yml` hold deploy-only secrets such as `relay_ghcr_token` and, for `relay-cn` TLS bootstrapping, `relay_certbot_email`
 
 Bootstrap each host once:
 
 ```bash
 cp ansible/host_vars/dev/relay-secrets.example.yml ansible/host_vars/dev/relay-secrets.yml
-cp ansible/host_vars/prod/relay-secrets.example.yml ansible/host_vars/prod/relay-secrets.yml
+cp ansible/host_vars/relay-cn/relay-secrets.example.yml ansible/host_vars/relay-cn/relay-secrets.yml
 make init-dev          # dev: install nginx and render HTTP nginx
-make init-prod         # prod: install nginx+certbot, render HTTP nginx, issue TLS cert, switch nginx to TLS
-make compose-sync-prod # sync Compose assets before creating /opt/agentunnel/compose/.env
+make init-relay-cn     # relay-cn: install nginx+certbot, render HTTP nginx, issue TLS cert, switch nginx to TLS
+make compose-sync-relay-cn # sync Compose assets before creating /opt/agentunnel/compose/.env
 ```
 
-Before running `make init-prod`, point the prod DNS records at the target host and set `relay_certbot_email` in `ansible/host_vars/prod/relay-secrets.yml`; Let's Encrypt validates over HTTP-01 against the new host.
+Before running `make init-relay-cn`, point the production DNS records at the target host and set `relay_certbot_email` in `ansible/host_vars/relay-cn/relay-secrets.yml`; Let's Encrypt validates over HTTP-01 against the new host.
 
 Deploy or update the Compose stack:
 
 ```bash
-make compose-sync-prod      # sync Compose assets to prod
-make compose-up-prod        # pull images and start/update prod services
-make compose-stop-prod      # stop prod services without removing containers
-make deploy-website-prod    # prod website bundle from ../agent-tunnel-website
+make compose-sync-relay-cn  # sync Compose assets to relay-cn
+make compose-up-relay-cn    # pull images and start/update relay-cn services
+make compose-stop-relay-cn  # stop relay-cn services without removing containers
+make relay-cn-ops           # print the common relay-cn Docker operator commands
+make relay-cn-invite-list   # run `relay invite list` inside the relay-cn relay container
+make relay-cn-status        # check relay-cn website, relay health, API auth paths, websocket auth paths, and Compose state
+make deploy-website-relay-cn # relay-cn website bundle from ../agent-tunnel-website
 make compose-sync-dev       # sync Compose assets to dev
 make compose-up-dev         # pull images and start/update dev services
 make deploy-website-dev     # dev website bundle from ../agent-tunnel-website
 ```
 
-The Compose role syncs `deploy/compose/` and `deploy/postgres/latest.sql`, but it does not overwrite the real remote `.env`. Create `/opt/agentunnel/compose/.env` from `.env.example` on the server and keep secrets there. The example intentionally leaves secrets blank so Compose fails until the values are filled in.
+The Compose role syncs `deploy/compose/` and `deploy/postgres/latest.sql`, but it does not overwrite the real remote `.env`. It also does not sync `.env.example` to the server. Create `/opt/agentunnel/compose/.env` manually on the server and keep secrets there. The checked-in example intentionally leaves secrets blank so Compose fails until the values are filled in.
 
 For Docker Compose operations, the remote `/opt/agentunnel/compose/.env` is the runtime source of truth for Relay and PostgreSQL configuration. Do not maintain duplicate runtime secrets in local Ansible files.
 
@@ -351,13 +354,17 @@ Use `ANSIBLE_DRY_RUN=1` for a check-mode preview and `ANSIBLE_EXTRA_VARS_FILE=<p
 make build             # builds bin/tunnel, bin/relay, and bin/relay-migrate
 make install           # installs local development builds to ~/.local/bin without release versioning, tagging, or pushing
 make install-dev       # installs packages and syncs the dev nginx config
-make install-prod      # installs packages, certbot, and syncs the prod nginx config
+make install-relay-cn  # installs packages, certbot, and syncs the relay-cn nginx config
 make docker-relay-image-test # build the Relay Docker image and verify embedded version metadata
 make compose-sync-dev     # sync relay Compose assets to dev
 make compose-up-dev       # pull and start/update relay Compose services on dev
 make compose-stop-dev     # stop relay Compose services on dev
+make compose-sync-relay-cn  # sync relay Compose assets to relay-cn
+make compose-up-relay-cn    # pull and start/update relay Compose services on relay-cn
+make compose-stop-relay-cn  # stop relay Compose services on relay-cn
+make relay-cn-status        # check relay-cn website, relay health, API auth paths, websocket auth paths, and Compose state
 make deploy-website-dev   # build ../agent-tunnel-website and publish it to the dev host
-make deploy-website-prod  # build ../agent-tunnel-website and publish it to the prod host
+make deploy-website-relay-cn  # build ../agent-tunnel-website and publish it to the relay-cn host
 make test              # go test ./...
 make test-relay        # focused relay/protocol contract tests
 make local-e2e-db-up   # start fixed-version Docker PostgreSQL for local E2E

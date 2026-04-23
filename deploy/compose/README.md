@@ -5,14 +5,13 @@ This Compose project runs the Relay service and PostgreSQL. It is intended to be
 ## Configure
 
 ```sh
-cp .env.example .env
-chmod 600 .env
+install -m 600 /dev/null .env
 ```
 
-Set `RELAY_IMAGE_TAG` to an immutable release tag such as `v0.1.0`. Do not use a mutable tag as the deployment source of truth.
+Populate `.env` with `RELAY_IMAGE_TAG`, `POSTGRES_PASSWORD`, `RELAY_APP_SECRET`, and `RELAY_OPERATOR_TOKEN`. Set `RELAY_IMAGE_TAG` to an immutable release tag such as `v0.1.0`. Do not use a mutable tag as the deployment source of truth.
 
 `POSTGRES_PASSWORD` is interpolated into `RELAY_DATABASE_URL`, so use URL-safe characters for the password unless you replace the composed DSN with an explicitly encoded one in `compose.yaml`.
-The example leaves secrets blank intentionally; fill them before running `docker compose`.
+The checked-in `.env.example` is a local reference file; the Ansible sync path intentionally does not upload it to the server.
 The Compose file fixes these non-secret runtime defaults:
 
 - Relay listens in-container on `0.0.0.0:8586`

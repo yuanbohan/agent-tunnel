@@ -53,7 +53,7 @@ GitHub repository or owner page -> Packages -> agent-tunnel-relay
 The Relay GHCR package is private. Docker login uses the fixed GitHub username `yuanbohan`, so the only deployment secret you need is a token that can read packages. Store it only in the local Ansible secrets file, not in the repository:
 
 ```yaml
-# ansible/host_vars/prod/relay-secrets.yml
+# ansible/host_vars/relay-cn/relay-secrets.yml
 relay_ghcr_token: YOUR_READ_PACKAGES_TOKEN
 ```
 
@@ -77,7 +77,7 @@ Create `relay_ghcr_token` in GitHub:
 1. Open GitHub as `yuanbohan`.
 2. Go to `Settings -> Developer settings -> Personal access tokens`.
 3. Create a token that can read packages. For a classic token, select the `read:packages` scope. If the UI requires repository access for private packages, restrict it to the `agent-tunnel` repository.
-4. Copy the token once and put it in `ansible/host_vars/prod/relay-secrets.yml` and, if needed, `ansible/host_vars/dev/relay-secrets.yml`.
+4. Copy the token once and put it in `ansible/host_vars/relay-cn/relay-secrets.yml` and, if needed, `ansible/host_vars/dev/relay-secrets.yml`.
 5. Do not commit the real secrets files.
 
 ## Repository Files
@@ -100,10 +100,10 @@ Ansible files used by the Docker flow:
 ```text
 ansible/playbooks/site.yml
 ansible/inventories/dev.yml
-ansible/inventories/prod.yml
+ansible/inventories/relay-cn.yml
 ansible/roles/relay_compose/tasks/main.yml
 ansible/host_vars/dev/relay-secrets.example.yml
-ansible/host_vars/prod/relay-secrets.example.yml
+ansible/host_vars/relay-cn/relay-secrets.example.yml
 ```
 
 ## Remote Layout
@@ -118,7 +118,6 @@ Expected remote paths:
 
 ```text
 /opt/agentunnel/compose/compose.yaml
-/opt/agentunnel/compose/.env.example
 /opt/agentunnel/compose/.env
 /opt/agentunnel/compose/README.md
 /opt/agentunnel/postgres/latest.sql
@@ -131,18 +130,18 @@ The real `.env` is remote-only:
 /opt/agentunnel/compose/.env
 ```
 
-Ansible syncs `.env.example`, but it does not overwrite the real `.env`.
+Ansible does not sync `.env.example`, and it does not overwrite the real `.env`.
 
 ## Local Ansible Secrets
 
 Create local secrets from the example files:
 
 ```bash
-cp ansible/host_vars/prod/relay-secrets.example.yml ansible/host_vars/prod/relay-secrets.yml
+cp ansible/host_vars/relay-cn/relay-secrets.example.yml ansible/host_vars/relay-cn/relay-secrets.yml
 cp ansible/host_vars/dev/relay-secrets.example.yml ansible/host_vars/dev/relay-secrets.yml
 ```
 
-Required prod values:
+Required relay-cn values:
 
 ```yaml
 relay_ghcr_token: YOUR_READ_PACKAGES_TOKEN
@@ -162,10 +161,9 @@ The Compose deployment path does not render this token into the remote Compose `
 Create the remote `.env` after syncing Compose assets:
 
 ```bash
-ssh prod-host
+ssh relay-cn-host
 cd /opt/agentunnel/compose
-sudo cp .env.example .env
-sudo chmod 600 .env
+sudo install -m 600 /dev/null .env
 sudoedit .env
 ```
 
@@ -199,13 +197,13 @@ The host must have Docker Engine and the Docker Compose plugin installed before 
 This Ansible flow does not install Docker. Verify the remote host first:
 
 ```bash
-ssh prod-host 'docker --version && docker compose version'
+ssh relay-cn-host 'docker --version && docker compose version'
 ```
 
-Bootstrap prod nginx/TLS host state:
+Bootstrap relay-cn nginx/TLS host state:
 
 ```bash
-make init-prod
+make init-relay-cn
 ```
 
 Bootstrap dev nginx host state:
@@ -218,10 +216,10 @@ These commands do not start the Relay Compose stack.
 
 ## Sync Compose Assets
 
-Sync prod:
+Sync relay-cn:
 
 ```bash
-make compose-sync-prod
+make compose-sync-relay-cn
 ```
 
 Sync dev:
@@ -234,7 +232,6 @@ This creates or updates:
 
 ```text
 /opt/agentunnel/compose/compose.yaml
-/opt/agentunnel/compose/.env.example
 /opt/agentunnel/compose/README.md
 /opt/agentunnel/postgres/latest.sql
 /opt/agentunnel/logs/relay/
@@ -248,10 +245,10 @@ It does not create or overwrite:
 
 ## Start or Update
 
-Start or update prod:
+Start or update relay-cn:
 
 ```bash
-make compose-up-prod
+make compose-up-relay-cn
 ```
 
 Start or update dev:
@@ -265,28 +262,28 @@ These targets pull configured images and run `docker compose up -d` on the remot
 To only pull images:
 
 ```bash
-make compose-pull-prod
+make compose-pull-relay-cn
 make compose-pull-dev
 ```
 
 To stop services without removing containers:
 
 ```bash
-make compose-stop-prod
+make compose-stop-relay-cn
 make compose-stop-dev
 ```
 
 To start existing stopped services:
 
 ```bash
-make compose-start-prod
+make compose-start-relay-cn
 make compose-start-dev
 ```
 
 To remove containers while keeping the PostgreSQL named volume:
 
 ```bash
-make compose-down-prod
+make compose-down-relay-cn
 make compose-down-dev
 ```
 
@@ -356,6 +353,17 @@ sudo docker compose --env-file .env exec relay relay user delete --username alic
 ```
 
 The operator routes are local maintenance routes and must stay outside the public `/api/` namespace. Do not expose them through nginx.
+
+If you prefer running these from your local checkout, the repo also exposes relay-cn-specific wrappers:
+
+```bash
+make relay-cn-relay-version
+make relay-cn-invite-create RELAY_CN_INVITE_COUNT=3 RELAY_CN_INVITE_EXPIRES_IN=7d
+make relay-cn-invite-list
+make relay-cn-invite-disable RELAY_CN_INVITE_CODE=AB2C3D
+make relay-cn-user-delete RELAY_CN_USERNAME=alice
+make relay-cn-psql
+```
 
 ## Logs
 
@@ -448,7 +456,7 @@ ghcr.io/yuanbohan/agent-tunnel-relay:v0.1.1
 Then update the remote `.env`:
 
 ```bash
-ssh prod-host
+ssh relay-cn-host
 sudoedit /opt/agentunnel/compose/.env
 ```
 
@@ -461,13 +469,13 @@ RELAY_IMAGE_TAG=v0.1.1
 Apply:
 
 ```bash
-make compose-up-prod
+make compose-up-relay-cn
 ```
 
 Verify:
 
 ```bash
-ssh prod-host
+ssh relay-cn-host
 curl -fsS http://127.0.0.1:8586/healthz
 sudo tail -n 100 /opt/agentunnel/logs/relay/relay.log
 ```

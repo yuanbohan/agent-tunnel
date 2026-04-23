@@ -33,16 +33,6 @@
   tags:
     - relay-compose
 
-- name: Sync relay Compose example env
-  ansible.builtin.copy:
-    src: "{{ relay_local_compose_dir }}/.env.example"
-    dest: "{{ relay_compose_dir }}/.env.example"
-    owner: root
-    group: root
-    mode: "0644"
-  tags:
-    - relay-compose
-
 - name: Sync relay Compose README
   ansible.builtin.copy:
     src: "{{ relay_local_compose_dir }}/README.md"
@@ -72,7 +62,7 @@
 
 - name: Require relay Compose env file for lifecycle actions
   ansible.builtin.fail:
-    msg: "Missing {{ relay_compose_env_file }}. Copy {{ relay_compose_dir }}/.env.example to .env on the host and fill in secrets before running relay Compose lifecycle actions."
+    msg: "Missing {{ relay_compose_env_file }}. Create the remote .env on the host with RELAY_IMAGE_TAG, POSTGRES_PASSWORD, RELAY_APP_SECRET, and RELAY_OPERATOR_TOKEN before running relay Compose lifecycle actions."
   when:
     - relay_compose_action | default('sync') != 'sync'
     - not relay_compose_env_stat.stat.exists
