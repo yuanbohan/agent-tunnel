@@ -14,6 +14,47 @@ Use this document together with:
 - `docs/connectivity/subscription-model.md`
 - `docs/connectivity/mobile-reference.md`
 - `docs/connectivity/sequence-flows.md`
+- `docs/connectivity/state-machines.md`
+- `docs/connectivity/error-codes.md`
+
+## Component Overview
+
+```mermaid
+flowchart TB
+    subgraph Android["Android device"]
+        AUI[Android UI]
+        ACM[Connection Manager]
+    end
+    subgraph Edge["Operator-hosted edge"]
+        RRT["Relay Realtime WS<br/>(presence, pairing,<br/>rendezvous, selection)"]
+        RTUN["Relay Tunnel WS<br/>(opaque QUIC bytes)"]
+        STUN["STUN<br/>UDP/3478"]
+    end
+    subgraph Computer["User computer"]
+        DCM[Daemon ConnMgr]
+        DSM[Daemon SessionMgr]
+        PTY["PTY / tunnel run"]
+    end
+
+    AUI <--> ACM
+    ACM <-->|"WSS: app-side"| RRT
+    DCM <-->|"WSS: daemon-side"| RRT
+    ACM <-->|"UDP STUN binding"| STUN
+    DCM <-->|"UDP STUN binding"| STUN
+    ACM <-.->|"Direct QUIC<br/>(pinned-cert TLS 1.3)"| DCM
+    ACM <-->|"WSS encrypted<br/>QUIC packet tunnel"| RTUN
+    DCM <-->|"WSS encrypted<br/>QUIC packet tunnel"| RTUN
+    DSM <--> PTY
+    DCM <--> DSM
+
+    style RRT fill:#e3f2fd
+    style RTUN fill:#fff3e0
+    style STUN fill:#f3e5f5
+```
+
+The diagram shows the three deployment edges (Android, operator-hosted edge, user computer) and the four communication carriers between them: Relay Realtime WebSocket (control plane), STUN (UDP candidate discovery), direct QUIC over UDP (preferred data plane), and Relay Tunnel WebSocket (fallback data plane carrying opaque QUIC packets).
+
+State machines for transport lifecycle, per-session interactive lifecycle, and active-session selection lifecycle live in `docs/connectivity/state-machines.md`.
 
 ## Goals
 
@@ -48,7 +89,7 @@ The account system remains because it solves:
 - multiple phones and multiple computers under one paid identity
 - app login and device ownership
 - Relay authorization for daemon presence, pairing transport, and fallback usage
-- Relay-owned active-session leases
+- Relay-owned account-global active-session selection and access-token issuance
 
 The account system is not the payload trust model.
 
@@ -82,12 +123,14 @@ Relay is responsible for:
 - pairing request and response transport
 - rendezvous hint exchange for direct connection attempts
 - fallback packet relay over WebSocket-over-HTTPS
+- account-global active-session selection state
+- device-scoped access-token issuance for currently selected sessions
 
 Relay is not responsible for:
 
 - session discovery authority
 - preview generation
-- interactive lease authority
+- interactive grant / deny decisions once a valid active-session selection exists and a valid device-scoped access token has been presented
 - terminal byte routing semantics
 - payload decryption
 
@@ -192,6 +235,7 @@ The following table summarizes the threats this architecture defends against, wh
 | Pairing response is replayed by Relay | Invitation is single-use; reuse fails closed | None |
 | Daemon device key is exfiltrated from the host | Pairing trust is per-pair; user must `tunnel daemon revoke` and re-pair all paired Android devices | All paired Android devices must re-pair; no in-band recovery |
 | Android device key is stolen with the device | Daemon-side `tunnel daemon revoke <device>` removes trust, immediately terminates active QUIC connections for that fingerprint, and Relay revoke fan-out blocks new visibility and fallback issuance | Brief in-flight packets already on the wire may still arrive until transport close propagates |
+| Attacker steals the user's Relay account token from the computer and impersonates the daemon to mint pairing invitations | The attacker's daemon has a different Ed25519 device key, so the SAS displayed on the victim's phone will not match the SAS on the legitimate daemon CLI; user-driven SAS comparison detects the substitution | The defense relies on the user actually comparing SAS digits. Account-token confidentiality is the indirect prerequisite; `~/.tunnel/auth.json` must remain `0600` and not be exfiltrated |
 
 This table should be updated whenever a new defense or new known residual risk is identified.
 
@@ -258,12 +302,12 @@ This means:
 
 - session list
 - session metadata such as `label`, `command_preview`, `cwd`, and `git_branch`
-- preview text for sessions whose Relay-issued active-session lease has been accepted
+- preview text for sessions whose Relay-selected session has been activated on this device with a valid access token
 - interactive session ownership
 - terminal snapshots
 - live terminal bytes
 
-Relay remains the source of truth for subscription and active-session lease issuance. The daemon enforces lease tokens but does not know free vs pro tier details.
+Relay remains the source of truth for subscription, account-global active-session selection, and device-scoped access-token issuance. The daemon enforces access tokens but does not know free vs pro tier details.
 
 In the target architecture, session discovery happens after Android establishes a secure daemon transport connection. `GET /api/sessions` is not part of the target design.
 
@@ -425,9 +469,9 @@ That means:
 
 - app startup can immediately show daemon cards from Relay presence
 - per-daemon sessions appear after secure daemon connectivity is established
-- previews appear only after the daemon transport is ready and the session holds an active-session lease
+- previews appear only after the daemon transport is ready and the session is currently selected for the account and activated on this device with a valid access token
 - no preview cache is required in phase 1
-- free users may still see all session rows, but non-leased sessions remain locked and do not receive real preview or interactive content
+- free users may still see all session rows, but non-selected sessions remain locked and do not receive real preview or interactive content
 
 This is a conscious tradeoff in favor of lower protocol complexity and stricter payload privacy.
 
@@ -466,6 +510,8 @@ The reasons are recorded in `docs/connectivity/decision-record.md`.
 - `docs/connectivity/subscription-model.md`
 - `docs/connectivity/mobile-reference.md`
 - `docs/connectivity/sequence-flows.md`
+- `docs/connectivity/state-machines.md`
+- `docs/connectivity/error-codes.md`
 - QUIC transport: `https://www.ietf.org/rfc/rfc9000.html`
 - QUIC + TLS integration: `https://datatracker.ietf.org/doc/html/rfc9001`
 - TLS 1.3: `https://datatracker.ietf.org/doc/html/rfc8446`

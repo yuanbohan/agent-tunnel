@@ -12,7 +12,7 @@ This document captures the target phase-1 Android behavior for the QUIC session-
 - no preview cache in phase 1
 - one daemon connection per visible online paired daemon
 - interactive state is managed per session, not by a global single-session limit
-- subscription enforcement is Relay-owned through active-session leases
+- subscription enforcement is Relay-owned through account-global active-session selection and device-scoped access tokens
 
 ## Startup Behavior
 
@@ -21,9 +21,10 @@ Recommended startup order:
 1. restore account session
 2. connect app realtime WebSocket
 3. receive daemon presence snapshot
-4. render daemon list
-5. for each visible online paired daemon, start a transport connection manager
-6. once daemon transport is ready, accept session metadata and preview updates
+4. receive active-session selection snapshot
+5. render daemon list
+6. for each visible online paired daemon, start a transport connection manager
+7. once daemon transport is ready, accept session metadata and preview updates
 
 The app should not pretend session data exists before the daemon transport is actually up.
 
@@ -41,13 +42,13 @@ Relay presence is enough to render:
 
 Session rows appear only after the daemon has sent `session_index`.
 
-Free-tier session rows that are not currently leased should remain visible but locked.
+Free-tier session rows that are not currently selected should remain visible but locked.
 
 ### Preview
 
 Preview is:
 
-- empty until the daemon sends it for a leased session
+- empty until the daemon sends it for a selected session that this device has activated with a valid access token
 - replaced whenever a fresh preview snapshot arrives
 - never loaded from local preview cache in phase 1
 
@@ -57,11 +58,22 @@ Locked sessions must not display real preview text.
 
 Phase-1 free tier UX:
 
-- exactly one session may hold the account's active-session lease at a time
-- the leased session renders normally
+- exactly one session may be selected for the account at a time
+- the selected session renders normally
 - all other visible sessions render with a lock icon and light greyed-out styling
 
-Tapping a locked session should show an explanatory prompt and an upgrade path. It should not silently replace the currently leased session.
+Tapping a locked session must show an explanatory modal naming both the currently active and the requested session, and offer an explicit "Replace current active session" action. The app must not silently replace the currently selected session.
+
+The selected session is NOT auto-released when the user leaves the session detail view. The detailed UX rules and explicit-release affordances are specified in `docs/connectivity/mobile-reference.md`.
+
+If another device on the same account changes the selected session, this device must:
+
+- relock the old session row
+- unlock the new selected session row
+- stop showing real preview for the old session
+- if the user is currently inside the old session detail view, show a blocking "active session changed on another device" notice instead of pretending the session is still usable
+
+The phase-1 upgrade affordance is text-only because the payment flow is deferred. The app does not yet provide a clickable upgrade link.
 
 ## Path Badge
 
@@ -78,8 +90,8 @@ The authoritative source of the badge is the Android connection manager, which k
 
 When the user opens a session detail view:
 
-1. if needed, app requests or renews an active-session lease through Relay
-2. app sends `session_activate` with the Relay-issued lease token
+1. if needed, app requests or renews a device-scoped access token through Relay for the currently selected session
+2. app sends `session_activate` with the Relay-issued access token
 3. app sends `interactive_request` on the control stream
 4. app waits for `interactive_granted` or `interactive_denied`
 5. on grant, app binds to the new interactive stream
@@ -93,8 +105,9 @@ When the user opens a session detail view:
 When the user leaves:
 
 1. app sends `interactive_release`
-2. if the product action is "stop using this session", app also releases the active-session lease through Relay
-3. app tears down the detail terminal view
+2. if the product action is "stop using this session", app also releases or replaces the account-global active-session selection through Relay
+3. Relay then fans out `access_token_revoked` to the daemon so the old token becomes unusable immediately
+4. app tears down the detail terminal view
 
 ## Reconnect Behavior
 
@@ -119,12 +132,12 @@ Phase 1 keeps caching simple:
 
 Logout or account switch must clear any local daemon trust visibility derived from the previous account session.
 
-The app must not assume that process death releases a free-tier active-session lease immediately. On restart, it should first try to resume the existing lease state reported by Relay.
+The app must not assume that process death clears the account's selected session. On restart, it should first inspect the selection state reported by Relay and then request a fresh device-scoped access token for that selected session if needed.
 
 Phase-1 recommended timing:
 
-- lease TTL: `3 minutes`
-- lease renewal cadence while actively in use: every `45 seconds`
+- access-token TTL: `3 minutes`
+- access-token renewal cadence while actively in use: every `45 seconds`
 
 ## References
 

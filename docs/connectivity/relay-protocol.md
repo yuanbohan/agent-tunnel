@@ -6,14 +6,15 @@ This document captures the target Relay-owned control-plane protocol for the QUI
 
 ## Purpose
 
-Relay now owns only four protocol concerns:
+Relay now owns only five protocol concerns:
 
 - daemon presence
+- active-session selection state
 - pairing message transport
 - rendezvous hint exchange
 - fallback relay-session setup
 
-In addition, Relay remains the source of truth for active-session lease issuance used by the subscription model.
+In addition, Relay remains the source of truth for account-global active-session selection and device-scoped access-token issuance used by the subscription model.
 
 The connectivity edge also needs a STUN service, but STUN itself is infrastructure rather than part of the Relay business protocol described here.
 
@@ -57,7 +58,8 @@ This keeps logging and reconciliation simple without inventing multiple protocol
 After authentication succeeds, Relay should send:
 
 1. `daemon_snapshot`
-2. `realtime_ready`
+2. `active_session_selection_snapshot`
+3. `realtime_ready`
 
 `daemon_snapshot` contains the full daemon roster visible to this Android device:
 
@@ -66,13 +68,33 @@ After authentication succeeds, Relay should send:
 
 It does not contain sessions.
 
+`active_session_selection_snapshot` contains the currently selected session set for this account. On free tier that set has length `0..1`. On pro it may contain more than one entry.
+
 ### Daemon-Side
 
-After daemon authentication succeeds, Relay should send:
+After daemon authentication succeeds:
 
-1. `realtime_ready`
+1. daemon sends `daemon_register` (see below)
+2. Relay sends `access_token_signing_keys`
+3. Relay sends `realtime_ready`
 
-The daemon-side socket does not need a startup roster snapshot. The daemon is the trust source for paired mobile devices and does not consume an app-visible daemon list.
+The daemon-side socket does not need a startup roster snapshot. The daemon is the trust source for paired mobile devices and does not consume an app-visible daemon list. It does need the current Relay access-token signing public keys so it can validate `session_activate` access tokens offline.
+
+#### `daemon_register`
+
+Sent by the daemon as the first frame after authentication, before `realtime_ready`.
+
+Recommended fields:
+
+- `daemon_id`
+- `daemon_display_name` — derived from local config or hostname
+- `daemon_pubkey` — Ed25519 device public key
+- `platform_family` — `linux` / `macos`
+- `platform_id` — finer-grained OS info, for example `darwin/24.4.0` or `ubuntu/22.04`
+- `tunnel_version` — semver string used for compatibility-line checks
+- `protocol_version` — single integer matching the QUIC protocol version
+
+Relay uses these fields to populate `daemon_snapshot` for app-side consumers and to detect compatibility-line mismatches before the daemon is announced as visible. If `daemon_register` is missing required fields or carries an incompatible `protocol_version`, Relay closes the daemon-side WebSocket with a structured error.
 
 ## Event Families
 
@@ -90,6 +112,29 @@ Recommended daemon fields:
 - `last_seen_at`
 - `platform_family`
 - `platform_id`
+
+### Active Session Selection
+
+- `active_session_selection_snapshot`
+- `active_session_selection_changed`
+
+These events let all app devices on the same account converge on the same currently usable session set.
+
+Recommended selection fields:
+
+- `account_id`
+- `daemon_id`
+- `session_id`
+- `selection_epoch`
+- `changed_by_device_fingerprint`
+- `changed_at`
+
+Phase-1 rules:
+
+- free tier has at most one selected session at a time
+- pro may have more than one selected session
+- when one device changes the selection, Relay MUST fan out the resulting state to all app realtime sockets on the same account
+- daemon sockets do not receive selection snapshots directly; they receive access-token revocation for affected device/session tokens
 
 ### Pairing
 
@@ -193,34 +238,95 @@ Phase-1 tunnel-token rules:
 - Relay must not pre-issue tunnel tokens inside `rendezvous_hint`
 - if the same side asks for a second tunnel token for the same `attempt_id`, Relay MUST reject it
 
-### Active-Session Lease
+### Active-Session Selection And Access Tokens
 
-Relay is the source of truth for active-session lease issuance and renewal.
+Relay is the source of truth for account-global active-session selection and device-scoped access-token issuance and renewal.
 
 Recommended responsibilities:
 
-- accept a request to activate one `session_id` for one `(account_id, device_fingerprint)`
-- enforce the account's current active-session slot limit
-- return a short-lived signed lease token bound to:
+- accept a request to select one `session_id` for one `account_id`
+- enforce the account's current active-session selection limit
+- update the account-global selected-session set and increment `selection_epoch` when a change is accepted
+- return a short-lived signed access token bound to:
   - `account_id`
   - `device_fingerprint`
   - `daemon_id`
   - `session_id`
+  - `selection_epoch`
   - `expires_at`
-- renew that lease while the app is still actively using the session
-- release the lease when the user explicitly gives it up or when it expires without renewal
+- renew that token while the app is still actively using the selected session
+- release or revoke the selection and/or affected tokens when:
+  - the user explicitly gives it up
+  - the user explicitly replaces it with another selected session
+  - the app logs out or switches accounts
+  - pairing trust is revoked
+  - the selected session disappears
+- fan out authoritative selection changes to app clients and token invalidation to daemons when release or revoke happens before token expiry
 
-Phase-1 recommended lease defaults:
+Phase-1 recommended access-token defaults:
 
-- lease TTL: `3 minutes`
+- token TTL: `3 minutes`
 - renewal cadence while in active use: every `45 seconds`
-- free tier slot limit: `1`
+- free tier selection limit: `1`
 - pro hard cap: `10`
 
-Relay does not send session content itself. The lease exists only so that the daemon can distinguish:
+Relay does not send session content itself. The selection and token exist only so that the daemon can distinguish:
 
 - visible session metadata
 - real content delivery authorization
+
+The exact token format, signing algorithm, selection semantics, and revocation behavior are specified in `docs/connectivity/subscription-model.md`.
+
+### Access-Token Signing Key Distribution
+
+Relay signs access tokens with a private key that the daemon must verify offline. Public keys are distributed to the daemon over the daemon-side WebSocket.
+
+Phase-1 distribution model:
+
+- on daemon-side WebSocket startup, Relay sends one `access_token_signing_keys` event after `daemon_register` and before `realtime_ready`
+- Relay also pushes a fresh `access_token_signing_keys` event whenever the keyset changes (key rotation, key compromise response)
+- the daemon persists the most recent received keyset to local disk so that access-token validation continues to work across daemon restarts and during transient Relay outages
+
+Recommended `access_token_signing_keys` payload:
+
+- `keys`: an array of objects, each with:
+  - `kid` — short string identifying this key
+  - `alg` — phase 1 fixed to `EdDSA`
+  - `pubkey` — base64-encoded Ed25519 public key
+  - `not_before` — Unix seconds
+  - `not_after` — Unix seconds, optional
+- `current_kid` — the `kid` of the key Relay is currently signing with
+
+Phase-1 rules:
+
+- daemon MUST keep all received non-expired keys; this allows rolling rotation where two keys are valid simultaneously
+- daemon MUST reject tokens whose `kid` is not in the active keyset
+- daemon MUST validate token `exp` against its local clock with no additional daemon-side grace window
+- if the daemon has never received an `access_token_signing_keys` event (e.g., very first startup with Relay unreachable), it MUST refuse all `session_activate` until at least one keyset is received
+
+### Access-Token Revocation Fan-Out
+
+Relay MUST push an `access_token_revoked` event to the daemon-side WebSocket whenever a still-unexpired token is invalidated before its `exp`.
+
+Typical reasons:
+
+- explicit user release
+- explicit user replacement of the selected session
+- logout
+- account switch
+- pairing revoke
+- later Relay decision that displaces the old selected session
+
+Recommended `access_token_revoked` payload:
+
+- `jti`
+- `device_fingerprint`
+- `daemon_id`
+- `session_id`
+- `reason`
+- `revoked_at`
+
+The daemon uses this event to invalidate the corresponding token immediately on direct connections, without waiting for expiry.
 
 ## Relay Tunnel Endpoint
 
@@ -257,7 +363,7 @@ The target Relay protocol deliberately removes:
 - ICE candidate trickle
 - TURN credentials
 - peer connection state taxonomies
-- Relay-owned interactive lease state
+- Relay-owned interactive grant state
 - session index snapshots
 
 This is the main complexity win of the QUIC direction.
@@ -267,6 +373,48 @@ This is the main complexity win of the QUIC direction.
 Relay carries rendezvous hints and authorizes fallback tunnels. A misbehaving Relay can therefore manipulate or withhold rendezvous hints to prevent direct connections from succeeding, forcing the connection onto the fallback tunnel.
 
 Relay cannot decrypt either path because both terminate inside the daemon and Android with pinned device identities. The product accepts this downgrade capability as the price of using Relay for rendezvous; it does not blur the confidentiality guarantee on either path.
+
+## Daemon-Side Event Catalog
+
+The daemon-side WebSocket carries the following events. This catalog is the authoritative list daemon implementations must handle.
+
+### Daemon Sends
+
+- `daemon_register` — startup registration with display metadata
+- `pair_completed` — final ack after SAS confirmation
+- `rendezvous_hint` — daemon's STUN-derived candidates for a given `attempt_id`
+- `relay_tunnel_request` — daemon-side request for a fallback tunnel token
+
+### Daemon Receives
+
+- `access_token_signing_keys` — initial and rotation push of Relay's access-token verification keys
+- `access_token_revoked` — authoritative invalidation of a still-unexpired access token
+- `realtime_ready` — startup completion marker
+- `pair_response_forward` — Android's signed pairing response, routed by Relay
+- `paired_device_revoked` — daemon already revoked an Android device locally; this is the inverse direction where Relay surfaces a revoke that originated elsewhere (e.g., admin tool in a future phase). Phase-1 daemon implementations may treat unsolicited revokes as advisory.
+- `rendezvous_open` — Android wants to establish a connection
+- `rendezvous_hint` — Android's candidates for a given `attempt_id`
+- `rendezvous_close` — Android cancels or completed an attempt
+- `relay_tunnel_ready` — daemon's tunnel token is ready
+
+Daemon MUST silently ignore unknown event `type` values to allow forward-compatible Relay extensions.
+
+## Server-Side Rate Limits
+
+Client-side reconnect backoff is not sufficient by itself. Relay applies internal rate limits to protect against retry storms and abuse. These limits are operational concerns and are not surfaced as user-facing subscription rules.
+
+Phase-1 recommended defaults:
+
+| Action | Per-account limit | Per-device limit |
+|---|---|---|
+| `rendezvous_open` | 10 / minute | — |
+| `relay_tunnel_request` | 10 / minute | — |
+| selection change / token issue / renew | 30 / minute | 60 / minute |
+| pairing response submit | — | 10 / minute |
+
+When a limit is exceeded, Relay returns a structured error with `retry_after_seconds`. Clients SHOULD honor `retry_after_seconds` instead of immediately retrying with their normal exponential backoff.
+
+These numbers are conservative starting points. Real values should be tuned from production data once usage patterns are observable.
 
 ## Failure Semantics
 

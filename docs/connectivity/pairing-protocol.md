@@ -189,17 +189,26 @@ This is why later transport authentication no longer needs repeated human confir
 
 ### Daemon Stores
 
-- Android device fingerprint
-- Android display name
-- paired_at
-- trust status
+The daemon persists, with file mode `0600` under `~/.tunnel/`:
+
+- daemon Ed25519 device key pair (file `~/.tunnel/identity.json`)
+- trusted Android roster:
+  - Android device fingerprint
+  - Android display name
+  - `paired_at`
+  - trust status
+- in-flight invitation roster (see "Invitation Persistence" below)
+
+The daemon device key is the trust root for every paired Android device. It must be treated with care comparable to an SSH host key. Phase 1 stores it as a `0600`-mode JSON file; future phases may move it to OS-native key storage (macOS Keychain, Linux secret-service) without changing the wire protocol.
 
 ### Android Stores
 
 - daemon fingerprint
 - daemon display name
-- paired_at
+- `paired_at`
 - trust status
+
+The Android device key SHOULD be stored in Android Keystore (hardware-backed where available). Reinstalling the app deletes the device key; the user must re-pair after reinstall.
 
 ### Relay Stores
 
@@ -209,6 +218,27 @@ Relay should only store:
 - the minimum authorization result needed to expose daemon presence to that Android device after pairing succeeds
 
 Relay should not become the durable trust database.
+
+## Invitation Persistence
+
+The daemon MUST persist invitation state across daemon restarts to prevent reuse-after-restart attacks.
+
+Phase-1 rules:
+
+- when `tunnel daemon pair` mints an invitation, the daemon writes a record to local state containing:
+  - `invitation_id`
+  - `nonce`
+  - `correlation_id`
+  - `expires_at`
+  - `consumed` (boolean, initially false)
+- on restart, the daemon reloads the roster
+- a new pairing response is accepted only if the matching `invitation_id` exists, is not expired, and is not yet consumed
+- on successful pair, the daemon flips `consumed = true` and persists; the record remains on disk until `expires_at` to defeat replay attempts that arrive after the consumer pair completed
+- a background sweep removes records whose `expires_at` is in the past
+
+Default invitation TTL is `5 minutes` in phase 1. The TTL is not user-configurable in phase 1.
+
+Storage form is implementation choice (single JSON file or SQLite); the contract is that the daemon MUST NOT lose this state across normal restarts.
 
 ## Transport Consequence
 

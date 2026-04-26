@@ -8,6 +8,8 @@ Its purpose is to make the review reproducible: every issue identified is paired
 
 It does not redefine any decision. It is a record, not a contract.
 
+Subscription-specific conclusions in this review were later superseded by the account-global active-session selection model documented in `docs/connectivity/subscription-model.md`. References below to "active-session lease" or `lease_*` event names should therefore be read as historical review context, not as the current protocol contract.
+
 ## Scope Of Review
 
 The review evaluated the following documents from five angles: best practices, maintainability, user experience, security, and implementation robustness.
@@ -238,6 +240,8 @@ Key principles locked in:
 - lapsed subscriptions degrade gracefully (existing pairings keep working)
 - subscription state MUST NOT influence cryptographic decisions
 
+This first-pass subscription direction was later superseded by the active-session lease model documented in the "Second Review Pass" section below and in `docs/connectivity/subscription-model.md`. It is kept here only as historical traceability for how the design evolved.
+
 ---
 
 ## Implementation Robustness Findings
@@ -361,7 +365,203 @@ When ready, the new plan should be broken into phases (pairing → presence/rend
 
 ---
 
+## Second Review Pass — 2026-04-26 (Late)
+
+After the user redesigned the subscription model around active-session leases and committed the docs, a second full review was performed. New findings (C1–C8 critical and I1–I10 important) were identified and resolved. User dispositions for the Q1–Q9 follow-up questions are recorded here.
+
+### User Dispositions On Open Questions
+
+| Question | Disposition |
+|---|---|
+| Q1 — lease grace window | **5 minutes** at second-pass review time; later superseded by the third-pass "no additional daemon-side grace" cleanup below |
+| Q2 — lease token format | **JWT (EdDSA / Ed25519)** with standard RFC 7519 claims plus `device`, `session`, `jti` |
+| Q3 — Pro upgrade payment flow | **Deferred** — kept as TODO; `upgrade_url` is empty in phase 1 |
+| Q4 — multi-daemon QUIC strategy | **Eager-with-idle-tear-down** — connect every paired online daemon; tear down background daemon QUIC after 60s of UI inactivity |
+| Q5 — auto-release on detail exit | **Manual release only** — preserve "instant return" experience; explicit release controls required |
+| Q6 — invitation TTL | **5 minutes** default; not user-configurable in phase 1 |
+| Q7 — daemon device key storage | **`~/.tunnel/identity.json` mode 0600** in phase 1; OS keyring deferred |
+| Q8 — pair-daemon limit on free | **Not limited** — pairing does not consume Relay resources |
+| Q9 — `daemon_register` event | **Yes** — daemon emits explicit register event with display, platform, and version metadata |
+
+### Critical Findings (C1–C8) Closed
+
+#### C1 — Lease Signing Key Distribution Was Unspecified
+
+**Issue:** Daemon must verify Relay-issued lease tokens but the doc did not say how daemon obtains Relay's signing public keys.
+
+**Decision:** Relay pushes a `lease_signing_keys` event over the daemon-side WebSocket immediately after `daemon_register` and on every key rotation. Daemon persists the most recent keyset to disk; rolling rotation is supported via `kid` headers. Tokens with unknown `kid` are rejected. A daemon that has never received a keyset MUST refuse all `session_activate`.
+
+**Change:** `relay-protocol.md` → new "Lease Signing Key Distribution" section; daemon-side startup sequence updated to include `lease_signing_keys`.
+
+#### C2 — Relay Outage Behavior For Lease Renewal Was Undefined
+
+**Issue:** With strict `exp` enforcement, a 30-second Relay hiccup would disconnect every active user.
+
+**Decision:** Daemon-side grace window of `5 minutes` beyond `exp`. Daemon accepts an unexpired-or-within-grace token; Relay never honors grace itself when issuing renewals. This was later superseded by the third-pass cleanup that removed the extra grace window entirely.
+
+**Change:** `relay-protocol.md` → grace window listed in lease defaults; `subscription-model.md` → new "Lease Grace Window" section detailing semantics and lapsed-subscription interaction. Both were later replaced by the "No Additional Grace Window" rule in the current contract docs.
+
+#### C3 — Lease Token Format Was Unspecified
+
+**Issue:** Token said "signed" but did not pin algorithm, container, or claims. Two implementations would not agree.
+
+**Decision:** Phase-1 token is **JWT, EdDSA (Ed25519)**, with claims `iss`, `sub`, `aud`, `device`, `session`, `iat`, `exp`, `jti`. Daemon validation order is fully specified. A worked example is included.
+
+**Change:** `subscription-model.md` → new "Lease Token Format" section with full claim table and example.
+
+#### C4 — Daemon-Side WebSocket Event Catalog Was Incomplete
+
+**Issue:** Documents named individual daemon-side events in scattered places but no catalog existed; daemon implementers would not know the full surface area.
+
+**Decision:** Added an authoritative "Daemon-Side Event Catalog" listing what daemon sends and what daemon receives.
+
+**Change:** `relay-protocol.md` → new "Daemon-Side Event Catalog" section.
+
+#### C5 — Stale Legacy Event Names — VERIFIED CLEAN
+
+`pairing_snapshot`, `session_index_snapshot`, `connection_state_snapshot`, `pairing_state_snapshot` are absent from all functional docs. Only this review record references them historically.
+
+#### C6 — Invitation Persistence Was Unspecified
+
+**Issue:** `tunnel daemon pair` mints one-time invitations, but daemon restart between mint and consume could allow invitation replay.
+
+**Decision:** Daemon persists invitation roster (`invitation_id`, `nonce`, `correlation_id`, `expires_at`, `consumed`) to disk; reload on startup; reject expired or consumed; sweep removes records past `expires_at`. Default invitation TTL is `5 minutes`.
+
+**Change:** `pairing-protocol.md` → new "Invitation Persistence" section.
+
+#### C7 — QUIC 0-RTT Was Not Explicitly Disabled
+
+**Issue:** quic-go enables 0-RTT by default. Replay of 0-RTT data could re-execute destructive shell commands.
+
+**Decision:** 0-RTT is DISABLED on both server and client in phase 1.
+
+**Change:** `transport-protocol.md` → QUIC Transport Parameters table includes 0-RTT row; new "0-RTT Is Disabled" subsection explains rationale.
+
+#### C8 — Pro Upgrade Payment Flow Selection — DEFERRED
+
+**Issue:** `upgrade_url` was named but no flow was chosen.
+
+**Decision (per user):** Defer payment work entirely. `upgrade_url` is an empty string in phase 1. App displays the upgrade explanation as text only with no clickable link.
+
+**Change:** `subscription-model.md` → new "Payment Flow Deferred" section with concrete phase-1 expectations; error envelope example updated; `upgrade_url` documented as empty in phase 1.
+
+### Important Findings (I1–I10) Closed
+
+#### I1 — Multi-Daemon Resource Strategy
+
+**Decision:** Eager-with-idle-tear-down. Foreground and most-recently-used daemon stay connected; other paired-online daemons tear down their QUIC connection after `60s` of UI inactivity. Relay realtime WS remains open.
+
+**Change:** `mobile-reference.md` → new "Multi-Daemon Connection Strategy" subsection.
+
+#### I2 — Server-Side Rate Limits Missing
+
+**Decision:** Phase-1 defaults: rendezvous 10/min/account, lease 30/min/account, pairing-response 10/min/device. Errors include `retry_after_seconds`.
+
+**Change:** `relay-protocol.md` → new "Server-Side Rate Limits" section.
+
+#### I3 — STUN Retry Policy
+
+**Decision:** 3 attempts with 500ms / 1s / 2s timeouts; on full failure fall back to relay tunnel directly.
+
+**Change:** `transport-protocol.md` → new "STUN Retry Policy" subsection.
+
+#### I4 — Symmetric NAT Acknowledgment
+
+**Decision:** Phase 1 does not traverse symmetric NATs; it falls back to relay tunnel. This is documented as expected behavior, not a defect.
+
+**Change:** `transport-protocol.md` → new "NAT Traversal Limitations" subsection.
+
+#### I5 — Lease Token Renewal Overlap
+
+**Decision:** Renewals share `jti`, get strictly later `exp`. Daemon accepts any unexpired-with-grace token; brief overlap during renewal is allowed.
+
+**Change:** `subscription-model.md` → new "Renewal Token Overlap" section.
+
+#### I6 — Account Switch Behavior
+
+**Decision:** Local pairing trust is daemon-scoped and persists across logout/account-switch. Relay-derived visibility is account-scoped and clears on logout. Account removal (not just logout) clears local pairing fingerprints.
+
+**Change:** `mobile-reference.md` → new "Account Switch Behavior" section.
+
+#### I7 — Lease Release UX
+
+**Decision:** No auto-release on detail-view exit. Explicit "Release this session" control required. Modal on locked-session tap names both sessions and offers explicit "Release X and activate Y".
+
+**Change:** `subscription-model.md` → "Auto-Release Policy" subsection added under Lease Release; `mobile-reference.md` → "Lease Release UX" subsection added under Subscription And Locked Sessions; `android-client-behavior.md` → Subscription Rendering updated.
+
+#### I8 — Daemon Device Key Storage Location
+
+**Decision:** Phase-1 stores `~/.tunnel/identity.json` mode `0600`; future phases may move to OS keyring (macOS Keychain / Linux secret-service) without protocol changes.
+
+**Change:** `pairing-protocol.md` → "Daemon Stores" section expanded to specify storage location and mode.
+
+#### I9 — Account-Token Theft Threat Row
+
+**Decision:** Added explicit row to threat model table acknowledging that stolen account tokens enable daemon impersonation; SAS comparison detects the substitution; account-token confidentiality is the indirect prerequisite.
+
+**Change:** `architecture.md` → Threat Model Summary extended.
+
+#### I10 — Aggregated Error Codes
+
+**Decision:** Created a single source of truth catalog covering pairing, transport, lease, relay, and QUIC error codes with handling guidance and user-facing string templates.
+
+**Change:** New file `docs/connectivity/error-codes.md`.
+
+### New Files Created In This Pass
+
+- `docs/connectivity/state-machines.md` — three canonical state machines (per-daemon transport, per-session interactive, lease lifecycle) with transition rules and side mirrors
+- `docs/connectivity/error-codes.md` — single-source-of-truth error catalog
+
+### Component Overview Diagram
+
+A component overview Mermaid diagram was added to the top of `architecture.md` so first-time readers can grasp the entire system shape (Android, operator-hosted edge, user computer) and the four communication carriers between them.
+
+---
+
+## Open Items (Updated)
+
+### O1 — Android QUIC Library — RESOLVED 2026-04-26
+
+User confirmed **Cloudflare quiche via JNI**. `decision-record.md` records this with `kwik` as fallback.
+
+### O2 — SAS Test Vector Bytes — DEFERRED TO IMPLEMENTATION
+
+Algorithm fully specified; bytes filled in once implementations exist.
+
+### O3 — CLAUDE.md / README / AGENTS.md Cascade — DEFERRED 2026-04-26
+
+TODO before phase-1 implementation begins.
+
+### O4 — Subscription Tier Numbers — RESOLVED 2026-04-26
+
+Replaced by single-dimension active-session lease model. Free = 1 active session, Pro = up to 10. Documented in `subscription-model.md`.
+
+### Third-Pass Cleanup After Full-Doc Review — 2026-04-26
+
+After the full-doc review that followed the user's broader edits, several contract-tightening changes were applied to remove implementation ambiguity:
+
+- removed the extra daemon-side lease grace window; token validity now ends exactly at `exp`
+- added Relay → daemon `lease_revoked` fan-out so explicit release / logout / account switch take effect immediately even on direct connections
+- clarified that Relay owns active-session lease issuance but does not own daemon-side interactive grant / deny decisions
+- relaxed the error-code naming rule so the existing short transport reason enums remain valid without contradicting the conventions section
+
+### O5 — Re-Generated Implementation Plan — DEFERRED 2026-04-26
+
+User decision: connectivity docs should stabilize first; new plan generated later.
+
+### O6 — Pro Upgrade Payment Flow — DEFERRED 2026-04-26 (NEW)
+
+User decision: defer payment. Phase 1 ships with `upgrade_url` empty and no clickable upgrade affordance. Decision between Stripe-only, Google Play Billing, or hybrid is left for a later phase.
+
+### O7 — SAS Active Confirmation UX (NEW IN SECOND PASS)
+
+The pairing-protocol mandates an active-confirmation pattern (≥1s delay before confirm, no auto-prefocus). Phase-1 Android implementation should validate UX testing of this pattern; the rule is documented but the actual Android UI work has not started.
+
+---
+
 ## Files Modified
+
+First pass (2026-04-26 morning):
 
 - `docs/connectivity/architecture.md`
 - `docs/connectivity/transport-protocol.md`
@@ -371,10 +571,27 @@ When ready, the new plan should be broken into phases (pairing → presence/rend
 - `docs/connectivity/mobile-reference.md`
 - `docs/connectivity/android-client-behavior.md`
 
+Second pass (2026-04-26 late):
+
+- `docs/connectivity/architecture.md` (component diagram, account-token threat row, links)
+- `docs/connectivity/transport-protocol.md` (0-RTT disabled, STUN retries, symmetric NAT)
+- `docs/connectivity/pairing-protocol.md` (invitation persistence, daemon key storage)
+- `docs/connectivity/relay-protocol.md` (lease signing keys, daemon_register, daemon-side event catalog, server-side rate limits)
+- `docs/connectivity/subscription-model.md` (JWT format, current no-additional-grace rule, renewal overlap, manual-release UX, payment-deferred section)
+- `docs/connectivity/mobile-reference.md` (multi-daemon strategy, account switch, lease release UX)
+- `docs/connectivity/android-client-behavior.md` (subscription rendering update)
+
 ## Files Created
+
+First pass:
 
 - `docs/connectivity/subscription-model.md`
 - `docs/connectivity/2026-04-26-architect-review.md` (this document)
+
+Second pass:
+
+- `docs/connectivity/state-machines.md`
+- `docs/connectivity/error-codes.md`
 
 ## How To Use This Document
 

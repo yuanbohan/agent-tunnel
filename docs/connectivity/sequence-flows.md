@@ -202,9 +202,10 @@ sequenceDiagram
     participant DaemonSess as Daemon SessionMgr
 
     AndroidUI->>AndroidConn: open session S1 detail view
-    AndroidConn->>RelayRT: request active-session lease for S1
-    RelayRT-->>AndroidConn: lease_token(session_id=S1)
-    AndroidConn->>DaemonConn: session_activate(session_id=S1, lease_token)\non control stream
+    AndroidConn->>RelayRT: request active-session selection for S1
+    RelayRT-->>AndroidConn: active_session_selection_changed(old=nil, new=S1, epoch=42)
+    RelayRT-->>AndroidConn: access_token(session_id=S1, epoch=42)
+    AndroidConn->>DaemonConn: session_activate(session_id=S1, access_token)\non control stream
     DaemonConn->>DaemonSess: validate token and activate S1 preview
     DaemonSess->>DaemonConn: preview snapshots for S1
     DaemonConn->>AndroidConn: preview_snapshot(S1)\non control stream
@@ -244,9 +245,10 @@ sequenceDiagram
     participant DaemonSess as Daemon SessionMgr
 
     AndroidUI->>AndroidConn: open session S1 detail
-    AndroidConn->>RelayRT: request active-session lease for S1
-    RelayRT-->>AndroidConn: lease_token(S1)
-    AndroidConn->>DaemonConn: session_activate(S1, lease_token)\non control stream
+    AndroidConn->>RelayRT: request active-session selection for S1
+    RelayRT-->>AndroidConn: active_session_selection_changed(new=S1, epoch=42)
+    RelayRT-->>AndroidConn: access_token(S1, epoch=42)
+    AndroidConn->>DaemonConn: session_activate(S1, access_token)\non control stream
     AndroidConn->>DaemonConn: interactive_request(S1)\non control stream
     DaemonConn->>DaemonSess: attach S1
     DaemonSess-->>DaemonConn: granted S1
@@ -254,9 +256,10 @@ sequenceDiagram
     DaemonConn->>AndroidConn: open interactive stream I1
 
     AndroidUI->>AndroidConn: also open session S2 detail
-    AndroidConn->>RelayRT: request active-session lease for S2
-    RelayRT-->>AndroidConn: lease_token(S2)
-    AndroidConn->>DaemonConn: session_activate(S2, lease_token)\non control stream
+    AndroidConn->>RelayRT: request active-session selection for S2
+    RelayRT-->>AndroidConn: active_session_selection_changed(new=S2, epoch=43)
+    RelayRT-->>AndroidConn: access_token(S2, epoch=43)
+    AndroidConn->>DaemonConn: session_activate(S2, access_token)\non control stream
     AndroidConn->>DaemonConn: interactive_request(S2)\non control stream
     DaemonConn->>DaemonSess: attach S2
     DaemonSess-->>DaemonConn: granted S2
@@ -284,7 +287,7 @@ sequenceDiagram
   - stream binding
   - input routing
 
-This flow is the general protocol capability. On free tier, Relay should deny the second active-session lease request, so the app will never reach the second `session_activate` step while the first lease is still held.
+This flow is the general protocol capability. On free tier, Relay should deny the second active-session selection request or require an explicit replacement flow, so the app will never reach the second `session_activate` step while the first selected session still stands.
 
 ## Flow 6: Reconnect And Fresh Recovery
 
@@ -328,6 +331,42 @@ sequenceDiagram
 - Reconnect is path-agnostic.
 - Recovery is based on fresh daemon state, not missed-byte replay.
 - Each still-needed interactive session is reattached independently.
+
+## Flow 7: One Phone Replaces The Free-Tier Active Session For All Phones
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant PhoneAUI as Phone A UI
+    participant PhoneA as Phone A ConnMgr
+    participant RelayRT as Relay RT
+    participant PhoneB as Phone B ConnMgr
+    participant PhoneBUI as Phone B UI
+    participant DaemonConn as Daemon ConnMgr
+
+    Note over PhoneA,PhoneB: Account currently has S1 selected on free tier
+
+    PhoneAUI->>PhoneA: tap locked session S2
+    PhoneA->>PhoneAUI: show modal\n(Currently active: S1)
+    PhoneAUI->>PhoneA: confirm replace S1 with S2
+    PhoneA->>RelayRT: replace active-session selection S1 -> S2
+    RelayRT-->>PhoneA: active_session_selection_changed(old=S1,new=S2,epoch=44)
+    RelayRT-->>PhoneB: active_session_selection_changed(old=S1,new=S2,epoch=44)
+    RelayRT-->>DaemonConn: access_token_revoked(for S1 tokens)
+    RelayRT-->>PhoneA: access_token(S2, epoch=44)
+
+    PhoneA->>DaemonConn: session_activate(S2, access_token)
+    DaemonConn-->>PhoneA: preview / interactive for S2
+
+    PhoneB->>PhoneBUI: lock S1, unlock S2
+    PhoneBUI->>PhoneBUI: if currently viewing S1,\nshow blocking notice:\n\"Active session switched to S2\"
+```
+
+### What This Flow Shows
+
+- free-tier selection is account-global, not device-private
+- one device changing the selected session updates all other devices on that account
+- daemon enforcement still uses device-scoped access tokens; Relay just keeps all devices converged on the same selected session
 
 ## State Ownership Summary
 

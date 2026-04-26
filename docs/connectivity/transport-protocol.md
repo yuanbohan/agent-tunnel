@@ -68,8 +68,15 @@ Phase-1 recommended transport parameters:
 | `max_incoming_streams` (server) | `64` |
 | `max_data` (connection) | `16 MB` |
 | `max_stream_data` (per stream) | `1 MB` |
+| 0-RTT | **DISABLED** |
 
 These are conservative defaults. They may be tuned later, but daemon and Android implementations MUST advertise consistent values until a new phase explicitly raises them.
+
+### 0-RTT Is Disabled
+
+QUIC 0-RTT allows clients to send application data before the handshake completes. The standard tradeoff is that 0-RTT data is replayable.
+
+In this product, replay would be catastrophic: a captured `input_text` frame could re-execute a destructive shell command. Phase 1 therefore disables 0-RTT on both server (daemon) and client (Android). Implementations MUST NOT advertise or accept 0-RTT, even at the cost of one extra round-trip on connection setup.
 
 ### Key Layers
 
@@ -171,6 +178,27 @@ Direct connection attempts use a minimal NAT traversal stack:
 STUN is used only for candidate discovery. It does not solve the full transport problem by itself.
 
 The product should self-host this STUN capability as part of its own edge infrastructure instead of relying on public third-party STUN services.
+
+### STUN Retry Policy
+
+STUN Binding Requests are unreliable UDP datagrams. Implementations MUST retry on timeout:
+
+- attempt 1: 500ms timeout
+- attempt 2: 1s timeout
+- attempt 3: 2s timeout
+- after 3 failed attempts: treat the peer's public address as undiscoverable for this attempt
+
+If STUN cannot return a public address within this budget (typically because UDP/3478 is blocked outbound), the connection manager MUST fall back to the relay tunnel directly without trying direct UDP. There is no point attempting hole punching when at least one side cannot learn its own mapping.
+
+### NAT Traversal Limitations
+
+The minimal STUN-based scheme works for cone NATs:
+
+- full-cone, restricted-cone, port-restricted-cone
+
+It does NOT traverse symmetric NATs. Symmetric NATs assign different external port mappings per destination, so a STUN-discovered mapping is not the mapping that will be seen by the peer. ICE-style candidate-pair lifecycle, port prediction, and similar techniques would be required to handle symmetric NATs and are intentionally out of scope for phase 1.
+
+When the direct attempt deadline expires under a symmetric NAT, the connection naturally falls back to the relay tunnel. This is expected behavior, not a defect; symmetric NATs are common in carrier-grade NAT environments and on some corporate networks.
 
 ## Reconnect Rule
 
@@ -293,9 +321,9 @@ Sent by Android when it wants to activate one session for real content delivery.
 Recommended fields:
 
 - `session_id`
-- `lease_token`
+- `access_token`
 
-`lease_token` is issued by Relay and proves that this Android device currently holds an active-session lease for the addressed session.
+`access_token` is issued by Relay and proves that this Android device is allowed to activate the addressed session under the account's current active-session selection state.
 
 The daemon validates:
 
@@ -304,18 +332,20 @@ The daemon validates:
 - token device binding
 - token daemon binding
 - token session binding
+- token selection-epoch binding
+- token `jti` not currently marked revoked by a prior daemon-side `access_token_revoked` event from Relay
 
 If validation succeeds, the daemon may begin sending real preview for that session and may later honor `interactive_request` for it.
 
 ### `session_release`
 
-Sent by Android when it intentionally releases the currently active session lease on this daemon connection.
+Sent by Android when it intentionally stops using the currently active session on this daemon connection.
 
-Release informs the daemon to stop sending real preview and to end any remaining interactive state for that session. Relay remains the source of truth for lease ownership; the Android side is still expected to release the corresponding Relay lease through the control plane.
+Release informs the daemon to stop sending real preview and to end any remaining interactive state for that session on this connection immediately. Relay remains the source of truth for account-global selection state; the Android side is still expected to release or replace the corresponding Relay selection through the control plane, after which Relay fans out `access_token_revoked` so that the token's `jti` cannot be reused before expiry.
 
 ### `preview_snapshot`
 
-Sent by the daemon whenever a preview changes for a session that currently holds a valid active-session lease.
+Sent by the daemon whenever a preview changes for a session that is currently selected for the account and has been activated on this device with a valid access token.
 
 Preview is:
 
@@ -360,7 +390,7 @@ Recommended fields:
 
 Recommended `reason` enum values:
 
-- `lease_required` — the session is not currently active for this device
+- `selection_required` — the session is not currently selected for the account and activated on this device
 - `not_authorized` — the requesting connection does not have rights to attach this session
 - `session_unavailable` — the session no longer exists or is not in an attachable state
 - `daemon_busy` — temporary daemon-side rejection, retry allowed
@@ -381,7 +411,7 @@ Recommended fields:
 - `session_id` (mandatory)
 - input or resize payload
 
-The `session_id` field is mandatory on every input and resize frame. The daemon MUST drop input or resize frames whose `session_id` does not currently hold an active `interactive_granted` lease on this connection. This protects against UI focus-confusion bugs on the Android side, where the wrong session could otherwise receive input. The daemon SHOULD log such drops at debug level but MUST NOT escalate them to a connection-level error.
+The `session_id` field is mandatory on every input and resize frame. The daemon MUST drop input or resize frames whose `session_id` does not currently hold an active `interactive_granted` session on this connection. This protects against UI focus-confusion bugs on the Android side, where the wrong session could otherwise receive input. The daemon SHOULD log such drops at debug level but MUST NOT escalate them to a connection-level error.
 
 ### `path_state`
 
