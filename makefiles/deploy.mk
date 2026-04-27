@@ -17,7 +17,7 @@
 	compose-start-dev compose-start-prod compose-start-relay-cn \
 	compose-stop-dev compose-stop-prod compose-stop-relay-cn \
 	compose-down-dev compose-down-prod compose-down-relay-cn \
-	relay-cn-ops relay-cn-relay-version relay-cn-invite-create relay-cn-invite-list relay-cn-invite-disable relay-cn-user-delete relay-cn-psql \
+	relay-cn-ops relay-cn-relay-version relay-cn-invite-create relay-cn-invite-list relay-cn-invite-disable relay-cn-user-delete relay-cn-psql relay-cn-logs \
 	relay-cn-status \
 	restart-dev restart-prod \
 	relay-dev relay-prod
@@ -199,6 +199,7 @@ relay-cn-ops: ## Print the common Docker Compose operator commands for relay-cn.
 	'  make relay-cn-invite-disable RELAY_CN_INVITE_CODE=AB2C3D' \
 	'  make relay-cn-user-delete RELAY_CN_USERNAME=alice        # destructive' \
 	'  make relay-cn-psql                                       # open PostgreSQL shell' \
+	'  make relay-cn-logs                                       # tail Relay structured logs' \
 	'  make relay-cn-status                                     # end-to-end health check'
 
 relay-cn-relay-version: ## Print the relay version from the running relay-cn container.
@@ -226,6 +227,9 @@ relay-cn-user-delete: ## Delete one user on relay-cn. Set RELAY_CN_USERNAME=<use
 
 relay-cn-psql: ## Open a PostgreSQL shell on relay-cn using the Compose postgres service.
 	@ssh -t "$(RELAY_CN_SSH_DEST)" 'cd "$(RELAY_CN_COMPOSE_DIR)" && sudo docker compose --env-file .env exec postgres sh -lc '"'"'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"'"'"''
+
+relay-cn-logs: ## Tail the persisted Relay structured log on relay-cn.
+	@ssh -t "$(RELAY_CN_SSH_DEST)" 'sudo tail -n 100 -f /opt/agentunnel/logs/relay/relay.log'
 
 relay-cn-status: ## Check relay-cn DNS, website, relay health, API auth paths, websocket auth paths, and Compose service state.
 	@./scripts/relay-cn-status.sh
