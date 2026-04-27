@@ -4,11 +4,17 @@
 
 This document is a point-in-time architectural review of the QUIC session-connectivity design under `docs/connectivity/` performed on 2026-04-26.
 
-Its purpose is to make the review reproducible: every issue identified is paired with the change applied and the file/section that absorbed it. Future reviewers can read this together with the doc set to verify the changes are still coherent.
+Its purpose is to make the review reproducible: every issue identified is paired with the change applied and the file/section that absorbed it.
 
 It does not redefine any decision. It is a record, not a contract.
 
-Subscription-specific conclusions in this review were later superseded by the account-global active-session selection model documented in `docs/connectivity/subscription-model.md`. References below to "active-session lease" or `lease_*` event names should therefore be read as historical review context, not as the current protocol contract.
+**This file is historical context only.** Do not use it as the current contract. The canonical phase-1 contract is `docs/connectivity/contract.md`.
+
+Conclusions in this review were superseded multiple times:
+
+- The account-global selection/token model was replaced by an oldest-live-session app-side rule, then replaced again by **sticky first-attach** (see `contract.md` D3 and `ux/subscription.md`).
+- References below to leases, selection epochs, signing keys, access tokens, or `session_activate` are historical only.
+- Path references using the old flat layout (e.g. `docs/connectivity/transport-protocol.md`) refer to files that now live under `protocol/` and `ux/` per the README index.
 
 ## Scope Of Review
 
@@ -386,6 +392,8 @@ After the user redesigned the subscription model around active-session leases an
 ### Critical Findings (C1–C8) Closed
 
 #### C1 — Lease Signing Key Distribution Was Unspecified
+
+**Superseded:** The current phase-1 design no longer uses daemon-validated lease tokens or signing-key distribution. The notes below remain as historical context only.
 
 **Issue:** Daemon must verify Relay-issued lease tokens but the doc did not say how daemon obtains Relay's signing public keys.
 

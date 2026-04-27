@@ -131,6 +131,54 @@ It is more accurate to describe it as:
 
 That keeps one end-to-end security model while avoiding TURN.
 
+## Phase-1 App Identity Simplification
+
+Confirmed on 2026-04-27: phase 1 uses a Relay-issued app-session JWT as the only app-side Relay authentication mechanism.
+
+The JWT should carry:
+
+- account identity
+- app-session identifier
+- Android app `device_fingerprint`
+
+This replaces the earlier idea of requiring an additional per-websocket `device_proof` on `app_register`.
+
+Why this simplification was chosen:
+
+- simpler Relay control-plane implementation
+- fewer moving parts before coding plan
+- still sufficient for Relay-side daemon visibility decisions
+- direct and relay transport security still rely on daemon-side pairing trust and device-key pinning
+
+Tradeoff:
+
+- Relay-side Android device identity is only as strong as the authenticated app session, not a second websocket-bound signature proof
+
+That tradeoff is accepted for phase 1.
+
+## Phase-1 Daemon Card Connection Strategy
+
+Confirmed on 2026-04-27: the official app should not eagerly connect to every visible online daemon in phase 1.
+
+Instead:
+
+- Relay presence renders daemon cards
+- daemon transport starts only when the user opens a daemon card
+- once connected, free/pro rules are evaluated only within that card
+- pro may auto-subscribe preview for every live session in that opened card
+
+Why this simplification was chosen:
+
+- keeps the first version smaller
+- avoids foreground fan-out to every visible daemon
+- avoids viewport and idle-eviction policy work
+- still gives a good pro experience once a daemon card is opened
+
+Tradeoff:
+
+- pro no longer sees all live previews across every visible daemon immediately on app open
+- preview richness is scoped to opened daemon cards in phase 1
+
 ## Consequences
 
 ### Positive
@@ -162,9 +210,10 @@ The new architecture should be documented under `docs/connectivity/` rather than
 
 The key documents are:
 
-- `docs/connectivity/architecture.md`
-- `docs/connectivity/relay-protocol.md`
-- `docs/connectivity/transport-protocol.md`
-- `docs/connectivity/pairing-protocol.md`
-- `docs/connectivity/daemon-session-sync.md`
-- `docs/connectivity/mobile-reference.md`
+- `../architecture.md`
+- `../contract.md`
+- `../protocol/relay.md`
+- `../protocol/transport.md`
+- `../protocol/pairing.md`
+- `../protocol/local-broker.md`
+- `../ux/android.md`

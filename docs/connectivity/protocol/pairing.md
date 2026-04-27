@@ -77,12 +77,13 @@ The daemon signs the invitation so Android can verify that the QR payload origin
 4. Android scans the QR
 5. Android verifies:
    - invitation signature
-   - account binding
+   - invitation `account_id` matches the currently authenticated Relay account
    - expiry
 6. Android signs:
    - `invitation_id`
    - `nonce`
    - `android_pubkey`
+   - `relay_asserted_account_id`
 7. Android sends pairing response to Relay with the `correlation_id`
 8. Relay forwards that response to the addressed daemon
 9. daemon verifies the response locally
@@ -90,9 +91,28 @@ The daemon signs the invitation so Android can verify that the QR payload origin
 11. user confirms the numbers match
 12. daemon stores Android trust locally
 13. Android stores daemon trust locally
-14. daemon optionally informs Relay that pairing is now valid for presence visibility
+14. daemon informs Relay that pairing is now valid for presence visibility
 
 Relay participates in message transport only. It does not decide trust.
+
+## Account Binding Trust Boundary
+
+The trust boundary is intentionally split:
+
+- device identity is daemon-verifiable
+- account identity is Relay-asserted and transcript-bound
+
+The `account_id` Android signs comes from **the `sub` claim of the Android app's own JWT** — i.e., the value Relay told *Android* the account is. It is not a value Relay later inserts into `pair_response_forward` to the daemon.
+
+Pairing transcript rules:
+
+- Android signs `(invitation_id || nonce || android_pubkey || android_jwt_sub)` with its device key
+- the signature plus `android_jwt_sub` travels through Relay inside `pair_response_submit`
+- daemon receives the response via `pair_response_forward`, verifies Android's signature over those exact bytes, and compares `android_jwt_sub` against `invitation.account_id`
+
+This closes the account-substitution attack: even if Relay tries to hand the daemon a different account assertion, the value covered by Android's signature is the one Android believed during its login. Relay cannot rewrite that field without breaking the signature.
+
+Daemon still relies on Relay to have authenticated the Android app's login in the first place. Phase 1 does not attempt to make account identity independently daemon-verifiable without Relay participation, but the signature transcript prevents Relay from steering pairing across accounts at this step.
 
 ## Why SAS Prevents MITM
 
@@ -314,8 +334,9 @@ Phase 1 does not provide automatic key rotation. Operators should treat daemon d
 
 ## References
 
-- `docs/connectivity/architecture.md`
-- `docs/connectivity/relay-protocol.md`
-- `docs/connectivity/mobile-reference.md`
+- `../architecture.md`
+- `../contract.md`
+- `relay.md`
+- `../ux/android.md`
 - Ed25519: `https://datatracker.ietf.org/doc/html/rfc8032`
 - Android Keystore: `https://developer.android.com/privacy-and-security/keystore`

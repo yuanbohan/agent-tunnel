@@ -10,8 +10,8 @@ It is intentionally more operational than `architecture.md`. Its purpose is to m
 - SAS confirmation
 - STUN-assisted direct connection attempts
 - relay fallback tunnel establishment
-- daemon-driven session synchronization
-- interactive session attachment over multiple QUIC streams
+- daemon-brokered session synchronization
+- preview and interactive attach over QUIC streams
 
 These flows describe the intended target design. They are not a statement that the current repository already implements them.
 
@@ -20,12 +20,38 @@ These flows describe the intended target design. They are not a statement that t
 The diagrams use these actors:
 
 - `Android UI`: the visible mobile app screens and user actions
-- `Android ConnMgr`: the mobile connectivity manager responsible for relay control-plane and daemon transport
-- `Relay RT`: Relay realtime control plane
+- `Android ConnMgr`: the mobile connectivity manager responsible for Relay control-plane and daemon transport
+- `Relay RT`: Relay realtime control plane and app policy API surface
 - `Relay Tunnel`: Relay fallback packet tunnel service
 - `STUN`: self-hosted STUN service operated in the same edge footprint as Relay
 - `Daemon ConnMgr`: daemon-side connectivity manager
-- `Daemon SessionMgr`: daemon-side session authority, preview generator, and PTY bridge
+- `Daemon Broker`: daemon-side local broker between mobile transport and local `tunnel run` sessions
+- `tunnel run`: the local session owner that owns PTY, mirror, preview source, and interactive attach
+
+## Flow 0: Local Session Registration
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant TunnelRun as tunnel run
+    participant DaemonBroker as Daemon Broker
+
+    TunnelRun->>DaemonBroker: open local socket
+    TunnelRun->>DaemonBroker: register_session\n(session_id, metadata)
+    TunnelRun->>DaemonBroker: preview_update(latest preview)
+    loop while session lives
+        TunnelRun->>DaemonBroker: session_update(metadata changes)
+        TunnelRun->>DaemonBroker: preview_update(preview changes)
+    end
+    TunnelRun->>DaemonBroker: session_gone
+    TunnelRun-->>DaemonBroker: close local connection
+```
+
+### What This Flow Shows
+
+- every `tunnel run` explicitly registers itself with daemon
+- the local connection lifetime is the primary liveness signal
+- daemon keeps the latest preview cached even before any mobile preview subscription arrives
 
 ## Flow 1: Pairing Invitation And SAS Confirmation
 
@@ -48,11 +74,11 @@ sequenceDiagram
 
     User->>AndroidUI: scan QR
     AndroidUI->>AndroidConn: parse invitation
-    AndroidConn->>AndroidConn: verify daemon signature\nverify account binding\nverify expiry
-    AndroidConn->>AndroidConn: sign(invitation_id || nonce || android_pubkey)
-    AndroidConn->>RelayRT: pair_response_submit\n(correlation_id, android_pubkey, signature)
-    RelayRT->>DaemonConn: pair_response_forward
-    DaemonConn->>DaemonConn: verify invitation still valid\nverify Android signature
+    AndroidConn->>AndroidConn: verify daemon signature\nverify expiry
+    AndroidConn->>AndroidConn: sign(invitation_id || nonce || android_pubkey || relay_asserted_account_id)
+    AndroidConn->>RelayRT: pair_response_submit\n(correlation_id, android_pubkey, signature, account_id)
+    RelayRT->>DaemonConn: pair_response_forward\n(+ relay_asserted_account_id)
+    DaemonConn->>DaemonConn: verify invitation still valid\nverify Android signature\nverify Relay-asserted account matches invitation
 
     DaemonConn->>DaemonConn: derive SAS from:\ndaemon_pubkey, android_pubkey,\ninvitation_id, nonce
     AndroidConn->>AndroidConn: derive same SAS from:\ndaemon_pubkey, android_pubkey,\ninvitation_id, nonce
@@ -64,17 +90,17 @@ sequenceDiagram
 
     DaemonConn->>DaemonConn: persist Android fingerprint
     AndroidConn->>AndroidConn: persist daemon fingerprint
-    DaemonConn->>RelayRT: pair_completed\n(derived visibility grant only)
+    DaemonConn->>RelayRT: pair_completed
     RelayRT-->>AndroidConn: paired_device_visible
 ```
 
 ### What This Flow Establishes
 
-- Relay transports pairing messages but is not the trust root.
-- The daemon-authored invitation is the initial trust anchor.
-- The Android device proves possession of its device key by signing the invitation challenge.
+- Relay transports pairing messages but is not the trust root for device identity.
+- The daemon-authored invitation is the initial device trust anchor.
+- Android proves possession of its device key by signing the invitation challenge.
+- Account binding is based on Relay assertion, and that assertion is bound into the signed pairing transcript.
 - The 6-digit SAS gives the user a final MITM check.
-- Successful pairing produces pinned peer identities on Android and daemon. It does not produce one long-lived shared transport secret.
 
 ## Flow 2: App Startup To Direct Connection Success
 
@@ -86,15 +112,19 @@ sequenceDiagram
     participant RelayRT as Relay RT
     participant STUN
     participant DaemonConn as Daemon ConnMgr
-    participant DaemonSess as Daemon SessionMgr
+    participant DaemonBroker as Daemon Broker
 
     AndroidUI->>AndroidConn: app foreground / user logged in
+    AndroidConn->>RelayRT: fetch subscription tier
+    RelayRT-->>AndroidConn: {tier}
     AndroidConn->>RelayRT: open app realtime websocket
+    AndroidConn->>RelayRT: app_register(app_version, protocol_version)
     RelayRT-->>AndroidConn: daemon_snapshot
     RelayRT-->>AndroidConn: realtime_ready
     AndroidConn-->>AndroidUI: render visible daemon cards
 
-    AndroidConn->>AndroidConn: select visible online paired daemon
+    AndroidUI->>AndroidConn: user opens one daemon card
+    AndroidConn->>AndroidConn: open transport for that daemon card
     AndroidConn->>STUN: Binding Request
     STUN-->>AndroidConn: Binding Response\n(public A_ip:A_port)
 
@@ -117,30 +147,33 @@ sequenceDiagram
     DaemonConn->>DaemonConn: verify Android pinned identity
 
     AndroidConn->>DaemonConn: open control stream
+    AndroidConn->>DaemonConn: hello(path=direct)
     DaemonConn->>AndroidConn: hello(path=direct)
+    DaemonBroker->>DaemonConn: current session roster
     DaemonConn->>AndroidConn: session_index
-    AndroidConn-->>AndroidUI: render session metadata\nbadge = Direct
+    AndroidConn->>AndroidConn: apply local free/pro rule
+    AndroidConn-->>AndroidUI: render daemon card + session metadata\nbadge = Direct
 ```
 
 ### What This Flow Shows
 
-- Relay tells Android which daemons are visible and online.
+- Relay tells Android which daemons are visible and which account tier applies.
 - STUN is only used to learn public UDP mappings.
 - Relay carries rendezvous hints but never terminal data.
-- Direct success means the daemon becomes the source of session list and preview data.
-- Path state is tracked per daemon connection, so the Android badge is `Direct` for that daemon.
+- daemon transport starts when the user opens a daemon card, not eagerly for every visible daemon
+- Direct success means the daemon becomes the source of session list and preview / interactive routing.
+- The free-tier unlocked row is chosen locally by the app within that daemon card after the initial `session_index`.
 
 ## Flow 3: Direct Attempt Fails And Falls Back To Relay
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant AndroidUI as Android UI
     participant AndroidConn as Android ConnMgr
     participant RelayRT as Relay RT
     participant RelayTunnel as Relay Tunnel
     participant DaemonConn as Daemon ConnMgr
-    participant DaemonSess as Daemon SessionMgr
+    participant DaemonBroker as Daemon Broker
 
     AndroidConn->>RelayRT: daemon online already known
     AndroidConn->>RelayRT: rendezvous_open(attempt_id)
@@ -153,7 +186,7 @@ sequenceDiagram
         DaemonConn->>AndroidConn: UDP probes + QUIC direct attempt
     end
 
-    Note over AndroidConn,DaemonConn: 3s direct attempt deadline expires<br/>without QUIC handshake completion
+    Note over AndroidConn,DaemonConn: direct attempt deadline expires<br/>without QUIC handshake completion
     AndroidConn->>AndroidConn: cancel direct attempt
     DaemonConn->>DaemonConn: cancel direct attempt
 
@@ -177,8 +210,11 @@ sequenceDiagram
     DaemonConn->>DaemonConn: verify Android pinned identity
 
     AndroidConn->>DaemonConn: open control stream
+    AndroidConn->>DaemonConn: hello(path=relay)
     DaemonConn->>AndroidConn: hello(path=relay)
+    DaemonBroker->>DaemonConn: current session roster
     DaemonConn->>AndroidConn: session_index
+    AndroidConn->>AndroidConn: apply local free/pro rule
     AndroidConn-->>AndroidUI: render session metadata\nbadge = Relay
 ```
 
@@ -187,107 +223,112 @@ sequenceDiagram
 - Direct and relay are different carriers, not different business protocols.
 - Fallback creates a new QUIC/TLS connection. It does not migrate the failed direct connection in place.
 - Relay Tunnel forwards encrypted QUIC packets only.
-- After fallback succeeds, daemon resends session list and preview data over the new connection.
-- The direct attempt deadline is fixed at `3s` in phase 1. Sequential (not happy-eyeballs) is chosen so the path-state badge stays unambiguous. See `transport-protocol.md` for the deadline contract.
+- After fallback succeeds, daemon resends session list over the new connection.
 
-## Flow 4: Interactive Session Attach Over QUIC Streams
+## Flow 4: Preview And Interactive For The Usable Session
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant AndroidUI as Android UI
     participant AndroidConn as Android ConnMgr
-    participant RelayRT as Relay RT
     participant DaemonConn as Daemon ConnMgr
-    participant DaemonSess as Daemon SessionMgr
+    participant DaemonBroker as Daemon Broker
+    participant TunnelRun as tunnel run
 
     AndroidUI->>AndroidConn: open session S1 detail view
-    AndroidConn->>RelayRT: request active-session selection for S1
-    RelayRT-->>AndroidConn: active_session_selection_changed(old=nil, new=S1, epoch=42)
-    RelayRT-->>AndroidConn: access_token(session_id=S1, epoch=42)
-    AndroidConn->>DaemonConn: session_activate(session_id=S1, access_token)\non control stream
-    DaemonConn->>DaemonSess: validate token and activate S1 preview
-    DaemonSess->>DaemonConn: preview snapshots for S1
+    AndroidConn->>AndroidConn: verify S1 is currently usable\nunder local free/pro rule
+    AndroidConn->>DaemonConn: preview_subscribe(session_id=S1)\non control stream
+    DaemonBroker->>DaemonConn: latest cached preview for S1
     DaemonConn->>AndroidConn: preview_snapshot(S1)\non control stream
+
     AndroidConn->>DaemonConn: interactive_request(session_id=S1, cols, rows)\non control stream
-    DaemonConn->>DaemonSess: ask for interactive attach for S1
-    DaemonSess-->>DaemonConn: granted(S1)
+    DaemonConn->>DaemonBroker: request interactive attach for S1
+    DaemonBroker->>TunnelRun: attach interactive for S1
+    TunnelRun-->>DaemonBroker: granted(S1)
+    DaemonBroker-->>DaemonConn: interactive granted(S1)
     DaemonConn-->>AndroidConn: interactive_granted\n(session_id=S1, interactive_stream_id=I1)
     DaemonConn->>AndroidConn: open interactive stream I1
-    DaemonSess->>DaemonConn: snapshot bytes for S1
-    DaemonConn->>AndroidConn: snapshot_begin(S1)\non stream I1
-    DaemonConn->>AndroidConn: snapshot_chunk...\non stream I1
-    DaemonConn->>AndroidConn: snapshot_end(S1)\non stream I1
-    DaemonSess->>DaemonConn: live bytes for S1
+    TunnelRun->>DaemonBroker: snapshot bytes for S1
+    DaemonBroker->>DaemonConn: snapshot bytes for S1
+    DaemonConn->>AndroidConn: snapshot_begin / snapshot_chunk / snapshot_end
+    TunnelRun->>DaemonBroker: live bytes for S1
+    DaemonBroker->>DaemonConn: live bytes for S1
     DaemonConn->>AndroidConn: live_bytes...\non stream I1
     AndroidConn-->>AndroidUI: render terminal for S1
 
     AndroidUI->>AndroidConn: user types into S1
     AndroidConn->>DaemonConn: input_text(session_id=S1, ...)\non control stream
-    DaemonConn->>DaemonSess: forward PTY input for S1
+    DaemonConn->>DaemonBroker: forward input for S1
+    DaemonBroker->>TunnelRun: PTY input for S1
 ```
 
 ### What This Flow Shows
 
-- Interactive control messages stay on the control stream.
-- Terminal payload bytes stay on a dedicated interactive stream.
-- The daemon is authoritative for whether a session may become interactive.
+- `tunnel run` remains the PTY owner.
+- The daemon is a gateway and local broker, not the terminal owner.
+- The official app asks for preview / interactive only for sessions it treats as usable.
+- No Relay-issued per-session access token is involved in phase 1.
 
-## Flow 5: Multiple Interactive Sessions On One Daemon Connection
+## Flow 4B: Pro Preview Bootstrap
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant AndroidConn as Android ConnMgr
+    participant DaemonConn as Daemon ConnMgr
+    participant DaemonBroker as Daemon Broker
+
+    Note over AndroidConn: account tier = pro
+
+    DaemonConn->>AndroidConn: session_index
+    AndroidConn->>AndroidConn: mark all rows usable
+
+    loop for each live session in roster
+        AndroidConn->>DaemonConn: preview_subscribe(session_id)
+        DaemonBroker->>DaemonConn: latest cached preview for session_id
+        DaemonConn->>AndroidConn: preview_snapshot(session_id)
+    end
+```
+
+### What This Flow Shows
+
+- pro does not wait for row-by-row user entry before showing live preview within a connected daemon card
+- pro still needs the user to open that daemon card first in phase 1
+- daemon can answer immediately because the latest preview is already cached from local `tunnel run` push
+
+## Flow 5: Free-Tier Sticky First-Attach
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant AndroidUI as Android UI
     participant AndroidConn as Android ConnMgr
-    participant RelayRT as Relay RT
     participant DaemonConn as Daemon ConnMgr
-    participant DaemonSess as Daemon SessionMgr
+    participant DaemonBroker as Daemon Broker
+    participant TunnelRun as tunnel run
 
-    AndroidUI->>AndroidConn: open session S1 detail
-    AndroidConn->>RelayRT: request active-session selection for S1
-    RelayRT-->>AndroidConn: active_session_selection_changed(new=S1, epoch=42)
-    RelayRT-->>AndroidConn: access_token(S1, epoch=42)
-    AndroidConn->>DaemonConn: session_activate(S1, access_token)\non control stream
-    AndroidConn->>DaemonConn: interactive_request(S1)\non control stream
-    DaemonConn->>DaemonSess: attach S1
-    DaemonSess-->>DaemonConn: granted S1
-    DaemonConn-->>AndroidConn: interactive_granted(S1, stream I1)
-    DaemonConn->>AndroidConn: open interactive stream I1
+    Note over AndroidConn: Within one daemon card,\nfree tier starts with no unlocked session
 
-    AndroidUI->>AndroidConn: also open session S2 detail
-    AndroidConn->>RelayRT: request active-session selection for S2
-    RelayRT-->>AndroidConn: active_session_selection_changed(new=S2, epoch=43)
-    RelayRT-->>AndroidConn: access_token(S2, epoch=43)
-    AndroidConn->>DaemonConn: session_activate(S2, access_token)\non control stream
-    AndroidConn->>DaemonConn: interactive_request(S2)\non control stream
-    DaemonConn->>DaemonSess: attach S2
-    DaemonSess-->>DaemonConn: granted S2
-    DaemonConn-->>AndroidConn: interactive_granted(S2, stream I2)
-    DaemonConn->>AndroidConn: open interactive stream I2
+    AndroidUI->>AndroidConn: tap session row S2
+    AndroidConn-->>AndroidUI: show first-use explanation\n("Tap again to start using S2 on free tier")
+    AndroidUI->>AndroidConn: confirm open S2
+    AndroidConn->>AndroidConn: set unlocked_session_id = S2
+    AndroidConn-->>AndroidUI: lock state updates\nS2 unlocked, other rows locked
 
-    par stream I1 for S1
-        DaemonConn->>AndroidConn: snapshot/live for S1 on I1
-    and stream I2 for S2
-        DaemonConn->>AndroidConn: snapshot/live for S2 on I2
-    end
-
-    AndroidConn->>DaemonConn: input_text(session_id=S1, ...)\non control stream
-    AndroidConn->>DaemonConn: input_text(session_id=S2, ...)\non control stream
+    TunnelRun->>DaemonBroker: session S2 exits
+    DaemonBroker->>DaemonConn: session_gone(S2)
+    DaemonConn->>AndroidConn: session_gone(S2)
+    AndroidConn->>AndroidConn: clear unlocked_session_id
+    AndroidConn-->>AndroidUI: all rows locked again\nuntil the next user attach
 ```
 
 ### What This Flow Shows
 
-- There is one daemon connection path, but potentially many interactive sessions under it.
-- The path badge remains a daemon-level property:
-  - all sessions on this daemon are either currently `Direct`
-  - or currently `Relay`
-- Interactive state remains session-scoped:
-  - grant/deny
-  - stream binding
-  - input routing
-
-This flow is the general protocol capability. On free tier, Relay should deny the second active-session selection request or require an explicit replacement flow, so the app will never reach the second `session_activate` step while the first selected session still stands.
+- the first user attach picks the sticky unlocked session for that daemon card
+- locked rows stay visible
+- when the sticky unlocked session disappears, the card returns to "no unlocked session yet"
+- different devices may pick different sticky sessions; phase 1 does not synchronize that choice through Relay
 
 ## Flow 6: Reconnect And Fresh Recovery
 
@@ -298,7 +339,8 @@ sequenceDiagram
     participant RelayRT as Relay RT
     participant RelayTunnel as Relay Tunnel
     participant DaemonConn as Daemon ConnMgr
-    participant DaemonSess as Daemon SessionMgr
+    participant DaemonBroker as Daemon Broker
+    participant TunnelRun as tunnel run
 
     Note over AndroidConn,DaemonConn: existing daemon connection drops
 
@@ -313,13 +355,19 @@ sequenceDiagram
     end
 
     DaemonConn->>AndroidConn: hello(path=direct or relay)
+    DaemonBroker->>DaemonConn: current session roster
     DaemonConn->>AndroidConn: session_index
-    DaemonConn->>AndroidConn: preview_snapshot...
+    AndroidConn->>AndroidConn: recompute usable vs locked rows
 
-    loop for each session Android still wants interactive
+    loop for each session Android still wants live preview for
+        AndroidConn->>DaemonConn: preview_subscribe(session_id)
+    end
+
+    loop for each still-usable session Android still wants interactive
         AndroidConn->>DaemonConn: interactive_request(session_id)
-        DaemonConn->>DaemonSess: attach session
-        DaemonSess-->>DaemonConn: granted
+        DaemonConn->>DaemonBroker: ask local tunnel run
+        TunnelRun-->>DaemonBroker: granted
+        DaemonBroker-->>DaemonConn: granted
         DaemonConn-->>AndroidConn: interactive_granted(stream_id)
         DaemonConn->>AndroidConn: fresh snapshot on that stream
         DaemonConn->>AndroidConn: live bytes continue
@@ -328,59 +376,19 @@ sequenceDiagram
 
 ### What This Flow Shows
 
-- Reconnect is path-agnostic.
-- Recovery is based on fresh daemon state, not missed-byte replay.
-- Each still-needed interactive session is reattached independently.
-
-## Flow 7: One Phone Replaces The Free-Tier Active Session For All Phones
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant PhoneAUI as Phone A UI
-    participant PhoneA as Phone A ConnMgr
-    participant RelayRT as Relay RT
-    participant PhoneB as Phone B ConnMgr
-    participant PhoneBUI as Phone B UI
-    participant DaemonConn as Daemon ConnMgr
-
-    Note over PhoneA,PhoneB: Account currently has S1 selected on free tier
-
-    PhoneAUI->>PhoneA: tap locked session S2
-    PhoneA->>PhoneAUI: show modal\n(Currently active: S1)
-    PhoneAUI->>PhoneA: confirm replace S1 with S2
-    PhoneA->>RelayRT: replace active-session selection S1 -> S2
-    RelayRT-->>PhoneA: active_session_selection_changed(old=S1,new=S2,epoch=44)
-    RelayRT-->>PhoneB: active_session_selection_changed(old=S1,new=S2,epoch=44)
-    RelayRT-->>DaemonConn: access_token_revoked(for S1 tokens)
-    RelayRT-->>PhoneA: access_token(S2, epoch=44)
-
-    PhoneA->>DaemonConn: session_activate(S2, access_token)
-    DaemonConn-->>PhoneA: preview / interactive for S2
-
-    PhoneB->>PhoneBUI: lock S1, unlock S2
-    PhoneBUI->>PhoneBUI: if currently viewing S1,\nshow blocking notice:\n\"Active session switched to S2\"
-```
-
-### What This Flow Shows
-
-- free-tier selection is account-global, not device-private
-- one device changing the selected session updates all other devices on that account
-- daemon enforcement still uses device-scoped access tokens; Relay just keeps all devices converged on the same selected session
+- reconnect is path-agnostic
+- recovery is based on fresh daemon state, not missed-byte replay
+- preview and interactive are re-established from current app state after reconnect
 
 ## State Ownership Summary
 
 ### Android ConnMgr Owns
 
+- app policy fetch
 - app realtime websocket lifecycle
-- per-daemon transport lifecycle:
-  - `connecting_direct`
-  - `connecting_relay`
-  - `connected_direct`
-  - `connected_relay`
-  - `reconnecting`
-- control stream handle per daemon
-- interactive stream handles per session
+- per-daemon transport lifecycle
+- local free/pro rule evaluation
+- preview / interactive subscriptions the official app chooses to request
 
 ### Daemon ConnMgr Owns
 
@@ -389,15 +397,26 @@ sequenceDiagram
 - QUIC/TLS transport lifecycle
 - stream creation and routing
 
-### Daemon SessionMgr Owns
+### Daemon Broker Owns
 
-- session list
-- preview generation
-- PTY snapshot/live byte production
-- per-session interactive attach decisions
+- local session directory
+- accepting explicit local `register_session` connections from `tunnel run`
+- caching the latest preview pushed by each owning `tunnel run`
+- fanning cached preview updates to subscribed mobile clients
+- forwarding interactive attach requests to the owning `tunnel run`
+- bridging snapshot / live bytes / input between transport and local session owners
+
+### `tunnel run` Owns
+
+- PTY lifecycle
+- mirror and preview source
+- snapshot generation
+- live terminal bytes
+- terminal input handling
 
 ### Relay Owns
 
+- subscription tier exposure to the official app
 - daemon presence
 - pairing transport
 - rendezvous hint exchange
@@ -412,10 +431,10 @@ Relay does not own:
 
 ## Related Documents
 
-- `docs/connectivity/architecture.md`
-- `docs/connectivity/pairing-protocol.md`
-- `docs/connectivity/relay-protocol.md`
-- `docs/connectivity/transport-protocol.md`
-- `docs/connectivity/mobile-reference.md`
-- `docs/connectivity/android-client-behavior.md`
-- `docs/connectivity/daemon-session-sync.md`
+- `../architecture.md`
+- `../contract.md`
+- `../protocol/pairing.md`
+- `../protocol/relay.md`
+- `../protocol/transport.md`
+- `../protocol/local-broker.md`
+- `../ux/android.md`
