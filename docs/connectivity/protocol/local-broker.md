@@ -1,0 +1,277 @@
+# Local Session Registration Protocol
+
+## Status
+
+This document defines the phase-1 local protocol between the daemon and each local `tunnel run` process.
+
+Its purpose is narrow:
+
+- keep `tunnel run` as the PTY owner
+- let daemon expose those sessions to mobile clients
+- avoid making daemon the session owner
+
+This is a local-machine protocol only. It is not exposed to Relay or to mobile clients.
+
+## Core Rule
+
+Each `tunnel run` process opens one long-lived local connection to the daemon and explicitly registers itself.
+
+That connection is the source of truth for:
+
+- whether the session is alive
+- the session's current metadata
+- the session's latest preview
+- interactive snapshot and live bytes
+
+If the local connection disappears, the daemon must treat that session as gone.
+
+## Transport
+
+Phase-1 transport should be:
+
+- Unix domain socket
+- dedicated daemon-owned listener for long-lived session registrations
+- one long-lived connection per `tunnel run`
+
+The daemon accepts only local clients on the same machine.
+
+This listener should be separate from the daemon's short-lived local control RPC socket.
+
+Recommended phase-1 hardening:
+
+- daemon creates the socket path with owner-only permissions
+- daemon verifies the connecting peer UID matches the daemon process UID where the platform supports peer credentials
+- `tunnel run` refuses to talk to a socket path it does not own through the current local user boundary
+
+## Ownership Model
+
+`tunnel run` owns:
+
+- PTY lifecycle
+- terminal mirror
+- preview generation
+- interactive attach semantics
+- PTY input handling
+
+daemon owns:
+
+- local session directory
+- mapping `session_id -> local connection`
+- forwarding preview and interactive traffic between mobile transport and the owning `tunnel run`
+
+## Connection Lifecycle
+
+### Session Startup
+
+When `tunnel run` starts:
+
+1. it opens the local daemon socket
+2. it sends `register_session`
+3. it keeps the connection open for the lifetime of the session
+
+### Daemon Restart
+
+If the daemon restarts:
+
+- the local socket disappears
+- each still-running `tunnel run` should reconnect automatically
+- after reconnect it sends a fresh `register_session`
+
+Until that reconnect succeeds, the session is temporarily absent from the daemon's mobile-visible roster.
+
+### Session Exit
+
+When `tunnel run` exits normally:
+
+- it should send `session_gone` if possible
+- then close the local connection
+
+If the process crashes or the local connection drops unexpectedly:
+
+- daemon should treat the session as gone on connection loss
+
+## Message Families
+
+The phase-1 local protocol should stay minimal.
+
+### `tunnel run` -> daemon
+
+- `register_session`
+- `session_update`
+- `preview_update`
+- `interactive_granted`
+- `interactive_denied`
+- `snapshot_begin`
+- `snapshot_chunk`
+- `snapshot_end`
+- `live_bytes`
+- `session_gone`
+
+### daemon -> `tunnel run`
+
+- `interactive_request`
+- `interactive_release`
+- `input_text`
+- `input_key`
+- `resize`
+
+## Required Fields
+
+### `register_session`
+
+Minimum fields:
+
+- `session_id`
+- `label`
+- `command_preview`
+- `cwd`
+- `git_branch`
+- `started_at`
+- `updated_at`
+- `online`
+
+This is the message that makes a session visible to the daemon's mobile-facing roster.
+
+### `session_update`
+
+Carries a full metadata refresh for the same session.
+
+Phase 1 should prefer full replacement payloads over patch-style deltas.
+
+### `preview_update`
+
+Carries the newest preview text for the session.
+
+Important phase-1 rule:
+
+- `tunnel run` pushes preview updates to daemon proactively
+- daemon caches only the latest preview per session
+- daemon does not need a second local preview subscription state machine
+
+### `interactive_request`
+
+Sent by daemon when a mobile client wants interactive access to the session.
+
+Minimum fields:
+
+- `session_id`
+- `cols`
+- `rows`
+
+Phase-1 rule:
+
+- at most one active interactive lifetime exists per `session_id`
+- if another request arrives while one lifetime is still active for that same session, `tunnel run` should reject it with `daemon_busy`
+
+### `interactive_granted`
+
+Sent by `tunnel run` after it accepts the interactive request.
+
+This means the following byte stream messages belong to that active interactive lifetime:
+
+- `snapshot_begin`
+- `snapshot_chunk`
+- `snapshot_end`
+- `live_bytes`
+
+### `interactive_denied`
+
+Sent by `tunnel run` when it rejects the request.
+
+Phase-1 recommended reasons:
+
+- `device_not_trusted`
+- `session_unavailable`
+- `daemon_busy`
+- `unknown`
+
+### `interactive_release`
+
+Sent by daemon when the mobile client leaves or explicitly releases interactive.
+
+### `input_text` / `input_key` / `resize`
+
+Sent by daemon only after interactive has been granted for that session.
+
+`tunnel run` should drop these messages if no active interactive lifetime exists for that session.
+
+## Preview Pipeline
+
+Preview is generated by the owning `tunnel run`, cached by the daemon, fanned out to subscribed paired devices. Relay never sees preview content. Android never derives preview from raw terminal output.
+
+### Source: `tunnel run`
+
+`tunnel run` extracts preview from the terminal mirror it already maintains. It pushes updates to the daemon proactively over the local socket using `preview_update`. There is no daemon-side pull request; this avoids a per-frame ask-response loop.
+
+### Cache: daemon broker
+
+- daemon keeps **only the latest** `preview_update` per session
+- no history, no deltas
+- on a fresh paired-device subscription, the daemon serves the cached latest preview immediately
+- subsequent `preview_update` events fan out to all currently subscribed paired devices
+
+### Fanout: paired devices
+
+- Android explicitly subscribes via `preview_subscribe` on the QUIC control stream
+- daemon emits `preview_snapshot` to every subscribing device when the cached preview changes
+- daemon does not consult subscription tier; subscription policy is an Android-side decision (see `../ux/subscription.md`)
+
+### Preview Shape
+
+Recommended phase-1 defaults for `preview_update` content produced by `tunnel run`:
+
+- plain text only — strip ANSI control sequences
+- bounded length — recent visible lines, modest total character budget
+- normalized whitespace for list rendering
+- not terminal emulation
+
+### Update Cadence
+
+- event-driven: emit when the mirror's visible content meaningfully changes
+- lightly throttled to avoid flooding under chatty output
+- always send the current snapshot, not a diff
+- phase 1 optimizes for correctness and simplicity over bandwidth
+
+### Empty Preview
+
+Empty preview is valid and SHOULD be tolerated by the Android UI:
+
+- brand new session with no output yet
+- session metadata published before the first preview update
+- output not yet meaningful for preview
+
+### Phase-1 App Implications
+
+Because the cache is fresh and per-session:
+
+- free-tier app subscribes only to the sticky-first-attach unlocked session per daemon card
+- pro-tier app subscribes to every live session in an opened daemon card after roster bootstrap
+
+This matches the intended UX:
+
+- free sees one real preview per daemon card
+- pro sees all live previews in an opened daemon card without opening each row
+
+## Failure Rules
+
+- unknown local `session_id` messages must be ignored and logged
+- daemon must remove a session from its roster on local connection loss
+- `tunnel run` should retry reconnect with backoff if daemon is temporarily unavailable
+- daemon should treat duplicate `register_session` for the same `session_id` as replacement of the old local connection
+
+## Security Boundary
+
+This protocol is local-only and phase-1 assumes the same local user boundary that already exists for `tunnel run` and daemon.
+
+It is not a cross-account security boundary. The strong security boundary remains:
+
+- pairing trust
+- QUIC/TLS transport identity pinning
+- Relay-authenticated app login
+
+## References
+
+- `../architecture.md`
+- `../contract.md`
+- `transport.md`
+- `../reference/sequence-flows.md`
