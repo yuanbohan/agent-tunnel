@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -40,6 +41,66 @@ func joinedBufferText(t *testing.T, buf *xterm.Buffer) string {
 		lines[i] = line.TranslateToString(true, 0, -1)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func snapshotDoneFromAttachOpen(t *testing.T, c *Connector) protocol.AgentFrame {
+	t.Helper()
+
+	const clientID = "4d2c6ec8-787a-49c9-b9a0-5dbd8d31b7b1"
+	doneCh := make(chan protocol.AgentFrame, 1)
+	errCh := make(chan error, 1)
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("Upgrade returned error: %v", err)
+		}
+		defer conn.Close()
+
+		for {
+			messageType, payload, err := conn.ReadMessage()
+			if err != nil {
+				errCh <- err
+				return
+			}
+			if messageType != websocket.TextMessage {
+				continue
+			}
+			var frame protocol.AgentFrame
+			if err := json.Unmarshal(payload, &frame); err != nil {
+				errCh <- err
+				return
+			}
+			if frame.Type == "snapshot_done" {
+				doneCh <- frame
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Dial returned error: %v", err)
+	}
+	defer conn.Close()
+
+	go func() {
+		if err := c.handleAttachOpen(conn, clientID); err != nil {
+			errCh <- err
+		}
+	}()
+
+	select {
+	case frame := <-doneCh:
+		return frame
+	case err := <-errCh:
+		t.Fatalf("attach open returned error before snapshot_done: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for snapshot_done")
+	}
+	return protocol.AgentFrame{}
 }
 
 func TestConnectorSendsRegisterBeforeStreamingOutput(t *testing.T) {
@@ -391,6 +452,184 @@ func TestConnectorRoutesStructuredInputFramesIntoHub(t *testing.T) {
 				t.Fatalf("input = %#v, want %#v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestConnectorRecordsSubmitAnchorsForSubmitInput(t *testing.T) {
+	hub := session.NewHub(func([]byte) error { return nil }, func(int, int) error { return nil })
+	c := New("ws://unused", "token", protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"})
+	c.applyResize(20, 4, false)
+	c.BindHub(hub)
+
+	for i := range 3 {
+		if i > 0 {
+			c.mirror.WriteOutput([]byte("\r\n"))
+		}
+		c.mirror.WriteOutput([]byte("prompt"))
+		c.deliverInputToHub(hub, protocol.ForwardInputTextFrame("client-1", "hello", true))
+	}
+
+	done := snapshotDoneFromAttachOpen(t, c)
+	if done.ClientID != "4d2c6ec8-787a-49c9-b9a0-5dbd8d31b7b1" {
+		t.Fatalf("snapshot_done client_id = %q, want test client", done.ClientID)
+	}
+	if len(done.SubmitAnchors) != 3 {
+		t.Fatalf("anchor count = %d, want 3: %#v", len(done.SubmitAnchors), done.SubmitAnchors)
+	}
+	for i, anchor := range done.SubmitAnchors {
+		if anchor.ID != "submit-"+strconv.Itoa(i+1) {
+			t.Fatalf("anchor[%d].ID = %q, want submit-%d", i, anchor.ID, i+1)
+		}
+		if anchor.Line < 0 {
+			t.Fatalf("anchor[%d].Line = %d, want non-negative", i, anchor.Line)
+		}
+		if anchor.SubmittedAt <= 0 {
+			t.Fatalf("anchor[%d].SubmittedAt = %d, want unix timestamp", i, anchor.SubmittedAt)
+		}
+	}
+}
+
+func TestConnectorRecordsSubmitAnchorsForRemoteKeyAndLocalEnter(t *testing.T) {
+	hub := session.NewHub(func([]byte) error { return nil }, func(int, int) error { return nil })
+	c := New("ws://unused", "token", protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"})
+	c.applyResize(20, 4, false)
+	c.BindHub(hub)
+
+	c.mirror.WriteOutput([]byte("prompt"))
+	c.deliverInputToHub(hub, protocol.ForwardInputKeyFrame("client-1", "ENTER"))
+	c.mirror.WriteOutput([]byte("\r\nprompt2"))
+	if err := hub.WriteInput([]byte("local\r")); err != nil {
+		t.Fatalf("WriteInput returned error: %v", err)
+	}
+
+	done := snapshotDoneFromAttachOpen(t, c)
+	if len(done.SubmitAnchors) != 2 {
+		t.Fatalf("anchor count = %d, want 2: %#v", len(done.SubmitAnchors), done.SubmitAnchors)
+	}
+}
+
+func TestConnectorRecordsSubmitAnchorForTextContainingCarriageReturn(t *testing.T) {
+	hub := session.NewHub(func([]byte) error { return nil }, func(int, int) error { return nil })
+	c := New("ws://unused", "token", protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"})
+	c.applyResize(20, 4, false)
+	c.BindHub(hub)
+
+	c.mirror.WriteOutput([]byte("prompt"))
+	c.deliverInputToHub(hub, protocol.ForwardInputTextFrame("client-1", "hello\r", false))
+
+	done := snapshotDoneFromAttachOpen(t, c)
+	if len(done.SubmitAnchors) != 1 {
+		t.Fatalf("anchor count = %d, want 1: %#v", len(done.SubmitAnchors), done.SubmitAnchors)
+	}
+}
+
+func TestConnectorRecordsOneSubmitAnchorPerCarriageReturn(t *testing.T) {
+	hub := session.NewHub(func([]byte) error { return nil }, func(int, int) error { return nil })
+	c := New("ws://unused", "token", protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"})
+	c.applyResize(20, 4, false)
+	c.BindHub(hub)
+
+	c.mirror.WriteOutput([]byte("prompt"))
+	c.deliverInputToHub(hub, protocol.ForwardInputTextFrame("client-1", "cmd1\rcmd2\r", false))
+
+	done := snapshotDoneFromAttachOpen(t, c)
+	if len(done.SubmitAnchors) != 2 {
+		t.Fatalf("anchor count = %d, want 2: %#v", len(done.SubmitAnchors), done.SubmitAnchors)
+	}
+}
+
+func TestConnectorRemovesSubmitAnchorWhenInputWriteFails(t *testing.T) {
+	writeErr := errors.New("write failed")
+	hub := session.NewHub(func([]byte) error { return writeErr }, func(int, int) error { return nil })
+	c := New("ws://unused", "token", protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"})
+	c.applyResize(20, 4, false)
+	c.BindHub(hub)
+
+	c.mirror.WriteOutput([]byte("prompt"))
+	if err := hub.WriteInput([]byte("local\r")); !errors.Is(err, writeErr) {
+		t.Fatalf("WriteInput error = %v, want %v", err, writeErr)
+	}
+
+	done := snapshotDoneFromAttachOpen(t, c)
+	if len(done.SubmitAnchors) != 0 {
+		t.Fatalf("anchors = %#v, want none after failed input write", done.SubmitAnchors)
+	}
+}
+
+func TestConnectorIgnoresCarriageReturnsInsideBracketedPaste(t *testing.T) {
+	hub := session.NewHub(func([]byte) error { return nil }, func(int, int) error { return nil })
+	c := New("ws://unused", "token", protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"})
+	c.applyResize(20, 4, false)
+	c.BindHub(hub)
+
+	c.mirror.WriteOutput([]byte("prompt"))
+	if err := hub.WriteInput([]byte("\x1b[200~line1\rline2\r\x1b[201~")); err != nil {
+		t.Fatalf("WriteInput returned error: %v", err)
+	}
+	if err := hub.WriteInput([]byte("\r")); err != nil {
+		t.Fatalf("WriteInput returned error: %v", err)
+	}
+
+	done := snapshotDoneFromAttachOpen(t, c)
+	if len(done.SubmitAnchors) != 1 {
+		t.Fatalf("anchor count = %d, want only the post-paste Enter anchor: %#v", len(done.SubmitAnchors), done.SubmitAnchors)
+	}
+}
+
+func TestConnectorTracksSplitBracketedPasteBoundaries(t *testing.T) {
+	hub := session.NewHub(func([]byte) error { return nil }, func(int, int) error { return nil })
+	c := New("ws://unused", "token", protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"})
+	c.applyResize(20, 4, false)
+	c.BindHub(hub)
+
+	c.mirror.WriteOutput([]byte("prompt"))
+	if err := hub.WriteInput([]byte("\x1b[2")); err != nil {
+		t.Fatalf("WriteInput returned error: %v", err)
+	}
+	if err := hub.WriteInput([]byte("00~line1\rline2\r\x1b[2")); err != nil {
+		t.Fatalf("WriteInput returned error: %v", err)
+	}
+	if err := hub.WriteInput([]byte("01~\r")); err != nil {
+		t.Fatalf("WriteInput returned error: %v", err)
+	}
+
+	done := snapshotDoneFromAttachOpen(t, c)
+	if len(done.SubmitAnchors) != 1 {
+		t.Fatalf("anchor count = %d, want only the post-paste Enter anchor: %#v", len(done.SubmitAnchors), done.SubmitAnchors)
+	}
+}
+
+func TestConnectorQueuedSubmitInputRecordsAnchorAfterHubBind(t *testing.T) {
+	hub := session.NewHub(func([]byte) error { return nil }, func(int, int) error { return nil })
+	c := New("ws://unused", "token", protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"})
+	c.applyResize(20, 4, false)
+
+	c.mirror.WriteOutput([]byte("prompt"))
+	c.routeInput(protocol.ForwardInputKeyFrame("client-1", "ENTER"))
+	c.BindHub(hub)
+
+	done := snapshotDoneFromAttachOpen(t, c)
+	if len(done.SubmitAnchors) != 1 {
+		t.Fatalf("anchor count = %d, want 1: %#v", len(done.SubmitAnchors), done.SubmitAnchors)
+	}
+}
+
+func TestConnectorDoesNotRecordAnchorsForNonSubmitInput(t *testing.T) {
+	hub := session.NewHub(func([]byte) error { return nil }, func(int, int) error { return nil })
+	c := New("ws://unused", "token", protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"})
+	c.applyResize(20, 4, false)
+	c.BindHub(hub)
+
+	c.mirror.WriteOutput([]byte("prompt"))
+	c.deliverInputToHub(hub, protocol.ForwardInputTextFrame("client-1", "draft", false))
+	c.deliverInputToHub(hub, protocol.ForwardInputKeyFrame("client-1", "TAB"))
+	if err := hub.WriteInput([]byte("local text")); err != nil {
+		t.Fatalf("WriteInput returned error: %v", err)
+	}
+
+	done := snapshotDoneFromAttachOpen(t, c)
+	if len(done.SubmitAnchors) != 0 {
+		t.Fatalf("anchors = %#v, want none", done.SubmitAnchors)
 	}
 }
 

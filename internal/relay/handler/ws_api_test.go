@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -261,13 +262,17 @@ func TestDeviceWebSocketLaunchRequestRoundTrip(t *testing.T) {
 	if err := agentConn.WriteJSON(protocol.AttachReadyFrame(open.ClientID, 120, 40)); err != nil {
 		t.Fatalf("WriteJSON attach_ready returned error: %v", err)
 	}
-	if err := agentConn.WriteJSON(protocol.SnapshotDoneFrame(open.ClientID)); err != nil {
+	anchors := []protocol.SubmitAnchor{
+		{ID: "submit-1", Line: 2, SubmittedAt: 1775131200},
+		{ID: "submit-2", Line: 5, SubmittedAt: 1775131300},
+	}
+	if err := agentConn.WriteJSON(protocol.SnapshotDoneFrame(open.ClientID, anchors...)); err != nil {
 		t.Fatalf("WriteJSON snapshot_done returned error: %v", err)
 	}
 	if attached := readAttachControl(t, attachConn); attached.Type != "attached" {
 		t.Fatalf("attached = %#v, want attached", attached)
 	}
-	if done := readAttachControl(t, attachConn); done.Type != "snapshot_done" {
+	if done := readAttachControl(t, attachConn); done.Type != "snapshot_done" || !reflect.DeepEqual(done.SubmitAnchors, anchors) {
 		t.Fatalf("snapshot_done = %#v, want snapshot_done", done)
 	}
 

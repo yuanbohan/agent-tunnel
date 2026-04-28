@@ -80,10 +80,17 @@ type Connector struct {
 	attachMu     sync.Mutex
 	attached     map[string]struct{}
 	writeTimeout time.Duration
+	inputMu      sync.Mutex
+	inputScanner submitInputScanner
 
 	connMu       sync.Mutex
 	activeConn   connectionCloser
 	overflowChan chan error
+}
+
+type submitInputScanner struct {
+	inBracketedPaste bool
+	pending          []byte
 }
 
 type outboundFrame struct {
@@ -140,6 +147,9 @@ func (c *Connector) BindHub(hub *session.Hub) {
 	}
 	hub.AddResizeListener("connector", func(cols, rows int) {
 		c.applyResize(cols, rows, true)
+	})
+	hub.SetInputObserver(func(data []byte) func(error) {
+		return c.observeInputForSubmitAnchors(data)
 	})
 
 	c.hubMu.Lock()
@@ -556,9 +566,125 @@ func (c *Connector) deliverInputToHub(hub *session.Hub, frame protocol.AgentFram
 	}
 }
 
+func (c *Connector) observeInputForSubmitAnchors(data []byte) func(error) {
+	count, restoreScanner := c.countSubmitEnters(data)
+	if count == 0 {
+		return func(err error) {
+			if err != nil {
+				restoreScanner()
+			}
+		}
+	}
+
+	ids := c.recordSubmitAnchors(count)
+	return func(err error) {
+		if err == nil {
+			return
+		}
+		restoreScanner()
+		c.removeSubmitAnchors(ids)
+	}
+}
+
+func (c *Connector) countSubmitEnters(data []byte) (int, func()) {
+	c.inputMu.Lock()
+	defer c.inputMu.Unlock()
+
+	previous := c.inputScanner.clone()
+	count := c.inputScanner.count(data)
+	return count, func() {
+		c.inputMu.Lock()
+		defer c.inputMu.Unlock()
+		c.inputScanner = previous
+	}
+}
+
+func (c *Connector) recordSubmitAnchors(count int) []string {
+	c.attachMu.Lock()
+	defer c.attachMu.Unlock()
+
+	ids := make([]string, 0, count)
+	for range count {
+		if id := c.mirror.RecordSubmitAnchor(); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+func (c *Connector) removeSubmitAnchors(ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+
+	c.attachMu.Lock()
+	defer c.attachMu.Unlock()
+	for _, id := range ids {
+		c.mirror.RemoveSubmitAnchor(id)
+	}
+}
+
+func (s submitInputScanner) clone() submitInputScanner {
+	return submitInputScanner{
+		inBracketedPaste: s.inBracketedPaste,
+		pending:          append([]byte(nil), s.pending...),
+	}
+}
+
+func (s *submitInputScanner) count(data []byte) int {
+	const (
+		bracketedPasteStart = "\x1b[200~"
+		bracketedPasteEnd   = "\x1b[201~"
+	)
+
+	buffer := append(append([]byte(nil), s.pending...), data...)
+	s.pending = nil
+	count := 0
+
+	for i := 0; i < len(buffer); {
+		remaining := buffer[i:]
+		if s.inBracketedPaste {
+			if hasPrefixString(remaining, bracketedPasteEnd) {
+				s.inBracketedPaste = false
+				i += len(bracketedPasteEnd)
+				continue
+			}
+			if isPartialPrefix(remaining, bracketedPasteEnd) {
+				s.pending = append([]byte(nil), remaining...)
+				break
+			}
+			i++
+			continue
+		}
+
+		if hasPrefixString(remaining, bracketedPasteStart) {
+			s.inBracketedPaste = true
+			i += len(bracketedPasteStart)
+			continue
+		}
+		if isPartialPrefix(remaining, bracketedPasteStart) {
+			s.pending = append([]byte(nil), remaining...)
+			break
+		}
+		if buffer[i] == '\r' {
+			count++
+		}
+		i++
+	}
+	return count
+}
+
+func hasPrefixString(data []byte, prefix string) bool {
+	return len(data) >= len(prefix) && string(data[:len(prefix)]) == prefix
+}
+
+func isPartialPrefix(data []byte, prefix string) bool {
+	return len(data) < len(prefix) && len(data) > 0 && prefix[:len(data)] == string(data)
+}
+
 func (c *Connector) handleAttachOpen(conn *websocket.Conn, clientID string) error {
 	c.attachMu.Lock()
-	snapshot, cols, rows := c.mirror.Snapshot()
+	snapshot, cols, rows, anchors := c.mirror.SnapshotWithSubmitAnchors()
 	c.attached[clientID] = struct{}{}
 	c.attachMu.Unlock()
 
@@ -575,7 +701,7 @@ func (c *Connector) handleAttachOpen(conn *websocket.Conn, clientID string) erro
 		}
 	}
 	return c.writeOutboundFrame(conn, outboundFrame{
-		json: protocol.SnapshotDoneFrame(clientID),
+		json: protocol.SnapshotDoneFrame(clientID, protocolSubmitAnchors(anchors)...),
 	})
 }
 
@@ -616,6 +742,21 @@ func (c *Connector) enqueueEphemeralBinary(payload []byte) {
 	if !c.tryEnqueue(c.ephemeral, outboundFrame{binary: append([]byte(nil), payload...)}) {
 		c.signalOverflow(errOutboundBackpressure)
 	}
+}
+
+func protocolSubmitAnchors(anchors []session.SubmitAnchor) []protocol.SubmitAnchor {
+	if len(anchors) == 0 {
+		return nil
+	}
+	out := make([]protocol.SubmitAnchor, len(anchors))
+	for i, anchor := range anchors {
+		out[i] = protocol.SubmitAnchor{
+			ID:          anchor.ID,
+			Line:        anchor.Line,
+			SubmittedAt: anchor.SubmittedAt,
+		}
+	}
+	return out
 }
 
 func (c *Connector) clearConnectionState() {

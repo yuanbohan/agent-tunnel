@@ -150,10 +150,11 @@ client opens /api/sessions/:id/attach/ws
 → agent terminal mirror atomically:
      - captures current cols / rows
      - serializes the current terminal state
+     - maps any still-valid submit anchors into the snapshot buffer coordinates
      - registers the attached client for subsequent live bytes
 → relay sends attached { session_id, cols, rows }
 → relay forwards snapshot bytes as binary frames
-→ relay sends snapshot_done
+→ relay sends snapshot_done, optionally with submit_anchors
 → relay forwards subsequent live PTY bytes as binary frames
 ```
 
@@ -165,6 +166,7 @@ The terminal mirror exists to make fresh snapshot recovery precise without trans
 
 - it is fed from the same PTY output stream seen by the local terminal
 - it preserves the current terminal state and a bounded amount of in-memory normal-buffer scrollback, not durable transcript history
+- it records bounded local and remote `ENTER` submit anchors as content-free navigation metadata when they occur outside bracketed-paste regions and still map into retained snapshot context
 - it is the source of snapshot bytes on attach
 - it fans out subsequent live bytes to attached clients after the snapshot boundary
 - it follows PTY resize updates owned by the local terminal session
@@ -187,7 +189,7 @@ client input message
 → PTY stdin
 ```
 
-This keeps terminal behavior close to the PTY owner and avoids embedding terminal emulation inside the relay.
+Local-terminal input and remote attach input share the same submit-anchor boundary: each `ENTER` carriage return written to the PTY outside a bracketed-paste region may create a bounded agent-local submit anchor for later fresh attaches. These anchors are capped at 256 valid entries and are not prompt text, transcript records, or exact TUI-rendered message markers. This keeps terminal behavior and navigation metadata close to the PTY owner and avoids embedding terminal emulation inside the relay.
 
 ## Resize Flow
 

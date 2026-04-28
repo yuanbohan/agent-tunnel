@@ -29,6 +29,7 @@ Both the local terminal and the remote client render the session by consuming te
 - **PTY output**: raw bytes emitted by the real local CLI process such as `claude`, `codex`, `gemini`, `qwen`, or `aider`
 - **terminal mirror**: the headless `xterm-go` terminal inside `tunnel` that consumes the same PTY output stream
 - **snapshot bytes**: a serialized current-screen checkpoint generated from the mirror on attach
+- **submit anchors**: optional content-free metadata for recent local or remote `ENTER` submits outside bracketed-paste regions that still map into the attach snapshot's restored terminal buffer
 - **live bytes**: subsequent raw PTY output bytes after the snapshot boundary
 - **relay**: an authenticated broker for discovery, attach lifecycle, and byte routing; it does not emulate the terminal
 - **client terminal emulator**: the mobile or web-side terminal implementation that consumes snapshot bytes and live bytes in order
@@ -139,14 +140,14 @@ sequenceDiagram
   C->>R: open /api/sessions/:id/attach/ws
   R->>A: attach_open(client_id)
   A->>M: capture current state
-  M-->>A: snapshot bytes + cols + rows
+  M-->>A: snapshot bytes + cols + rows + valid submit anchors
   A->>A: register client for later live bytes
   A->>R: attach_ready(client_id, cols, rows)
   A->>R: snapshot bytes
-  A->>R: snapshot_done(client_id)
+  A->>R: snapshot_done(client_id, submit_anchors)
   R->>C: attached(session_id, cols, rows)
   R->>C: snapshot bytes
-  R->>C: snapshot_done
+  R->>C: snapshot_done(submit_anchors)
   P-->>A: later PTY output
   A->>R: live terminal bytes
   R->>C: live terminal bytes
@@ -176,12 +177,16 @@ It does not contain:
 - durable transcript history
 - durable replay of every old PTY byte
 - a relay-generated interpretation of the TUI
+- exact Codex-rendered user-message markers
 
 The practical consequence is:
 
 - a new client can attach mid-session and render the current screen correctly, with bounded recent normal-buffer history when available
+- a new client can receive bounded submit anchors when they still map into the restored snapshot buffer
 - a client can recover the latest current screen by rediscovering the session after the agent comes back online
 - a client cannot ask the relay for the exact bytes it missed while disconnected
+
+Submit anchors are navigation hints for local or remote input events that sent an `ENTER` carriage return to the PTY outside a bracketed-paste region. They do not include prompt text or terminal bytes. Their `line` value is meaningful only after the client has applied the snapshot bytes that preceded `snapshot_done`.
 
 ## 5. What Live Bytes Are
 
@@ -391,6 +396,7 @@ Handle relay-to-client messages like this:
 - `attached`: create or confirm a fresh emulator, set terminal size, reset local attach-phase state
 - binary before `snapshot_done`: feed into emulator as ordered terminal bytes
 - `snapshot_done`: mark the attach as fully live
+- `snapshot_done` with `submit_anchors`: after applying all snapshot bytes, map each anchor's `line` to the restored terminal buffer and draw jump dots for anchors the UI wants to expose
 - binary after `snapshot_done`: keep feeding into the same emulator
 - `resize`: resize the emulator immediately
 - `closing`: stop input, close the websocket, discard the emulator, and move into reconnect logic based on `reason`
@@ -507,11 +513,14 @@ Resize remains session-wide and follows the PTY owner. The client must resize it
 
 Structured input still goes over the attach websocket as `input_text` and `input_key`. If the attach is gone or the session is offline, the client should stop sending input and wait for a fresh attach.
 
+When local-terminal input or mobile attach input sends an `ENTER` carriage return outside a bracketed-paste region, the owning agent may record a bounded submit anchor for future fresh attaches. Mobile Local Draft usually does this through `input_text { submit: true }`; mobile Remote Streaming usually does this through `input_key { key: "ENTER" }`. Draft text without `\r` and non-Enter special keys do not create anchors; any carriage return embedded in non-paste text is still Enter-bearing PTY input.
+
 ## 11. What This Model Guarantees
 
 This model guarantees:
 
 - a fresh attach can reconstruct the current visible screen and bounded recent normal-buffer scrollback when available
+- a fresh attach can include bounded submit anchors that map into the restored snapshot buffer when available
 - snapshot bytes and later live bytes form one continuous stream for that attach
 - relay reconnect for the same running agent keeps the same `session_id`
 - the local terminal remains usable even if the relay is unavailable
@@ -521,6 +530,8 @@ This model does not guarantee:
 - transcript replay
 - durable delivery of every PTY byte to every remote client
 - recovery of missed live bytes after client disconnect
+- exact semantic locations of Codex-rendered user-message blocks
+- durable recovery of submit anchors after they expire from agent-local retained context
 - remote-driven PTY sizing
 
 ## 12. Implementation References

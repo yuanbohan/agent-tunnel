@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"reflect"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -585,7 +587,11 @@ func TestRegistryRoutesAttachLifecycle(t *testing.T) {
 	}); !ok {
 		t.Fatal("RouteTerminalBytesIfOwner returned false, want true")
 	}
-	if ok := reg.RouteSnapshotDoneIfOwner("sess-1", owner, "client-1"); !ok {
+	anchors := []protocol.SubmitAnchor{
+		{ID: "submit-1", Line: 2, SubmittedAt: 1775131200},
+		{ID: "submit-2", Line: 5, SubmittedAt: 1775131300},
+	}
+	if ok := reg.RouteSnapshotDoneIfOwner("sess-1", owner, "client-1", anchors...); !ok {
 		t.Fatal("RouteSnapshotDoneIfOwner returned false, want true")
 	}
 
@@ -595,6 +601,9 @@ func TestRegistryRoutesAttachLifecycle(t *testing.T) {
 	}
 	if controls[0].Type != "attached" || controls[1].Type != "resize" || controls[2].Type != "snapshot_done" {
 		t.Fatalf("controls = %#v, want attached then resize then snapshot_done", controls)
+	}
+	if !reflect.DeepEqual(controls[2].SubmitAnchors, anchors) {
+		t.Fatalf("snapshot_done anchors = %#v, want %#v", controls[2].SubmitAnchors, anchors)
 	}
 	if controls[1].Cols != 121 || controls[1].Rows != 41 {
 		t.Fatalf("resize = %#v, want cols=121 rows=41", controls[1])
@@ -612,6 +621,53 @@ func TestRegistryRoutesAttachLifecycle(t *testing.T) {
 	frames := owner.Frames()
 	if len(frames) != 1 || frames[0].Type != "attach_close" || frames[0].ClientID != "client-1" {
 		t.Fatalf("owner frames = %#v, want attach_close for client-1", frames)
+	}
+}
+
+func TestRegistryRoutesSnapshotDoneSanitizesSubmitAnchors(t *testing.T) {
+	reg := NewRegistry()
+	owner := &recordingPeer{}
+	client := &recordingAttachPeer{}
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, owner)
+
+	if _, err := reg.StartAttach("sess-1", "client-1", client); err != nil {
+		t.Fatalf("StartAttach returned error: %v", err)
+	}
+	if ok := reg.RouteAttachReadyIfOwner("sess-1", owner, "client-1", 120, 40); !ok {
+		t.Fatal("RouteAttachReadyIfOwner returned false, want true")
+	}
+
+	anchors := []protocol.SubmitAnchor{
+		{ID: "", Line: 1, SubmittedAt: 1775131200},
+		{ID: "negative-line", Line: -1, SubmittedAt: 1775131200},
+		{ID: "negative-time", Line: 1, SubmittedAt: -1},
+		{ID: "submit-1", Line: 2, SubmittedAt: 1775131200},
+	}
+	for i := 2; i <= protocol.MaxSubmitAnchors+2; i++ {
+		anchors = append(anchors, protocol.SubmitAnchor{
+			ID:          "submit-" + strconv.Itoa(i),
+			Line:        i,
+			SubmittedAt: 1775131200 + i,
+		})
+	}
+
+	if ok := reg.RouteSnapshotDoneIfOwner("sess-1", owner, "client-1", anchors...); !ok {
+		t.Fatal("RouteSnapshotDoneIfOwner returned false, want true")
+	}
+
+	controls := client.Controls()
+	if len(controls) != 2 {
+		t.Fatalf("control count = %d, want 2", len(controls))
+	}
+	got := controls[1].SubmitAnchors
+	if len(got) != protocol.MaxSubmitAnchors {
+		t.Fatalf("anchor count = %d, want %d", len(got), protocol.MaxSubmitAnchors)
+	}
+	if got[0].ID != "submit-1" {
+		t.Fatalf("first anchor = %#v, want submit-1", got[0])
+	}
+	if got[len(got)-1].ID != "submit-"+strconv.Itoa(protocol.MaxSubmitAnchors) {
+		t.Fatalf("last anchor = %#v, want submit-%d", got[len(got)-1], protocol.MaxSubmitAnchors)
 	}
 }
 

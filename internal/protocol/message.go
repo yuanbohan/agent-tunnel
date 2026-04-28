@@ -5,6 +5,8 @@ import "time"
 const (
 	SessionLaunchSourceLocal  = "local"
 	SessionLaunchSourceMobile = "mobile"
+
+	MaxSubmitAnchors = 256
 )
 
 func UnixTimestamp(t time.Time) int {
@@ -50,6 +52,15 @@ type AgentFrame struct {
 	Key           string         `json:"key,omitempty"`
 	Cols          int            `json:"cols,omitempty"`
 	Rows          int            `json:"rows,omitempty"`
+	SubmitAnchors []SubmitAnchor `json:"submit_anchors,omitempty"`
+}
+
+// SubmitAnchor describes a submit position relative to the terminal
+// buffer restored by the attach snapshot that carries it.
+type SubmitAnchor struct {
+	ID          string `json:"id"`
+	Line        int    `json:"line"`
+	SubmittedAt int    `json:"submitted_at"`
 }
 
 // RegisterFrame builds an AgentFrame of type "register".
@@ -92,10 +103,11 @@ func AttachReadyFrame(clientID string, cols, rows int) AgentFrame {
 	}
 }
 
-func SnapshotDoneFrame(clientID string) AgentFrame {
+func SnapshotDoneFrame(clientID string, anchors ...SubmitAnchor) AgentFrame {
 	return AgentFrame{
-		Type:     "snapshot_done",
-		ClientID: clientID,
+		Type:          "snapshot_done",
+		ClientID:      clientID,
+		SubmitAnchors: cloneSubmitAnchors(anchors),
 	}
 }
 
@@ -131,11 +143,12 @@ func ForwardInputKeyFrame(clientID, key string) AgentFrame {
 }
 
 type AttachControlMessage struct {
-	Type      string `json:"type"`
-	SessionID string `json:"session_id,omitempty"`
-	Cols      int    `json:"cols,omitempty"`
-	Rows      int    `json:"rows,omitempty"`
-	Reason    string `json:"reason,omitempty"`
+	Type          string         `json:"type"`
+	SessionID     string         `json:"session_id,omitempty"`
+	Cols          int            `json:"cols,omitempty"`
+	Rows          int            `json:"rows,omitempty"`
+	Reason        string         `json:"reason,omitempty"`
+	SubmitAnchors []SubmitAnchor `json:"submit_anchors,omitempty"`
 }
 
 func AttachedMessage(sessionID string, cols, rows int) AttachControlMessage {
@@ -147,9 +160,10 @@ func AttachedMessage(sessionID string, cols, rows int) AttachControlMessage {
 	}
 }
 
-func SnapshotDoneMessage() AttachControlMessage {
+func SnapshotDoneMessage(anchors ...SubmitAnchor) AttachControlMessage {
 	return AttachControlMessage{
-		Type: "snapshot_done",
+		Type:          "snapshot_done",
+		SubmitAnchors: cloneSubmitAnchors(anchors),
 	}
 }
 
@@ -166,6 +180,26 @@ func ClosingMessage(reason string) AttachControlMessage {
 		Type:   "closing",
 		Reason: reason,
 	}
+}
+
+func cloneSubmitAnchors(anchors []SubmitAnchor) []SubmitAnchor {
+	if len(anchors) == 0 {
+		return nil
+	}
+	out := make([]SubmitAnchor, 0, len(anchors))
+	for _, anchor := range anchors {
+		if len(out) >= MaxSubmitAnchors {
+			break
+		}
+		if anchor.ID == "" || anchor.Line < 0 || anchor.SubmittedAt < 0 {
+			continue
+		}
+		out = append(out, anchor)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // ClientInputMessage is the client-to-relay envelope used by the

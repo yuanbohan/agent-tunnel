@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	xterm "github.com/gitpod-io/xterm-go"
 )
@@ -120,6 +121,172 @@ func TestTerminalMirrorSnapshotIncludesBoundedScrollback(t *testing.T) {
 	}
 	if strings.Contains(gotBuffer, "line000") {
 		t.Fatalf("restored buffer = %q, did not expect trimmed oldest line", gotBuffer)
+	}
+}
+
+func TestTerminalMirrorSnapshotIncludesSubmitAnchors(t *testing.T) {
+	mirror := NewTerminalMirror(20, 4)
+	now := int64(1775131200)
+	mirror.now = func() time.Time {
+		now++
+		return time.Unix(now, 0)
+	}
+
+	for i := range 3 {
+		if i > 0 {
+			mirror.WriteOutput([]byte("\r\n"))
+		}
+		mirror.WriteOutput([]byte(fmt.Sprintf("prompt%03d", i)))
+		mirror.RecordSubmitAnchor()
+	}
+
+	snapshot, cols, rows, anchors := mirror.SnapshotWithSubmitAnchors()
+	if cols != 20 || rows != 4 {
+		t.Fatalf("Snapshot size = %dx%d, want 20x4", cols, rows)
+	}
+	if len(snapshot) == 0 {
+		t.Fatal("snapshot is empty, want terminal bytes")
+	}
+	if len(anchors) != 3 {
+		t.Fatalf("anchor count = %d, want 3", len(anchors))
+	}
+
+	restored := xterm.New(xterm.WithCols(cols), xterm.WithRows(rows), xterm.WithScrollback(defaultMirrorScrollback))
+	_, _ = restored.Write(snapshot)
+	restoredLines := bufferText(t, restored.NormalBuffer())
+
+	for i, anchor := range anchors {
+		if anchor.ID != fmt.Sprintf("submit-%d", i+1) {
+			t.Fatalf("anchor[%d].ID = %q, want submit-%d", i, anchor.ID, i+1)
+		}
+		if anchor.SubmittedAt != int(1775131201+int64(i)) {
+			t.Fatalf("anchor[%d].SubmittedAt = %d, want %d", i, anchor.SubmittedAt, 1775131201+i)
+		}
+		if anchor.Line < 0 || anchor.Line >= len(restoredLines) {
+			t.Fatalf("anchor[%d].Line = %d outside restored buffer length %d", i, anchor.Line, len(restoredLines))
+		}
+		if got, want := restoredLines[anchor.Line], fmt.Sprintf("prompt%03d", i); got != want {
+			t.Fatalf("restored line for anchor[%d] = %q, want %q", i, got, want)
+		}
+	}
+}
+
+func TestTerminalMirrorSnapshotMapsSubmitAnchorAfterScrollbackTrim(t *testing.T) {
+	mirror := NewTerminalMirror(20, 3)
+	mirror.now = func() time.Time { return time.Unix(1775131200, 0) }
+
+	const anchorLine = 250
+	for i := range 270 {
+		if i > 0 {
+			mirror.WriteOutput([]byte("\r\n"))
+		}
+		mirror.WriteOutput([]byte(fmt.Sprintf("prompt%03d", i)))
+		if i == anchorLine {
+			mirror.RecordSubmitAnchor()
+		}
+	}
+
+	snapshot, cols, rows, anchors := mirror.SnapshotWithSubmitAnchors()
+	if len(anchors) != 1 {
+		t.Fatalf("anchor count = %d, want 1: %#v", len(anchors), anchors)
+	}
+
+	restored := xterm.New(xterm.WithCols(cols), xterm.WithRows(rows), xterm.WithScrollback(defaultMirrorScrollback))
+	_, _ = restored.Write(snapshot)
+	restoredLines := bufferText(t, restored.NormalBuffer())
+	anchor := anchors[0]
+	if anchor.Line < 0 || anchor.Line >= len(restoredLines) {
+		t.Fatalf("anchor line = %d outside restored buffer length %d", anchor.Line, len(restoredLines))
+	}
+	if got, want := restoredLines[anchor.Line], fmt.Sprintf("prompt%03d", anchorLine); got != want {
+		t.Fatalf("restored line for anchor = %q, want %q", got, want)
+	}
+}
+
+func TestTerminalMirrorKeepsNewestSubmitAnchorsAtLimit(t *testing.T) {
+	mirror := NewTerminalMirror(20, 300)
+	mirror.now = func() time.Time { return time.Unix(1775131200, 0) }
+
+	totalAnchors := defaultSubmitAnchorLimit + 10
+	for i := range totalAnchors {
+		if i > 0 {
+			mirror.WriteOutput([]byte("\r\n"))
+		}
+		mirror.WriteOutput([]byte(fmt.Sprintf("prompt%03d", i)))
+		mirror.RecordSubmitAnchor()
+	}
+
+	_, _, _, anchors := mirror.SnapshotWithSubmitAnchors()
+	if len(anchors) != defaultSubmitAnchorLimit {
+		t.Fatalf("anchor count = %d, want %d", len(anchors), defaultSubmitAnchorLimit)
+	}
+	if got, want := anchors[0].ID, "submit-11"; got != want {
+		t.Fatalf("first retained anchor ID = %q, want %q", got, want)
+	}
+	if got, want := anchors[len(anchors)-1].ID, fmt.Sprintf("submit-%d", totalAnchors); got != want {
+		t.Fatalf("last retained anchor ID = %q, want %q", got, want)
+	}
+}
+
+func TestTerminalMirrorSnapshotOmitsExpiredSubmitAnchors(t *testing.T) {
+	mirror := NewTerminalMirror(20, 3)
+	mirror.now = func() time.Time { return time.Unix(1775131200, 0) }
+	mirror.WriteOutput([]byte("prompt000"))
+	mirror.RecordSubmitAnchor()
+
+	totalLines := defaultMirrorScrollback + 8
+	for i := 1; i < totalLines; i++ {
+		mirror.WriteOutput([]byte("\r\n"))
+		mirror.WriteOutput([]byte(fmt.Sprintf("line%03d", i)))
+	}
+
+	_, _, _, anchors := mirror.SnapshotWithSubmitAnchors()
+	if len(anchors) != 0 {
+		t.Fatalf("anchors = %#v, want none after oldest anchor expired", anchors)
+	}
+}
+
+func TestTerminalMirrorSnapshotOmitsSubmitAnchorsOutsideSnapshotRange(t *testing.T) {
+	mirror := NewTerminalMirror(20, 3)
+	mirror.now = func() time.Time { return time.Unix(1775131200, 0) }
+	mirror.WriteOutput([]byte("prompt000"))
+	mirror.RecordSubmitAnchor()
+
+	for i := 1; i < defaultSnapshotScrollback+5; i++ {
+		mirror.WriteOutput([]byte("\r\n"))
+		mirror.WriteOutput([]byte(fmt.Sprintf("line%03d", i)))
+	}
+
+	_, _, _, anchors := mirror.SnapshotWithSubmitAnchors()
+	if len(anchors) != 0 {
+		t.Fatalf("anchors = %#v, want none outside serialized snapshot range", anchors)
+	}
+}
+
+func TestTerminalMirrorSnapshotOmitsNormalAnchorsWhileAltBufferActive(t *testing.T) {
+	mirror := NewTerminalMirror(20, 3)
+	mirror.now = func() time.Time { return time.Unix(1775131200, 0) }
+	mirror.WriteOutput([]byte("normal prompt"))
+	mirror.RecordSubmitAnchor()
+	mirror.WriteOutput([]byte("\x1b[?1049h"))
+	mirror.WriteOutput([]byte("alt prompt"))
+
+	_, _, _, anchors := mirror.SnapshotWithSubmitAnchors()
+	if len(anchors) != 0 {
+		t.Fatalf("anchors = %#v, want none while alt buffer is active", anchors)
+	}
+}
+
+func TestTerminalMirrorDoesNotRecordSubmitAnchorsInAltBuffer(t *testing.T) {
+	mirror := NewTerminalMirror(20, 3)
+	mirror.now = func() time.Time { return time.Unix(1775131200, 0) }
+	mirror.WriteOutput([]byte("\x1b[?1049h"))
+	mirror.WriteOutput([]byte("alt prompt"))
+	mirror.RecordSubmitAnchor()
+
+	_, _, _, anchors := mirror.SnapshotWithSubmitAnchors()
+	if len(anchors) != 0 {
+		t.Fatalf("anchors = %#v, want none while alt buffer is active", anchors)
 	}
 }
 

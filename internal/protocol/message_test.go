@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -114,6 +115,121 @@ func TestAttachedMessageRoundTrip(t *testing.T) {
 
 	if decoded.Type != "attached" || decoded.SessionID != "sess-1" || decoded.Cols != 132 || decoded.Rows != 43 {
 		t.Fatalf("decoded = %#v, want attached sess-1 132x43", decoded)
+	}
+}
+
+func TestSnapshotDoneFrameWithSubmitAnchorsRoundTrip(t *testing.T) {
+	anchors := []SubmitAnchor{
+		{ID: "submit-1", Line: 3, SubmittedAt: 1775131200},
+		{ID: "submit-2", Line: 8, SubmittedAt: 1775131300},
+	}
+	frame := SnapshotDoneFrame("client-1", anchors...)
+
+	raw, err := json.Marshal(frame)
+	if err != nil {
+		t.Fatalf("Marshal returned error: %v", err)
+	}
+
+	var decoded AgentFrame
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+
+	if decoded.Type != "snapshot_done" || decoded.ClientID != "client-1" {
+		t.Fatalf("decoded = %#v, want snapshot_done client-1", decoded)
+	}
+	if len(decoded.SubmitAnchors) != len(anchors) {
+		t.Fatalf("anchor count = %d, want %d", len(decoded.SubmitAnchors), len(anchors))
+	}
+	for i, want := range anchors {
+		if decoded.SubmitAnchors[i] != want {
+			t.Fatalf("anchor[%d] = %#v, want %#v", i, decoded.SubmitAnchors[i], want)
+		}
+	}
+}
+
+func TestSnapshotDoneMessageWithSubmitAnchorsRoundTrip(t *testing.T) {
+	anchors := []SubmitAnchor{
+		{ID: "submit-1", Line: 3, SubmittedAt: 1775131200},
+		{ID: "submit-2", Line: 8, SubmittedAt: 1775131300},
+	}
+	frame := SnapshotDoneMessage(anchors...)
+
+	raw, err := json.Marshal(frame)
+	if err != nil {
+		t.Fatalf("Marshal returned error: %v", err)
+	}
+
+	var decoded AttachControlMessage
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+
+	if decoded.Type != "snapshot_done" {
+		t.Fatalf("decoded = %#v, want snapshot_done", decoded)
+	}
+	if len(decoded.SubmitAnchors) != len(anchors) {
+		t.Fatalf("anchor count = %d, want %d", len(decoded.SubmitAnchors), len(anchors))
+	}
+	for i, want := range anchors {
+		if decoded.SubmitAnchors[i] != want {
+			t.Fatalf("anchor[%d] = %#v, want %#v", i, decoded.SubmitAnchors[i], want)
+		}
+	}
+}
+
+func TestSnapshotDoneMessagesOmitEmptySubmitAnchors(t *testing.T) {
+	agentRaw, err := json.Marshal(SnapshotDoneFrame("client-1"))
+	if err != nil {
+		t.Fatalf("Marshal agent frame returned error: %v", err)
+	}
+	if strings.Contains(string(agentRaw), "submit_anchors") {
+		t.Fatalf("agent json = %s, did not expect submit_anchors", agentRaw)
+	}
+
+	controlRaw, err := json.Marshal(SnapshotDoneMessage())
+	if err != nil {
+		t.Fatalf("Marshal control message returned error: %v", err)
+	}
+	if strings.Contains(string(controlRaw), "submit_anchors") {
+		t.Fatalf("control json = %s, did not expect submit_anchors", controlRaw)
+	}
+}
+
+func TestSnapshotDoneMessagesSanitizeSubmitAnchors(t *testing.T) {
+	anchors := []SubmitAnchor{
+		{ID: "", Line: 1, SubmittedAt: 1775131200},
+		{ID: "negative-line", Line: -1, SubmittedAt: 1775131200},
+		{ID: "negative-time", Line: 1, SubmittedAt: -1},
+	}
+	for i := 0; i < MaxSubmitAnchors+2; i++ {
+		anchors = append(anchors, SubmitAnchor{
+			ID:          fmt.Sprintf("submit-%d", i),
+			Line:        i,
+			SubmittedAt: 1775131200 + i,
+		})
+	}
+
+	agentFrame := SnapshotDoneFrame("client-1", anchors...)
+	if len(agentFrame.SubmitAnchors) != MaxSubmitAnchors {
+		t.Fatalf("agent anchor count = %d, want %d", len(agentFrame.SubmitAnchors), MaxSubmitAnchors)
+	}
+	if agentFrame.SubmitAnchors[0].ID != "submit-0" {
+		t.Fatalf("first agent anchor = %#v, want submit-0", agentFrame.SubmitAnchors[0])
+	}
+	if got := agentFrame.SubmitAnchors[len(agentFrame.SubmitAnchors)-1].ID; got != fmt.Sprintf("submit-%d", MaxSubmitAnchors-1) {
+		t.Fatalf("last agent anchor ID = %q, want submit-%d", got, MaxSubmitAnchors-1)
+	}
+
+	control := SnapshotDoneMessage(anchors...)
+	if len(control.SubmitAnchors) != MaxSubmitAnchors {
+		t.Fatalf("control anchor count = %d, want %d", len(control.SubmitAnchors), MaxSubmitAnchors)
+	}
+	if control.SubmitAnchors[0].ID != "submit-0" {
+		t.Fatalf("first control anchor = %#v, want submit-0", control.SubmitAnchors[0])
+	}
+	if got := control.SubmitAnchors[len(control.SubmitAnchors)-1].ID; got != fmt.Sprintf("submit-%d", MaxSubmitAnchors-1) {
+		t.Fatalf("last control anchor ID = %q, want submit-%d", got, MaxSubmitAnchors-1)
 	}
 }
 
