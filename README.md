@@ -7,7 +7,7 @@ The remote contract now has two live-only surfaces:
 - session attach: clients discover live sessions with `GET /api/sessions`, then attach to one session with `GET /api/sessions/:id/attach/ws`
 - device launch: clients discover currently online devices with `GET /api/devices`, then ask one device daemon to launch `tunnel run <command>` with required `cwd`, optional `label`, and wait for `session_ready`; any live session can later be stopped through `POST /api/sessions/:id/stop`
 
-On attach, the owning `tunnel` process sends a fresh terminal-state snapshot, which may include bounded agent-local normal-buffer scrollback, and then continues streaming live PTY bytes on that same websocket.
+On attach, the owning `tunnel` process sends a fresh terminal-state snapshot, which may include up to 10,000 lines of bounded agent-local normal-buffer scrollback, and then continues streaming live PTY bytes on that same websocket.
 
 `tunnel` starts a real CLI command such as `claude`, `codex`, `gemini`, `qwen`, or `aider`, keeps the launching terminal interactive, and registers the session with a relay server. The relay is API-only: it authenticates app clients with user-scoped bearer tokens, authenticates agents with user-owned long-lived agent tokens, lists live sessions, lists currently online daemons, brokers session-scoped attaches, forwards structured input, forwards session stop control, and forwards device launch requests. Session discovery now includes best-effort Git branch metadata for the startup directory, optional local daemon identity through `device_id`, `launch_source` (`local` or `mobile`), and best-effort machine identity metadata from the registering agent, including platform family, platform id, and normalized computer name. Operator maintenance routes stay host-local outside the public `/api/` namespace. It does not retain transcript history and it does not emulate the terminal.
 
@@ -18,7 +18,7 @@ After startup, if the relay socket drops, `tunnel` keeps retrying with backoff (
 The local terminal remains the primary view of the PTY session. Remote clients are intentionally narrower:
 
 - they can recover the current screen state on a fresh attach
-- they can recover bounded recent normal-buffer scrollback when the agent mirror still has it
+- they can recover bounded recent normal-buffer scrollback, currently up to 10,000 lines, when the agent mirror still has it
 - they can continue receiving live terminal bytes after that snapshot
 - they do not get full transcript replay, durable history recovery, or exact missed-byte recovery in this protocol revision
 
@@ -213,12 +213,12 @@ Device daemons connect separately on `/device/ws`. Reverse proxies for hosted re
 The attach websocket is session-scoped:
 
 - the first JSON control message is `attached` with `session_id`, `cols`, and `rows`
-- the next binary frames are snapshot bytes for the current terminal state, including bounded agent-local normal-buffer scrollback when available
+- the next binary frames are snapshot bytes for the current terminal state, including up to 10,000 lines of bounded agent-local normal-buffer scrollback when available
 - a `snapshot_done` control message marks the boundary after which binary frames are live PTY bytes
 - later `resize` control messages tell the client to resize its terminal emulator
 - client input goes back on the same websocket as JSON `input_text` and `input_key`
 
-If the attach drops, the client should create a fresh terminal emulator state and open a fresh attach. Recovery in this protocol revision is fresh snapshot recovery, not transcript replay. A fresh snapshot may include bounded in-memory scrollback, but it is not a replay of every missed PTY byte.
+If the attach drops, the client should create a fresh terminal emulator state and open a fresh attach. Recovery in this protocol revision is fresh snapshot recovery, not transcript replay. A fresh snapshot may include up to 10,000 lines of bounded in-memory scrollback, but it is not a replay of every missed PTY byte.
 
 ## Session Attach Model
 
@@ -228,7 +228,7 @@ The current remote model is:
 - the relay stores live session metadata such as `started_at`
 - the relay also stores session metadata such as `git_branch`, optional local daemon `device_id`, `platform_family`, `platform_id`, and normalized `computer_name`
 - `started_at` is a Unix timestamp encoded as a JSON integer in seconds
-- a remote attach asks the agent for the current terminal state, plus bounded in-memory normal-buffer scrollback when available, not for relay-owned or durable old output history
+- a remote attach asks the agent for the current terminal state, plus up to 10,000 lines of bounded in-memory normal-buffer scrollback when available, not for relay-owned or durable old output history
 - after the initial snapshot, the same attach continues as an ordered live byte stream for that client
 - if the owning agent disconnects, the relay closes active attaches and removes the session from discovery immediately
 - if an app session logs out or all app sessions are revoked by password change, the relay closes the affected app-side attaches but leaves the owning agent session online

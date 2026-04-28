@@ -529,7 +529,7 @@ func TestConnectorAttachOpenSendsSnapshotThenLiveBytes(t *testing.T) {
 		t.Fatalf("snapshot client_id = %q, want %q", snapshot.ClientID, clientID)
 	}
 
-	restored := xterm.New(xterm.WithCols(attachReady.Cols), xterm.WithRows(attachReady.Rows), xterm.WithScrollback(256))
+	restored := xterm.New(xterm.WithCols(attachReady.Cols), xterm.WithRows(attachReady.Rows), xterm.WithScrollback(10000))
 	_, _ = restored.Write(snapshot.Payload)
 	for _, want := range []string{"line002", "line003", "line004"} {
 		if !strings.Contains(restored.String(), want) {

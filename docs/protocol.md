@@ -18,7 +18,7 @@ The current protocol is built around these boundaries:
 - Hosted relay deployments rely on strict multi-tenant isolation: sessions are owned by the user behind the authenticating agent token, and other users must not discover or attach to them.
 - Sessions are discoverable only while the owning agent websocket is connected. If the agent disconnects, the session disappears from discovery immediately and reappears when the agent re-registers with the same `session_id`.
 - Remote viewing is session-scoped: a client attaches to one session, receives a fresh terminal-state snapshot, and then receives subsequent live PTY bytes on that same attach.
-- Remote recovery in this revision is fresh snapshot recovery only. Snapshot bytes may include bounded agent-local normal-buffer scrollback, but there is no transcript replay API.
+- Remote recovery in this revision is fresh snapshot recovery only. Snapshot bytes may include up to 10,000 lines of bounded agent-local normal-buffer scrollback, but there is no transcript replay API.
 - The local terminal remains the most complete and authoritative foreground view of the PTY session.
 
 All protocol timestamps are Unix timestamps represented as JSON integers in seconds.
@@ -133,7 +133,7 @@ The attach contract is:
 3. the relay allocates a relay-scoped `client_id` and sends `attach_open` to the owning agent
 4. the agent atomically:
    - captures the current terminal size
-   - serializes the current terminal state into snapshot bytes, including bounded normal-buffer scrollback when the mirror still has it
+   - serializes the current terminal state into snapshot bytes, including up to 10,000 lines of bounded normal-buffer scrollback when the mirror still has it
    - registers that attached client for subsequent live-byte delivery
 5. the agent sends `attach_ready`
 6. the agent sends snapshot bytes
@@ -188,7 +188,7 @@ Notes:
 Notes:
 
 - this marks the end of the initial current-state snapshot
-- the snapshot phase may include bounded agent-local normal-buffer scrollback ahead of the current viewport
+- the snapshot phase may include up to 10,000 lines of bounded agent-local normal-buffer scrollback ahead of the current viewport
 - after this point, all subsequent binary frames are live PTY bytes
 - binary bytes before `snapshot_done` and after `snapshot_done` should both be fed into the same terminal emulator in arrival order
 
@@ -242,7 +242,7 @@ Each binary websocket frame carries raw terminal bytes.
 
 Rules:
 
-- the first binary frames after `attached` are the serialized snapshot bytes and may include bounded agent-local normal-buffer scrollback
+- the first binary frames after `attached` are the serialized snapshot bytes and may include up to 10,000 lines of bounded agent-local normal-buffer scrollback
 - after `snapshot_done`, binary frames are live PTY bytes
 - binary frames may split escape sequences arbitrarily; clients must feed bytes into a real terminal emulator rather than parse frame boundaries semantically
 - binary frames may be empty in theory but should be ignored in practice
@@ -627,7 +627,7 @@ This keeps terminal behavior close to the PTY owner and avoids embedding termina
 ## Invariants
 
 - there is no output-history API in this protocol revision
-- reconnect recovery restores the current terminal state plus bounded agent-local normal-buffer scrollback when available, not missed transcript history
+- reconnect recovery restores the current terminal state plus up to 10,000 lines of bounded agent-local normal-buffer scrollback when available, not missed transcript history
 - the relay remains content-opaque with respect to PTY output
 - the local terminal remains the most complete live session view
 - attached clients for the same session observe the same PTY and therefore the same session-wide terminal size
