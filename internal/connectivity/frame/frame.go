@@ -8,8 +8,15 @@ import (
 )
 
 const (
-	TypeHello     byte = 0x01
-	TypeLiveBytes byte = 0x12
+	TypeHello              byte = 0x01
+	TypeSessionIndex       byte = 0x02
+	TypePreviewSubscribe   byte = 0x03
+	TypeInteractiveRequest byte = 0x08
+	TypeInteractiveGranted byte = 0x09
+	TypeSnapshotBegin      byte = 0x10
+	TypeSnapshotChunk      byte = 0x11
+	TypeLiveBytes          byte = 0x12
+	TypeSnapshotEnd        byte = 0x13
 
 	DefaultMaxPayload = 1 << 20
 )
@@ -73,7 +80,7 @@ func Write(w io.Writer, frame Frame) error {
 func Read(r io.Reader, maxPayload int) (Frame, error) {
 	var header [9]byte
 	if _, err := io.ReadFull(r, header[:2]); err != nil {
-		if errors.Is(err, io.ErrUnexpectedEOF) {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 			return Frame{}, ErrTruncatedVarint
 		}
 		return Frame{}, err
@@ -82,7 +89,7 @@ func Read(r io.Reader, maxPayload int) (Frame, error) {
 	varintLen := varintEncodedLen(header[1])
 	if varintLen > 1 {
 		if _, err := io.ReadFull(r, header[2:1+varintLen]); err != nil {
-			if errors.Is(err, io.ErrUnexpectedEOF) {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 				return Frame{}, ErrTruncatedVarint
 			}
 			return Frame{}, err
@@ -99,6 +106,9 @@ func Read(r io.Reader, maxPayload int) (Frame, error) {
 
 	payload := make([]byte, payloadLen)
 	if _, err := io.ReadFull(r, payload); err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return Frame{}, io.ErrUnexpectedEOF
+		}
 		return Frame{}, err
 	}
 	return Frame{Type: header[0], Payload: payload}, nil

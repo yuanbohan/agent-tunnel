@@ -43,7 +43,7 @@ The full reasoning lives in `contract.md`. The headlines:
 - **Free unlock = sticky first-attach** per daemon card. No auto-rollover.
 - **App-session JWT** carries `device_fingerprint`; client supplies it on login. Phase 1 does not require a per-WS device-key proof.
 - **Control stream = bidirectional, JSON-typed frames.** Interactive stream = unidirectional (daemon → Android), raw PTY bytes.
-- **Cloudflare quiche on Android, quic-go on daemon.** Phase-0 interop spike is a hard gate.
+- **Cloudflare quiche on Android, quic-go on daemon.** Step 1 validates the protocol/data layer with a Go mobile simulator; real Android `quiche` validation remains a TODO before Android compatibility is claimed.
 
 ## Phase-1 Implementation Order
 

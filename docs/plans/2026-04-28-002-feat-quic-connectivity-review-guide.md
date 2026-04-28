@@ -65,11 +65,11 @@ Each PR should:
 
 ## Step 1: Interop Spike And Connectivity Primitives
 
-**Purpose:** Prove the riskiest transport and security assumptions before production integration.
+**Purpose:** Prove the riskiest transport, protocol, and data-format assumptions before production integration. Step 1 uses a Go mobile simulator; it does not validate a real Android client.
 
 **Major modules:**
 
-- QUIC/TLS interop between Go daemon side and Android side
+- QUIC/TLS interop between a Go daemon side and a Go mobile-simulator side
 - Device-key identity and certificate pinning
 - Pairing SAS algorithm
 - Length-framed control/raw-byte message codec
@@ -78,7 +78,8 @@ Each PR should:
 
 **In scope:**
 
-- Prove `quic-go` and Android `quiche` are viable together.
+- Prove the Android-facing protocol/data shape with `quic-go` on both sides.
+- Leave Android `quiche` JNI/emulator/device validation as an explicit TODO/FIXME before Android compatibility is claimed.
 - Prove Relay fallback can carry opaque encrypted QUIC packets.
 - Produce reusable primitives for later steps.
 
@@ -92,12 +93,13 @@ Each PR should:
 
 **Independent acceptance:**
 
-- Go and Android can complete pinned QUIC/TLS handshake.
+- Go daemon and Go mobile simulator can complete pinned QUIC/TLS handshake.
+- Go mobile simulator validates JSON control frames and raw snapshot/live byte frames.
 - Bidirectional control and daemon-to-app unidirectional streams work.
 - Relay-like WSS carrier sees only opaque packet bytes.
-- The step handoff clearly says whether the program can proceed or must change transport library strategy.
+- The step handoff clearly says Step 1 validates protocol/data primitives only and leaves real Android validation as TODO/FIXME.
 
-**Why this split is important:** If this fails, the program should stop or switch libraries before touching auth, daemon, Relay, or Android product code.
+**Why this split is important:** If the Go simulator fails, the program should stop before touching auth, daemon, Relay, or Android product code. If later Android `quiche` validation fails, switch Android transport strategy before claiming production Android compatibility.
 
 ## Step 2: App Identity, Subscription Surface, Pairing, And Visibility
 

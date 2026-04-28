@@ -111,9 +111,18 @@ Rationale:
 - exposes the certificate verification callback needed for device-key pinning
 - daemon-side `quic-go` and Android-side `quiche` both implement RFC 9000/9001 and have been demonstrated to interop in third-party deployments
 
-Phase-0 prerequisite before higher-level features are built:
+Step 1 repository prerequisite before higher-level features are built:
 
-- run a small interoperability spike where `quic-go` listens with ALPN `tunnel-conn/1`, an Android-side `quiche` client completes the QUIC/TLS handshake using a self-signed Ed25519 certificate, and both sides exchange at least 1KB of test data over a single bidirectional stream
+- run a small Go mobile-simulator spike where `quic-go` listens with ALPN
+  `tunnel-conn/1`, both Go endpoints complete the QUIC/TLS handshake using
+  self-signed Ed25519 certificates, both sides verify peer SPKI pins, and the
+  Android-facing frame/data sequence passes over direct UDP and the Relay-like
+  packet carrier
+
+FIXME(Android): Real Android `quiche` JNI/emulator/device validation remains
+required before production Android compatibility is claimed. That validation
+must run the same pinned TLS and stream/data exchange recorded by the Go
+simulator.
 
 Phase-1 fallback if `quiche` packaging proves unworkable on Android:
 

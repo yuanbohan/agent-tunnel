@@ -13,7 +13,7 @@ origin: docs/brainstorms/2026-04-23-direct-attach-control-plane-requirements.md
 
 Implement the `docs/connectivity/` architecture as a multi-branch program, not a single mega-PR. The target shape is a daemon-mediated mobile session stack where Android connects to a trusted computer over QUIC/TLS with device-key pinning, prefers direct UDP when possible, and falls back to a Relay-hosted WebSocket tunnel that forwards only encrypted QUIC packets.
 
-This plan intentionally separates the program into large, reviewable steps. Each step should land independently, update a step handoff document, and leave the repository in a coherent state before the next branch begins. Step 1 is the only step that should start immediately: a hard-gate interop and transport-primitives spike. Later steps should be re-reviewed after Step 1 merges.
+This plan intentionally separates the program into large, reviewable steps. Each step should land independently, update a step handoff document, and leave the repository in a coherent state before the next branch begins. Step 1 is the only step that should start immediately: a Go mobile-simulator protocol/data and transport-primitives spike. Later steps should be re-reviewed after Step 1 merges.
 
 ---
 
@@ -224,14 +224,14 @@ flowchart TB
 
 ### Step 1: Interop Spike And Connectivity Primitives
 
-Goal: prove the core transport/security assumptions before production code depends on them. This step is a hard gate and should be the first branch.
+Goal: prove the core transport/security/protocol assumptions before production code depends on them. This step is the first branch and validates Step 1 with a Go mobile simulator, not a real Android client.
 
 Exit summary:
-- `quic-go` and Android `quiche` complete mutual TLS with self-signed Ed25519 SPKI pinning and ALPN `tunnel-conn/1`.
-- Both sides exchange at least 1 KB over a bidirectional stream and at least 1 KB over a daemon-to-app unidirectional stream.
+- `quic-go` daemon side and Go mobile-simulator side complete mutual TLS with self-signed Ed25519 SPKI pinning and ALPN `tunnel-conn/1`.
+- The Go mobile simulator exchanges the Android-facing protocol/data sequence over a bidirectional control stream and a daemon-to-app unidirectional stream.
 - Go-side tests cover SAS golden vectors, SPKI comparison, frame encoding, protocol mismatch, and relay-carrier packet forwarding.
 - Reconnect loop runs 10 times without observable goroutine/file descriptor leaks in the Go harness.
-- `docs/connectivity/implementation/step-01-interop-spike.md` records what passed, what failed, Android build/device details, and the recommendation for Step 2.
+- `docs/connectivity/implementation/step-01-interop-spike.md` records what passed, what failed, the explicit FIXME that Android was not validated, and the TODO for later Android `quiche` emulator/device evidence.
 
 Do not start Step 2 until this step's handoff is reviewed and merged.
 
@@ -337,9 +337,9 @@ Exit summary:
 - Implement the `[type][varint length][payload]` frame codec with explicit unknown-type tolerance tests and raw-byte payload support.
 - Add a Go-only QUIC harness that rejects ALPN mismatch, disables 0-RTT/early APIs, requires mutual certificates, and exercises one bidirectional control stream plus one daemon-initiated unidirectional stream.
 - Add a Go-only packet carrier harness that proves encrypted QUIC packets can travel through a WebSocket-like ordered carrier without Relay parsing frame contents.
-- Record Android `quiche` JNI spike results in the step handoff. If Android packaging blocks, the handoff must recommend whether to switch to `kwik` before any higher-level work starts.
+- Record in the step handoff that Android `quiche` JNI/emulator/device validation is not performed by Step 1. If later Android validation or packaging blocks, decide whether to switch to `kwik` before claiming Android compatibility.
 
-**Execution note:** Implement security primitives and frame codec test-first. The Android `quiche` interop result is a hard gate for continuing the program.
+**Execution note:** Implement security primitives and frame codec test-first. Step 1's automated gate is the Go mobile-simulator protocol/data harness; real Android `quiche` validation is a follow-up TODO/FIXME.
 
 **Patterns to follow:**
 - `internal/protocol/attach_packet.go` for compact binary codec tests.
@@ -358,12 +358,13 @@ Exit summary:
 - Edge case: frame decoder rejects truncated varints, oversized declared lengths, and incomplete payloads without panics.
 - Forward compatibility: unknown frame types and unknown JSON fields are tolerated according to `D6`.
 - Integration: Go relay-carrier harness forwards encrypted QUIC packets between two endpoints without parsing control/session frames.
-- Covers AE1. Integration: Android `quiche` client and Go `quic-go` daemon complete pinned TLS and stream exchange on emulator API 33 and at least one API 30+ device.
+- Covers AE1 replacement. Integration: Go mobile-simulator client and Go `quic-go` daemon complete pinned TLS, protocol ordering, JSON control frame, raw byte stream, direct UDP, and Relay-like packet-carrier exchange.
+- FIXME(Android): Android `quiche` client and Go `quic-go` daemon still need pinned TLS and stream/data exchange on emulator API 33 and at least one API 30+ device before Android compatibility is claimed.
 - Covers AE2. Integration: fallback carrier test confirms the middle Relay-like component sees only packet-sized opaque bytes, not terminal/session frame JSON.
 - Stability: reconnect loop completes 10 iterations without leaking tracked goroutines or leaving listeners open in the Go harness.
 
 **Verification:**
-- Step 1 handoff states "pass" or "block" for every contract 1.0 exit criterion.
+- Step 1 handoff states "pass" or "block" for every contract 1.0 Go simulator exit criterion and explicitly records that real Android validation remains TODO/FIXME.
 - No production Relay, daemon, session, or CLI behavior changes are required for this branch.
 - Reviewers can decide whether Step 2 is safe based on concrete interop evidence, not design optimism.
 
@@ -808,7 +809,7 @@ Exit summary:
 
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
-| Android `quiche` JNI packaging blocks | Medium | High | Step 1 is a hard gate; switch to `kwik` before higher-level work if packaging is not viable. |
+| Android `quiche` JNI packaging blocks | Medium | High | Step 1 uses a Go simulator and does not prove Android packaging. Run Android validation before claiming Android compatibility; switch to `kwik` if packaging is not viable. |
 | `quic-go` over WSS carrier is harder than expected | Medium | High | Step 1 includes a packet-carrier spike before Relay tunnel implementation. |
 | Daemon auto-start conflicts with tmux requirement | High | Medium | U4 explicitly splits connectivity core from launch health and updates `docs/daemon.md`. |
 | Relay visibility after restart is underspecified | Medium | High | U3 must amend the relay protocol with daemon-to-Relay visibility refresh before implementation. |
@@ -834,7 +835,7 @@ Exit summary:
 
 ## Success Metrics
 
-- Step 1: interop gate passes with Go and Android `quiche` evidence, or the program stops with a documented fallback recommendation.
+- Step 1: protocol/data gate passes with Go daemon and Go mobile-simulator evidence, and the handoff explicitly records Android `quiche` validation as TODO/FIXME.
 - Step 4: fallback-only Android/simulated client can list sessions, see preview, attach, send input, release, and reconnect without Relay seeing plaintext.
 - Step 5: measured cone-NAT panel reaches at least 80% direct success over at least 20 test pairings; symmetric NATs fall back without user intervention.
 - Production: fallback input p95 remains below the contract's 500 ms trigger unless UDP relay is re-speced.

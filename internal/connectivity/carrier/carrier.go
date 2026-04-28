@@ -69,6 +69,9 @@ func (r *Relay) forward(from *PacketConn, to net.Addr, payload []byte) error {
 		}
 
 		deadline, changed := from.writeDeadlineSnapshot()
+		if deadlineExpired(deadline) {
+			return os.ErrDeadlineExceeded
+		}
 		timer, stop := deadlineTimer(deadline)
 		select {
 		case peer.inbound <- packet{from: from.addr, payload: copied}:
@@ -138,6 +141,9 @@ func (c *PacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
 		}
 
 		deadline, changed := c.readDeadlineSnapshot()
+		if deadlineExpired(deadline) {
+			return 0, nil, os.ErrDeadlineExceeded
+		}
 		timer, stop := deadlineTimer(deadline)
 		select {
 		case pkt := <-c.inbound:
@@ -170,7 +176,7 @@ func (c *PacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 	c.mu.Lock()
 	deadline := c.writeDeadline
 	c.mu.Unlock()
-	if !deadline.IsZero() && time.Now().After(deadline) {
+	if deadlineExpired(deadline) {
 		return 0, os.ErrDeadlineExceeded
 	}
 
@@ -270,4 +276,8 @@ func deadlineTimer(deadline time.Time) (<-chan time.Time, func()) {
 			}
 		}
 	}
+}
+
+func deadlineExpired(deadline time.Time) bool {
+	return !deadline.IsZero() && !time.Now().Before(deadline)
 }

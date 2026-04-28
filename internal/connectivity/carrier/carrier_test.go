@@ -81,6 +81,26 @@ func TestReadDeadlineWakesPendingRead(t *testing.T) {
 	}
 }
 
+func TestPastReadDeadlinePrecedesQueuedPacket(t *testing.T) {
+	relay := NewRelay()
+	client := relay.NewPacketConn("client")
+	server := relay.NewPacketConn("server")
+	defer client.Close()
+	defer server.Close()
+
+	if _, err := server.WriteTo([]byte("queued"), client.LocalAddr()); err != nil {
+		t.Fatalf("server WriteTo returned error: %v", err)
+	}
+	if err := client.SetReadDeadline(time.Now().Add(-time.Millisecond)); err != nil {
+		t.Fatalf("SetReadDeadline returned error: %v", err)
+	}
+
+	_, _, err := client.ReadFrom(make([]byte, 32))
+	if !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("ReadFrom err = %v, want os.ErrDeadlineExceeded", err)
+	}
+}
+
 func TestWriteDeadlineWakesPendingWrite(t *testing.T) {
 	relay := NewRelay()
 	client := relay.NewPacketConn("client")
@@ -112,6 +132,22 @@ func TestWriteDeadlineWakesPendingWrite(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("WriteTo did not wake after write deadline changed")
+	}
+}
+
+func TestPastWriteDeadlinePrecedesAvailablePeer(t *testing.T) {
+	relay := NewRelay()
+	client := relay.NewPacketConn("client")
+	server := relay.NewPacketConn("server")
+	defer client.Close()
+	defer server.Close()
+
+	if err := client.SetWriteDeadline(time.Now().Add(-time.Millisecond)); err != nil {
+		t.Fatalf("SetWriteDeadline returned error: %v", err)
+	}
+	_, err := client.WriteTo([]byte("late"), server.LocalAddr())
+	if !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("WriteTo err = %v, want os.ErrDeadlineExceeded", err)
 	}
 }
 

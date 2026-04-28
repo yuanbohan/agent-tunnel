@@ -125,16 +125,20 @@ Detail: `protocol/transport.md` § Control Stream Encoding.
 
 Each sub-phase has a hard gate: do not start the next until the current one's checklist passes.
 
-### 1.0 — Interop Spike (Hard Gate)
+### 1.0 — Interop Spike (Protocol/Data Gate)
 
 - `quic-go` listener with ALPN `tunnel-conn/1`.
-- `quiche` (JNI) Android client.
-- Both present self-signed Ed25519 certs; both verify peer SPKI byte-for-byte.
-- Exchange ≥ 1 KB on a bidirectional stream and ≥ 1 KB on a unidirectional stream.
+- Go mobile-simulator client that follows the Android-facing protocol shape.
+- Both Go endpoints present self-signed Ed25519 certs; both verify peer SPKI byte-for-byte.
+- Exchange JSON `hello`, JSON `session_index`, JSON `interactive_request`, JSON `interactive_granted`, JSON `snapshot_begin`, raw `snapshot_chunk`, JSON `snapshot_end`, and raw `live_bytes`.
+- Exercise direct UDP and Relay-like packet-carrier paths.
 - Reconnect 10 times in a loop without leaks.
-- **Exit criterion**: spike repo passes the above with both quiche and quic-go on macOS host, Android emulator API 33, Android device API 30+.
+- **Exit criterion**: repository tests pass the above with a Go daemon side and a Go mobile-simulator side. This proves Step 1 protocol/data assumptions, not production Android runtime compatibility.
 
-If `quiche` packaging blocks, fall back to `kwik` per `reference/decision-record.md`.
+FIXME(Android): Before claiming Android compatibility, run the same pinned TLS
+and stream/data exchange through the Android `quiche` JNI client on emulator and
+device. If `quiche` packaging blocks, fall back to `kwik` per
+`reference/decision-record.md`.
 
 ### 1.1 — Pairing + Local Broker
 

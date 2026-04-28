@@ -5,6 +5,8 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/tls"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"testing"
@@ -12,17 +14,17 @@ import (
 
 	"github.com/quic-go/quic-go"
 
+	"yuanbohan/tunnel/internal/connectivity/carrier"
 	"yuanbohan/tunnel/internal/connectivity/frame"
 	"yuanbohan/tunnel/internal/connectivity/identity"
+	"yuanbohan/tunnel/internal/connectivity/interop"
 	"yuanbohan/tunnel/internal/connectivity/transport"
 )
 
-func TestGoPinnedQUICInteropHarness(t *testing.T) {
+func TestGoMobileSimulatorValidatesProtocolDataOverUDP(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	clientHello := bytes.Repeat([]byte("a"), 1024)
-	daemonHello := bytes.Repeat([]byte("d"), 1024)
-	daemonLive := bytes.Repeat([]byte("u"), 1024)
+	script := probeScript(interop.PathDirect)
 
 	serverTLS, clientTLS := interopTLSConfigs(t)
 	packetConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
@@ -39,96 +41,225 @@ func TestGoPinnedQUICInteropHarness(t *testing.T) {
 	serverErr := make(chan error, 1)
 	clientDone := make(chan struct{})
 	go func() {
-		conn, err := listener.Accept(ctx)
-		if err != nil {
-			serverErr <- err
-			return
-		}
-		defer conn.CloseWithError(0, "done")
-		if err := transport.ValidateConnectionState(conn.ConnectionState()); err != nil {
-			serverErr <- err
-			return
-		}
-
-		control, err := conn.AcceptStream(ctx)
-		if err != nil {
-			serverErr <- err
-			return
-		}
-		hello, err := frame.Read(control, frame.DefaultMaxPayload)
-		if err != nil {
-			serverErr <- err
-			return
-		}
-		if hello.Type != frame.TypeHello || !bytes.Equal(hello.Payload, clientHello) {
-			serverErr <- io.ErrUnexpectedEOF
-			return
-		}
-		if err := frame.Write(control, frame.Frame{Type: frame.TypeHello, Payload: daemonHello}); err != nil {
-			serverErr <- err
-			return
-		}
-		if err := control.Close(); err != nil {
-			serverErr <- err
-			return
-		}
-
-		interactive, err := conn.OpenUniStreamSync(ctx)
-		if err != nil {
-			serverErr <- err
-			return
-		}
-		if err := frame.Write(interactive, frame.Frame{Type: frame.TypeLiveBytes, Payload: daemonLive}); err != nil {
-			serverErr <- err
-			return
-		}
-		if err := interactive.Close(); err != nil {
-			serverErr <- err
-			return
-		}
-		<-clientDone
-		serverErr <- nil
+		serverErr <- runDaemonProbe(ctx, listener, script, clientDone)
 	}()
 
-	conn, err := quic.DialAddr(ctx, packetConn.LocalAddr().String(), clientTLS, transport.QUICConfig())
+	client := interop.MobileClient{TLSConfig: clientTLS}
+	clientErr := client.DialAddr(ctx, packetConn.LocalAddr().String(), script)
+	close(clientDone)
+	if clientErr != nil {
+		t.Fatalf("mobile DialAddr returned error: %v", clientErr)
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatalf("daemon probe returned error: %v", err)
+	}
+}
+
+func TestGoMobileSimulatorValidatesProtocolDataOverRelayCarrier(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	script := probeScript(interop.PathRelay)
+
+	relay := carrier.NewRelay()
+	clientPacketConn := relay.NewPacketConn("android")
+	serverPacketConn := relay.NewPacketConn("daemon")
+	defer clientPacketConn.Close()
+	defer serverPacketConn.Close()
+
+	serverTLS, clientTLS := interopTLSConfigs(t)
+	listener, err := quic.Listen(serverPacketConn, serverTLS, transport.QUICConfig())
 	if err != nil {
-		t.Fatalf("DialAddr returned error: %v", err)
+		t.Fatalf("quic.Listen returned error: %v", err)
+	}
+	defer listener.Close()
+
+	serverErr := make(chan error, 1)
+	clientDone := make(chan struct{})
+	go func() {
+		serverErr <- runDaemonProbe(ctx, listener, script, clientDone)
+	}()
+
+	client := interop.MobileClient{TLSConfig: clientTLS}
+	clientErr := client.DialPacketConn(ctx, clientPacketConn, serverPacketConn.LocalAddr(), script)
+	close(clientDone)
+	if clientErr != nil {
+		t.Fatalf("mobile DialPacketConn returned error: %v", clientErr)
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatalf("daemon probe returned error: %v", err)
+	}
+
+	needles := [][]byte{
+		[]byte("android-fingerprint-go-simulator"),
+		[]byte("daemon-fingerprint-go-simulator"),
+		[]byte("session-interop-1"),
+		[]byte("SNAPSHOT_SECRET_"),
+		[]byte("LIVE_SECRET_"),
+	}
+	for _, packet := range relay.ObservedPackets() {
+		for _, needle := range needles {
+			if bytes.Contains(packet, needle) {
+				t.Fatalf("relay observed application plaintext %q in QUIC packet: %x", needle, packet)
+			}
+		}
+	}
+}
+
+func TestMobileClientRequiresTLSConfig(t *testing.T) {
+	err := interop.MobileClient{}.DialAddr(context.Background(), "127.0.0.1:1", interop.ProbeScript{})
+	if err != interop.ErrMissingTLSConfig {
+		t.Fatalf("err = %v, want ErrMissingTLSConfig", err)
+	}
+}
+
+func runDaemonProbe(ctx context.Context, listener *quic.Listener, script interop.ProbeScript, clientDone <-chan struct{}) error {
+	conn, err := listener.Accept(ctx)
+	if err != nil {
+		return err
 	}
 	defer conn.CloseWithError(0, "done")
 	if err := transport.ValidateConnectionState(conn.ConnectionState()); err != nil {
-		t.Fatalf("client connection state: %v", err)
+		return err
 	}
 
-	control, err := conn.OpenStreamSync(ctx)
+	control, err := conn.AcceptStream(ctx)
 	if err != nil {
-		t.Fatalf("OpenStreamSync returned error: %v", err)
+		return err
 	}
-	if err := frame.Write(control, frame.Frame{Type: frame.TypeHello, Payload: clientHello}); err != nil {
-		t.Fatalf("client frame.Write returned error: %v", err)
-	}
-	reply, err := frame.Read(control, frame.DefaultMaxPayload)
+	mobileHello, err := readJSONFrame[interop.Hello](control, frame.TypeHello)
 	if err != nil {
-		t.Fatalf("client frame.Read returned error: %v", err)
+		return err
 	}
-	if reply.Type != frame.TypeHello || !bytes.Equal(reply.Payload, daemonHello) {
-		t.Fatalf("reply frame = %#v, want 1KB hello", reply)
+	if mobileHello != script.MobileHello {
+		return fmt.Errorf("mobile hello=%#v want %#v", mobileHello, script.MobileHello)
+	}
+	if err := writeJSONFrameWithUnknown(control, frame.TypeHello, script.DaemonHello); err != nil {
+		return err
+	}
+	if err := writeJSONFrameWithUnknown(control, frame.TypeSessionIndex, script.SessionIndex); err != nil {
+		return err
 	}
 
-	interactive, err := conn.AcceptUniStream(ctx)
+	request, err := readJSONFrame[interop.InteractiveRequest](control, frame.TypeInteractiveRequest)
 	if err != nil {
-		t.Fatalf("AcceptUniStream returned error: %v", err)
+		return err
 	}
-	live, err := frame.Read(interactive, frame.DefaultMaxPayload)
-	if err != nil {
-		t.Fatalf("interactive frame.Read returned error: %v", err)
-	}
-	if live.Type != frame.TypeLiveBytes || !bytes.Equal(live.Payload, daemonLive) {
-		t.Fatalf("interactive frame = %#v, want 1KB live bytes", live)
+	if request != script.InteractiveRequest {
+		return fmt.Errorf("interactive request=%#v want %#v", request, script.InteractiveRequest)
 	}
 
-	close(clientDone)
-	if err := <-serverErr; err != nil {
-		t.Fatalf("server returned error: %v", err)
+	interactive, err := conn.OpenUniStreamSync(ctx)
+	if err != nil {
+		return err
+	}
+	defer interactive.Close()
+
+	granted := script.InteractiveGranted
+	granted.InteractiveStreamID = int64(interactive.StreamID())
+	if err := writeJSONFrameWithUnknown(control, frame.TypeInteractiveGranted, granted); err != nil {
+		return err
+	}
+	if err := writeJSONFrameWithUnknown(interactive, frame.TypeSnapshotBegin, script.SnapshotBegin); err != nil {
+		return err
+	}
+	if err := frame.Write(interactive, frame.Frame{Type: frame.TypeSnapshotChunk, Payload: script.SnapshotChunk}); err != nil {
+		return err
+	}
+	if err := writeJSONFrameWithUnknown(interactive, frame.TypeSnapshotEnd, script.SnapshotEnd); err != nil {
+		return err
+	}
+	if err := frame.Write(interactive, frame.Frame{Type: frame.TypeLiveBytes, Payload: script.LiveBytes}); err != nil {
+		return err
+	}
+	select {
+	case <-clientDone:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func readJSONFrame[T any](r io.Reader, typ byte) (T, error) {
+	var payload T
+	got, err := frame.Read(r, frame.DefaultMaxPayload)
+	if err != nil {
+		return payload, err
+	}
+	if got.Type != typ {
+		return payload, fmt.Errorf("frame type=0x%02x want 0x%02x", got.Type, typ)
+	}
+	if err := json.Unmarshal(got.Payload, &payload); err != nil {
+		return payload, err
+	}
+	return payload, nil
+}
+
+func writeJSONFrameWithUnknown(w io.Writer, typ byte, payload any) error {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
+	var withUnknown map[string]any
+	if err := json.Unmarshal(raw, &withUnknown); err != nil {
+		return err
+	}
+	withUnknown["future_field"] = "ignored"
+
+	raw, err = json.Marshal(withUnknown)
+	if err != nil {
+		return err
+	}
+	return frame.Write(w, frame.Frame{Type: typ, Payload: raw})
+}
+
+func probeScript(pathKind string) interop.ProbeScript {
+	return interop.ProbeScript{
+		MobileHello: interop.Hello{
+			ProtocolVersion:   1,
+			ActorType:         interop.ActorMobile,
+			DeviceFingerprint: "android-fingerprint-go-simulator",
+			PathKind:          pathKind,
+		},
+		DaemonHello: interop.Hello{
+			ProtocolVersion:   1,
+			ActorType:         interop.ActorDaemon,
+			DeviceFingerprint: "daemon-fingerprint-go-simulator",
+			PathKind:          pathKind,
+		},
+		SessionIndex: interop.SessionIndex{Sessions: []interop.SessionMetadata{
+			{
+				SessionID:      "session-interop-1",
+				Label:          "Interop shell",
+				CommandPreview: "codex",
+				CWD:            "/Users/example/project",
+				GitBranch:      "feat/direct-p2p",
+				StartedAt:      1_700_000_000,
+				UpdatedAt:      1_700_000_010,
+				Online:         true,
+			},
+		}},
+		InteractiveRequest: interop.InteractiveRequest{
+			SessionID: "session-interop-1",
+			Cols:      120,
+			Rows:      40,
+		},
+		InteractiveGranted: interop.InteractiveGranted{
+			SessionID: "session-interop-1",
+			Cols:      120,
+			Rows:      40,
+		},
+		SnapshotBegin: interop.SnapshotBegin{
+			SessionID: "session-interop-1",
+			Cols:      120,
+			Rows:      40,
+		},
+		SnapshotChunk: bytes.Repeat([]byte("SNAPSHOT_SECRET_"), 80),
+		SnapshotEnd: interop.SnapshotEnd{
+			SessionID:  "session-interop-1",
+			ChunkCount: 1,
+		},
+		LiveBytes: bytes.Repeat([]byte("LIVE_SECRET_"), 100),
 	}
 }
 

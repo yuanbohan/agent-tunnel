@@ -85,12 +85,20 @@ available, and `tunnel run` remaining the PTY/session source of truth.
 ```markdown
 ## Goal
 
-Prove the riskiest transport and security assumptions before production daemon,
-Relay, or Android product integration begins.
+Prove the riskiest transport, protocol, and data-format assumptions before
+production daemon, Relay, or Android product integration begins.
+
+Step 1 uses a Go mobile simulator rather than a production Android client. It
+validates the architecture, frame types, JSON control payloads, raw snapshot/live
+payloads, stream ordering, and packet-carrier behavior without requiring the
+Android repository, `quiche` JNI packaging, an emulator, or a physical device.
+
+FIXME(Android): Real Android `quiche` JNI/emulator/device validation remains a
+follow-up before claiming production Android compatibility.
 
 ## Major Modules
 
-- QUIC/TLS interop between Go daemon side and Android side
+- QUIC/TLS interop between a Go daemon side and a Go mobile-simulator side
 - Device-key identity and certificate pinning
 - Pairing SAS algorithm
 - Length-framed control/raw-byte message codec
@@ -99,7 +107,8 @@ Relay, or Android product integration begins.
 
 ## In Scope
 
-- Prove `quic-go` and Android `quiche` are viable together.
+- Prove the daemon/mobile protocol shape with `quic-go` on both sides.
+- Validate the Android-facing data format with a Go mobile simulator.
 - Prove Relay fallback can carry opaque encrypted QUIC packets.
 - Produce reusable primitives for later steps.
 
@@ -107,17 +116,19 @@ Relay, or Android product integration begins.
 
 - Production daemon behavior
 - Production Relay routes
+- Real Android app, `quiche` JNI packaging, emulator, or physical-device runs
 - Pairing UX
 - Session list, preview, terminal attach
 - STUN/direct UDP
 
 ## Acceptance Checklist
 
-- [ ] Go and Android complete pinned QUIC/TLS handshake.
-- [ ] Bidirectional control stream works.
-- [ ] Daemon-to-app unidirectional stream works.
+- [ ] Go daemon and Go mobile simulator complete pinned QUIC/TLS handshake.
+- [ ] Bidirectional control stream works in the Go mobile-simulator harness.
+- [ ] Daemon-to-app unidirectional stream works in the Go mobile-simulator harness.
+- [ ] Go mobile simulator validates `hello`, `session_index`, `interactive_request`, `interactive_granted`, `snapshot_begin`, `snapshot_chunk`, `snapshot_end`, and `live_bytes`.
 - [ ] Relay-like WSS carrier sees only opaque packet bytes.
-- [ ] Handoff states whether the program can proceed or must change transport library strategy.
+- [ ] Handoff states Step 1 validates protocol/data primitives only and leaves real Android validation as TODO/FIXME.
 
 ## Handoff
 

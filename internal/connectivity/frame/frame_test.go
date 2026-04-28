@@ -98,13 +98,21 @@ func TestEncodeDecodeVarintLengthBoundaries(t *testing.T) {
 }
 
 func TestReadRejectsTruncatedHeaderAndOversizedPayload(t *testing.T) {
-	if _, err := Read(bytes.NewReader(nil), DefaultMaxPayload); err == nil {
-		t.Fatal("Read returned nil error for empty input")
-	}
-
-	_, err := Read(bytes.NewReader([]byte{TypeHello, 0x80, 0x00}), DefaultMaxPayload)
-	if !errors.Is(err, ErrTruncatedVarint) {
-		t.Fatalf("err = %v, want ErrTruncatedVarint", err)
+	for _, tt := range []struct {
+		name string
+		raw  []byte
+	}{
+		{name: "empty", raw: nil},
+		{name: "one byte header", raw: []byte{TypeHello}},
+		{name: "two byte varint missing second byte", raw: []byte{TypeHello, 0x40}},
+		{name: "four byte varint missing trailing bytes", raw: []byte{TypeHello, 0x80, 0x00}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Read(bytes.NewReader(tt.raw), DefaultMaxPayload)
+			if !errors.Is(err, ErrTruncatedVarint) {
+				t.Fatalf("err = %v, want ErrTruncatedVarint", err)
+			}
+		})
 	}
 
 	raw, err := Encode(Frame{Type: TypeHello, Payload: bytes.Repeat([]byte{'x'}, 9)})
@@ -114,6 +122,28 @@ func TestReadRejectsTruncatedHeaderAndOversizedPayload(t *testing.T) {
 	_, err = Read(bytes.NewReader(raw), 8)
 	if !errors.Is(err, ErrPayloadTooLarge) {
 		t.Fatalf("err = %v, want ErrPayloadTooLarge", err)
+	}
+}
+
+func TestReadRejectsIncompletePayload(t *testing.T) {
+	raw, err := Encode(Frame{Type: TypeHello, Payload: []byte("hello")})
+	if err != nil {
+		t.Fatalf("Encode returned error: %v", err)
+	}
+
+	for _, tt := range []struct {
+		name string
+		raw  []byte
+	}{
+		{name: "missing entire payload", raw: raw[:2]},
+		{name: "missing partial payload", raw: raw[:len(raw)-1]},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Read(bytes.NewReader(tt.raw), DefaultMaxPayload)
+			if !errors.Is(err, io.ErrUnexpectedEOF) {
+				t.Fatalf("err = %v, want io.ErrUnexpectedEOF", err)
+			}
+		})
 	}
 }
 
