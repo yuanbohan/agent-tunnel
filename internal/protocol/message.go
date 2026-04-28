@@ -56,8 +56,10 @@ type AgentFrame struct {
 	SubmitAnchor  *SubmitAnchor  `json:"submit_anchor,omitempty"`
 }
 
-// SubmitAnchor describes a submit position relative to the terminal
-// buffer restored by the attach snapshot that carries it.
+// SubmitAnchor describes a content-free submit navigation hint. Snapshot
+// anchors use a line relative to the buffer restored by the accompanying
+// snapshot; live anchors use a line relative to the attached terminal buffer
+// when the event is received.
 type SubmitAnchor struct {
 	ID          string `json:"id"`
 	Line        int    `json:"line"`

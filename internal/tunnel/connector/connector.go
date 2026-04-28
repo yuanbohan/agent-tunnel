@@ -566,6 +566,17 @@ func (c *Connector) deliverInputToHub(hub *session.Hub, frame protocol.AgentFram
 	}
 }
 
+// observeInputForSubmitAnchors is called by the Hub before each PTY input
+// write. It counts carriage returns (outside bracketed paste), records submit
+// anchors into the mirror, and returns a callback the Hub invokes after the
+// write succeeds or fails. On failure, recorded anchors are removed and the
+// scanner state is rolled back.
+//
+// Anchor recording and the PTY write are not atomic: after recordSubmitAnchors
+// releases attachMu, concurrent output may advance the mirror before the PTY
+// write completes. This is acceptable because mirror mutations are serialized,
+// xterm markers track later buffer shifts, and failed writes remove the anchors
+// and roll back scanner state.
 func (c *Connector) observeInputForSubmitAnchors(data []byte) func(error) {
 	count, restoreScanner := c.countSubmitEnters(data)
 	if count == 0 {

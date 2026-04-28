@@ -196,6 +196,31 @@ func TestTerminalMirrorRecordSubmitAnchorReturnsLiveAnchor(t *testing.T) {
 	}
 }
 
+func TestTerminalMirrorLiveAndSnapshotAnchorLinesAreIndependent(t *testing.T) {
+	mirror := NewTerminalMirror(20, 4)
+	anchor := submitAnchorMarker{
+		id:          "submit-1",
+		marker:      xterm.NewMarker(12),
+		submittedAt: 1775131200,
+	}
+
+	live, ok := mirror.liveSubmitAnchorLocked(anchor)
+	if !ok {
+		t.Fatal("liveSubmitAnchorLocked returned ok=false, want live anchor")
+	}
+	snapshot, ok := mirror.submitAnchorForBufferLocked(anchor, 5)
+	if !ok {
+		t.Fatal("submitAnchorForBufferLocked returned ok=false, want snapshot anchor")
+	}
+
+	if live.Line != 12 {
+		t.Fatalf("live line = %d, want current-buffer line 12", live.Line)
+	}
+	if snapshot.Line != 7 {
+		t.Fatalf("snapshot line = %d, want snapshot-relative line 7", snapshot.Line)
+	}
+}
+
 func TestTerminalMirrorSnapshotMapsSubmitAnchorAfterScrollbackTrim(t *testing.T) {
 	mirror := NewTerminalMirror(20, 3)
 	mirror.now = func() time.Time { return time.Unix(1775131200, 0) }

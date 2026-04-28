@@ -102,7 +102,7 @@ func (m *TerminalMirror) RecordSubmitAnchor() (SubmitAnchor, bool) {
 	}
 	m.submitAnchors = append(m.submitAnchors, anchor)
 	m.compactSubmitAnchorsLocked()
-	return m.submitAnchorForBufferLocked(anchor, snapshotStartLine(buffer, m.rows, defaultSnapshotScrollback))
+	return m.liveSubmitAnchorLocked(anchor)
 }
 
 func (m *TerminalMirror) RemoveSubmitAnchor(id string) {
@@ -190,6 +190,22 @@ func (m *TerminalMirror) submitAnchorForBufferLocked(anchor submitAnchorMarker, 
 	return SubmitAnchor{
 		ID:          anchor.id,
 		Line:        line - startLine,
+		SubmittedAt: anchor.submittedAt,
+	}, true
+}
+
+// liveSubmitAnchorLocked returns the anchor with a line relative to the
+// current terminal buffer (absolute marker position). This is distinct from
+// submitAnchorForBufferLocked which maps lines relative to a snapshot's
+// serialized start line. Live anchors are interpreted against the client's
+// attached terminal state when the event is received, not against a snapshot.
+func (m *TerminalMirror) liveSubmitAnchorLocked(anchor submitAnchorMarker) (SubmitAnchor, bool) {
+	if anchor.marker == nil || anchor.marker.IsDisposed {
+		return SubmitAnchor{}, false
+	}
+	return SubmitAnchor{
+		ID:          anchor.id,
+		Line:        anchor.marker.Line,
 		SubmittedAt: anchor.submittedAt,
 	}, true
 }
