@@ -3,6 +3,7 @@ package frame
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"testing"
 )
@@ -71,6 +72,48 @@ func TestDecodeRejectsIncompletePayload(t *testing.T) {
 	_, _, err = Decode(raw[:len(raw)-1], DefaultMaxPayload)
 	if !errors.Is(err, io.ErrUnexpectedEOF) {
 		t.Fatalf("err = %v, want io.ErrUnexpectedEOF", err)
+	}
+}
+
+func TestEncodeDecodeVarintLengthBoundaries(t *testing.T) {
+	for _, size := range []int{0, 63, 64, 16_383, 16_384, DefaultMaxPayload} {
+		t.Run(fmt.Sprintf("size_%d", size), func(t *testing.T) {
+			payload := bytes.Repeat([]byte{'x'}, size)
+			raw, err := Encode(Frame{Type: TypeLiveBytes, Payload: payload})
+			if err != nil {
+				t.Fatalf("Encode returned error: %v", err)
+			}
+			got, consumed, err := Decode(raw, DefaultMaxPayload)
+			if err != nil {
+				t.Fatalf("Decode returned error: %v", err)
+			}
+			if consumed != len(raw) {
+				t.Fatalf("consumed = %d, want %d", consumed, len(raw))
+			}
+			if !bytes.Equal(got.Payload, payload) {
+				t.Fatalf("payload length = %d, want %d", len(got.Payload), len(payload))
+			}
+		})
+	}
+}
+
+func TestReadRejectsTruncatedHeaderAndOversizedPayload(t *testing.T) {
+	if _, err := Read(bytes.NewReader(nil), DefaultMaxPayload); err == nil {
+		t.Fatal("Read returned nil error for empty input")
+	}
+
+	_, err := Read(bytes.NewReader([]byte{TypeHello, 0x80, 0x00}), DefaultMaxPayload)
+	if !errors.Is(err, ErrTruncatedVarint) {
+		t.Fatalf("err = %v, want ErrTruncatedVarint", err)
+	}
+
+	raw, err := Encode(Frame{Type: TypeHello, Payload: bytes.Repeat([]byte{'x'}, 9)})
+	if err != nil {
+		t.Fatalf("Encode returned error: %v", err)
+	}
+	_, err = Read(bytes.NewReader(raw), 8)
+	if !errors.Is(err, ErrPayloadTooLarge) {
+		t.Fatalf("err = %v, want ErrPayloadTooLarge", err)
 	}
 }
 

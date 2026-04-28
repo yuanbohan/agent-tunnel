@@ -25,9 +25,8 @@ type CertificateOptions struct {
 	CommonName string
 }
 
-func SelfSignedCertificate(privateKey any, opts CertificateOptions) (tls.Certificate, error) {
-	key, ok := privateKey.(ed25519.PrivateKey)
-	if !ok || len(key) != ed25519.PrivateKeySize {
+func SelfSignedCertificate(key ed25519.PrivateKey, opts CertificateOptions) (tls.Certificate, error) {
+	if len(key) != ed25519.PrivateKeySize {
 		return tls.Certificate{}, ErrInvalidPrivateKey
 	}
 

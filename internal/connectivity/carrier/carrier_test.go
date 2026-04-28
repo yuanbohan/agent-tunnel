@@ -5,8 +5,10 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/tls"
+	"errors"
 	"io"
 	"net"
+	"os"
 	"testing"
 	"time"
 
@@ -50,6 +52,116 @@ func TestRelayPacketConnForwardsDatagrams(t *testing.T) {
 
 	if got := len(relay.ObservedPackets()); got != 2 {
 		t.Fatalf("relay observed %d packets, want 2", got)
+	}
+}
+
+func TestReadDeadlineWakesPendingRead(t *testing.T) {
+	relay := NewRelay()
+	client := relay.NewPacketConn("client")
+	defer client.Close()
+
+	errc := make(chan error, 1)
+	go func() {
+		_, _, err := client.ReadFrom(make([]byte, 8))
+		errc <- err
+	}()
+
+	time.Sleep(10 * time.Millisecond)
+	if err := client.SetReadDeadline(time.Now().Add(-time.Millisecond)); err != nil {
+		t.Fatalf("SetReadDeadline returned error: %v", err)
+	}
+
+	select {
+	case err := <-errc:
+		if !errors.Is(err, os.ErrDeadlineExceeded) {
+			t.Fatalf("ReadFrom err = %v, want os.ErrDeadlineExceeded", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ReadFrom did not wake after read deadline changed")
+	}
+}
+
+func TestWriteDeadlineWakesPendingWrite(t *testing.T) {
+	relay := NewRelay()
+	client := relay.NewPacketConn("client")
+	server := relay.NewPacketConn("server")
+	defer client.Close()
+	defer server.Close()
+
+	for i := 0; i < cap(server.inbound); i++ {
+		if _, err := client.WriteTo([]byte("x"), server.LocalAddr()); err != nil {
+			t.Fatalf("fill WriteTo %d returned error: %v", i, err)
+		}
+	}
+
+	errc := make(chan error, 1)
+	go func() {
+		_, err := client.WriteTo([]byte("blocked"), server.LocalAddr())
+		errc <- err
+	}()
+
+	time.Sleep(10 * time.Millisecond)
+	if err := client.SetWriteDeadline(time.Now().Add(-time.Millisecond)); err != nil {
+		t.Fatalf("SetWriteDeadline returned error: %v", err)
+	}
+
+	select {
+	case err := <-errc:
+		if !errors.Is(err, os.ErrDeadlineExceeded) {
+			t.Fatalf("WriteTo err = %v, want os.ErrDeadlineExceeded", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("WriteTo did not wake after write deadline changed")
+	}
+}
+
+func TestCloseReleasesEndpointAndRejectsQueuedReads(t *testing.T) {
+	relay := NewRelay()
+	client := relay.NewPacketConn("client")
+	server := relay.NewPacketConn("server")
+	defer client.Close()
+
+	if _, err := client.WriteTo([]byte("queued"), server.LocalAddr()); err != nil {
+		t.Fatalf("WriteTo returned error: %v", err)
+	}
+	if err := server.Close(); err != nil {
+		t.Fatalf("server Close returned error: %v", err)
+	}
+	if relay.endpoints["server"] != nil {
+		t.Fatal("closed server endpoint remained registered")
+	}
+
+	_, _, err := server.ReadFrom(make([]byte, 32))
+	if !errors.Is(err, ErrClosedEndpoint) {
+		t.Fatalf("ReadFrom after Close err = %v, want ErrClosedEndpoint", err)
+	}
+	_, err = client.WriteTo([]byte("after-close"), server.LocalAddr())
+	if !errors.Is(err, ErrUnknownEndpoint) {
+		t.Fatalf("WriteTo closed endpoint err = %v, want ErrUnknownEndpoint", err)
+	}
+}
+
+func TestPacketConnRejectsClosedAndUnknownWrites(t *testing.T) {
+	relay := NewRelay()
+	client := relay.NewPacketConn("client")
+	if err := client.Close(); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+
+	_, err := client.WriteTo([]byte("x"), Addr("server"))
+	if !errors.Is(err, ErrClosedEndpoint) {
+		t.Fatalf("WriteTo after Close err = %v, want ErrClosedEndpoint", err)
+	}
+
+	live := relay.NewPacketConn("live")
+	defer live.Close()
+	_, err = live.WriteTo([]byte("x"), nil)
+	if !errors.Is(err, ErrUnknownEndpoint) {
+		t.Fatalf("WriteTo nil addr err = %v, want ErrUnknownEndpoint", err)
+	}
+	_, err = live.WriteTo([]byte("x"), Addr("missing"))
+	if !errors.Is(err, ErrUnknownEndpoint) {
+		t.Fatalf("WriteTo unknown addr err = %v, want ErrUnknownEndpoint", err)
 	}
 }
 
@@ -160,23 +272,14 @@ func carrierTLSConfigs(t *testing.T) (*tls.Config, *tls.Config) {
 		t.Fatalf("android SelfSignedCertificate returned error: %v", err)
 	}
 
-	daemonSPKI, err := identity.PublicKeySPKI(daemonKey.Public().(ed25519.PublicKey))
-	if err != nil {
-		t.Fatalf("daemon PublicKeySPKI returned error: %v", err)
-	}
-	androidSPKI, err := identity.PublicKeySPKI(androidKey.Public().(ed25519.PublicKey))
-	if err != nil {
-		t.Fatalf("android PublicKeySPKI returned error: %v", err)
-	}
-
 	return transport.DaemonTLSConfig(transport.EndpointConfig{
-			Certificate:    daemonCert,
-			PinnedPeerSPKI: androidSPKI,
+			Certificate:         daemonCert,
+			PinnedPeerPublicKey: androidKey.Public().(ed25519.PublicKey),
 		}),
 		transport.AndroidTLSConfig(transport.EndpointConfig{
-			Certificate:    androidCert,
-			PinnedPeerSPKI: daemonSPKI,
-			ServerName:     "daemon.carrier",
+			Certificate:         androidCert,
+			PinnedPeerPublicKey: daemonKey.Public().(ed25519.PublicKey),
+			ServerName:          "daemon.carrier",
 		})
 }
 

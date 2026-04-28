@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"io"
 	"net"
@@ -153,17 +152,15 @@ func TestRejectsPeerSPKIMismatch(t *testing.T) {
 	defer server.Close()
 
 	wrongDaemon := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x99}, ed25519.SeedSize))
-	wrongSPKI, err := identity.PublicKeySPKI(wrongDaemon.Public().(ed25519.PublicKey))
-	if err != nil {
-		t.Fatalf("PublicKeySPKI returned error: %v", err)
-	}
 
 	badClientConfig := clientConfig.Clone()
-	badClientConfig.VerifyPeerCertificate = func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-		return identity.VerifyPinnedCertificate(rawCerts, wrongSPKI)
-	}
+	badClientConfig.VerifyPeerCertificate = AndroidTLSConfig(EndpointConfig{
+		Certificate:         clientConfig.Certificates[0],
+		PinnedPeerPublicKey: wrongDaemon.Public().(ed25519.PublicKey),
+		ServerName:          "daemon.local",
+	}).VerifyPeerCertificate
 
-	_, err = quic.DialAddr(ctx, server.Addr, badClientConfig, QUICConfig())
+	_, err := quic.DialAddr(ctx, server.Addr, badClientConfig, QUICConfig())
 	if err == nil {
 		t.Fatal("DialAddr succeeded with wrong pinned daemon SPKI")
 	}
@@ -172,32 +169,116 @@ func TestRejectsPeerSPKIMismatch(t *testing.T) {
 	}
 }
 
+func TestDaemonTLSConfigRejectsClientSPKIMismatch(t *testing.T) {
+	daemonKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x11}, ed25519.SeedSize))
+	androidKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x22}, ed25519.SeedSize))
+	wrongAndroidKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x98}, ed25519.SeedSize))
+
+	daemonCert, err := identity.SelfSignedCertificate(daemonKey, identity.CertificateOptions{Now: time.Unix(1700000000, 0)})
+	if err != nil {
+		t.Fatalf("daemon SelfSignedCertificate returned error: %v", err)
+	}
+	androidCert, err := identity.SelfSignedCertificate(androidKey, identity.CertificateOptions{Now: time.Unix(1700000000, 0)})
+	if err != nil {
+		t.Fatalf("android SelfSignedCertificate returned error: %v", err)
+	}
+
+	config := DaemonTLSConfig(EndpointConfig{
+		Certificate:         daemonCert,
+		PinnedPeerPublicKey: wrongAndroidKey.Public().(ed25519.PublicKey),
+	})
+	err = config.VerifyPeerCertificate(androidCert.Certificate, nil)
+	if !errors.Is(err, identity.ErrPinnedKeyMismatch) {
+		t.Fatalf("err = %v, want ErrPinnedKeyMismatch", err)
+	}
+}
+
+func TestDaemonTLSConfigRejectsMissingClientCertificate(t *testing.T) {
+	daemonKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x11}, ed25519.SeedSize))
+	androidKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x22}, ed25519.SeedSize))
+	daemonCert, err := identity.SelfSignedCertificate(daemonKey, identity.CertificateOptions{Now: time.Unix(1700000000, 0)})
+	if err != nil {
+		t.Fatalf("daemon SelfSignedCertificate returned error: %v", err)
+	}
+
+	config := DaemonTLSConfig(EndpointConfig{
+		Certificate:         daemonCert,
+		PinnedPeerPublicKey: androidKey.Public().(ed25519.PublicKey),
+	})
+	err = config.VerifyPeerCertificate(nil, nil)
+	if !errors.Is(err, identity.ErrMissingPeerCertificate) {
+		t.Fatalf("err = %v, want ErrMissingPeerCertificate", err)
+	}
+}
+
+func TestQUICConfigDisables0RTT(t *testing.T) {
+	if QUICConfig().Allow0RTT {
+		t.Fatal("QUICConfig().Allow0RTT = true, want false")
+	}
+}
+
+func TestTLSConfigsDisableSessionTickets(t *testing.T) {
+	daemonKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x11}, ed25519.SeedSize))
+	androidKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x22}, ed25519.SeedSize))
+	daemonCert, err := identity.SelfSignedCertificate(daemonKey, identity.CertificateOptions{Now: time.Unix(1700000000, 0)})
+	if err != nil {
+		t.Fatalf("daemon SelfSignedCertificate returned error: %v", err)
+	}
+	androidCert, err := identity.SelfSignedCertificate(androidKey, identity.CertificateOptions{Now: time.Unix(1700000000, 0)})
+	if err != nil {
+		t.Fatalf("android SelfSignedCertificate returned error: %v", err)
+	}
+
+	daemonConfig := DaemonTLSConfig(EndpointConfig{
+		Certificate:         daemonCert,
+		PinnedPeerPublicKey: androidKey.Public().(ed25519.PublicKey),
+	})
+	if !daemonConfig.SessionTicketsDisabled {
+		t.Fatal("DaemonTLSConfig SessionTicketsDisabled = false, want true")
+	}
+
+	clientConfig := AndroidTLSConfig(EndpointConfig{
+		Certificate:         androidCert,
+		PinnedPeerPublicKey: daemonKey.Public().(ed25519.PublicKey),
+		ServerName:          "daemon.local",
+	})
+	if !clientConfig.SessionTicketsDisabled {
+		t.Fatal("AndroidTLSConfig SessionTicketsDisabled = false, want true")
+	}
+}
+
+func TestValidateConnectionStateRejectsBadALPNAnd0RTT(t *testing.T) {
+	if err := ValidateConnectionState(quic.ConnectionState{}); !errors.Is(err, ErrALPNMismatch) {
+		t.Fatalf("err = %v, want ErrALPNMismatch", err)
+	}
+	if err := ValidateConnectionState(quic.ConnectionState{
+		TLS:      tls.ConnectionState{NegotiatedProtocol: ALPN},
+		Used0RTT: true,
+	}); !errors.Is(err, ErrEarlyData) {
+		t.Fatalf("err = %v, want ErrEarlyData", err)
+	}
+}
+
 func TestReconnectLoopClosesConnections(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	before := runtime.NumGoroutine()
 	server, clientConfig := newHarness(t)
 	defer server.Close()
 
-	acceptDone := make(chan error, 1)
-	go func() {
-		for i := 0; i < 10; i++ {
+	for i := 0; i < 10; i++ {
+		accepted := make(chan *quic.Conn, 1)
+		acceptErr := make(chan error, 1)
+		go func() {
 			conn, err := server.Listener.Accept(ctx)
 			if err != nil {
-				acceptDone <- err
+				acceptErr <- err
 				return
 			}
-			if err := ValidateConnectionState(conn.ConnectionState()); err != nil {
-				acceptDone <- err
-				return
-			}
-			_ = conn.CloseWithError(0, "done")
-		}
-		acceptDone <- nil
-	}()
+			accepted <- conn
+		}()
 
-	for i := 0; i < 10; i++ {
 		conn, err := quic.DialAddr(ctx, server.Addr, clientConfig, QUICConfig())
 		if err != nil {
 			t.Fatalf("DialAddr iteration %d returned error: %v", i, err)
@@ -205,13 +286,23 @@ func TestReconnectLoopClosesConnections(t *testing.T) {
 		if err := ValidateConnectionState(conn.ConnectionState()); err != nil {
 			t.Fatalf("client connection state iteration %d: %v", i, err)
 		}
+
+		var serverConn *quic.Conn
+		select {
+		case serverConn = <-accepted:
+		case err := <-acceptErr:
+			t.Fatalf("Accept iteration %d returned error: %v", i, err)
+		case <-ctx.Done():
+			t.Fatalf("Accept iteration %d timed out: %v", i, ctx.Err())
+		}
+		if err := ValidateConnectionState(serverConn.ConnectionState()); err != nil {
+			t.Fatalf("server connection state iteration %d: %v", i, err)
+		}
+
 		if err := conn.CloseWithError(0, "done"); err != nil {
 			t.Fatalf("CloseWithError iteration %d returned error: %v", i, err)
 		}
-	}
-
-	if err := <-acceptDone; err != nil {
-		t.Fatalf("accept loop returned error: %v", err)
+		_ = serverConn.CloseWithError(0, "done")
 	}
 
 	deadline := time.Now().Add(2 * time.Second)
@@ -249,32 +340,23 @@ func newHarness(t *testing.T) (harnessServer, *tls.Config) {
 		t.Fatalf("android SelfSignedCertificate returned error: %v", err)
 	}
 
-	daemonSPKI, err := identity.PublicKeySPKI(daemonKey.Public().(ed25519.PublicKey))
-	if err != nil {
-		t.Fatalf("daemon PublicKeySPKI returned error: %v", err)
-	}
-	androidSPKI, err := identity.PublicKeySPKI(androidKey.Public().(ed25519.PublicKey))
-	if err != nil {
-		t.Fatalf("android PublicKeySPKI returned error: %v", err)
-	}
-
 	packetConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	if err != nil {
 		t.Fatalf("ListenUDP returned error: %v", err)
 	}
 
 	listener, err := quic.Listen(packetConn, DaemonTLSConfig(EndpointConfig{
-		Certificate:    daemonCert,
-		PinnedPeerSPKI: androidSPKI,
+		Certificate:         daemonCert,
+		PinnedPeerPublicKey: androidKey.Public().(ed25519.PublicKey),
 	}), QUICConfig())
 	if err != nil {
 		t.Fatalf("quic.Listen returned error: %v", err)
 	}
 
 	clientConfig := AndroidTLSConfig(EndpointConfig{
-		Certificate:    androidCert,
-		PinnedPeerSPKI: daemonSPKI,
-		ServerName:     "daemon.local",
+		Certificate:         androidCert,
+		PinnedPeerPublicKey: daemonKey.Public().(ed25519.PublicKey),
+		ServerName:          "daemon.local",
 	})
 
 	return harnessServer{Addr: packetConn.LocalAddr().String(), Listener: listener}, clientConfig

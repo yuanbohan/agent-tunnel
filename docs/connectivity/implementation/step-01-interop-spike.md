@@ -54,7 +54,7 @@ Relay, or Android product integration begins.
 - Added `internal/connectivity/identity` for Ed25519 self-signed X.509 certificate generation, SPKI extraction, and pinned peer-certificate verification.
 - Added `internal/connectivity/pairing` with the fixed 6-digit SAS algorithm from `docs/connectivity/protocol/pairing.md`, including length-prefixed canonical input helpers.
 - Added `internal/connectivity/frame` with `[type][QUIC varint payload_length][payload]` encoding, stream read/write helpers, unknown-frame tolerance, and truncation/oversize failures.
-- Added `internal/connectivity/transport` with pinned TLS 1.3 configs, required ALPN `tunnel-conn/1`, 0-RTT rejection checks, and a `quic-go` harness covering bidirectional and daemon-initiated unidirectional streams.
+- Added `internal/connectivity/transport` with pinned TLS 1.3 configs, raw Ed25519 peer-key inputs that derive SPKI pins internally, session-ticket resumption disabled, required ALPN `tunnel-conn/1`, 0-RTT rejection checks, and a `quic-go` harness covering bidirectional and daemon-initiated unidirectional streams.
 - Added `internal/connectivity/carrier` with an in-memory ordered packet relay exposed as `net.PacketConn`, proving `quic-go` can run over a WebSocket-like packet carrier abstraction.
 - Added `internal/connectivity/interop` as the Step 1 evidence directory. Its automated test is a Go pinned-QUIC interop harness; the README records the Android `quiche` manual gate that must be filled before Step 2.
 - Promoted `github.com/quic-go/quic-go v0.59.0` to a direct dependency because Step 1 now imports it directly.
@@ -62,6 +62,7 @@ Relay, or Android product integration begins.
 ## Verification Performed
 
 - `go test ./internal/connectivity/...`
+- `go test -race ./internal/connectivity/...`
 - `go test ./...`
 
 Covered scenarios:
@@ -70,11 +71,12 @@ Covered scenarios:
 - SPKI extraction and pin mismatch failure.
 - Frame round trip, unknown frame type tolerance, truncated varint rejection, oversized declared payload rejection, incomplete payload rejection, and raw byte payload read/write.
 - QUIC pinned mutual TLS handshake with ALPN `tunnel-conn/1`.
+- TLS config disables session-ticket resumption so reconnects cannot skip the pin check through cached TLS state.
 - ALPN mismatch rejection before application frames are processed.
 - Peer SPKI mismatch rejection.
 - 1 KB bidirectional stream exchange and 1 KB daemon-to-app unidirectional stream exchange.
 - 10-iteration reconnect loop without observable goroutine growth beyond the harness threshold.
-- Relay-like packet carrier forwarding and QUIC-over-carrier application plaintext opacity check.
+- Relay-like packet carrier forwarding, close/deadline behavior, and QUIC-over-carrier application plaintext opacity check.
 
 ## Known Gaps
 

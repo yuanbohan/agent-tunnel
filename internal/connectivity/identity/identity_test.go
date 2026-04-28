@@ -61,8 +61,8 @@ func TestVerifyPinnedCertificateRejectsMissingPeerCertificate(t *testing.T) {
 	}
 }
 
-func TestSelfSignedCertificateRejectsWrongPrivateKeyType(t *testing.T) {
-	_, err := SelfSignedCertificate(struct{}{}, CertificateOptions{})
+func TestSelfSignedCertificateRejectsInvalidPrivateKeyLength(t *testing.T) {
+	_, err := SelfSignedCertificate(ed25519.PrivateKey("not a valid private key"), CertificateOptions{})
 	if !errors.Is(err, ErrInvalidPrivateKey) {
 		t.Fatalf("err = %v, want ErrInvalidPrivateKey", err)
 	}

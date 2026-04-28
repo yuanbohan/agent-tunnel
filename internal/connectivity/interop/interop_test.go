@@ -20,6 +20,9 @@ import (
 func TestGoPinnedQUICInteropHarness(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	clientHello := bytes.Repeat([]byte("a"), 1024)
+	daemonHello := bytes.Repeat([]byte("d"), 1024)
+	daemonLive := bytes.Repeat([]byte("u"), 1024)
 
 	serverTLS, clientTLS := interopTLSConfigs(t)
 	packetConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
@@ -57,11 +60,11 @@ func TestGoPinnedQUICInteropHarness(t *testing.T) {
 			serverErr <- err
 			return
 		}
-		if hello.Type != frame.TypeHello || len(hello.Payload) < 1024 {
+		if hello.Type != frame.TypeHello || !bytes.Equal(hello.Payload, clientHello) {
 			serverErr <- io.ErrUnexpectedEOF
 			return
 		}
-		if err := frame.Write(control, frame.Frame{Type: frame.TypeHello, Payload: bytes.Repeat([]byte("d"), 1024)}); err != nil {
+		if err := frame.Write(control, frame.Frame{Type: frame.TypeHello, Payload: daemonHello}); err != nil {
 			serverErr <- err
 			return
 		}
@@ -75,7 +78,7 @@ func TestGoPinnedQUICInteropHarness(t *testing.T) {
 			serverErr <- err
 			return
 		}
-		if err := frame.Write(interactive, frame.Frame{Type: frame.TypeLiveBytes, Payload: bytes.Repeat([]byte("u"), 1024)}); err != nil {
+		if err := frame.Write(interactive, frame.Frame{Type: frame.TypeLiveBytes, Payload: daemonLive}); err != nil {
 			serverErr <- err
 			return
 		}
@@ -100,14 +103,14 @@ func TestGoPinnedQUICInteropHarness(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenStreamSync returned error: %v", err)
 	}
-	if err := frame.Write(control, frame.Frame{Type: frame.TypeHello, Payload: bytes.Repeat([]byte("a"), 1024)}); err != nil {
+	if err := frame.Write(control, frame.Frame{Type: frame.TypeHello, Payload: clientHello}); err != nil {
 		t.Fatalf("client frame.Write returned error: %v", err)
 	}
 	reply, err := frame.Read(control, frame.DefaultMaxPayload)
 	if err != nil {
 		t.Fatalf("client frame.Read returned error: %v", err)
 	}
-	if reply.Type != frame.TypeHello || len(reply.Payload) < 1024 {
+	if reply.Type != frame.TypeHello || !bytes.Equal(reply.Payload, daemonHello) {
 		t.Fatalf("reply frame = %#v, want 1KB hello", reply)
 	}
 
@@ -119,7 +122,7 @@ func TestGoPinnedQUICInteropHarness(t *testing.T) {
 	if err != nil {
 		t.Fatalf("interactive frame.Read returned error: %v", err)
 	}
-	if live.Type != frame.TypeLiveBytes || len(live.Payload) < 1024 {
+	if live.Type != frame.TypeLiveBytes || !bytes.Equal(live.Payload, daemonLive) {
 		t.Fatalf("interactive frame = %#v, want 1KB live bytes", live)
 	}
 
@@ -144,22 +147,13 @@ func interopTLSConfigs(t *testing.T) (*tls.Config, *tls.Config) {
 		t.Fatalf("android SelfSignedCertificate returned error: %v", err)
 	}
 
-	daemonSPKI, err := identity.PublicKeySPKI(daemonKey.Public().(ed25519.PublicKey))
-	if err != nil {
-		t.Fatalf("daemon PublicKeySPKI returned error: %v", err)
-	}
-	androidSPKI, err := identity.PublicKeySPKI(androidKey.Public().(ed25519.PublicKey))
-	if err != nil {
-		t.Fatalf("android PublicKeySPKI returned error: %v", err)
-	}
-
 	return transport.DaemonTLSConfig(transport.EndpointConfig{
-			Certificate:    daemonCert,
-			PinnedPeerSPKI: androidSPKI,
+			Certificate:         daemonCert,
+			PinnedPeerPublicKey: androidKey.Public().(ed25519.PublicKey),
 		}),
 		transport.AndroidTLSConfig(transport.EndpointConfig{
-			Certificate:    androidCert,
-			PinnedPeerSPKI: daemonSPKI,
-			ServerName:     "interop.daemon",
+			Certificate:         androidCert,
+			PinnedPeerPublicKey: daemonKey.Public().(ed25519.PublicKey),
+			ServerName:          "interop.daemon",
 		})
 }

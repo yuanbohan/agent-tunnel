@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"crypto/ed25519"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -20,36 +21,46 @@ var (
 )
 
 type EndpointConfig struct {
-	Certificate    tls.Certificate
-	PinnedPeerSPKI []byte
-	ServerName     string
+	Certificate         tls.Certificate
+	PinnedPeerPublicKey ed25519.PublicKey
+	ServerName          string
 }
 
 func DaemonTLSConfig(config EndpointConfig) *tls.Config {
+	pinnedPeerSPKI, pinnedPeerSPKIErr := identity.PublicKeySPKI(config.PinnedPeerPublicKey)
 	return &tls.Config{
-		MinVersion: tls.VersionTLS13,
-		NextProtos: []string{ALPN},
+		MinVersion:             tls.VersionTLS13,
+		NextProtos:             []string{ALPN},
+		SessionTicketsDisabled: true,
 		Certificates: []tls.Certificate{
 			config.Certificate,
 		},
 		ClientAuth: tls.RequireAnyClientCert,
 		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-			return identity.VerifyPinnedCertificate(rawCerts, config.PinnedPeerSPKI)
+			if pinnedPeerSPKIErr != nil {
+				return pinnedPeerSPKIErr
+			}
+			return identity.VerifyPinnedCertificate(rawCerts, pinnedPeerSPKI)
 		},
 	}
 }
 
 func AndroidTLSConfig(config EndpointConfig) *tls.Config {
+	pinnedPeerSPKI, pinnedPeerSPKIErr := identity.PublicKeySPKI(config.PinnedPeerPublicKey)
 	return &tls.Config{
-		MinVersion:         tls.VersionTLS13,
-		NextProtos:         []string{ALPN},
-		ServerName:         config.ServerName,
-		InsecureSkipVerify: true,
+		MinVersion:             tls.VersionTLS13,
+		NextProtos:             []string{ALPN},
+		ServerName:             config.ServerName,
+		InsecureSkipVerify:     true,
+		SessionTicketsDisabled: true,
 		Certificates: []tls.Certificate{
 			config.Certificate,
 		},
 		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-			return identity.VerifyPinnedCertificate(rawCerts, config.PinnedPeerSPKI)
+			if pinnedPeerSPKIErr != nil {
+				return pinnedPeerSPKIErr
+			}
+			return identity.VerifyPinnedCertificate(rawCerts, pinnedPeerSPKI)
 		},
 	}
 }
