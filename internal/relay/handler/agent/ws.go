@@ -147,7 +147,11 @@ func Handle(registry *session.Registry, deviceRegistry *relaydevice.Registry) gi
 					}
 				case "snapshot_done":
 					if frame.ClientID != "" {
-						registry.RouteSnapshotDoneIfOwner(register.Session.SessionID, peer, frame.ClientID)
+						registry.RouteSnapshotDoneIfOwner(register.Session.SessionID, peer, frame.ClientID, frame.SubmitAnchors...)
+					}
+				case "submit_anchor":
+					if frame.ClientID != "" && frame.SubmitAnchor != nil {
+						registry.RouteSubmitAnchorIfOwner(register.Session.SessionID, peer, frame.ClientID, *frame.SubmitAnchor)
 					}
 				case "attach_close":
 					if frame.ClientID != "" {

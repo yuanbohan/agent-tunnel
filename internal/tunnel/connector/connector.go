@@ -80,10 +80,17 @@ type Connector struct {
 	attachMu     sync.Mutex
 	attached     map[string]struct{}
 	writeTimeout time.Duration
+	inputMu      sync.Mutex
+	inputScanner submitInputScanner
 
 	connMu       sync.Mutex
 	activeConn   connectionCloser
 	overflowChan chan error
+}
+
+type submitInputScanner struct {
+	inBracketedPaste bool
+	pending          []byte
 }
 
 type outboundFrame struct {
@@ -140,6 +147,9 @@ func (c *Connector) BindHub(hub *session.Hub) {
 	}
 	hub.AddResizeListener("connector", func(cols, rows int) {
 		c.applyResize(cols, rows, true)
+	})
+	hub.SetInputObserver(func(data []byte) func(error) {
+		return c.observeInputForSubmitAnchors(data)
 	})
 
 	c.hubMu.Lock()
@@ -556,9 +566,160 @@ func (c *Connector) deliverInputToHub(hub *session.Hub, frame protocol.AgentFram
 	}
 }
 
+// observeInputForSubmitAnchors is called by the Hub before each PTY input
+// write. It counts carriage returns (outside bracketed paste), records submit
+// anchors into the mirror, and returns a callback the Hub invokes after the
+// write succeeds or fails. On failure, recorded anchors are removed and the
+// scanner state is rolled back.
+//
+// Anchor recording and the PTY write are not atomic: after recordSubmitAnchors
+// releases attachMu, concurrent output may advance the mirror before the PTY
+// write completes. This is acceptable because mirror mutations are serialized,
+// xterm markers track later buffer shifts, and failed writes remove the anchors
+// and roll back scanner state.
+func (c *Connector) observeInputForSubmitAnchors(data []byte) func(error) {
+	count, restoreScanner := c.countSubmitEnters(data)
+	if count == 0 {
+		return func(err error) {
+			if err != nil {
+				restoreScanner()
+			}
+		}
+	}
+
+	anchors := c.recordSubmitAnchors(count)
+	return func(err error) {
+		if err == nil {
+			c.emitSubmitAnchors(anchors)
+			return
+		}
+		restoreScanner()
+		c.removeSubmitAnchors(anchors)
+	}
+}
+
+func (c *Connector) countSubmitEnters(data []byte) (int, func()) {
+	c.inputMu.Lock()
+	defer c.inputMu.Unlock()
+
+	previous := c.inputScanner.clone()
+	count := c.inputScanner.count(data)
+	return count, func() {
+		c.inputMu.Lock()
+		defer c.inputMu.Unlock()
+		c.inputScanner = previous
+	}
+}
+
+func (c *Connector) recordSubmitAnchors(count int) []session.SubmitAnchor {
+	c.attachMu.Lock()
+	defer c.attachMu.Unlock()
+
+	anchors := make([]session.SubmitAnchor, 0, count)
+	for range count {
+		if anchor, ok := c.mirror.RecordSubmitAnchor(); ok {
+			anchors = append(anchors, anchor)
+		}
+	}
+	return anchors
+}
+
+func (c *Connector) removeSubmitAnchors(anchors []session.SubmitAnchor) {
+	if len(anchors) == 0 {
+		return
+	}
+
+	c.attachMu.Lock()
+	defer c.attachMu.Unlock()
+	for _, anchor := range anchors {
+		c.mirror.RemoveSubmitAnchor(anchor.ID)
+	}
+}
+
+func (c *Connector) emitSubmitAnchors(anchors []session.SubmitAnchor) {
+	if len(anchors) == 0 {
+		return
+	}
+
+	c.attachMu.Lock()
+	attached := make([]string, 0, len(c.attached))
+	for clientID := range c.attached {
+		attached = append(attached, clientID)
+	}
+	c.attachMu.Unlock()
+
+	if len(attached) == 0 {
+		return
+	}
+
+	for _, anchor := range protocolSubmitAnchors(anchors) {
+		for _, clientID := range attached {
+			c.enqueueEphemeralJSON(protocol.SubmitAnchorFrame(clientID, anchor))
+		}
+	}
+}
+
+func (s submitInputScanner) clone() submitInputScanner {
+	return submitInputScanner{
+		inBracketedPaste: s.inBracketedPaste,
+		pending:          append([]byte(nil), s.pending...),
+	}
+}
+
+func (s *submitInputScanner) count(data []byte) int {
+	const (
+		bracketedPasteStart = "\x1b[200~"
+		bracketedPasteEnd   = "\x1b[201~"
+	)
+
+	buffer := append(append([]byte(nil), s.pending...), data...)
+	s.pending = nil
+	count := 0
+
+	for i := 0; i < len(buffer); {
+		remaining := buffer[i:]
+		if s.inBracketedPaste {
+			if hasPrefixString(remaining, bracketedPasteEnd) {
+				s.inBracketedPaste = false
+				i += len(bracketedPasteEnd)
+				continue
+			}
+			if isPartialPrefix(remaining, bracketedPasteEnd) {
+				s.pending = append([]byte(nil), remaining...)
+				break
+			}
+			i++
+			continue
+		}
+
+		if hasPrefixString(remaining, bracketedPasteStart) {
+			s.inBracketedPaste = true
+			i += len(bracketedPasteStart)
+			continue
+		}
+		if isPartialPrefix(remaining, bracketedPasteStart) {
+			s.pending = append([]byte(nil), remaining...)
+			break
+		}
+		if buffer[i] == '\r' {
+			count++
+		}
+		i++
+	}
+	return count
+}
+
+func hasPrefixString(data []byte, prefix string) bool {
+	return len(data) >= len(prefix) && string(data[:len(prefix)]) == prefix
+}
+
+func isPartialPrefix(data []byte, prefix string) bool {
+	return len(data) < len(prefix) && len(data) > 0 && prefix[:len(data)] == string(data)
+}
+
 func (c *Connector) handleAttachOpen(conn *websocket.Conn, clientID string) error {
 	c.attachMu.Lock()
-	snapshot, cols, rows := c.mirror.Snapshot()
+	snapshot, cols, rows, anchors := c.mirror.SnapshotWithSubmitAnchors()
 	c.attached[clientID] = struct{}{}
 	c.attachMu.Unlock()
 
@@ -575,7 +736,7 @@ func (c *Connector) handleAttachOpen(conn *websocket.Conn, clientID string) erro
 		}
 	}
 	return c.writeOutboundFrame(conn, outboundFrame{
-		json: protocol.SnapshotDoneFrame(clientID),
+		json: protocol.SnapshotDoneFrame(clientID, protocolSubmitAnchors(anchors)...),
 	})
 }
 
@@ -616,6 +777,21 @@ func (c *Connector) enqueueEphemeralBinary(payload []byte) {
 	if !c.tryEnqueue(c.ephemeral, outboundFrame{binary: append([]byte(nil), payload...)}) {
 		c.signalOverflow(errOutboundBackpressure)
 	}
+}
+
+func protocolSubmitAnchors(anchors []session.SubmitAnchor) []protocol.SubmitAnchor {
+	if len(anchors) == 0 {
+		return nil
+	}
+	out := make([]protocol.SubmitAnchor, len(anchors))
+	for i, anchor := range anchors {
+		out[i] = protocol.SubmitAnchor{
+			ID:          anchor.ID,
+			Line:        anchor.Line,
+			SubmittedAt: anchor.SubmittedAt,
+		}
+	}
+	return out
 }
 
 func (c *Connector) clearConnectionState() {

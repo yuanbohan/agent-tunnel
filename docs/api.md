@@ -804,6 +804,8 @@ Success:
 
 - HTTP upgrades to WebSocket
 - relay sends `attached`, then snapshot bytes, then `snapshot_done`, then live PTY bytes
+- `snapshot_done` may include bounded submit anchors that map into the just-restored snapshot buffer
+- after `snapshot_done`, relay may send live `submit_anchor` controls for new submit Enter events while the client remains attached
 
 Relay -> client control message examples:
 
@@ -822,9 +824,33 @@ Relay -> client control message examples:
 
 ```json
 {
-  "type": "snapshot_done"
+  "type": "snapshot_done",
+  "submit_anchors": [
+    {
+      "id": "submit-1",
+      "line": 42,
+      "submitted_at": 1775131200
+    }
+  ]
 }
 ```
+
+`submit_anchors` is optional and omitted when no valid anchors are available. Each anchor is a content-free navigation hint for a local or remote input event that sent an `ENTER` carriage return to the PTY outside a bracketed-paste region. `id` is an opaque session-local identifier that is stable only while the running agent retains that anchor; clients must not treat it as durable across process exit, a new `session_id`, or anchor expiry. `line` is a 0-based row in the terminal buffer after applying the preceding snapshot bytes, and `submitted_at` is a Unix timestamp in integer seconds. Anchors are bounded agent-local metadata; at most 256 valid anchors are forwarded, invalid anchors are omitted, and anchors are not durable transcript history or exact Codex-rendered message-block positions.
+
+`submit_anchor`
+
+```json
+{
+  "type": "submit_anchor",
+  "submit_anchor": {
+    "id": "submit-2",
+    "line": 45,
+    "submitted_at": 1775131300
+  }
+}
+```
+
+`submit_anchor` is a live incremental control message for clients that are already attached. It uses the same content-free anchor shape and same Tunnel-owned retention/id model as `snapshot_done.submit_anchors`, but `line` is interpreted against the client's current terminal buffer when the live event is received. Fresh `snapshot_done.submit_anchors` remains the reconciliation point after reconnect, missed live events, or local provisional dots.
 
 `resize`
 
@@ -862,6 +888,8 @@ Relay -> client binary frames:
 - bytes after `snapshot_done` are live PTY output
 - frame boundaries are not semantic terminal boundaries
 - clients should keep local terminal scrollback enabled if they want those replayed snapshot lines to remain available after restore
+- clients should interpret `snapshot_done.submit_anchors` only after applying the preceding snapshot bytes, and should ignore unknown control fields for forward compatibility
+- clients should interpret live `submit_anchor.line` against the current attached terminal state when the control is received, and reconcile from the next fresh `snapshot_done.submit_anchors` after reconnect
 
 Client -> relay input messages:
 
@@ -887,7 +915,9 @@ Client -> relay input messages:
 Notes:
 
 - input messages do not include `session_id`; the websocket path already scopes the session
-- `input_text { "submit": true }` means "text, then one trailing carriage return" as one serialized PTY-owner operation
+- `input_text { "submit": true }` means "text, then one trailing carriage return" as one serialized PTY-owner operation; the trailing carriage return may create a bounded agent-local submit anchor for future fresh attaches and currently attached clients
+- `input_text` with `submit: false` does not append Enter, but any carriage return already present in `text` outside a bracketed-paste region is still Enter-bearing PTY input and may create an anchor
+- `input_key { "key": "ENTER" }` sends the same carriage return and may also create a bounded agent-local submit anchor for snapshots and live attached clients
 - `input_key` is only for non-text special keys
 
 Currently supported `input_key` values:

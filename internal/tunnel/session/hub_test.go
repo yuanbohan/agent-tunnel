@@ -2,6 +2,7 @@ package session
 
 import (
 	"bytes"
+	"errors"
 	"reflect"
 	"testing"
 	"time"
@@ -99,6 +100,79 @@ func TestHubWriteInputSequencePreservesOrderAndCopiesChunks(t *testing.T) {
 	}
 	if string(got[1]) != "\r" {
 		t.Fatalf("second chunk = %q, want \\r", string(got[1]))
+	}
+}
+
+func TestHubWriteInputNotifiesInputObserverWithCopyAndResult(t *testing.T) {
+	events := make([]string, 0, 3)
+	hub := NewHub(func(data []byte) error {
+		events = append(events, "write:"+string(data))
+		return nil
+	}, func(int, int) error { return nil })
+	hub.SetInputObserver(func(data []byte) func(error) {
+		events = append(events, "observe:"+string(data))
+		if len(data) > 0 {
+			data[0] = 'x'
+		}
+		return func(err error) {
+			if err != nil {
+				events = append(events, "done:error")
+				return
+			}
+			events = append(events, "done:ok")
+		}
+	})
+
+	input := []byte("hello")
+	if err := hub.WriteInput(input); err != nil {
+		t.Fatalf("WriteInput returned error: %v", err)
+	}
+	input[0] = 'j'
+
+	if !reflect.DeepEqual(events, []string{"observe:hello", "write:hello", "done:ok"}) {
+		t.Fatalf("events = %#v, want observer before write and completion after write", events)
+	}
+}
+
+func TestHubWriteInputNotifiesInputObserverOnWriteError(t *testing.T) {
+	writeErr := errors.New("stop")
+	events := make([]string, 0, 3)
+	hub := NewHub(func(data []byte) error {
+		events = append(events, "write:"+string(data))
+		return writeErr
+	}, func(int, int) error { return nil })
+	hub.SetInputObserver(func(data []byte) func(error) {
+		events = append(events, "observe:"+string(data))
+		return func(err error) {
+			if !errors.Is(err, writeErr) {
+				t.Fatalf("completion error = %v, want %v", err, writeErr)
+			}
+			events = append(events, "done:error")
+		}
+	})
+
+	if err := hub.WriteInput([]byte("hello")); !errors.Is(err, writeErr) {
+		t.Fatalf("WriteInput error = %v, want %v", err, writeErr)
+	}
+	if !reflect.DeepEqual(events, []string{"observe:hello", "write:hello", "done:error"}) {
+		t.Fatalf("events = %#v, want observer before failed write and completion after write", events)
+	}
+}
+
+func TestHubClearInputObserverStopsNotifications(t *testing.T) {
+	calls := 0
+	hub := NewHub(func([]byte) error { return nil }, func(int, int) error { return nil })
+	hub.SetInputObserver(func([]byte) func(error) {
+		calls++
+		return nil
+	})
+	hub.SetInputObserver(nil)
+
+	if err := hub.WriteInput([]byte("hello")); err != nil {
+		t.Fatalf("WriteInput returned error: %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("listener calls = %d, want 0 after removal", calls)
 	}
 }
 
