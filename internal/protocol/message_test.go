@@ -178,6 +178,50 @@ func TestSnapshotDoneMessageWithSubmitAnchorsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSubmitAnchorFrameRoundTrip(t *testing.T) {
+	anchor := SubmitAnchor{ID: "submit-1", Line: 3, SubmittedAt: 1775131200}
+	frame := SubmitAnchorFrame("client-1", anchor)
+
+	raw, err := json.Marshal(frame)
+	if err != nil {
+		t.Fatalf("Marshal returned error: %v", err)
+	}
+
+	var decoded AgentFrame
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+
+	if decoded.Type != "submit_anchor" || decoded.ClientID != "client-1" {
+		t.Fatalf("decoded = %#v, want submit_anchor client-1", decoded)
+	}
+	if decoded.SubmitAnchor == nil || *decoded.SubmitAnchor != anchor {
+		t.Fatalf("submit_anchor = %#v, want %#v", decoded.SubmitAnchor, anchor)
+	}
+}
+
+func TestSubmitAnchorMessageRoundTrip(t *testing.T) {
+	anchor := SubmitAnchor{ID: "submit-1", Line: 3, SubmittedAt: 1775131200}
+	msg := SubmitAnchorMessage(anchor)
+
+	raw, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("Marshal returned error: %v", err)
+	}
+
+	var decoded AttachControlMessage
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+
+	if decoded.Type != "submit_anchor" {
+		t.Fatalf("decoded = %#v, want submit_anchor", decoded)
+	}
+	if decoded.SubmitAnchor == nil || *decoded.SubmitAnchor != anchor {
+		t.Fatalf("submit_anchor = %#v, want %#v", decoded.SubmitAnchor, anchor)
+	}
+}
+
 func TestSnapshotDoneMessagesOmitEmptySubmitAnchors(t *testing.T) {
 	agentRaw, err := json.Marshal(SnapshotDoneFrame("client-1"))
 	if err != nil {
@@ -193,6 +237,30 @@ func TestSnapshotDoneMessagesOmitEmptySubmitAnchors(t *testing.T) {
 	}
 	if strings.Contains(string(controlRaw), "submit_anchors") {
 		t.Fatalf("control json = %s, did not expect submit_anchors", controlRaw)
+	}
+}
+
+func TestSubmitAnchorMessagesOmitInvalidSubmitAnchor(t *testing.T) {
+	for _, anchor := range []SubmitAnchor{
+		{ID: "", Line: 1, SubmittedAt: 1775131200},
+		{ID: "negative-line", Line: -1, SubmittedAt: 1775131200},
+		{ID: "negative-time", Line: 1, SubmittedAt: -1},
+	} {
+		agentRaw, err := json.Marshal(SubmitAnchorFrame("client-1", anchor))
+		if err != nil {
+			t.Fatalf("Marshal agent frame returned error: %v", err)
+		}
+		if strings.Contains(string(agentRaw), `"submit_anchor":`) {
+			t.Fatalf("agent json = %s, did not expect submit_anchor", agentRaw)
+		}
+
+		controlRaw, err := json.Marshal(SubmitAnchorMessage(anchor))
+		if err != nil {
+			t.Fatalf("Marshal control message returned error: %v", err)
+		}
+		if strings.Contains(string(controlRaw), `"submit_anchor":`) {
+			t.Fatalf("control json = %s, did not expect submit_anchor", controlRaw)
+		}
 	}
 }
 

@@ -576,13 +576,14 @@ func (c *Connector) observeInputForSubmitAnchors(data []byte) func(error) {
 		}
 	}
 
-	ids := c.recordSubmitAnchors(count)
+	anchors := c.recordSubmitAnchors(count)
 	return func(err error) {
 		if err == nil {
+			c.emitSubmitAnchors(anchors)
 			return
 		}
 		restoreScanner()
-		c.removeSubmitAnchors(ids)
+		c.removeSubmitAnchors(anchors)
 	}
 }
 
@@ -599,28 +600,51 @@ func (c *Connector) countSubmitEnters(data []byte) (int, func()) {
 	}
 }
 
-func (c *Connector) recordSubmitAnchors(count int) []string {
+func (c *Connector) recordSubmitAnchors(count int) []session.SubmitAnchor {
 	c.attachMu.Lock()
 	defer c.attachMu.Unlock()
 
-	ids := make([]string, 0, count)
+	anchors := make([]session.SubmitAnchor, 0, count)
 	for range count {
-		if id := c.mirror.RecordSubmitAnchor(); id != "" {
-			ids = append(ids, id)
+		if anchor, ok := c.mirror.RecordSubmitAnchor(); ok {
+			anchors = append(anchors, anchor)
 		}
 	}
-	return ids
+	return anchors
 }
 
-func (c *Connector) removeSubmitAnchors(ids []string) {
-	if len(ids) == 0 {
+func (c *Connector) removeSubmitAnchors(anchors []session.SubmitAnchor) {
+	if len(anchors) == 0 {
 		return
 	}
 
 	c.attachMu.Lock()
 	defer c.attachMu.Unlock()
-	for _, id := range ids {
-		c.mirror.RemoveSubmitAnchor(id)
+	for _, anchor := range anchors {
+		c.mirror.RemoveSubmitAnchor(anchor.ID)
+	}
+}
+
+func (c *Connector) emitSubmitAnchors(anchors []session.SubmitAnchor) {
+	if len(anchors) == 0 {
+		return
+	}
+
+	c.attachMu.Lock()
+	attached := make([]string, 0, len(c.attached))
+	for clientID := range c.attached {
+		attached = append(attached, clientID)
+	}
+	c.attachMu.Unlock()
+
+	if len(attached) == 0 {
+		return
+	}
+
+	for _, anchor := range protocolSubmitAnchors(anchors) {
+		for _, clientID := range attached {
+			c.enqueueEphemeralJSON(protocol.SubmitAnchorFrame(clientID, anchor))
+		}
 	}
 }
 

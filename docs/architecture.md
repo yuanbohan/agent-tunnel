@@ -156,6 +156,7 @@ client opens /api/sessions/:id/attach/ws
 → relay forwards snapshot bytes as binary frames
 → relay sends snapshot_done, optionally with submit_anchors
 → relay forwards subsequent live PTY bytes as binary frames
+→ relay forwards live submit_anchor controls for newly recorded submit Enter events while clients remain attached
 ```
 
 The critical invariant is gap-free handoff: there must be no byte gap between the snapshot point and the first later live bytes for that attached client.
@@ -166,9 +167,9 @@ The terminal mirror exists to make fresh snapshot recovery precise without trans
 
 - it is fed from the same PTY output stream seen by the local terminal
 - it preserves the current terminal state and up to 10,000 lines of in-memory normal-buffer scrollback, not durable transcript history
-- it records bounded local and remote `ENTER` submit anchors as content-free navigation metadata when they occur outside bracketed-paste regions and still map into retained snapshot context
+- it records bounded local and remote `ENTER` submit anchors as content-free navigation metadata when they occur outside bracketed-paste regions and still map into retained terminal context
 - it is the source of snapshot bytes on attach
-- it fans out subsequent live bytes to attached clients after the snapshot boundary
+- it fans out subsequent live bytes and live submit-anchor controls to attached clients after the snapshot boundary
 - it follows PTY resize updates owned by the local terminal session
 
 The current implementation uses `github.com/gitpod-io/xterm-go`, an xterm-compatible headless engine with serialization support, so the snapshot path can restore alternate screen state, colors, cursor state, and other modern TUI behavior without a hand-written ANSI screen walker.
@@ -189,7 +190,7 @@ client input message
 → PTY stdin
 ```
 
-Local-terminal input and remote attach input share the same submit-anchor boundary: each `ENTER` carriage return written to the PTY outside a bracketed-paste region may create a bounded agent-local submit anchor for later fresh attaches. These anchors are capped at 256 valid entries and are not prompt text, transcript records, or exact TUI-rendered message markers. This keeps terminal behavior and navigation metadata close to the PTY owner and avoids embedding terminal emulation inside the relay.
+Local-terminal input and remote attach input share the same submit-anchor boundary: each `ENTER` carriage return written to the PTY outside a bracketed-paste region may create a bounded agent-local submit anchor for later fresh attaches and live attached clients. These anchors are capped at 256 valid entries and are not prompt text, transcript records, or exact TUI-rendered message markers. This keeps terminal behavior and navigation metadata close to the PTY owner and avoids embedding terminal emulation inside the relay.
 
 ## Resize Flow
 

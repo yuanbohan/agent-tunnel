@@ -171,6 +171,31 @@ func TestTerminalMirrorSnapshotIncludesSubmitAnchors(t *testing.T) {
 	}
 }
 
+func TestTerminalMirrorRecordSubmitAnchorReturnsLiveAnchor(t *testing.T) {
+	mirror := NewTerminalMirror(20, 4)
+	mirror.now = func() time.Time { return time.Unix(1775131200, 0) }
+	mirror.WriteOutput([]byte("prompt"))
+
+	live, ok := mirror.RecordSubmitAnchor()
+	if !ok {
+		t.Fatal("RecordSubmitAnchor returned ok=false, want live anchor")
+	}
+	if live.ID != "submit-1" {
+		t.Fatalf("ID = %q, want submit-1", live.ID)
+	}
+	if live.Line < 0 {
+		t.Fatalf("Line = %d, want non-negative line", live.Line)
+	}
+	if live.SubmittedAt != 1775131200 {
+		t.Fatalf("SubmittedAt = %d, want 1775131200", live.SubmittedAt)
+	}
+
+	_, _, _, snapshotAnchors := mirror.SnapshotWithSubmitAnchors()
+	if len(snapshotAnchors) != 1 || snapshotAnchors[0] != live {
+		t.Fatalf("snapshot anchors = %#v, want live anchor %#v", snapshotAnchors, live)
+	}
+}
+
 func TestTerminalMirrorSnapshotMapsSubmitAnchorAfterScrollbackTrim(t *testing.T) {
 	mirror := NewTerminalMirror(20, 3)
 	mirror.now = func() time.Time { return time.Unix(1775131200, 0) }
@@ -282,7 +307,9 @@ func TestTerminalMirrorDoesNotRecordSubmitAnchorsInAltBuffer(t *testing.T) {
 	mirror.now = func() time.Time { return time.Unix(1775131200, 0) }
 	mirror.WriteOutput([]byte("\x1b[?1049h"))
 	mirror.WriteOutput([]byte("alt prompt"))
-	mirror.RecordSubmitAnchor()
+	if anchor, ok := mirror.RecordSubmitAnchor(); ok {
+		t.Fatalf("RecordSubmitAnchor = %#v, true; want no live anchor in alt buffer", anchor)
+	}
 
 	_, _, _, anchors := mirror.SnapshotWithSubmitAnchors()
 	if len(anchors) != 0 {

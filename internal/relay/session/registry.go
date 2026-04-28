@@ -413,6 +413,30 @@ func (r *Registry) RouteSnapshotDoneIfOwner(sessionID string, owner AgentPeer, c
 	return true
 }
 
+func (r *Registry) RouteSubmitAnchorIfOwner(sessionID string, owner AgentPeer, clientID string, anchor protocol.SubmitAnchor) bool {
+	msg := protocol.SubmitAnchorMessage(anchor)
+	if msg.SubmitAnchor == nil {
+		return false
+	}
+
+	r.mu.RLock()
+	live, ok := r.sessions[sessionID]
+	if !ok || live.peer != owner {
+		r.mu.RUnlock()
+		return false
+	}
+	client, ok := live.attached[clientID]
+	r.mu.RUnlock()
+
+	if !ok {
+		return false
+	}
+	if err := client.SendControl(msg); err != nil {
+		return r.DetachClient(sessionID, clientID, "slow_client")
+	}
+	return true
+}
+
 func (r *Registry) RouteResizeIfOwner(sessionID string, owner AgentPeer, cols, rows int) bool {
 	r.mu.RLock()
 	live, ok := r.sessions[sessionID]

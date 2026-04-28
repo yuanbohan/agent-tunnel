@@ -9,7 +9,7 @@ topic: submit-anchor-index
 
 When a user interacts with a web coding agent from the mobile client, the agent can produce long terminal output. After several turns, the user has trouble finding where they submitted an earlier prompt and quickly jumping back to that part of the session.
 
-The first version should help the mobile client navigate to user-submitted interaction entry points without turning the relay into transcript storage, without parsing Codex-specific UI output, and without promising durable history beyond the existing agent-local bounded snapshot model.
+The first version should help the mobile client navigate to user-submitted interaction entry points without turning the relay into transcript storage, without parsing Codex-specific UI output, and without promising durable history beyond the existing agent-local bounded snapshot model. A fresh attach recovers the current bounded anchor set from the snapshot path, while an already attached client receives live anchor events for new submits so online dots do not lag until the next reconnect.
 
 ---
 
@@ -38,7 +38,14 @@ The first version should help the mobile client navigate to user-submitted inter
   - **Outcome:** The user can jump to recent submit positions that survived within the bounded snapshot context.
   - **Covered by:** R3, R5, R6
 
-- F3. Anchor expires with scrollback
+- F3. Live attached client receives a new anchor
+  - **Trigger:** A mobile client is already attached while the user submits from the local terminal, the same mobile client, or another attached client.
+  - **Actors:** A1, A2, A3, A4
+  - **Steps:** The Tunnel agent records the successful submit in its unified anchor index, emits a live `submit_anchor` control event for currently attached clients, and the relay routes it without inspecting terminal bytes or persisting anchor state.
+  - **Outcome:** The online mobile client can add a jump dot immediately without waiting for a refresh or reattach.
+  - **Covered by:** R4, R8, R13, R14
+
+- F4. Anchor expires with scrollback
   - **Trigger:** The session produces enough output that an older anchor falls outside the agent-local retained context.
   - **Actors:** A1, A2, A3
   - **Steps:** The agent drops or omits the expired anchor, and the mobile client no longer shows a jump dot for it on fresh attach.
@@ -59,6 +66,8 @@ The first version should help the mobile client navigate to user-submitted inter
 - R5. A fresh attach or reattach must allow the mobile client to recover currently valid submit anchors along with the terminal snapshot context.
 - R6. Anchors that no longer map into retained terminal context must not be shown as jump targets after refresh or reattach.
 - R7. The mobile client must be able to render multiple anchors for one session and jump to the corresponding retained terminal location.
+- R13. While a mobile client is already attached, the Tunnel agent must send live submit-anchor events for newly recorded successful submit Enter events so online clients can update dots without reconnecting.
+- R14. The Tunnel agent remains the single owner of anchor creation, ids, retention, and expiry; mobile clients may render live events, but must reconcile against snapshot anchors after reconnect.
 
 **Relay and Protocol Boundaries**
 - R8. The relay must remain content-opaque. It may route anchor metadata if needed, but it must not parse terminal bytes, derive input locations from output, or store transcript history.
@@ -77,12 +86,13 @@ The first version should help the mobile client navigate to user-submitted inter
 - AE2. **Covers R3.** Given a user submits once from the local terminal and once from mobile Remote Streaming with `input_key ENTER`, when the mobile client refreshes, both retained submits can appear as dots.
 - AE3. **Covers R5, R6, R9.** Given an older submit anchor has fallen outside the retained terminal context, when the mobile client reattaches, that anchor is omitted rather than shown as a broken or stale jump target.
 - AE4. **Covers R8, R10.** Given the relay handles the attach websocket, when anchors are delivered to the mobile client, the relay does not inspect terminal bytes or persist transcript content.
+- AE5. **Covers R13, R14.** Given a mobile client is already attached and a submit happens from the desktop or any attached client, when the submit write succeeds, the attached mobile client receives a live `submit_anchor` event and can add a dot without refreshing.
 
 ---
 
 ## Success Criteria
 
-- A mobile user can quickly jump between recent submitted prompts in a long coding-agent session after refresh or reattach, regardless of whether those submits came from the local terminal or mobile attach input.
+- A mobile user can quickly jump between recent submitted prompts in a long coding-agent session while online and after refresh or reattach, regardless of whether those submits came from the local terminal or mobile attach input.
 - The implementation preserves the current relay boundary: no relay-owned terminal emulation, transcript storage, or durable replay API.
 - Downstream planning can proceed without inventing the v1 anchor meaning, input-source scope, or history boundary.
 
@@ -104,6 +114,7 @@ The first version should help the mobile client navigate to user-submitted inter
 
 - Use submit Enter anchors for v1: this gives the user the navigation affordance they need while keeping local terminal and mobile input behavior consistent at the PTY input boundary.
 - Keep anchors agent-local and bounded: this matches the existing terminal mirror ownership model and avoids changing Relay into a stateful transcript service.
+- Deliver anchors through both recovery and live paths: `snapshot_done.submit_anchors` gives full bounded state on attach, while live `submit_anchor` events keep already attached clients current.
 - Treat Codex-rendered message anchors as a later semantic-marker problem: precise TUI message locations require cooperation from the TUI rather than inference from raw terminal bytes.
 
 ---
@@ -119,11 +130,14 @@ The first version should help the mobile client navigate to user-submitted inter
 
 ## Outstanding Questions
 
+### Resolved
+
+- [Affects R5, R8, R13][Technical] Anchor metadata uses two attach-scoped delivery paths: `snapshot_done.submit_anchors` for fresh attach recovery and live `submit_anchor` control events for already attached clients.
+
 ### Deferred to Planning
 
 - [Affects R4, R5][Technical] What exact line-position representation should the agent expose so mobile can map an anchor into its terminal emulator after snapshot restore?
 - [Affects R4, R6][Technical] Should anchor expiry be driven by terminal buffer markers, explicit snapshot range checks, or another mirror-owned mechanism?
-- [Affects R5, R8][Technical] Should anchor metadata be delivered as a new attach control message, included near `snapshot_done`, or exposed through another attach-scoped mechanism?
 - [Affects R11][Technical] What visual treatment should the mobile scrollbar dots use when anchors are dense or near each other?
 
 ---

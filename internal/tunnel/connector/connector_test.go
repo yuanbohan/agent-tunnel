@@ -633,6 +633,140 @@ func TestConnectorDoesNotRecordAnchorsForNonSubmitInput(t *testing.T) {
 	}
 }
 
+func TestConnectorEmitsLiveSubmitAnchorForSuccessfulSubmitInput(t *testing.T) {
+	tests := []struct {
+		name string
+		send func(*Connector, *session.Hub) error
+	}{
+		{
+			name: "local terminal enter",
+			send: func(_ *Connector, hub *session.Hub) error {
+				return hub.WriteInput([]byte("local\r"))
+			},
+		},
+		{
+			name: "remote input_key enter",
+			send: func(c *Connector, hub *session.Hub) error {
+				c.deliverInputToHub(hub, protocol.ForwardInputKeyFrame("client-1", "ENTER"))
+				return nil
+			},
+		},
+		{
+			name: "remote input_text submit",
+			send: func(c *Connector, hub *session.Hub) error {
+				c.deliverInputToHub(hub, protocol.ForwardInputTextFrame("client-1", "", true))
+				return nil
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			hub := session.NewHub(func([]byte) error { return nil }, func(int, int) error { return nil })
+			c := New("ws://unused", "token", protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"})
+			c.applyResize(20, 4, false)
+			c.BindHub(hub)
+			c.attachMu.Lock()
+			c.attached["client-1"] = struct{}{}
+			c.attachMu.Unlock()
+			c.mirror.WriteOutput([]byte("prompt"))
+
+			if err := tc.send(c, hub); err != nil {
+				t.Fatalf("send returned error: %v", err)
+			}
+
+			frame := readEphemeralSubmitAnchorFrame(t, c)
+			if frame.ClientID != "client-1" {
+				t.Fatalf("ClientID = %q, want client-1", frame.ClientID)
+			}
+			if frame.SubmitAnchor == nil {
+				t.Fatalf("SubmitAnchor = nil, want live anchor")
+			}
+			if frame.SubmitAnchor.ID != "submit-1" || frame.SubmitAnchor.Line < 0 || frame.SubmitAnchor.SubmittedAt <= 0 {
+				t.Fatalf("SubmitAnchor = %#v, want valid submit-1 anchor", frame.SubmitAnchor)
+			}
+		})
+	}
+}
+
+func TestConnectorEmitsLiveSubmitAnchorToAllAttachedClients(t *testing.T) {
+	hub := session.NewHub(func([]byte) error { return nil }, func(int, int) error { return nil })
+	c := New("ws://unused", "token", protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"})
+	c.applyResize(20, 4, false)
+	c.BindHub(hub)
+	c.attachMu.Lock()
+	c.attached["client-1"] = struct{}{}
+	c.attached["client-2"] = struct{}{}
+	c.attachMu.Unlock()
+	c.mirror.WriteOutput([]byte("prompt"))
+
+	c.deliverInputToHub(hub, protocol.ForwardInputKeyFrame("client-1", "ENTER"))
+
+	gotClients := map[string]bool{}
+	var anchorID string
+	for range 2 {
+		frame := readEphemeralSubmitAnchorFrame(t, c)
+		gotClients[frame.ClientID] = true
+		if frame.SubmitAnchor == nil {
+			t.Fatalf("SubmitAnchor = nil, want live anchor")
+		}
+		if anchorID == "" {
+			anchorID = frame.SubmitAnchor.ID
+		}
+		if frame.SubmitAnchor.ID != anchorID {
+			t.Fatalf("SubmitAnchor.ID = %q, want %q", frame.SubmitAnchor.ID, anchorID)
+		}
+	}
+	if !gotClients["client-1"] || !gotClients["client-2"] {
+		t.Fatalf("clients = %#v, want client-1 and client-2", gotClients)
+	}
+}
+
+func TestConnectorDoesNotEmitLiveSubmitAnchorWhenInputWriteFails(t *testing.T) {
+	writeErr := errors.New("write failed")
+	hub := session.NewHub(func([]byte) error { return writeErr }, func(int, int) error { return nil })
+	c := New("ws://unused", "token", protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"})
+	c.applyResize(20, 4, false)
+	c.BindHub(hub)
+	c.attachMu.Lock()
+	c.attached["client-1"] = struct{}{}
+	c.attachMu.Unlock()
+	c.mirror.WriteOutput([]byte("prompt"))
+
+	if err := hub.WriteInput([]byte("local\r")); !errors.Is(err, writeErr) {
+		t.Fatalf("WriteInput error = %v, want %v", err, writeErr)
+	}
+	select {
+	case frame := <-c.ephemeral:
+		t.Fatalf("unexpected live frame after failed write: %#v", frame)
+	default:
+	}
+
+	done := snapshotDoneFromAttachOpen(t, c)
+	if len(done.SubmitAnchors) != 0 {
+		t.Fatalf("anchors = %#v, want none after failed input write", done.SubmitAnchors)
+	}
+}
+
+func readEphemeralSubmitAnchorFrame(t *testing.T, c *Connector) protocol.AgentFrame {
+	t.Helper()
+
+	select {
+	case outbound := <-c.ephemeral:
+		frame, ok := outbound.json.(protocol.AgentFrame)
+		if !ok {
+			t.Fatalf("ephemeral json = %#v, want protocol.AgentFrame", outbound.json)
+		}
+		if frame.Type != "submit_anchor" {
+			t.Fatalf("frame.Type = %q, want submit_anchor", frame.Type)
+		}
+		return frame
+	default:
+		t.Fatal("expected submit_anchor frame, got none")
+		return protocol.AgentFrame{}
+	}
+}
+
 func TestConnectorAttachOpenSendsSnapshotThenLiveBytes(t *testing.T) {
 	const clientID = "4d2c6ec8-787a-49c9-b9a0-5dbd8d31b7b1"
 

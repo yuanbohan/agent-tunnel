@@ -53,6 +53,7 @@ type AgentFrame struct {
 	Cols          int            `json:"cols,omitempty"`
 	Rows          int            `json:"rows,omitempty"`
 	SubmitAnchors []SubmitAnchor `json:"submit_anchors,omitempty"`
+	SubmitAnchor  *SubmitAnchor  `json:"submit_anchor,omitempty"`
 }
 
 // SubmitAnchor describes a submit position relative to the terminal
@@ -111,6 +112,17 @@ func SnapshotDoneFrame(clientID string, anchors ...SubmitAnchor) AgentFrame {
 	}
 }
 
+func SubmitAnchorFrame(clientID string, anchor SubmitAnchor) AgentFrame {
+	frame := AgentFrame{
+		Type:     "submit_anchor",
+		ClientID: clientID,
+	}
+	if sanitized, ok := sanitizeSubmitAnchor(anchor); ok {
+		frame.SubmitAnchor = &sanitized
+	}
+	return frame
+}
+
 func AttachCloseFrame(clientID, reason string) AgentFrame {
 	return AgentFrame{
 		Type:     "attach_close",
@@ -149,6 +161,7 @@ type AttachControlMessage struct {
 	Rows          int            `json:"rows,omitempty"`
 	Reason        string         `json:"reason,omitempty"`
 	SubmitAnchors []SubmitAnchor `json:"submit_anchors,omitempty"`
+	SubmitAnchor  *SubmitAnchor  `json:"submit_anchor,omitempty"`
 }
 
 func AttachedMessage(sessionID string, cols, rows int) AttachControlMessage {
@@ -165,6 +178,16 @@ func SnapshotDoneMessage(anchors ...SubmitAnchor) AttachControlMessage {
 		Type:          "snapshot_done",
 		SubmitAnchors: cloneSubmitAnchors(anchors),
 	}
+}
+
+func SubmitAnchorMessage(anchor SubmitAnchor) AttachControlMessage {
+	msg := AttachControlMessage{
+		Type: "submit_anchor",
+	}
+	if sanitized, ok := sanitizeSubmitAnchor(anchor); ok {
+		msg.SubmitAnchor = &sanitized
+	}
+	return msg
 }
 
 func ResizeMessage(cols, rows int) AttachControlMessage {
@@ -191,15 +214,23 @@ func cloneSubmitAnchors(anchors []SubmitAnchor) []SubmitAnchor {
 		if len(out) >= MaxSubmitAnchors {
 			break
 		}
-		if anchor.ID == "" || anchor.Line < 0 || anchor.SubmittedAt < 0 {
+		sanitized, ok := sanitizeSubmitAnchor(anchor)
+		if !ok {
 			continue
 		}
-		out = append(out, anchor)
+		out = append(out, sanitized)
 	}
 	if len(out) == 0 {
 		return nil
 	}
 	return out
+}
+
+func sanitizeSubmitAnchor(anchor SubmitAnchor) (SubmitAnchor, bool) {
+	if anchor.ID == "" || anchor.Line < 0 || anchor.SubmittedAt < 0 {
+		return SubmitAnchor{}, false
+	}
+	return anchor, true
 }
 
 // ClientInputMessage is the client-to-relay envelope used by the

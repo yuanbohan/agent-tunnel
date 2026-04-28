@@ -84,12 +84,12 @@ func (m *TerminalMirror) Resize(cols, rows int) {
 	m.rows = rows
 }
 
-func (m *TerminalMirror) RecordSubmitAnchor() string {
+func (m *TerminalMirror) RecordSubmitAnchor() (SubmitAnchor, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if m.term.IsAltBufferActive() {
-		return ""
+		return SubmitAnchor{}, false
 	}
 
 	buffer := m.term.NormalBuffer()
@@ -102,7 +102,7 @@ func (m *TerminalMirror) RecordSubmitAnchor() string {
 	}
 	m.submitAnchors = append(m.submitAnchors, anchor)
 	m.compactSubmitAnchorsLocked()
-	return id
+	return m.submitAnchorForBufferLocked(anchor, snapshotStartLine(buffer, m.rows, defaultSnapshotScrollback))
 }
 
 func (m *TerminalMirror) RemoveSubmitAnchor(id string) {
@@ -170,20 +170,28 @@ func (m *TerminalMirror) submitAnchorsForSnapshotLocked(startLine int) []SubmitA
 	endLine := buffer.Lines.Length() - 1
 	out := make([]SubmitAnchor, 0, len(m.submitAnchors))
 	for _, anchor := range m.submitAnchors {
-		if anchor.marker == nil || anchor.marker.IsDisposed {
-			continue
+		if mapped, ok := m.submitAnchorForBufferLocked(anchor, startLine); ok {
+			if mapped.Line+startLine <= endLine {
+				out = append(out, mapped)
+			}
 		}
-		line := anchor.marker.Line
-		if line < startLine || line > endLine {
-			continue
-		}
-		out = append(out, SubmitAnchor{
-			ID:          anchor.id,
-			Line:        line - startLine,
-			SubmittedAt: anchor.submittedAt,
-		})
 	}
 	return out
+}
+
+func (m *TerminalMirror) submitAnchorForBufferLocked(anchor submitAnchorMarker, startLine int) (SubmitAnchor, bool) {
+	if anchor.marker == nil || anchor.marker.IsDisposed {
+		return SubmitAnchor{}, false
+	}
+	line := anchor.marker.Line
+	if line < startLine {
+		return SubmitAnchor{}, false
+	}
+	return SubmitAnchor{
+		ID:          anchor.id,
+		Line:        line - startLine,
+		SubmittedAt: anchor.submittedAt,
+	}, true
 }
 
 func (m *TerminalMirror) compactSubmitAnchorsLocked() {

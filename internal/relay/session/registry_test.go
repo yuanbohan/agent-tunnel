@@ -594,16 +594,23 @@ func TestRegistryRoutesAttachLifecycle(t *testing.T) {
 	if ok := reg.RouteSnapshotDoneIfOwner("sess-1", owner, "client-1", anchors...); !ok {
 		t.Fatal("RouteSnapshotDoneIfOwner returned false, want true")
 	}
+	liveAnchor := protocol.SubmitAnchor{ID: "submit-3", Line: 7, SubmittedAt: 1775131400}
+	if ok := reg.RouteSubmitAnchorIfOwner("sess-1", owner, "client-1", liveAnchor); !ok {
+		t.Fatal("RouteSubmitAnchorIfOwner returned false, want true")
+	}
 
 	controls := client.Controls()
-	if len(controls) != 3 {
-		t.Fatalf("control count = %d, want 3", len(controls))
+	if len(controls) != 4 {
+		t.Fatalf("control count = %d, want 4", len(controls))
 	}
-	if controls[0].Type != "attached" || controls[1].Type != "resize" || controls[2].Type != "snapshot_done" {
-		t.Fatalf("controls = %#v, want attached then resize then snapshot_done", controls)
+	if controls[0].Type != "attached" || controls[1].Type != "resize" || controls[2].Type != "snapshot_done" || controls[3].Type != "submit_anchor" {
+		t.Fatalf("controls = %#v, want attached then resize then snapshot_done then submit_anchor", controls)
 	}
 	if !reflect.DeepEqual(controls[2].SubmitAnchors, anchors) {
 		t.Fatalf("snapshot_done anchors = %#v, want %#v", controls[2].SubmitAnchors, anchors)
+	}
+	if controls[3].SubmitAnchor == nil || *controls[3].SubmitAnchor != liveAnchor {
+		t.Fatalf("submit_anchor = %#v, want %#v", controls[3].SubmitAnchor, liveAnchor)
 	}
 	if controls[1].Cols != 121 || controls[1].Rows != 41 {
 		t.Fatalf("resize = %#v, want cols=121 rows=41", controls[1])
@@ -671,6 +678,35 @@ func TestRegistryRoutesSnapshotDoneSanitizesSubmitAnchors(t *testing.T) {
 	}
 }
 
+func TestRegistryDropsInvalidSubmitAnchor(t *testing.T) {
+	reg := NewRegistry()
+	owner := &recordingPeer{}
+	client := &recordingAttachPeer{}
+	reg.Register(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, owner)
+
+	if _, err := reg.StartAttach("sess-1", "client-1", client); err != nil {
+		t.Fatalf("StartAttach returned error: %v", err)
+	}
+	if ok := reg.RouteAttachReadyIfOwner("sess-1", owner, "client-1", 120, 40); !ok {
+		t.Fatal("RouteAttachReadyIfOwner returned false, want true")
+	}
+
+	for _, anchor := range []protocol.SubmitAnchor{
+		{ID: "", Line: 1, SubmittedAt: 1775131200},
+		{ID: "negative-line", Line: -1, SubmittedAt: 1775131200},
+		{ID: "negative-time", Line: 1, SubmittedAt: -1},
+	} {
+		if ok := reg.RouteSubmitAnchorIfOwner("sess-1", owner, "client-1", anchor); ok {
+			t.Fatalf("RouteSubmitAnchorIfOwner(%#v) returned true, want false", anchor)
+		}
+	}
+
+	controls := client.Controls()
+	if len(controls) != 1 || controls[0].Type != "attached" {
+		t.Fatalf("controls = %#v, want only attached", controls)
+	}
+}
+
 func TestRegistryStartAttachForUserRejectsCrossUserAccess(t *testing.T) {
 	reg := NewRegistry()
 	owner := &recordingPeer{}
@@ -716,6 +752,9 @@ func TestRegistryPendingAttachDisconnectBeforeReadyPreventsLaterDelivery(t *test
 	if ok := reg.RouteSnapshotDoneIfOwner("sess-1", owner, "client-1"); ok {
 		t.Fatal("RouteSnapshotDoneIfOwner returned true after pending detach, want false")
 	}
+	if ok := reg.RouteSubmitAnchorIfOwner("sess-1", owner, "client-1", protocol.SubmitAnchor{ID: "submit-1", Line: 1, SubmittedAt: 1775131200}); ok {
+		t.Fatal("RouteSubmitAnchorIfOwner returned true after pending detach, want false")
+	}
 	if ok := reg.RouteTerminalBytesIfOwner("sess-1", owner, protocol.AttachPacket{
 		Type:     protocol.AttachPacketTypeTerminalBytes,
 		ClientID: "client-1",
@@ -756,6 +795,16 @@ func TestRegistryDetachesSlowAttachClientsOnSendFailure(t *testing.T) {
 					t.Fatal("RouteAttachReadyIfOwner returned false, want true")
 				}
 				return reg.RouteSnapshotDoneIfOwner("sess-1", owner, "client-1")
+			},
+		},
+		{
+			name:   "submit_anchor control failure",
+			client: &failingAttachPeer{failControlAt: 2},
+			run: func(t *testing.T, reg *Registry, owner AgentPeer) bool {
+				if ok := reg.RouteAttachReadyIfOwner("sess-1", owner, "client-1", 120, 40); !ok {
+					t.Fatal("RouteAttachReadyIfOwner returned false, want true")
+				}
+				return reg.RouteSubmitAnchorIfOwner("sess-1", owner, "client-1", protocol.SubmitAnchor{ID: "submit-1", Line: 2, SubmittedAt: 1775131200})
 			},
 		},
 		{

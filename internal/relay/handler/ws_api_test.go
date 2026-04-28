@@ -556,6 +556,13 @@ func TestAttachWebSocketForwardsSnapshotLiveBytesAndInputForOwner(t *testing.T) 
 	if done := readAttachControl(t, attachConn); done.Type != "snapshot_done" {
 		t.Fatalf("snapshot_done = %#v, want snapshot_done", done)
 	}
+	liveAnchor := protocol.SubmitAnchor{ID: "submit-1", Line: 2, SubmittedAt: 1775131200}
+	if err := agentConn.WriteJSON(protocol.SubmitAnchorFrame(open.ClientID, liveAnchor)); err != nil {
+		t.Fatalf("WriteJSON submit_anchor returned error: %v", err)
+	}
+	if live := readAttachControl(t, attachConn); live.Type != "submit_anchor" || live.SubmitAnchor == nil || *live.SubmitAnchor != liveAnchor {
+		t.Fatalf("submit_anchor = %#v, want live anchor %#v", live, liveAnchor)
+	}
 
 	if err := attachConn.WriteJSON(protocol.EncodeClientInputText("hello", true)); err != nil {
 		t.Fatalf("WriteJSON input_text returned error: %v", err)
