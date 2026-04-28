@@ -9,6 +9,7 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/jackc/pgx/v5 v5.9.1
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51
+	github.com/quic-go/quic-go v0.59.0
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.9
 	golang.org/x/crypto v0.50.0
@@ -39,7 +40,6 @@ require (
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
-	github.com/quic-go/quic-go v0.59.0 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.3.0 // indirect
 	golang.org/x/arch v0.20.0 // indirect

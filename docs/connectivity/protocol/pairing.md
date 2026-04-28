@@ -171,7 +171,14 @@ The output gives approximately `log2(1_000_000) ≈ 20` bits of MITM resistance,
 
 Implementations MUST agree on output for the following input. Daemon and Android implementations should each persist these test vectors in their own test suites and recompute on every build.
 
-Phase-1 implementations should add at least one shared golden vector to both code bases before the first end-to-end pairing is attempted. The exact byte values will be filled in once daemon and Android implementations exist; until then, the algorithm above is the contract.
+Phase-1 implementations MUST include these shared golden vectors before the
+first end-to-end pairing is attempted. Byte fields are hex encoded.
+
+| Case | `daemon_pubkey` | `android_pubkey` | `invitation_id` | `nonce` | `display` |
+|---|---|---|---|---|---|
+| ascending keys | `000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f` | `202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f` | `invite-0001` | `000102030405060708090a0b0c0d0e0f` | `696700` |
+| boundary shaped ids | `fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0efeeedecebeae9e8e7e6e5e4e3e2e1e0` | `000306090c0f1215181b1e2124272a2d303336393c3f4245484b4e5154575a5d` | `edge-boundary` | `101112131415161718191a1b1c1d1e1f` | `626209` |
+| high bit keys | `7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f` | `8080808080808080808080808080808080808080808080808080808080808080` | `unicode-safe-ascii` | `ffffffff00000000aaaaaaaa55555555` | `670900` |
 
 ### UX Rules
 

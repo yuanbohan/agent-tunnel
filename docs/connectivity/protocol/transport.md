@@ -195,6 +195,27 @@ The control stream is a typed frame stream.
 [1-byte type] [varint payload_length] [payload bytes]
 ```
 
+### Frame Type Registry
+
+Step 1 pins the initial protocol/data frame type bytes for the Go
+mobile-simulator harness. Android should mirror these values unless a later
+compatibility-line change updates the registry.
+
+| Type | Name | Payload |
+|---|---|---|
+| `0x01` | `hello` | JSON |
+| `0x02` | `session_index` | JSON |
+| `0x03` | `preview_subscribe` | JSON |
+| `0x08` | `interactive_request` | JSON |
+| `0x09` | `interactive_granted` | JSON |
+| `0x10` | `snapshot_begin` | JSON |
+| `0x11` | `snapshot_chunk` | raw bytes |
+| `0x12` | `live_bytes` | raw bytes |
+| `0x13` | `snapshot_end` | JSON |
+
+Frame families not listed here remain unassigned by Step 1 and should be pinned
+when their implementation lands.
+
 ### Payload Encoding (`../contract.md` D6)
 
 - typed control frames use **JSON** for `payload bytes`
