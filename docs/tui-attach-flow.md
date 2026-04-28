@@ -120,9 +120,9 @@ What breaks without a mirror is fresh snapshot recovery:
 - wide characters
 - terminal modes needed to interpret later bytes correctly
 
-On attach, the mirror serializes the current terminal state into snapshot bytes. Those bytes are not a screenshot and not a JSON diff. They are escape sequences and text that a fresh terminal emulator can replay to reconstruct the current screen and, when the normal buffer has history available, bounded recent scrollback above that screen.
+On attach, the mirror serializes the current terminal state into snapshot bytes. Those bytes are not a screenshot and not a JSON diff. They are escape sequences and text that a fresh terminal emulator can replay to reconstruct the current screen and, when the normal buffer has history available, up to 10,000 lines of bounded recent scrollback above that screen.
 
-This repository configures the mirror with bounded normal-buffer scrollback, so the snapshot can restore recent in-memory history without turning reconnect into transcript replay. If the terminal is currently on the alternate screen, the snapshot still restores that current alt-screen state. The alternate buffer itself does not gain scrollback, although bounded normal-buffer history may remain available underneath it.
+This repository configures the mirror with up to 10,000 lines of bounded normal-buffer scrollback, so the snapshot can restore recent in-memory history without turning reconnect into transcript replay. If the terminal is currently on the alternate screen, the snapshot still restores that current alt-screen state. The alternate buffer itself does not gain scrollback, although bounded normal-buffer history may remain available underneath it.
 
 ## 3. Attach Flow: Snapshot Then Live Bytes
 
@@ -168,7 +168,7 @@ The snapshot is a checkpoint for a fresh terminal emulator.
 It contains enough terminal instructions to restore the current visible state, including:
 
 - the active screen buffer when the TUI is on the alternate screen
-- bounded recent normal-buffer scrollback when the mirror still has it
+- up to 10,000 lines of bounded recent normal-buffer scrollback when the mirror still has it
 - visible text and styling
 - cursor and mode state needed for later bytes to make sense
 
@@ -519,7 +519,7 @@ When local-terminal input or mobile attach input sends an `ENTER` carriage retur
 
 This model guarantees:
 
-- a fresh attach can reconstruct the current visible screen and bounded recent normal-buffer scrollback when available
+- a fresh attach can reconstruct the current visible screen and up to 10,000 lines of bounded recent normal-buffer scrollback when available
 - a fresh attach can include bounded submit anchors that map into the restored snapshot buffer when available
 - snapshot bytes and later live bytes form one continuous stream for that attach
 - relay reconnect for the same running agent keeps the same `session_id`
