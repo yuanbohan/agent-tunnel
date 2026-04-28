@@ -9,8 +9,8 @@ import (
 const (
 	defaultMirrorCols         = 80
 	defaultMirrorRows         = 24
-	defaultMirrorScrollback   = 256
-	defaultSnapshotScrollback = 256
+	defaultMirrorScrollback   = 10000
+	defaultSnapshotScrollback = 10000
 )
 
 type TerminalMirror struct {

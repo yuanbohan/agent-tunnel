@@ -18,7 +18,7 @@ See [docs/api.md](./api.md) for the current endpoint inventory, auth requirement
 
 Protocol-facing timestamps such as `started_at` are Unix timestamps encoded as JSON integers in seconds.
 
-The local terminal is still the primary and most complete view of the PTY session. Remote access is session-scoped: a client attaches to one session, receives a fresh terminal-state snapshot that may include bounded agent-local normal-buffer scrollback, and then receives subsequent live PTY bytes on that same attach.
+The local terminal is still the primary and most complete view of the PTY session. Remote access is session-scoped: a client attaches to one session, receives a fresh terminal-state snapshot that may include up to 10,000 lines of bounded agent-local normal-buffer scrollback, and then receives subsequent live PTY bytes on that same attach.
 
 `tunnel` enforces strict startup gating and runtime reconnect:
 
@@ -164,7 +164,7 @@ The critical invariant is gap-free handoff: there must be no byte gap between th
 The terminal mirror exists to make fresh snapshot recovery precise without transcript replay.
 
 - it is fed from the same PTY output stream seen by the local terminal
-- it preserves the current terminal state and a bounded amount of in-memory normal-buffer scrollback, not durable transcript history
+- it preserves the current terminal state and up to 10,000 lines of in-memory normal-buffer scrollback, not durable transcript history
 - it is the source of snapshot bytes on attach
 - it fans out subsequent live bytes to attached clients after the snapshot boundary
 - it follows PTY resize updates owned by the local terminal session
