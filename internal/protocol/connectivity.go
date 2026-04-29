@@ -15,11 +15,28 @@ type ConnectivityFrame struct {
 	Actor              string                       `json:"actor,omitempty"`
 	DaemonID           string                       `json:"daemon_id,omitempty"`
 	TunnelToken        string                       `json:"tunnel_token,omitempty"`
+	PublicUDPAddr      string                       `json:"public_udp_addr,omitempty"`
+	PrivateUDPAddrs    []string                     `json:"private_udp_addrs,omitempty"`
+	ExpiresAt          int64                        `json:"expires_at,omitempty"`
 	Daemon             *ConnectivityDaemonInfo      `json:"daemon,omitempty"`
 	Daemons            []ConnectivityDaemonInfo     `json:"daemons,omitempty"`
 	TrustedDevices     []ConnectivityTrustedAndroid `json:"trusted_devices,omitempty"`
 	AndroidFingerprint string                       `json:"android_fingerprint,omitempty"`
 	PairingResponse    *ConnectivityPairingResponse `json:"pairing_response,omitempty"`
+}
+
+func ConnectivityRendezvousHintFrame(requestID, attemptID, actor, daemonID, androidFingerprint, publicUDPAddr string, privateUDPAddrs []string, expiresAt int64) ConnectivityFrame {
+	return ConnectivityFrame{
+		Type:               "rendezvous_hint",
+		RequestID:          requestID,
+		AttemptID:          attemptID,
+		Actor:              actor,
+		DaemonID:           daemonID,
+		AndroidFingerprint: androidFingerprint,
+		PublicUDPAddr:      publicUDPAddr,
+		PrivateUDPAddrs:    privateUDPAddrs,
+		ExpiresAt:          expiresAt,
+	}
 }
 
 func (f ConnectivityFrame) MarshalJSON() ([]byte, error) {

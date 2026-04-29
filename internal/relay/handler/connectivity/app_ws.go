@@ -115,6 +115,34 @@ func App(registry *relayconnectivity.Registry, appAuth *relayauth.AppAuthService
 					continue
 				}
 				_ = peer.SendJSON(ready)
+			case "rendezvous_open":
+				if !appAuthStillValid(c, appAuth, app) {
+					return
+				}
+				if _, err := registry.OpenRendezvousFromApp(relayconnectivity.AppOwner{
+					UserID:            app.User.ID,
+					AppSessionID:      app.Session.ID,
+					DeviceFingerprint: app.Session.DeviceFingerprint,
+					SessionCreatedAt:  app.Session.CreatedAt,
+				}, peer, frame.DaemonID, frame.AttemptID, frame.RequestID, frame.PublicUDPAddr, frame.PrivateUDPAddrs, 30*time.Second); err != nil {
+					if err == relayconnectivity.ErrRendezvousRateLimited {
+						_ = peer.SendJSON(protocol.ConnectivityErrorFrameWithRetryAfter(frame.RequestID, "relay_rate_limited", int(relayconnectivity.RelayTunnelRequestWindow.Seconds())))
+						continue
+					}
+					_ = peer.SendJSON(protocol.ConnectivityErrorFrame(frame.RequestID, "rendezvous_unavailable"))
+				}
+			case "rendezvous_close":
+				if !appAuthStillValid(c, appAuth, app) {
+					return
+				}
+				if !registry.CloseRendezvousFromApp(relayconnectivity.AppOwner{
+					UserID:            app.User.ID,
+					AppSessionID:      app.Session.ID,
+					DeviceFingerprint: app.Session.DeviceFingerprint,
+					SessionCreatedAt:  app.Session.CreatedAt,
+				}, peer, frame.DaemonID, frame.AttemptID) {
+					_ = peer.SendJSON(protocol.ConnectivityErrorFrame(frame.RequestID, "rendezvous_unavailable"))
+				}
 			default:
 				_ = peer.SendJSON(protocol.ConnectivityErrorFrame(frame.RequestID, "unsupported_event"))
 			}

@@ -2,7 +2,7 @@
 
 ## Status
 
-This document captures the Relay-owned control-plane protocol for the QUIC connectivity architecture. Step 2 implemented the auth/pairing/visibility subset. Step 4 adds fallback relay tunnel setup and opaque packet forwarding. Rendezvous and direct transport remain future work.
+This document captures the Relay-owned control-plane protocol for the QUIC connectivity architecture. Step 2 implemented the auth/pairing/visibility subset. Step 4 adds fallback relay tunnel setup and opaque packet forwarding. Step 5 adds live rendezvous hint exchange for direct UDP attempts.
 
 ## Purpose
 
@@ -172,7 +172,7 @@ Event responsibilities:
 - `paired_device_removed` is sent from Relay to Android when a still-trusted daemon connection disappears or is replaced
 - `paired_device_revoked` is sent from Relay to Android when the daemon revokes a previously paired device
 
-Implemented Step 4 supports app registration, daemon trusted-roster registration, app-side daemon snapshots, account-bound pairing invitation reservation, `pair_response_submit` / `pair_response_forward` routing for account-scoped reserved live correlations, `pair_completed` visibility grants, revocation/removal events, and fallback relay tunnel setup. Session index, preview, terminal bytes, input, and resize events remain inside the end-to-end connectivity transport rather than Relay realtime.
+Implemented Step 5 supports app registration, daemon trusted-roster registration, app-side daemon snapshots, account-bound pairing invitation reservation, `pair_response_submit` / `pair_response_forward` routing for account-scoped reserved live correlations, `pair_completed` visibility grants, revocation/removal events, live rendezvous hint exchange, and fallback relay tunnel setup. Session index, preview, terminal bytes, input, and resize events remain inside the end-to-end connectivity transport rather than Relay realtime.
 
 Relay's pairing state is a derived live authorization copy. It MUST be invalidated when the daemon revokes trust, and Relay MUST NOT grant new presence visibility, signaling routing, or fallback tunnel issuance to a revoked device.
 
@@ -194,12 +194,48 @@ Recommended hint payload:
 
 Relay must treat these hints as short-lived routing information, not durable device history.
 
+Implemented app-to-Relay open frame:
+
+```json
+{
+  "type": "rendezvous_open",
+  "request_id": "req-1",
+  "attempt_id": "attempt-uuid",
+  "daemon_id": "dev_abcd1234",
+  "public_udp_addr": "203.0.113.10:50000",
+  "private_udp_addrs": ["10.0.0.5:50000"]
+}
+```
+
+Relay forwards the app hint to the paired online daemon as:
+
+```json
+{
+  "type": "rendezvous_hint",
+  "request_id": "req-1",
+  "attempt_id": "attempt-uuid",
+  "daemon_id": "dev_abcd1234",
+  "android_fingerprint": "<android-device-fingerprint>",
+  "actor": "android",
+  "public_udp_addr": "203.0.113.10:50000",
+  "private_udp_addrs": ["10.0.0.5:50000"],
+  "expires_at": 1777478400
+}
+```
+
+The daemon answers with `rendezvous_hint` containing its candidate addresses.
+Relay forwards that hint to the app with `actor: "daemon"` and the same
+`attempt_id`. Either side may send `rendezvous_close` with `attempt_id` to
+remove live attempt state. Relay rejects unavailable, expired, unpaired,
+wrong-account, malformed, or superseded attempts with
+`reason: "rendezvous_unavailable"`.
+
 #### attempt_id Rules
 
-`attempt_id` is a UUID minted by Android per direct/fallback attempt.
+`attempt_id` is minted by Android per direct/fallback attempt.
 
-- If Android opens a new `rendezvous_open` for the same `daemon_id` while a previous attempt is still in flight, both daemon and Relay SHOULD treat the older `attempt_id` as superseded and discard its in-flight state after a short grace period.
-- All rendezvous hints expire after a short phase-1 lifetime.
+- If Android opens a new `rendezvous_open` for the same app session and `daemon_id` while a previous attempt is still in flight, Relay treats the older `attempt_id` as superseded and discards it immediately.
+- All rendezvous hints expire after a short phase-1 lifetime. The current Relay default is 30 seconds.
 
 #### private_udp_addrs Hygiene
 

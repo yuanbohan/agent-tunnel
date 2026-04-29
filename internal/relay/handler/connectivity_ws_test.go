@@ -73,6 +73,172 @@ func TestConnectivityWebSocketsExposeTrustedDaemonSnapshot(t *testing.T) {
 	}
 }
 
+func TestConnectivityWebSocketsExchangeRendezvousHints(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	appFingerprint := strings.Repeat("a", 64)
+	appSession, err := env.appAuth.LoginWithDeviceFingerprint(context.Background(), "alice", "password123", appFingerprint)
+	if err != nil {
+		t.Fatalf("Login returned error: %v", err)
+	}
+	agentToken := env.createAgentToken(t, user.ID, "Laptop")
+	handler := env.handler(nil)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	wsBase := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	daemonConn := dialConnectivityWS(t, wsBase+"/connectivity/daemon/ws", agentToken.Plaintext)
+	defer daemonConn.Close()
+	if err := daemonConn.WriteJSON(protocol.ConnectivityDaemonRegisterFrame(protocol.ConnectivityDaemonInfo{
+		DeviceID:          "dev-1",
+		DisplayName:       "Laptop",
+		DaemonPublicKey:   strings.Repeat("b", 64),
+		DaemonFingerprint: strings.Repeat("c", 64),
+	}, []protocol.ConnectivityTrustedAndroid{{Fingerprint: appFingerprint, DisplayName: "Pixel"}})); err != nil {
+		t.Fatalf("daemon WriteJSON returned error: %v", err)
+	}
+
+	appConn := dialConnectivityWS(t, wsBase+"/api/connectivity/app/ws", appSession.AccessToken)
+	defer appConn.Close()
+	if err := appConn.WriteJSON(protocol.ConnectivityAppRegisterFrame()); err != nil {
+		t.Fatalf("app register WriteJSON returned error: %v", err)
+	}
+	var snapshot protocol.ConnectivityFrame
+	readConnectivityFrame(t, appConn, &snapshot)
+	if snapshot.Type != "daemon_snapshot" || len(snapshot.Daemons) != 1 {
+		t.Fatalf("snapshot = %#v, want one visible daemon", snapshot)
+	}
+
+	if err := appConn.WriteJSON(protocol.ConnectivityFrame{
+		Type:            "rendezvous_open",
+		RequestID:       "request-open",
+		AttemptID:       "attempt-1",
+		DaemonID:        "dev-1",
+		PublicUDPAddr:   "203.0.113.1:5000",
+		PrivateUDPAddrs: []string{"10.0.0.1:5000"},
+	}); err != nil {
+		t.Fatalf("rendezvous_open WriteJSON returned error: %v", err)
+	}
+	var daemonHint protocol.ConnectivityFrame
+	readConnectivityFrame(t, daemonConn, &daemonHint)
+	if daemonHint.Type != "rendezvous_hint" || daemonHint.Actor != "android" || daemonHint.AttemptID != "attempt-1" || daemonHint.PublicUDPAddr != "203.0.113.1:5000" {
+		t.Fatalf("daemon hint = %#v, want android rendezvous_hint", daemonHint)
+	}
+	if daemonHint.ExpiresAt == 0 {
+		t.Fatalf("daemon hint = %#v, want expires_at", daemonHint)
+	}
+
+	if err := daemonConn.WriteJSON(protocol.ConnectivityFrame{
+		Type:            "rendezvous_hint",
+		RequestID:       "request-daemon",
+		AttemptID:       "attempt-1",
+		PublicUDPAddr:   "203.0.113.2:6000",
+		PrivateUDPAddrs: []string{"10.0.0.2:6000"},
+	}); err != nil {
+		t.Fatalf("daemon rendezvous_hint WriteJSON returned error: %v", err)
+	}
+	var appHint protocol.ConnectivityFrame
+	readConnectivityFrame(t, appConn, &appHint)
+	if appHint.Type != "rendezvous_hint" || appHint.Actor != "daemon" || appHint.AttemptID != "attempt-1" || appHint.PublicUDPAddr != "203.0.113.2:6000" {
+		t.Fatalf("app hint = %#v, want daemon rendezvous_hint", appHint)
+	}
+
+	if err := daemonConn.WriteJSON(protocol.ConnectivityFrame{
+		Type:      "rendezvous_close",
+		RequestID: "request-close",
+		AttemptID: "attempt-1",
+	}); err != nil {
+		t.Fatalf("rendezvous_close WriteJSON returned error: %v", err)
+	}
+	if err := daemonConn.WriteJSON(protocol.ConnectivityFrame{
+		Type:          "rendezvous_hint",
+		RequestID:     "request-stale",
+		AttemptID:     "attempt-1",
+		PublicUDPAddr: "203.0.113.2:6001",
+	}); err != nil {
+		t.Fatalf("stale daemon rendezvous_hint WriteJSON returned error: %v", err)
+	}
+	var daemonError protocol.ConnectivityFrame
+	readConnectivityFrame(t, daemonConn, &daemonError)
+	if daemonError.Type != "error" || daemonError.Reason != "rendezvous_unavailable" {
+		t.Fatalf("daemon error = %#v, want rendezvous_unavailable", daemonError)
+	}
+}
+
+func TestConnectivityRendezvousRejectsUnpairedApp(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	appFingerprint := strings.Repeat("a", 64)
+	appSession, err := env.appAuth.LoginWithDeviceFingerprint(context.Background(), "alice", "password123", appFingerprint)
+	if err != nil {
+		t.Fatalf("Login returned error: %v", err)
+	}
+	agentToken := env.createAgentToken(t, user.ID, "Laptop")
+	handler := env.handler(nil)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	wsBase := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	daemonConn := dialConnectivityWS(t, wsBase+"/connectivity/daemon/ws", agentToken.Plaintext)
+	defer daemonConn.Close()
+	if err := daemonConn.WriteJSON(protocol.ConnectivityDaemonRegisterFrame(protocol.ConnectivityDaemonInfo{
+		DeviceID:          "dev-1",
+		DaemonPublicKey:   strings.Repeat("b", 64),
+		DaemonFingerprint: strings.Repeat("c", 64),
+	}, nil)); err != nil {
+		t.Fatalf("daemon WriteJSON returned error: %v", err)
+	}
+
+	appConn := dialConnectivityWS(t, wsBase+"/api/connectivity/app/ws", appSession.AccessToken)
+	defer appConn.Close()
+	if err := appConn.WriteJSON(protocol.ConnectivityAppRegisterFrame()); err != nil {
+		t.Fatalf("app register WriteJSON returned error: %v", err)
+	}
+	var snapshot protocol.ConnectivityFrame
+	readConnectivityFrame(t, appConn, &snapshot)
+	if snapshot.Type != "daemon_snapshot" || len(snapshot.Daemons) != 0 {
+		t.Fatalf("snapshot = %#v, want no visible daemons", snapshot)
+	}
+
+	if err := appConn.WriteJSON(protocol.ConnectivityFrame{
+		Type:          "rendezvous_open",
+		RequestID:     "request-open",
+		AttemptID:     "attempt-1",
+		DaemonID:      "dev-1",
+		PublicUDPAddr: "203.0.113.1:5000",
+	}); err != nil {
+		t.Fatalf("rendezvous_open WriteJSON returned error: %v", err)
+	}
+	var appError protocol.ConnectivityFrame
+	readConnectivityFrame(t, appConn, &appError)
+	if appError.Type != "error" || appError.Reason != "rendezvous_unavailable" {
+		t.Fatalf("app error = %#v, want rendezvous_unavailable", appError)
+	}
+}
+
+func TestConnectivityRendezvousHandlersStayContentOpaque(t *testing.T) {
+	for _, path := range []string{
+		filepath.Join("connectivity", "app_ws.go"),
+		filepath.Join("connectivity", "daemon_ws.go"),
+	} {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("ReadFile(%s): %v", path, err)
+		}
+		source := string(body)
+		for _, forbidden := range []string{
+			`internal/connectivity/frame`,
+			`internal/connectivity/sessionproto`,
+		} {
+			if strings.Contains(source, forbidden) {
+				t.Fatalf("%s imports %s; rendezvous handlers must stay content-opaque", path, forbidden)
+			}
+		}
+	}
+}
+
 func TestConnectivityAppWebSocketRequiresFingerprintBoundSession(t *testing.T) {
 	env := newHandlerTestEnv(t)
 	env.addInvite(t, "AB2C3D")

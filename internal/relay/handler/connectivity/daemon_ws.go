@@ -87,6 +87,14 @@ func Daemon(registry *relayconnectivity.Registry, agentTokens *relayauth.AgentTo
 					continue
 				}
 				_ = peer.SendJSON(protocol.ConnectivityPairInvitationReservedFrame(frame.RequestID, strconv.FormatInt(authenticated.User.ID, 10)))
+			case "rendezvous_hint":
+				if err := registry.ForwardRendezvousHintFromDaemon(owner, register.Daemon.DeviceID, peer, frame.AttemptID, frame.RequestID, frame.PublicUDPAddr, frame.PrivateUDPAddrs); err != nil {
+					_ = peer.SendJSON(protocol.ConnectivityErrorFrame(frame.RequestID, "rendezvous_unavailable"))
+				}
+			case "rendezvous_close":
+				if !registry.CloseRendezvousFromDaemon(owner, register.Daemon.DeviceID, peer, frame.AttemptID) {
+					_ = peer.SendJSON(protocol.ConnectivityErrorFrame(frame.RequestID, "rendezvous_unavailable"))
+				}
 			default:
 				_ = peer.SendJSON(protocol.ConnectivityErrorFrame(frame.RequestID, "unsupported_event"))
 			}

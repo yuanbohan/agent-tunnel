@@ -52,6 +52,7 @@ Defined in `relay-protocol.md`. Returned by Relay over the realtime WebSocket or
 | `relay_account_mismatch` | Relay | actor identity does not match expected | "Account mismatch. Sign out and sign in again." |
 | `invalid_device_fingerprint` | Relay | app login/refresh or connectivity websocket used a missing or malformed required device fingerprint | "Device identity is invalid. Sign in again." |
 | `pairing_correlation_not_found` | Relay | app submitted a pairing response for an unknown, expired, or cross-account correlation | "Pairing code expired. Run pairing again." |
+| `rendezvous_unavailable` | Relay | direct rendezvous requested an unpaired, offline, expired, superseded, malformed, wrong-account, or otherwise unavailable daemon/attempt | "Could not try direct connection. Falling back." |
 | `relay_tunnel_unavailable` | Relay | fallback tunnel setup requested an unpaired, offline, wrong-account, or otherwise unavailable daemon/attempt | "Could not open relay fallback. Try again." |
 | `relay_tunnel_token_invalid` | Relay | fallback tunnel websocket used a missing, expired, reused, or actor-mismatched one-time token | "Could not open relay fallback. Try again." |
 | `interactive_not_granted` | daemon transport | input or resize arrived before an `interactive_granted` lifetime for that session on the current QUIC connection | "Reconnect to the session and try again." |

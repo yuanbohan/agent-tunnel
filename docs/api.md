@@ -695,7 +695,7 @@ Success:
 
 ## Connectivity WebSockets
 
-These routes carry connectivity control-plane state. They do not carry terminal snapshots, live terminal bytes, structured input, fallback QUIC packets, session previews, or STUN/direct-UDP data.
+These routes carry connectivity control-plane state. They do not carry terminal snapshots, live terminal bytes, structured input, fallback QUIC packets, session previews, or direct UDP packet data. Rendezvous frames may carry UDP candidate addresses only.
 
 ### `GET /api/connectivity/app/ws`
 
@@ -720,6 +720,25 @@ Relay replies with:
 ```
 
 Relay may later send `paired_device_visible`, `paired_device_revoked`, or `paired_device_removed`. App peers may submit `pair_response_submit` frames with a signed Android pairing response. The response must include the authenticated app account id and the app session's `device_fingerprint`; Relay forwards only through a live daemon-owned reserved correlation.
+
+After a paired daemon is visible, app peers may open a direct-attempt rendezvous:
+
+```json
+{
+  "type": "rendezvous_open",
+  "request_id": "req-1",
+  "attempt_id": "attempt-uuid",
+  "daemon_id": "dev_abcd1234",
+  "public_udp_addr": "203.0.113.10:50000",
+  "private_udp_addrs": ["10.0.0.5:50000"]
+}
+```
+
+Relay forwards this to the daemon as `rendezvous_hint` with `actor: "android"`,
+`android_fingerprint`, and `expires_at`. The daemon sends its own
+`rendezvous_hint`; Relay forwards it to the app with `actor: "daemon"`.
+Either side may send `rendezvous_close` with `attempt_id` to remove live attempt
+state. Relay stores rendezvous state only in memory and expires it quickly.
 
 After a paired daemon is visible, app peers may request fallback tunnel setup:
 
@@ -777,10 +796,12 @@ Rate-limited fallback requests include a retry hint:
 
 App-side reasons are `invalid_register`, `invalid_pairing_response`,
 `device_fingerprint_mismatch`, `pairing_account_mismatch`,
-`pairing_correlation_not_found`, `relay_tunnel_unavailable`,
+`pairing_correlation_not_found`, `rendezvous_unavailable`,
+`relay_tunnel_unavailable`,
 `relay_rate_limited`, and `unsupported_event`. Daemon-side reasons are
 `invalid_register`, `invalid_device_fingerprint`,
-`invalid_pairing_correlation`, and `unsupported_event`.
+`invalid_pairing_correlation`, `rendezvous_unavailable`, and
+`unsupported_event`.
 
 ### `GET /connectivity/daemon/ws`
 
@@ -813,6 +834,11 @@ Daemon first sends:
 Relay derives app-visible daemon presence from this live trusted roster and the authenticated app session fingerprint. Relay does not persist the roster durably; daemon reconnect rebuilds visibility.
 
 Daemon peers reserve pairing invitations with `pair_invitation_reserve` using the desired `correlation_id` as `request_id`. Relay replies with `pair_invitation_reserved` and an `account_id`; the daemon signs that account id into the invitation before returning it locally. Relay forwards app `pair_response_submit` messages as `pair_response_forward`. After local SAS confirmation stores Android trust, the daemon sends `pair_completed` with `android_fingerprint`, and Relay emits `paired_device_visible` to any matching online app peer.
+
+Daemon peers receive `rendezvous_hint` when a paired app opens a direct attempt.
+Daemon peers may respond with their own `rendezvous_hint` containing
+`attempt_id`, `public_udp_addr`, and optional `private_udp_addrs`; Relay forwards
+only when the attempt is live and still belongs to that app/daemon pair.
 
 Daemon peers receive `relay_tunnel_ready` when a paired app requests fallback
 tunnel setup. The daemon redeems its daemon-scoped `tunnel_token` at the tunnel

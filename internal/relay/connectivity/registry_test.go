@@ -272,6 +272,173 @@ func TestRegistryCompletePairingMakesDaemonVisibleToApp(t *testing.T) {
 	}
 }
 
+func TestRegistryForwardsRendezvousHintsForVisibleDaemon(t *testing.T) {
+	registry := NewRegistry()
+	now := time.Unix(100, 0)
+	registry.now = func() time.Time { return now }
+	appPeer := &recordingPeer{}
+	daemonPeer := &recordingPeer{}
+	appOwner := AppOwner{UserID: 1, AppSessionID: "appsess-1", DeviceFingerprint: "android-a"}
+	daemonOwner := DaemonOwner{UserID: 1, AgentTokenID: "agt-1"}
+	registry.RegisterApp(appOwner, appPeer)
+	registry.RegisterDaemon(daemonOwner, protocol.ConnectivityDaemonInfo{
+		DeviceID:          "dev-1",
+		DaemonFingerprint: "daemon-a",
+	}, []protocol.ConnectivityTrustedAndroid{{Fingerprint: "android-a"}}, daemonPeer)
+	appPeer.frames = nil
+	daemonPeer.frames = nil
+
+	if _, err := registry.OpenRendezvousFromApp(appOwner, appPeer, "dev-1", "attempt-1", "request-1", "203.0.113.1:5000", []string{"10.0.0.1:5000"}, time.Minute); err != nil {
+		t.Fatalf("OpenRendezvousFromApp returned error: %v", err)
+	}
+	if len(daemonPeer.frames) != 1 {
+		t.Fatalf("daemon frames = %#v, want rendezvous hint", daemonPeer.frames)
+	}
+	daemonFrame := daemonPeer.frames[0].(protocol.ConnectivityFrame)
+	if daemonFrame.Type != "rendezvous_hint" || daemonFrame.Actor != TunnelActorAndroid || daemonFrame.AttemptID != "attempt-1" || daemonFrame.PublicUDPAddr != "203.0.113.1:5000" {
+		t.Fatalf("daemon frame = %#v, want app rendezvous_hint", daemonFrame)
+	}
+	if daemonFrame.ExpiresAt != now.Add(time.Minute).Unix() {
+		t.Fatalf("ExpiresAt = %d, want %d", daemonFrame.ExpiresAt, now.Add(time.Minute).Unix())
+	}
+
+	if err := registry.ForwardRendezvousHintFromDaemon(daemonOwner, "dev-1", daemonPeer, "attempt-1", "request-2", "203.0.113.2:6000", []string{"10.0.0.2:6000"}); err != nil {
+		t.Fatalf("ForwardRendezvousHintFromDaemon returned error: %v", err)
+	}
+	if len(appPeer.frames) != 1 {
+		t.Fatalf("app frames = %#v, want daemon rendezvous hint", appPeer.frames)
+	}
+	appFrame := appPeer.frames[0].(protocol.ConnectivityFrame)
+	if appFrame.Type != "rendezvous_hint" || appFrame.Actor != TunnelActorDaemon || appFrame.AttemptID != "attempt-1" || appFrame.PublicUDPAddr != "203.0.113.2:6000" {
+		t.Fatalf("app frame = %#v, want daemon rendezvous_hint", appFrame)
+	}
+}
+
+func TestRegistryRendezvousCloseExpiryAndSupersedeRejectStaleHints(t *testing.T) {
+	registry := NewRegistry()
+	now := time.Unix(100, 0)
+	registry.now = func() time.Time { return now }
+	appPeer := &recordingPeer{}
+	daemonPeer := &recordingPeer{}
+	appOwner := AppOwner{UserID: 1, AppSessionID: "appsess-1", DeviceFingerprint: "android-a"}
+	daemonOwner := DaemonOwner{UserID: 1, AgentTokenID: "agt-1"}
+	registry.RegisterApp(appOwner, appPeer)
+	registry.RegisterDaemon(daemonOwner, protocol.ConnectivityDaemonInfo{
+		DeviceID:          "dev-1",
+		DaemonFingerprint: "daemon-a",
+	}, []protocol.ConnectivityTrustedAndroid{{Fingerprint: "android-a"}}, daemonPeer)
+
+	if _, err := registry.OpenRendezvousFromApp(appOwner, appPeer, "dev-1", "attempt-1", "request-1", "203.0.113.1:5000", nil, time.Minute); err != nil {
+		t.Fatalf("OpenRendezvousFromApp attempt-1 returned error: %v", err)
+	}
+	if _, err := registry.OpenRendezvousFromApp(appOwner, appPeer, "dev-1", "attempt-2", "request-2", "203.0.113.1:5001", nil, time.Minute); err != nil {
+		t.Fatalf("OpenRendezvousFromApp attempt-2 returned error: %v", err)
+	}
+	if err := registry.ForwardRendezvousHintFromDaemon(daemonOwner, "dev-1", daemonPeer, "attempt-1", "request-stale", "203.0.113.2:6000", nil); !errors.Is(err, ErrRendezvousUnavailable) {
+		t.Fatalf("stale ForwardRendezvousHintFromDaemon err = %v, want ErrRendezvousUnavailable", err)
+	}
+	if err := registry.ForwardRendezvousHintFromDaemon(daemonOwner, "dev-1", daemonPeer, "attempt-2", "request-current", "203.0.113.2:6000", nil); err != nil {
+		t.Fatalf("current ForwardRendezvousHintFromDaemon returned error: %v", err)
+	}
+
+	if !registry.CloseRendezvousFromApp(appOwner, appPeer, "dev-1", "attempt-2") {
+		t.Fatal("CloseRendezvousFromApp returned false")
+	}
+	if err := registry.ForwardRendezvousHintFromDaemon(daemonOwner, "dev-1", daemonPeer, "attempt-2", "request-closed", "203.0.113.2:6000", nil); !errors.Is(err, ErrRendezvousUnavailable) {
+		t.Fatalf("closed ForwardRendezvousHintFromDaemon err = %v, want ErrRendezvousUnavailable", err)
+	}
+
+	if _, err := registry.OpenRendezvousFromApp(appOwner, appPeer, "dev-1", "attempt-3", "request-3", "203.0.113.1:5002", nil, time.Second); err != nil {
+		t.Fatalf("OpenRendezvousFromApp attempt-3 returned error: %v", err)
+	}
+	now = now.Add(2 * time.Second)
+	if err := registry.ForwardRendezvousHintFromDaemon(daemonOwner, "dev-1", daemonPeer, "attempt-3", "request-expired", "203.0.113.2:6000", nil); !errors.Is(err, ErrRendezvousUnavailable) {
+		t.Fatalf("expired ForwardRendezvousHintFromDaemon err = %v, want ErrRendezvousUnavailable", err)
+	}
+}
+
+func TestRegistryRendezvousRejectsUnpairedDisconnectedAndMalformedAttempts(t *testing.T) {
+	registry := NewRegistry()
+	appPeer := &recordingPeer{}
+	daemonPeer := &recordingPeer{}
+	appOwner := AppOwner{UserID: 1, AppSessionID: "appsess-1", DeviceFingerprint: "android-a"}
+	registry.RegisterApp(appOwner, appPeer)
+	registry.RegisterDaemon(DaemonOwner{UserID: 1, AgentTokenID: "agt-1"}, protocol.ConnectivityDaemonInfo{
+		DeviceID:          "dev-1",
+		DaemonFingerprint: "daemon-a",
+	}, nil, daemonPeer)
+
+	if _, err := registry.OpenRendezvousFromApp(appOwner, appPeer, "dev-1", "attempt-1", "request-1", "203.0.113.1:5000", nil, time.Minute); !errors.Is(err, ErrRendezvousUnavailable) {
+		t.Fatalf("unpaired OpenRendezvousFromApp err = %v, want ErrRendezvousUnavailable", err)
+	}
+	registry.CompletePairing("dev-1", daemonPeer, protocol.ConnectivityTrustedAndroid{Fingerprint: "android-a"})
+	if _, err := registry.OpenRendezvousFromApp(appOwner, appPeer, "dev-1", "", "request-2", "203.0.113.1:5000", nil, time.Minute); !errors.Is(err, ErrRendezvousUnavailable) {
+		t.Fatalf("missing attempt OpenRendezvousFromApp err = %v, want ErrRendezvousUnavailable", err)
+	}
+	if _, err := registry.OpenRendezvousFromApp(appOwner, appPeer, "dev-1", "attempt-2", "request-3", "not-an-addr", nil, time.Minute); !errors.Is(err, ErrRendezvousUnavailable) {
+		t.Fatalf("malformed OpenRendezvousFromApp err = %v, want ErrRendezvousUnavailable", err)
+	}
+	registry.DisconnectAppSession("appsess-1", "logged_out")
+	if _, err := registry.OpenRendezvousFromApp(appOwner, appPeer, "dev-1", "attempt-3", "request-4", "203.0.113.1:5000", nil, time.Minute); !errors.Is(err, ErrRendezvousUnavailable) {
+		t.Fatalf("disconnected OpenRendezvousFromApp err = %v, want ErrRendezvousUnavailable", err)
+	}
+}
+
+func TestRegistryRateLimitsRendezvousOpensPerAccount(t *testing.T) {
+	registry := NewRegistry()
+	now := time.Unix(100, 0)
+	registry.now = func() time.Time { return now }
+	daemonPeer := &recordingPeer{}
+	registry.RegisterDaemon(DaemonOwner{UserID: 1, AgentTokenID: "agt-1"}, protocol.ConnectivityDaemonInfo{
+		DeviceID:          "dev-1",
+		DaemonFingerprint: "daemon-a",
+	}, []protocol.ConnectivityTrustedAndroid{{Fingerprint: "android-a"}}, daemonPeer)
+
+	for i := 0; i < RelayTunnelRequestLimit; i++ {
+		suffix := strconv.Itoa(i)
+		appPeer := &recordingPeer{}
+		owner := AppOwner{UserID: 1, AppSessionID: "appsess-" + suffix, DeviceFingerprint: "android-a"}
+		registry.RegisterApp(owner, appPeer)
+		if _, err := registry.OpenRendezvousFromApp(owner, appPeer, "dev-1", "attempt-"+suffix, "request", "203.0.113.1:5000", nil, time.Minute); err != nil {
+			t.Fatalf("OpenRendezvousFromApp %d returned error: %v", i, err)
+		}
+	}
+	appPeer := &recordingPeer{}
+	owner := AppOwner{UserID: 1, AppSessionID: "appsess-over", DeviceFingerprint: "android-a"}
+	registry.RegisterApp(owner, appPeer)
+	if _, err := registry.OpenRendezvousFromApp(owner, appPeer, "dev-1", "attempt-over", "request", "203.0.113.1:5000", nil, time.Minute); !errors.Is(err, ErrRendezvousRateLimited) {
+		t.Fatalf("over-limit OpenRendezvousFromApp err = %v, want ErrRendezvousRateLimited", err)
+	}
+
+	now = now.Add(RelayTunnelRequestWindow + time.Second)
+	if _, err := registry.OpenRendezvousFromApp(owner, appPeer, "dev-1", "attempt-after-window", "request", "203.0.113.1:5000", nil, time.Minute); err != nil {
+		t.Fatalf("OpenRendezvousFromApp after window returned error: %v", err)
+	}
+}
+
+func TestRegistryRendezvousRevocationRemovesAttemptState(t *testing.T) {
+	registry := NewRegistry()
+	appPeer := &recordingPeer{}
+	daemonPeer := &recordingPeer{}
+	appOwner := AppOwner{UserID: 1, AppSessionID: "appsess-1", DeviceFingerprint: "android-a"}
+	daemonOwner := DaemonOwner{UserID: 1, AgentTokenID: "agt-1"}
+	registry.RegisterApp(appOwner, appPeer)
+	registry.RegisterDaemon(daemonOwner, protocol.ConnectivityDaemonInfo{
+		DeviceID:          "dev-1",
+		DaemonFingerprint: "daemon-a",
+	}, []protocol.ConnectivityTrustedAndroid{{Fingerprint: "android-a"}}, daemonPeer)
+	if _, err := registry.OpenRendezvousFromApp(appOwner, appPeer, "dev-1", "attempt-1", "request-1", "203.0.113.1:5000", nil, time.Minute); err != nil {
+		t.Fatalf("OpenRendezvousFromApp returned error: %v", err)
+	}
+
+	if !registry.RevokeTrustedAndroid("dev-1", daemonPeer, "android-a") {
+		t.Fatal("RevokeTrustedAndroid returned false")
+	}
+	if err := registry.ForwardRendezvousHintFromDaemon(daemonOwner, "dev-1", daemonPeer, "attempt-1", "request-2", "203.0.113.2:6000", nil); !errors.Is(err, ErrRendezvousUnavailable) {
+		t.Fatalf("ForwardRendezvousHintFromDaemon after revoke err = %v, want ErrRendezvousUnavailable", err)
+	}
+}
+
 func TestRegistryIssuesAndRedeemsRelayTunnelTokensForVisibleDaemon(t *testing.T) {
 	registry := NewRegistry()
 	registry.now = func() time.Time { return time.Unix(100, 0) }

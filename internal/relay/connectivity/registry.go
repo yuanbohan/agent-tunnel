@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
 	"sort"
 	"strings"
 	"sync"
@@ -19,6 +20,8 @@ var (
 	ErrRelayTunnelUnavailable     = errors.New("relay tunnel unavailable")
 	ErrRelayTunnelRateLimited     = errors.New("relay tunnel rate limited")
 	ErrRelayTunnelTokenInvalid    = errors.New("relay tunnel token invalid")
+	ErrRendezvousUnavailable      = errors.New("rendezvous unavailable")
+	ErrRendezvousRateLimited      = errors.New("rendezvous rate limited")
 )
 
 const (
@@ -28,6 +31,7 @@ const (
 	RelayTunnelRequestLimit               = 10
 	RelayTunnelRequestWindow              = time.Minute
 	RelayTunnelInFlightPerAppSessionLimit = 4
+	RendezvousCandidateLimit              = 8
 )
 
 type AppPeer interface {
@@ -58,8 +62,10 @@ type Registry struct {
 	daemons        map[string]*liveDaemon
 	correlations   map[string]pairCorrelation
 	attempts       map[string]*tunnelAttempt
+	rendezvous     map[string]*rendezvousAttempt
 	tokens         map[string]tunnelToken
 	tunnelRequests map[int64][]time.Time
+	rendezvousReqs map[int64][]time.Time
 	revokedApps    map[string]struct{}
 	revokedAgents  map[string]struct{}
 	userAppCutoff  map[int64]time.Time
@@ -106,6 +112,18 @@ type tunnelAttempt struct {
 	closers           map[int64]func()
 }
 
+type rendezvousAttempt struct {
+	key               string
+	id                string
+	appOwner          AppOwner
+	appPeer           AppPeer
+	daemonOwner       DaemonOwner
+	daemonDeviceID    string
+	daemonFingerprint string
+	daemonPeer        DaemonPeer
+	expiresAt         time.Time
+}
+
 type tunnelToken struct {
 	attemptID string
 	actor     string
@@ -128,8 +146,10 @@ func NewRegistry() *Registry {
 		daemons:        make(map[string]*liveDaemon),
 		correlations:   make(map[string]pairCorrelation),
 		attempts:       make(map[string]*tunnelAttempt),
+		rendezvous:     make(map[string]*rendezvousAttempt),
 		tokens:         make(map[string]tunnelToken),
 		tunnelRequests: make(map[int64][]time.Time),
+		rendezvousReqs: make(map[int64][]time.Time),
 		revokedApps:    make(map[string]struct{}),
 		revokedAgents:  make(map[string]struct{}),
 		userAppCutoff:  make(map[int64]time.Time),
@@ -195,6 +215,9 @@ func (r *Registry) RegisterDaemonIfValid(owner DaemonOwner, info protocol.Connec
 	if old != nil && old.peer != peer {
 		delete(r.daemons, key)
 		r.removeCorrelationsForDaemonLocked(key, old.peer)
+		r.removeRendezvousLocked(func(attempt *rendezvousAttempt) bool {
+			return attempt.daemonPeer == old.peer
+		})
 		closers = r.removeTunnelAttemptsLocked(func(attempt *tunnelAttempt) bool {
 			return attempt.daemonPeer == old.peer
 		})
@@ -233,6 +256,9 @@ func (r *Registry) DisconnectDaemon(deviceID string, peer DaemonPeer) bool {
 	}
 	delete(r.daemons, key)
 	r.removeCorrelationsForDaemonLocked(key, peer)
+	r.removeRendezvousLocked(func(attempt *rendezvousAttempt) bool {
+		return attempt.daemonPeer == peer
+	})
 	closers := r.removeTunnelAttemptsLocked(func(attempt *tunnelAttempt) bool {
 		return attempt.daemonPeer == peer
 	})
@@ -257,6 +283,9 @@ func (r *Registry) RevokeTrustedAndroid(deviceID string, peer DaemonPeer, finger
 		return false
 	}
 	delete(live.trusted, fingerprint)
+	r.removeRendezvousLocked(func(attempt *rendezvousAttempt) bool {
+		return attempt.daemonPeer == peer && attempt.appOwner.DeviceFingerprint == fingerprint
+	})
 	closers := r.removeTunnelAttemptsLocked(func(attempt *tunnelAttempt) bool {
 		return attempt.daemonPeer == peer && attempt.appOwner.DeviceFingerprint == fingerprint
 	})
@@ -367,6 +396,9 @@ func (r *Registry) DisconnectAppSession(appSessionID string, reason string) int 
 		delete(r.apps, peer)
 		peers = append(peers, peer)
 	}
+	r.removeRendezvousLocked(func(attempt *rendezvousAttempt) bool {
+		return attempt.appOwner.AppSessionID == appSessionID
+	})
 	closers := r.removeTunnelAttemptsLocked(func(attempt *tunnelAttempt) bool {
 		return attempt.appOwner.AppSessionID == appSessionID
 	})
@@ -394,9 +426,15 @@ func (r *Registry) DisconnectUser(userID int64, reason string) int {
 		if live.owner.UserID == userID {
 			delete(r.daemons, key)
 			r.removeCorrelationsForDaemonLocked(key, live.peer)
+			r.removeRendezvousLocked(func(attempt *rendezvousAttempt) bool {
+				return attempt.daemonPeer == live.peer
+			})
 			daemonPeers = append(daemonPeers, live.peer)
 		}
 	}
+	r.removeRendezvousLocked(func(attempt *rendezvousAttempt) bool {
+		return attempt.appOwner.UserID == userID || attempt.daemonOwner.UserID == userID
+	})
 	closers := r.removeTunnelAttemptsLocked(func(attempt *tunnelAttempt) bool {
 		return attempt.appOwner.UserID == userID || attempt.daemonOwner.UserID == userID
 	})
@@ -419,9 +457,15 @@ func (r *Registry) DisconnectAgentToken(agentTokenID string) int {
 		if live.owner.AgentTokenID == agentTokenID {
 			delete(r.daemons, key)
 			r.removeCorrelationsForDaemonLocked(key, live.peer)
+			r.removeRendezvousLocked(func(attempt *rendezvousAttempt) bool {
+				return attempt.daemonPeer == live.peer
+			})
 			peers = append(peers, live.peer)
 		}
 	}
+	r.removeRendezvousLocked(func(attempt *rendezvousAttempt) bool {
+		return attempt.daemonOwner.AgentTokenID == agentTokenID
+	})
 	closers := r.removeTunnelAttemptsLocked(func(attempt *tunnelAttempt) bool {
 		return attempt.daemonOwner.AgentTokenID == agentTokenID
 	})
@@ -431,6 +475,144 @@ func (r *Registry) DisconnectAgentToken(agentTokenID string) int {
 		_ = peer.Close()
 	}
 	return len(peers)
+}
+
+func (r *Registry) OpenRendezvousFromApp(owner AppOwner, peer AppPeer, daemonID, attemptID, requestID, publicUDPAddr string, privateUDPAddrs []string, ttl time.Duration) (protocol.ConnectivityFrame, error) {
+	owner.DeviceFingerprint = normalizeFingerprint(owner.DeviceFingerprint)
+	daemonID = strings.TrimSpace(daemonID)
+	attemptID = strings.TrimSpace(attemptID)
+	publicUDPAddr = strings.TrimSpace(publicUDPAddr)
+	privateUDPAddrs = normalizeCandidateList(privateUDPAddrs)
+	if ttl <= 0 {
+		ttl = 30 * time.Second
+	}
+	if owner.DeviceFingerprint == "" || daemonID == "" || attemptID == "" || !validCandidatePayload(publicUDPAddr, privateUDPAddrs) {
+		return protocol.ConnectivityFrame{}, ErrRendezvousUnavailable
+	}
+
+	r.mu.Lock()
+	r.sweepExpiredRendezvousLocked()
+	now := r.now()
+	if !r.appPeerActiveLocked(owner, peer) {
+		r.mu.Unlock()
+		return protocol.ConnectivityFrame{}, ErrRendezvousUnavailable
+	}
+	key := daemonMapKey(owner.UserID, daemonID)
+	live := r.daemons[key]
+	if live == nil || live.trusted[owner.DeviceFingerprint].Fingerprint == "" {
+		r.mu.Unlock()
+		return protocol.ConnectivityFrame{}, ErrRendezvousUnavailable
+	}
+	if !r.allowRendezvousRequestLocked(owner.UserID, now) {
+		r.mu.Unlock()
+		return protocol.ConnectivityFrame{}, ErrRendezvousRateLimited
+	}
+	r.recordRendezvousRequestLocked(owner.UserID, now)
+	attemptKey := tunnelAttemptKey(owner, daemonID, attemptID)
+	r.removeRendezvousLocked(func(attempt *rendezvousAttempt) bool {
+		return attempt.appOwner.UserID == owner.UserID &&
+			attempt.appOwner.AppSessionID == owner.AppSessionID &&
+			attempt.appOwner.DeviceFingerprint == owner.DeviceFingerprint &&
+			attempt.daemonDeviceID == daemonID
+	})
+	expiresAt := now.Add(ttl)
+	attempt := &rendezvousAttempt{
+		key:               attemptKey,
+		id:                attemptID,
+		appOwner:          owner,
+		appPeer:           peer,
+		daemonOwner:       live.owner,
+		daemonDeviceID:    live.info.DeviceID,
+		daemonFingerprint: live.info.DaemonFingerprint,
+		daemonPeer:        live.peer,
+		expiresAt:         expiresAt,
+	}
+	r.rendezvous[attemptKey] = attempt
+	daemonPeer := live.peer
+	daemonFrame := protocol.ConnectivityRendezvousHintFrame(requestID, attemptID, TunnelActorAndroid, live.info.DeviceID, owner.DeviceFingerprint, publicUDPAddr, privateUDPAddrs, expiresAt.Unix())
+	r.mu.Unlock()
+
+	r.expireRendezvousLater(attemptKey, ttl)
+	if err := daemonPeer.SendJSON(daemonFrame); err != nil {
+		r.mu.Lock()
+		if current := r.rendezvous[attemptKey]; current == attempt {
+			delete(r.rendezvous, attemptKey)
+		}
+		r.mu.Unlock()
+		return protocol.ConnectivityFrame{}, ErrConnectivityPeerInactive
+	}
+	return daemonFrame, nil
+}
+
+func (r *Registry) ForwardRendezvousHintFromDaemon(owner DaemonOwner, deviceID string, peer DaemonPeer, attemptID, requestID, publicUDPAddr string, privateUDPAddrs []string) error {
+	deviceID = strings.TrimSpace(deviceID)
+	attemptID = strings.TrimSpace(attemptID)
+	publicUDPAddr = strings.TrimSpace(publicUDPAddr)
+	privateUDPAddrs = normalizeCandidateList(privateUDPAddrs)
+	if deviceID == "" || attemptID == "" || !validCandidatePayload(publicUDPAddr, privateUDPAddrs) {
+		return ErrRendezvousUnavailable
+	}
+
+	r.mu.Lock()
+	r.sweepExpiredRendezvousLocked()
+	_, live, ok := r.daemonByDevicePeerLocked(deviceID, peer)
+	if !ok || live.owner != owner {
+		r.mu.Unlock()
+		return ErrRendezvousUnavailable
+	}
+	var attempt *rendezvousAttempt
+	for _, candidate := range r.rendezvous {
+		if candidate.id == attemptID && candidate.daemonPeer == peer && candidate.daemonOwner == owner && candidate.daemonDeviceID == deviceID {
+			attempt = candidate
+			break
+		}
+	}
+	if attempt == nil || !attempt.expiresAt.After(r.now()) {
+		r.mu.Unlock()
+		return ErrRendezvousUnavailable
+	}
+	appPeer := attempt.appPeer
+	appFrame := protocol.ConnectivityRendezvousHintFrame(requestID, attemptID, TunnelActorDaemon, attempt.daemonDeviceID, attempt.appOwner.DeviceFingerprint, publicUDPAddr, privateUDPAddrs, attempt.expiresAt.Unix())
+	r.mu.Unlock()
+
+	if err := appPeer.SendJSON(appFrame); err != nil {
+		return ErrConnectivityPeerInactive
+	}
+	return nil
+}
+
+func (r *Registry) CloseRendezvousFromApp(owner AppOwner, peer AppPeer, daemonID, attemptID string) bool {
+	owner.DeviceFingerprint = normalizeFingerprint(owner.DeviceFingerprint)
+	daemonID = strings.TrimSpace(daemonID)
+	attemptID = strings.TrimSpace(attemptID)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.appPeerActiveLocked(owner, peer) {
+		return false
+	}
+	key := tunnelAttemptKey(owner, daemonID, attemptID)
+	if _, ok := r.rendezvous[key]; !ok {
+		return false
+	}
+	delete(r.rendezvous, key)
+	return true
+}
+
+func (r *Registry) CloseRendezvousFromDaemon(owner DaemonOwner, deviceID string, peer DaemonPeer, attemptID string) bool {
+	deviceID = strings.TrimSpace(deviceID)
+	attemptID = strings.TrimSpace(attemptID)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, live, ok := r.daemonByDevicePeerLocked(deviceID, peer); !ok || live.owner != owner {
+		return false
+	}
+	for key, attempt := range r.rendezvous {
+		if attempt.id == attemptID && attempt.daemonPeer == peer && attempt.daemonOwner == owner && attempt.daemonDeviceID == deviceID {
+			delete(r.rendezvous, key)
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Registry) RequestRelayTunnel(owner AppOwner, daemonID, attemptID, requestID string, ttl time.Duration) (protocol.ConnectivityFrame, error) {
@@ -736,6 +918,41 @@ func (r *Registry) removeTunnelAttemptLocked(attempt *tunnelAttempt) []func() {
 	return closers
 }
 
+func (r *Registry) removeRendezvousLocked(match func(*rendezvousAttempt) bool) {
+	for key, attempt := range r.rendezvous {
+		if match(attempt) {
+			delete(r.rendezvous, key)
+		}
+	}
+}
+
+func (r *Registry) sweepExpiredRendezvousLocked() int {
+	removed := 0
+	now := r.now()
+	for key, attempt := range r.rendezvous {
+		if attempt.expiresAt.After(now) {
+			continue
+		}
+		delete(r.rendezvous, key)
+		removed++
+	}
+	return removed
+}
+
+func (r *Registry) expireRendezvousLater(key string, ttl time.Duration) {
+	if ttl <= 0 {
+		return
+	}
+	time.AfterFunc(ttl, func() {
+		r.mu.Lock()
+		attempt := r.rendezvous[key]
+		if attempt != nil && !attempt.expiresAt.After(r.now()) {
+			delete(r.rendezvous, key)
+		}
+		r.mu.Unlock()
+	})
+}
+
 func (r *Registry) sweepExpiredTunnelAttemptsLocked() (int, []func()) {
 	var closers []func()
 	removed := 0
@@ -830,6 +1047,36 @@ func (r *Registry) allowRelayTunnelRequestLocked(userID int64, now time.Time) bo
 	return len(r.recentRelayTunnelRequestsLocked(userID, now)) < RelayTunnelRequestLimit
 }
 
+func (r *Registry) allowRendezvousRequestLocked(userID int64, now time.Time) bool {
+	return len(r.recentRendezvousRequestsLocked(userID, now)) < RelayTunnelRequestLimit
+}
+
+func (r *Registry) recordRendezvousRequestLocked(userID int64, now time.Time) {
+	requests := r.recentRendezvousRequestsLocked(userID, now)
+	requests = append(requests, now)
+	r.rendezvousReqs[userID] = requests
+}
+
+func (r *Registry) recentRendezvousRequestsLocked(userID int64, now time.Time) []time.Time {
+	requests := r.rendezvousReqs[userID]
+	if len(requests) == 0 {
+		return nil
+	}
+	cutoff := now.Add(-RelayTunnelRequestWindow)
+	kept := requests[:0]
+	for _, requestedAt := range requests {
+		if requestedAt.After(cutoff) {
+			kept = append(kept, requestedAt)
+		}
+	}
+	if len(kept) == 0 {
+		delete(r.rendezvousReqs, userID)
+		return nil
+	}
+	r.rendezvousReqs[userID] = kept
+	return kept
+}
+
 func (r *Registry) recordRelayTunnelRequestLocked(userID int64, now time.Time) {
 	requests := r.recentRelayTunnelRequestsLocked(userID, now)
 	requests = append(requests, now)
@@ -881,6 +1128,43 @@ func trustedMapFromSlice(trusted []protocol.ConnectivityTrustedAndroid) map[stri
 		out[device.Fingerprint] = device
 	}
 	return out
+}
+
+func normalizeCandidateList(addrs []string) []string {
+	seen := make(map[string]struct{})
+	for _, raw := range addrs {
+		addr := strings.TrimSpace(raw)
+		if addr == "" {
+			continue
+		}
+		seen[addr] = struct{}{}
+	}
+	out := make([]string, 0, len(seen))
+	for addr := range seen {
+		out = append(out, addr)
+	}
+	sort.Strings(out)
+	if len(out) > RendezvousCandidateLimit {
+		out = out[:RendezvousCandidateLimit]
+	}
+	return out
+}
+
+func validCandidatePayload(publicUDPAddr string, privateUDPAddrs []string) bool {
+	if !validUDPAddr(publicUDPAddr) {
+		return false
+	}
+	for _, addr := range privateUDPAddrs {
+		if !validUDPAddr(addr) {
+			return false
+		}
+	}
+	return true
+}
+
+func validUDPAddr(raw string) bool {
+	addr, err := net.ResolveUDPAddr("udp", strings.TrimSpace(raw))
+	return err == nil && addr.IP != nil && addr.Port > 0 && addr.Port <= 65535
 }
 
 func normalizeFingerprint(raw string) string {
