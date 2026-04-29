@@ -5,8 +5,6 @@ import "time"
 const (
 	SessionLaunchSourceLocal  = "local"
 	SessionLaunchSourceMobile = "mobile"
-
-	MaxSubmitAnchors = 256
 )
 
 func UnixTimestamp(t time.Time) int {
@@ -52,18 +50,6 @@ type AgentFrame struct {
 	Key           string         `json:"key,omitempty"`
 	Cols          int            `json:"cols,omitempty"`
 	Rows          int            `json:"rows,omitempty"`
-	SubmitAnchors []SubmitAnchor `json:"submit_anchors,omitempty"`
-	SubmitAnchor  *SubmitAnchor  `json:"submit_anchor,omitempty"`
-}
-
-// SubmitAnchor describes a content-free submit navigation hint. Snapshot
-// anchors use a line relative to the buffer restored by the accompanying
-// snapshot; live anchors use a line relative to the attached terminal buffer
-// when the event is received.
-type SubmitAnchor struct {
-	ID          string `json:"id"`
-	Line        int    `json:"line"`
-	SubmittedAt int    `json:"submitted_at"`
 }
 
 // RegisterFrame builds an AgentFrame of type "register".
@@ -106,23 +92,11 @@ func AttachReadyFrame(clientID string, cols, rows int) AgentFrame {
 	}
 }
 
-func SnapshotDoneFrame(clientID string, anchors ...SubmitAnchor) AgentFrame {
+func SnapshotDoneFrame(clientID string) AgentFrame {
 	return AgentFrame{
-		Type:          "snapshot_done",
-		ClientID:      clientID,
-		SubmitAnchors: cloneSubmitAnchors(anchors),
-	}
-}
-
-func SubmitAnchorFrame(clientID string, anchor SubmitAnchor) AgentFrame {
-	frame := AgentFrame{
-		Type:     "submit_anchor",
+		Type:     "snapshot_done",
 		ClientID: clientID,
 	}
-	if sanitized, ok := sanitizeSubmitAnchor(anchor); ok {
-		frame.SubmitAnchor = &sanitized
-	}
-	return frame
 }
 
 func AttachCloseFrame(clientID, reason string) AgentFrame {
@@ -162,8 +136,6 @@ type AttachControlMessage struct {
 	Cols          int            `json:"cols,omitempty"`
 	Rows          int            `json:"rows,omitempty"`
 	Reason        string         `json:"reason,omitempty"`
-	SubmitAnchors []SubmitAnchor `json:"submit_anchors,omitempty"`
-	SubmitAnchor  *SubmitAnchor  `json:"submit_anchor,omitempty"`
 }
 
 func AttachedMessage(sessionID string, cols, rows int) AttachControlMessage {
@@ -175,21 +147,10 @@ func AttachedMessage(sessionID string, cols, rows int) AttachControlMessage {
 	}
 }
 
-func SnapshotDoneMessage(anchors ...SubmitAnchor) AttachControlMessage {
+func SnapshotDoneMessage() AttachControlMessage {
 	return AttachControlMessage{
-		Type:          "snapshot_done",
-		SubmitAnchors: cloneSubmitAnchors(anchors),
+		Type: "snapshot_done",
 	}
-}
-
-func SubmitAnchorMessage(anchor SubmitAnchor) AttachControlMessage {
-	msg := AttachControlMessage{
-		Type: "submit_anchor",
-	}
-	if sanitized, ok := sanitizeSubmitAnchor(anchor); ok {
-		msg.SubmitAnchor = &sanitized
-	}
-	return msg
 }
 
 func ResizeMessage(cols, rows int) AttachControlMessage {
@@ -205,34 +166,6 @@ func ClosingMessage(reason string) AttachControlMessage {
 		Type:   "closing",
 		Reason: reason,
 	}
-}
-
-func cloneSubmitAnchors(anchors []SubmitAnchor) []SubmitAnchor {
-	if len(anchors) == 0 {
-		return nil
-	}
-	out := make([]SubmitAnchor, 0, len(anchors))
-	for _, anchor := range anchors {
-		if len(out) >= MaxSubmitAnchors {
-			break
-		}
-		sanitized, ok := sanitizeSubmitAnchor(anchor)
-		if !ok {
-			continue
-		}
-		out = append(out, sanitized)
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-func sanitizeSubmitAnchor(anchor SubmitAnchor) (SubmitAnchor, bool) {
-	if anchor.ID == "" || anchor.Line < 0 || anchor.SubmittedAt < 0 {
-		return SubmitAnchor{}, false
-	}
-	return anchor, true
 }
 
 // ClientInputMessage is the client-to-relay envelope used by the
