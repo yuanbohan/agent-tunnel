@@ -68,7 +68,8 @@ func AndroidTLSConfig(config EndpointConfig) *tls.Config {
 func QUICConfig() *quic.Config {
 	return &quic.Config{
 		HandshakeIdleTimeout:  2 * time.Second,
-		MaxIdleTimeout:        5 * time.Second,
+		MaxIdleTimeout:        2 * time.Minute,
+		KeepAlivePeriod:       30 * time.Second,
 		MaxIncomingStreams:    16,
 		MaxIncomingUniStreams: 16,
 		Allow0RTT:             false,

@@ -1,5 +1,7 @@
 package protocol
 
+import "encoding/json"
+
 const ConnectivityProtocolVersion = 1
 
 type ConnectivityFrame struct {
@@ -7,12 +9,38 @@ type ConnectivityFrame struct {
 	ProtocolVersion    int                          `json:"protocol_version,omitempty"`
 	RequestID          string                       `json:"request_id,omitempty"`
 	Reason             string                       `json:"reason,omitempty"`
+	RetryAfterSeconds  int                          `json:"retry_after_seconds,omitempty"`
 	AccountID          string                       `json:"account_id,omitempty"`
+	AttemptID          string                       `json:"attempt_id,omitempty"`
+	Actor              string                       `json:"actor,omitempty"`
+	DaemonID           string                       `json:"daemon_id,omitempty"`
+	TunnelToken        string                       `json:"tunnel_token,omitempty"`
 	Daemon             *ConnectivityDaemonInfo      `json:"daemon,omitempty"`
-	Daemons            []ConnectivityDaemonInfo     `json:"daemons"`
+	Daemons            []ConnectivityDaemonInfo     `json:"daemons,omitempty"`
 	TrustedDevices     []ConnectivityTrustedAndroid `json:"trusted_devices,omitempty"`
 	AndroidFingerprint string                       `json:"android_fingerprint,omitempty"`
 	PairingResponse    *ConnectivityPairingResponse `json:"pairing_response,omitempty"`
+}
+
+func (f ConnectivityFrame) MarshalJSON() ([]byte, error) {
+	type connectivityFrame ConnectivityFrame
+	raw, err := json.Marshal(connectivityFrame(f))
+	if err != nil {
+		return nil, err
+	}
+	if f.Type != "daemon_snapshot" {
+		return raw, nil
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, err
+	}
+	daemons := f.Daemons
+	if daemons == nil {
+		daemons = []ConnectivityDaemonInfo{}
+	}
+	fields["daemons"] = daemons
+	return json.Marshal(fields)
 }
 
 type ConnectivityDaemonInfo struct {
@@ -97,6 +125,24 @@ func ConnectivityPairCompletedFrame(androidFingerprint string) ConnectivityFrame
 	return ConnectivityFrame{Type: "pair_completed", AndroidFingerprint: androidFingerprint}
 }
 
+func ConnectivityRelayTunnelReadyFrame(requestID, attemptID, actor, daemonID, androidFingerprint, token string) ConnectivityFrame {
+	return ConnectivityFrame{
+		Type:               "relay_tunnel_ready",
+		RequestID:          requestID,
+		AttemptID:          attemptID,
+		Actor:              actor,
+		DaemonID:           daemonID,
+		AndroidFingerprint: androidFingerprint,
+		TunnelToken:        token,
+	}
+}
+
 func ConnectivityErrorFrame(requestID, reason string) ConnectivityFrame {
 	return ConnectivityFrame{Type: "error", RequestID: requestID, Reason: reason}
+}
+
+func ConnectivityErrorFrameWithRetryAfter(requestID, reason string, retryAfterSeconds int) ConnectivityFrame {
+	frame := ConnectivityErrorFrame(requestID, reason)
+	frame.RetryAfterSeconds = retryAfterSeconds
+	return frame
 }

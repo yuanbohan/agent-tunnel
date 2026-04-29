@@ -2,7 +2,7 @@
 
 ## Status
 
-This document captures the Relay-owned control-plane protocol for the QUIC connectivity architecture. Step 2 implements the auth/pairing/visibility subset; rendezvous, fallback relay tunnel, and direct transport remain future work.
+This document captures the Relay-owned control-plane protocol for the QUIC connectivity architecture. Step 2 implemented the auth/pairing/visibility subset. Step 4 adds fallback relay tunnel setup and opaque packet forwarding. Rendezvous and direct transport remain future work.
 
 ## Purpose
 
@@ -34,7 +34,7 @@ They share one envelope style but do not necessarily receive the same startup sn
 
 Separately, Relay exposes:
 
-- a fallback relay endpoint used to tunnel encrypted QUIC packets over WebSocket-over-HTTPS
+- fallback relay endpoint: `GET /connectivity/tunnel/ws?token=<single-use-token>`
 - authenticated app APIs that expose the current subscription tier
 
 ## App Authentication Model
@@ -108,23 +108,25 @@ The app learns its current subscription tier through authenticated Relay app API
 After daemon authentication succeeds:
 
 1. daemon sends `daemon_register`
-2. Relay sends `realtime_ready`
+2. Relay accepts the registration and starts routing later control-plane frames
 
 The daemon-side socket does not need startup session or subscription state.
 
 #### `daemon_register`
 
-Sent by the daemon as the first frame after authentication, before `realtime_ready`.
+Sent by the daemon as the first frame after authentication.
 
-Recommended fields:
+Implemented fields:
 
-- `daemon_id`
-- `daemon_display_name`
-- `daemon_pubkey`
+- `device_id`
+- `display_name`
+- `daemon_public_key`
+- `daemon_fingerprint`
 - `platform_family`
 - `platform_id`
 - `tunnel_version`
 - `protocol_version`
+- `trusted_devices`
 
 Relay uses these fields to populate `daemon_snapshot` for app-side consumers and to detect compatibility mismatches before the daemon is announced as visible.
 
@@ -133,17 +135,19 @@ Relay uses these fields to populate `daemon_snapshot` for app-side consumers and
 ### Presence
 
 - `daemon_snapshot`
-- `daemon_upsert`
-- `daemon_remove`
+- `paired_device_visible`
+- `paired_device_removed`
+- `paired_device_revoked`
 
-Recommended daemon fields:
+Implemented daemon fields:
 
-- `daemon_id`
-- `daemon_display_name`
-- `online`
-- `last_seen_at`
+- `device_id`
+- `display_name`
 - `platform_family`
 - `platform_id`
+- `daemon_public_key`
+- `daemon_fingerprint`
+- `tunnel_version`
 
 ### Pairing
 
@@ -165,9 +169,10 @@ Event responsibilities:
 - `pair_response_forward` is sent from Relay to the addressed daemon
 - `pair_completed` is sent from daemon to Relay after both sides have stored trust locally and the SAS has been confirmed
 - `paired_device_visible` is sent from Relay to Android after `pair_completed`
+- `paired_device_removed` is sent from Relay to Android when a still-trusted daemon connection disappears or is replaced
 - `paired_device_revoked` is sent from Relay to Android when the daemon revokes a previously paired device
 
-Implemented Step 2 supports app registration, daemon trusted-roster registration, app-side daemon snapshots, account-bound pairing invitation reservation, `pair_response_submit` / `pair_response_forward` routing for reserved live correlations, `pair_completed` visibility grants, and `paired_device_revoked`. Transport/session events are intentionally absent.
+Implemented Step 4 supports app registration, daemon trusted-roster registration, app-side daemon snapshots, account-bound pairing invitation reservation, `pair_response_submit` / `pair_response_forward` routing for account-scoped reserved live correlations, `pair_completed` visibility grants, revocation/removal events, and fallback relay tunnel setup. Session index, preview, terminal bytes, input, and resize events remain inside the end-to-end connectivity transport rather than Relay realtime.
 
 Relay's pairing state is a derived live authorization copy. It MUST be invalidated when the daemon revokes trust, and Relay MUST NOT grant new presence visibility, signaling routing, or fallback tunnel issuance to a revoked device.
 
@@ -210,13 +215,41 @@ These events describe the WebSocket-over-HTTPS fallback tunnel lifecycle. They d
 
 Phase-1 tunnel-token rules:
 
-- `relay_tunnel_request` is sent separately from rendezvous and only after the direct attempt is judged failed or timed out
+- Step 4 fallback-only clients may send `relay_tunnel_request` immediately after choosing the fallback path. Step 5 direct-first clients send it only after the direct attempt is judged failed or timed out.
 - Relay issues one short-lived, single-use tunnel token per side
 - each token is bound to:
   - `attempt_id`
+  - requesting account and app session
+  - app `device_fingerprint`
+  - target `daemon_id`
   - authenticated actor identity
   - actor type (`android` or `daemon`)
 - a token may be redeemed exactly once at the fallback tunnel endpoint
+
+Current Step 4 event payloads:
+
+`relay_tunnel_request` from app to Relay:
+
+- `request_id`
+- `attempt_id`
+- `daemon_id`
+
+`relay_tunnel_ready` from Relay to each side:
+
+- `request_id`
+- `attempt_id`
+- `daemon_id`
+- `android_fingerprint`
+- `actor` (`android` or `daemon`)
+- `tunnel_token`
+
+Relay authorizes the request only when the app's authenticated account and
+server-side `device_fingerprint` currently have pairing-derived visibility to
+the requested online daemon.
+
+`android_fingerprint` is included in both side-specific ready frames. The daemon
+uses it to look up the locally trusted Android public key before starting the
+inner pinned QUIC/TLS listener over the fallback packet tunnel.
 
 ## Subscription Policy Surface
 
@@ -246,8 +279,13 @@ Properties:
 - runs over WebSocket-over-HTTPS
 - scoped to one authenticated peer-to-peer attempt
 - keyed by Relay-issued short-lived tunnel tokens
+- the current path is `GET /connectivity/tunnel/ws?token=<single-use-token>`
+- accepts binary WebSocket messages for QUIC packets
 - forwards opaque encrypted packets only
 - does not parse session frames
+- closes active tunnel endpoints when the app session logs out, password change
+  disconnects the app, the daemon disconnects, the agent token is revoked, the
+  user is deleted, or daemon-local trust for the Android fingerprint is revoked
 
 ## What Relay Does Not Carry
 
@@ -287,19 +325,18 @@ Relay cannot decrypt either path because both terminate inside the daemon and An
 - `pair_invitation_reserve`
 - `daemon_register`
 - `pair_completed`
+- `paired_device_revoked`
 - `rendezvous_hint`
-- `relay_tunnel_request`
 
 ### Daemon Receives
 
 - `pair_invitation_reserved`
-- `realtime_ready`
 - `pair_response_forward`
-- `paired_device_revoked`
 - `rendezvous_open`
 - `rendezvous_hint`
 - `rendezvous_close`
 - `relay_tunnel_ready`
+- `error`
 
 Daemon MUST silently ignore unknown event `type` values to allow forward-compatible Relay extensions.
 

@@ -20,6 +20,7 @@ import (
 
 const readySignalEnv = "TUNNEL_DAEMON_READY_FD"
 const daemonAuthTokenEnv = "TUNNEL_AUTH_TOKEN"
+const connectivityEventEnqueueTimeout = 5 * time.Second
 
 var daemonStartupLockTimeout = 10 * time.Second
 
@@ -97,6 +98,7 @@ func StartBackground(ctx context.Context, options StartOptions) (StartResult, er
 		fmt.Sprintf("%s=%s", daemonAuthTokenEnv, options.AuthToken),
 		fmt.Sprintf("%s=%d", readySignalEnv, 3),
 	)
+
 	cmd.ExtraFiles = []*os.File{writeReady}
 	devNull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	if err != nil {
@@ -272,7 +274,9 @@ func Run(ctx context.Context, options RuntimeOptions, readyWriter io.Writer) err
 			if err != nil {
 				return Response{Error: err.Error()}
 			}
-			state.sendConnectivityEvent(protocol.ConnectivityPairCompletedFrame(completion.Device.Fingerprint))
+			if !state.sendConnectivityEventBlocking(requestCtx, protocol.ConnectivityPairCompletedFrame(completion.Device.Fingerprint)) {
+				return Response{Error: "relay connectivity event queue unavailable"}
+			}
 			return Response{PairCompletion: &completion}
 		case actionDevices:
 			devices, err := ListTrustedAndroidDevices(options.Paths)
@@ -287,10 +291,12 @@ func Run(ctx context.Context, options RuntimeOptions, readyWriter io.Writer) err
 			if err != nil {
 				return Response{Error: err.Error()}
 			}
-			state.sendConnectivityEvent(protocol.ConnectivityFrame{
+			if !state.sendConnectivityEventBlocking(requestCtx, protocol.ConnectivityFrame{
 				Type:               "paired_device_revoked",
 				AndroidFingerprint: revoked.Fingerprint,
-			})
+			}) {
+				return Response{Error: "relay connectivity event queue unavailable"}
+			}
 			return Response{TrustedDevice: &revoked}
 		case actionStop:
 			state.stop()
@@ -419,6 +425,25 @@ func (s *runtimeState) sendConnectivityEvent(frame protocol.ConnectivityFrame) b
 	case s.connectivityEvents <- frame:
 		return true
 	default:
+		return false
+	}
+}
+
+func (s *runtimeState) sendConnectivityEventBlocking(ctx context.Context, frame protocol.ConnectivityFrame) bool {
+	if s == nil || s.connectivityEvents == nil {
+		return false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	timer := time.NewTimer(connectivityEventEnqueueTimeout)
+	defer timer.Stop()
+	select {
+	case s.connectivityEvents <- frame:
+		return true
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
 		return false
 	}
 }

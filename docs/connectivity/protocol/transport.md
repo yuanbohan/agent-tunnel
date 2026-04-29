@@ -206,15 +206,26 @@ compatibility-line change updates the registry.
 | `0x01` | `hello` | JSON |
 | `0x02` | `session_index` | JSON |
 | `0x03` | `preview_subscribe` | JSON |
+| `0x04` | `session_upsert` | JSON |
+| `0x05` | `session_gone` | JSON |
+| `0x06` | `preview_unsubscribe` | JSON |
+| `0x07` | `preview_snapshot` | JSON |
 | `0x08` | `interactive_request` | JSON |
 | `0x09` | `interactive_granted` | JSON |
+| `0x0a` | `interactive_denied` | JSON |
+| `0x0b` | `interactive_release` | JSON |
+| `0x0c` | `input_text` | JSON |
+| `0x0d` | `input_key` | JSON |
+| `0x0e` | `resize` | JSON |
+| `0x0f` | `path_state` | JSON |
 | `0x10` | `snapshot_begin` | JSON |
 | `0x11` | `snapshot_chunk` | raw bytes |
 | `0x12` | `live_bytes` | raw bytes |
 | `0x13` | `snapshot_end` | JSON |
+| `0x7f` | `error` | JSON |
 
-Frame families not listed here remain unassigned by Step 1 and should be pinned
-when their implementation lands.
+Frame families not listed here remain unassigned and should be pinned when their
+implementation lands.
 
 ### Payload Encoding (`../contract.md` D6)
 
@@ -368,6 +379,11 @@ Recommended fields:
 
 The `interactive_stream_id` is the QUIC stream id of the daemon-initiated stream that will carry snapshot and live bytes for this attach lifetime.
 
+In the current Step 4 daemon implementation, a grant opens this stream and
+sends `snapshot_begin` followed by `snapshot_end`. Full snapshot chunks and live
+PTY bytes are reserved by this contract and are still pending the local broker
+bridge work.
+
 ### `interactive_denied`
 
 Sent by the daemon when the request is rejected.
@@ -397,7 +413,9 @@ Sent by Android for sessions that currently hold interactive ownership on this d
 Recommended fields:
 
 - `session_id`
-- input or resize payload
+- `input_text`: `text`, optional `submit`
+- `input_key`: `key`
+- `resize`: `cols`, `rows`
 
 The daemon MUST drop input or resize frames whose `session_id` does not currently hold an active `interactive_granted` session on this connection.
 
@@ -469,6 +487,10 @@ Payload encoding:
 - `snapshot_chunk` and `live_bytes` carry **raw PTY bytes only**, not JSON. The outer length-framed envelope is sufficient.
 
 This split keeps PTY byte throughput cheap while still letting the start / end markers carry structured fields like `cols` / `rows`.
+
+An implementation that has no snapshot bytes ready yet may send
+`snapshot_begin` followed immediately by `snapshot_end`, but it must not report
+`interactive_granted` unless the announced daemon-initiated stream exists.
 
 ### `snapshot_begin`
 

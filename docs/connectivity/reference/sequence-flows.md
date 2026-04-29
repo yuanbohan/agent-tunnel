@@ -120,7 +120,6 @@ sequenceDiagram
     AndroidConn->>RelayRT: open app realtime websocket
     AndroidConn->>RelayRT: app_register(app_version, protocol_version)
     RelayRT-->>AndroidConn: daemon_snapshot
-    RelayRT-->>AndroidConn: realtime_ready
     AndroidConn-->>AndroidUI: render visible daemon cards
 
     AndroidUI->>AndroidConn: user opens one daemon card

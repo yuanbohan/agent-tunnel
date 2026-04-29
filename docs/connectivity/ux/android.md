@@ -96,7 +96,6 @@ Treat the realtime WebSocket as daemon presence and rendezvous only.
 
 1. app sends `app_register(app_version, protocol_version, ...)`
 2. Relay sends `daemon_snapshot`
-3. Relay sends `realtime_ready`
 
 The app learns its subscription tier through authenticated Relay app APIs, not through realtime per-session policy events. Relay derives `account_id` and `device_fingerprint` from the authenticated server-side app session.
 

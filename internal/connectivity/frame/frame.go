@@ -11,12 +11,23 @@ const (
 	TypeHello              byte = 0x01
 	TypeSessionIndex       byte = 0x02
 	TypePreviewSubscribe   byte = 0x03
+	TypeSessionUpsert      byte = 0x04
+	TypeSessionGone        byte = 0x05
+	TypePreviewUnsubscribe byte = 0x06
+	TypePreviewSnapshot    byte = 0x07
 	TypeInteractiveRequest byte = 0x08
 	TypeInteractiveGranted byte = 0x09
+	TypeInteractiveDenied  byte = 0x0a
+	TypeInteractiveRelease byte = 0x0b
+	TypeInputText          byte = 0x0c
+	TypeInputKey           byte = 0x0d
+	TypeResize             byte = 0x0e
+	TypePathState          byte = 0x0f
 	TypeSnapshotBegin      byte = 0x10
 	TypeSnapshotChunk      byte = 0x11
 	TypeLiveBytes          byte = 0x12
 	TypeSnapshotEnd        byte = 0x13
+	TypeError              byte = 0x7f
 
 	DefaultMaxPayload = 1 << 20
 )

@@ -8,7 +8,7 @@ This file covers:
 
 - public app-facing HTTP endpoints under `/api/...`
 - the client attach WebSocket
-- the Step 2 connectivity app/daemon WebSockets
+- the connectivity app/daemon WebSockets and fallback tunnel endpoint
 
 For lower-level wire details such as the binary attach packet format, also see [docs/protocol.md](./protocol.md).
 
@@ -33,6 +33,7 @@ The relay currently uses three token classes:
 | App access token | mobile/web/native app clients | `Authorization: Bearer <access-token>` on app-facing `/api/...` routes, `GET /api/sessions/:sessionID/attach/ws`, and `GET /api/connectivity/app/ws` |
 | App refresh token | app clients | JSON body for `POST /api/auth/refresh` |
 | Agent token | created by app clients, used later by `tunnel` | returned by `POST /api/agent-tokens`; used by `/agent/ws`, `/device/ws`, `/connectivity/daemon/ws`, `GET /api/sessions`, and `POST /api/sessions/:sessionID/stop` |
+| Fallback tunnel token | app and daemon connectivity peers | one-time `token` query parameter on `GET /connectivity/tunnel/ws`; issued through `relay_tunnel_ready` and bound to one actor and attempt |
 
 ### JSON Request Rules
 
@@ -354,7 +355,8 @@ Response:
     "access_token": "<access-token>",
     "refresh_token": "<refresh-token>",
     "expires_in": 86400,
-    "token_type": "Bearer"
+    "token_type": "Bearer",
+    "account_id": "123"
   }
 }
 ```
@@ -407,7 +409,8 @@ Response:
     "access_token": "<new-access-token>",
     "refresh_token": "<new-refresh-token>",
     "expires_in": 86400,
-    "token_type": "Bearer"
+    "token_type": "Bearer",
+    "account_id": "123"
   }
 }
 ```
@@ -682,6 +685,7 @@ Success:
   "code": 0,
   "message": "success",
   "body": {
+    "account_id": "123",
     "tier": "free"
   }
 }
@@ -691,7 +695,7 @@ Success:
 
 ## Connectivity WebSockets
 
-These routes carry Step 2 connectivity control-plane state only. They do not carry terminal snapshots, live terminal bytes, structured input, fallback QUIC packets, session previews, or STUN/direct-UDP data.
+These routes carry connectivity control-plane state. They do not carry terminal snapshots, live terminal bytes, structured input, fallback QUIC packets, session previews, or STUN/direct-UDP data.
 
 ### `GET /api/connectivity/app/ws`
 
@@ -716,6 +720,67 @@ Relay replies with:
 ```
 
 Relay may later send `paired_device_visible`, `paired_device_revoked`, or `paired_device_removed`. App peers may submit `pair_response_submit` frames with a signed Android pairing response. The response must include the authenticated app account id and the app session's `device_fingerprint`; Relay forwards only through a live daemon-owned reserved correlation.
+
+After a paired daemon is visible, app peers may request fallback tunnel setup:
+
+```json
+{
+  "type": "relay_tunnel_request",
+  "request_id": "req-1",
+  "attempt_id": "attempt-uuid",
+  "daemon_id": "dev_abcd1234"
+}
+```
+
+Relay replies to the app and sends a matching frame to the daemon:
+
+```json
+{
+  "type": "relay_tunnel_ready",
+  "request_id": "req-1",
+  "attempt_id": "attempt-uuid",
+  "daemon_id": "dev_abcd1234",
+  "android_fingerprint": "<android-device-fingerprint>",
+  "actor": "android",
+  "tunnel_token": "<single-use-token>"
+}
+```
+
+The daemon-side frame has `actor: "daemon"` and a different single-use token.
+Both frames include `android_fingerprint` so the daemon can select the trusted
+Android public key needed to pin the inner QUIC/TLS handshake.
+Relay rejects tunnel setup for unpaired apps, wrong accounts, wrong device
+fingerprints, offline daemons, expired attempts, and rate-limited request bursts
+with an `error` frame.
+
+Connectivity WebSocket errors use the same JSON frame shape on app and daemon
+sockets:
+
+```json
+{
+  "type": "error",
+  "request_id": "req-1",
+  "reason": "relay_tunnel_unavailable"
+}
+```
+
+Rate-limited fallback requests include a retry hint:
+
+```json
+{
+  "type": "error",
+  "request_id": "req-1",
+  "reason": "relay_rate_limited",
+  "retry_after_seconds": 60
+}
+```
+
+App-side reasons are `invalid_register`, `invalid_pairing_response`,
+`device_fingerprint_mismatch`, `pairing_account_mismatch`,
+`pairing_correlation_not_found`, `relay_tunnel_unavailable`,
+`relay_rate_limited`, and `unsupported_event`. Daemon-side reasons are
+`invalid_register`, `invalid_device_fingerprint`,
+`invalid_pairing_correlation`, and `unsupported_event`.
 
 ### `GET /connectivity/daemon/ws`
 
@@ -748,6 +813,28 @@ Daemon first sends:
 Relay derives app-visible daemon presence from this live trusted roster and the authenticated app session fingerprint. Relay does not persist the roster durably; daemon reconnect rebuilds visibility.
 
 Daemon peers reserve pairing invitations with `pair_invitation_reserve` using the desired `correlation_id` as `request_id`. Relay replies with `pair_invitation_reserved` and an `account_id`; the daemon signs that account id into the invitation before returning it locally. Relay forwards app `pair_response_submit` messages as `pair_response_forward`. After local SAS confirmation stores Android trust, the daemon sends `pair_completed` with `android_fingerprint`, and Relay emits `paired_device_visible` to any matching online app peer.
+
+Daemon peers receive `relay_tunnel_ready` when a paired app requests fallback
+tunnel setup. The daemon redeems its daemon-scoped `tunnel_token` at the tunnel
+endpoint below and then runs QUIC/TLS over the resulting packet tunnel.
+
+### `GET /connectivity/tunnel/ws`
+
+Auth: one-time fallback tunnel token in the `token` query parameter.
+
+Example:
+
+```text
+GET /connectivity/tunnel/ws?token=<single-use-token>
+```
+
+This endpoint upgrades to WebSocket and accepts binary WebSocket messages only.
+Each binary message is one opaque encrypted QUIC packet. Relay pairs the Android
+and daemon endpoints by `attempt_id`, forwards binary packets unchanged, and
+does not parse QUIC, connectivity frames, terminal bytes, input, resize, preview
+text, or session metadata. Tokens expire quickly, may be redeemed once, and are
+invalidated when the owning app session, daemon connection, agent token, user, or
+paired-device trust is revoked.
 
 ### `GET /api/sessions`
 

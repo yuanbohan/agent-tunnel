@@ -52,6 +52,7 @@ func newRouter(
 
 	attachSessions := session.NewAttachSessionIndex()
 	connectivityRegistry := relayconnectivity.NewRegistry()
+	connectivityTunnelHub := connectivityhandler.NewTunnelHub()
 
 	router := gin.New()
 	router.HandleMethodNotAllowed = true
@@ -85,7 +86,7 @@ func newRouter(
 	appRoutes.POST("/api/auth/logout", api.Logout(appAuth, registry, attachSessions, connectivityRegistry))
 	appRoutes.POST("/api/auth/password/change", api.ChangePassword(appAuth, registry, attachSessions, connectivityRegistry))
 	appRoutes.GET("/api/account/policy", api.AccountPolicy())
-	appRoutes.GET("/api/connectivity/app/ws", connectivityhandler.App(connectivityRegistry))
+	appRoutes.GET("/api/connectivity/app/ws", connectivityhandler.App(connectivityRegistry, appAuth))
 	appRoutes.GET("/api/agent-tokens", api.ListAgentTokens(agentTokens))
 	appRoutes.POST("/api/agent-tokens", api.CreateAgentToken(agentTokens))
 	appRoutes.DELETE("/api/agent-tokens/:tokenID", api.RevokeAgentToken(agentTokens, registry, deviceRegistry, connectivityRegistry))
@@ -100,7 +101,8 @@ func newRouter(
 
 	router.GET("/agent/ws", middleware.AgentAuth(agentTokens), agent.Handle(registry, deviceRegistry))
 	router.GET("/device/ws", middleware.AgentAuth(agentTokens), devicehandler.Handle(deviceRegistry, registry, agentTokens))
-	router.GET("/connectivity/daemon/ws", middleware.AgentAuth(agentTokens), connectivityhandler.Daemon(connectivityRegistry))
+	router.GET("/connectivity/daemon/ws", middleware.AgentAuth(agentTokens), connectivityhandler.Daemon(connectivityRegistry, agentTokens))
+	router.GET("/connectivity/tunnel/ws", connectivityhandler.Tunnel(connectivityRegistry, connectivityTunnelHub))
 
 	return router
 }

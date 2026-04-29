@@ -14,6 +14,7 @@ import (
 	"github.com/quic-go/quic-go"
 
 	"yuanbohan/tunnel/internal/connectivity/frame"
+	"yuanbohan/tunnel/internal/connectivity/sessionproto"
 	"yuanbohan/tunnel/internal/connectivity/transport"
 )
 
@@ -23,11 +24,11 @@ var (
 )
 
 const (
-	ActorMobile = "mobile"
-	ActorDaemon = "daemon"
+	ActorMobile = sessionproto.ActorMobile
+	ActorDaemon = sessionproto.ActorDaemon
 
-	PathDirect = "direct"
-	PathRelay  = "relay"
+	PathDirect = sessionproto.PathDirect
+	PathRelay  = sessionproto.PathRelay
 )
 
 type MobileClient struct {
@@ -36,51 +37,13 @@ type MobileClient struct {
 	MaxPayload int
 }
 
-type Hello struct {
-	ProtocolVersion   int    `json:"protocol_version"`
-	ActorType         string `json:"actor_type"`
-	DeviceFingerprint string `json:"device_fingerprint"`
-	PathKind          string `json:"path_kind"`
-}
-
-type SessionMetadata struct {
-	SessionID      string `json:"session_id"`
-	Label          string `json:"label"`
-	CommandPreview string `json:"command_preview"`
-	CWD            string `json:"cwd"`
-	GitBranch      string `json:"git_branch"`
-	StartedAt      int    `json:"started_at"`
-	UpdatedAt      int    `json:"updated_at"`
-	Online         bool   `json:"online"`
-}
-
-type SessionIndex struct {
-	Sessions []SessionMetadata `json:"sessions"`
-}
-
-type InteractiveRequest struct {
-	SessionID string `json:"session_id"`
-	Cols      int    `json:"cols"`
-	Rows      int    `json:"rows"`
-}
-
-type InteractiveGranted struct {
-	SessionID           string `json:"session_id"`
-	InteractiveStreamID int64  `json:"interactive_stream_id"`
-	Cols                int    `json:"cols"`
-	Rows                int    `json:"rows"`
-}
-
-type SnapshotBegin struct {
-	SessionID string `json:"session_id"`
-	Cols      int    `json:"cols"`
-	Rows      int    `json:"rows"`
-}
-
-type SnapshotEnd struct {
-	SessionID  string `json:"session_id,omitempty"`
-	ChunkCount int    `json:"chunk_count,omitempty"`
-}
+type Hello = sessionproto.Hello
+type SessionMetadata = sessionproto.SessionMetadata
+type SessionIndex = sessionproto.SessionIndex
+type InteractiveRequest = sessionproto.InteractiveRequest
+type InteractiveGranted = sessionproto.InteractiveGranted
+type SnapshotBegin = sessionproto.SnapshotBegin
+type SnapshotEnd = sessionproto.SnapshotEnd
 
 type ProbeScript struct {
 	MobileHello        Hello
