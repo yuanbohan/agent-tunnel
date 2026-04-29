@@ -37,9 +37,10 @@ Detail: `protocol/transport.md`, `protocol/relay.md`.
 - `tunnel run` checks for the local daemon socket on startup.
 - If the daemon is not running, `tunnel run` forks one as a detached child process before opening its PTY.
 - The daemon process is parent-detached: it survives `tunnel run` exit.
-- The user does not manage daemon lifecycle as an explicit step.
+- The default user path does not require managing daemon lifecycle as an explicit step.
+- `tunnel run --daemon auto|off|required` controls this broker path for automation and diagnostics; `auto` remains the default.
 
-`tunnel daemon ensure` is the new internal command that performs the check-and-fork. `tunnel run` calls it on every start.
+The check-and-fork path is internal to `tunnel run`; it is not a public daemon subcommand.
 
 **Why**: keeps the existing single-command UX. Without this, the connectivity rewrite would be a UX regression versus the old direct-relay-attach flow.
 
@@ -147,8 +148,8 @@ device. If `quiche` packaging blocks, fall back to `kwik` per
 - SAS computation with golden vectors checked in (≥ 3 cases) before any pairing UI is built.
 - `tunnel daemon pair` reserves Relay correlation and prints a signed JSON invitation; QR rendering is deferred.
 - Test client (Go-only, no Android required) completes a full pair end-to-end through Relay.
-- `tunnel daemon ensure` auto-start path works from cold.
-- Local broker socket: `tunnel run` registers, pushes preview, daemon mirrors.
+- `tunnel run` daemon auto-start path works from cold.
+- Local broker socket: `tunnel run` registers, pushes preview, daemon caches latest preview.
 
 **Exit criterion**: golden test (`tunnel daemon pair` + test client) passes; daemon-state sweep tests pass; local broker roundtrip < 5ms.
 

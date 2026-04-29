@@ -402,3 +402,20 @@ func TestTerminalMirrorSnapshotPreservesHiddenCursor(t *testing.T) {
 		t.Fatal("restored terminal cursor is visible, want hidden")
 	}
 }
+
+func TestTerminalMirrorPreviewTextIsPlainText(t *testing.T) {
+	mirror := NewTerminalMirror(20, 5)
+	mirror.WriteOutput([]byte("\x1b[31mred\x1b[0m\ttext\r\nnext\x00line"))
+
+	got := mirror.PreviewText(DefaultPreviewMaxChars)
+	if got != "red text\nnextline" {
+		t.Fatalf("PreviewText = %q, want plain normalized text", got)
+	}
+}
+
+func TestNormalizePreviewTextKeepsRecentBoundedContent(t *testing.T) {
+	got := NormalizePreviewText("alpha\nbravo\ncharlie\n", 12)
+	if got != "charlie" {
+		t.Fatalf("NormalizePreviewText = %q, want recent bounded content", got)
+	}
+}
