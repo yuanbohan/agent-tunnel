@@ -2,7 +2,7 @@
 
 ## Status
 
-This document captures the target Relay-owned control-plane protocol for the QUIC connectivity architecture. It is a design contract for future implementation, not a claim that the current repository already exposes these endpoints or message types.
+This document captures the Relay-owned control-plane protocol for the QUIC connectivity architecture. Step 2 implements the auth/pairing/visibility subset; rendezvous, fallback relay tunnel, and direct transport remain future work.
 
 ## Purpose
 
@@ -27,8 +27,8 @@ The connectivity edge also needs a STUN service, but STUN itself is infrastructu
 
 The target architecture keeps two authenticated realtime WebSockets:
 
-- app-side realtime WebSocket
-- daemon-side realtime WebSocket
+- app-side realtime WebSocket: `GET /api/connectivity/app/ws`
+- daemon-side realtime WebSocket: `GET /connectivity/daemon/ws`
 
 They share one envelope style but do not necessarily receive the same startup snapshots.
 
@@ -39,7 +39,7 @@ Separately, Relay exposes:
 
 ## App Authentication Model
 
-Phase 1 uses one simple Relay-issued app-session JWT for both app APIs and the app-side realtime WebSocket. See `../contract.md` D4.
+Phase 1 uses the existing Relay-issued opaque app access token for app APIs and the app-side realtime WebSocket. The token value is opaque to clients; Relay stores the device fingerprint binding on the server-side app session. See `../contract.md` D4.
 
 ### Device Fingerprint Binding
 
@@ -51,20 +51,13 @@ device_fingerprint = sha256(public_key_raw_bytes)   // 32 bytes, hex-encoded for
 
 Login flow:
 
-1. Android sends `POST /auth/login` with body `{ username, password, device_fingerprint }`.
-2. Relay validates credentials and persists `(account_id, sid, device_fingerprint)` server-side.
-3. Relay returns a JWT carrying these claims.
+1. Android sends `POST /api/auth/login` with body `{ username, password, device_fingerprint }`.
+2. Relay validates credentials and persists `(account_id, app_session_id, device_fingerprint)` server-side.
+3. Relay returns opaque access and refresh tokens.
 
-JWT claims:
+Token refresh requires the same `device_fingerprint`; mismatch is rejected as an invalid app session.
 
-- `sub` = account identifier
-- `device_fingerprint` = the value supplied at login (Relay echoes it for daemon-side comparison)
-- `sid` = app-session identifier
-- `exp`
-
-Token refresh requires the same `device_fingerprint`; mismatch is rejected with `relay_account_mismatch`.
-
-Relay uses the authenticated account plus `device_fingerprint` from the JWT claims as the app-side identity for:
+Relay uses the authenticated account plus the server-side app-session `device_fingerprint` as the app-side identity for:
 
 - pairing-derived daemon visibility
 - pairing response routing
@@ -72,25 +65,13 @@ Relay uses the authenticated account plus `device_fingerprint` from the JWT clai
 
 ### Phase-1 Simplicity Tradeoff
 
-Phase 1 does not require a per-WebSocket cryptographic proof that the JWT holder owns the device's private key. That tradeoff is accepted because daemon-side pinned device keys still protect direct and relay transport access; Relay-side app identity stays as simple as a normal authenticated app session.
+Phase 1 does not require a per-WebSocket cryptographic proof that the app-session holder owns the device's private key. That tradeoff is accepted because daemon-side pinned device keys still protect direct and relay transport access; Relay-side app identity stays as simple as a normal authenticated app session.
 
-Phase-2 may upgrade this by introducing `/auth/register-device` that requires the client to sign a Relay challenge with the device key, raising the JWT to a proof-of-possession token (`../contract.md` open TODO `T-AUTH-POP`).
+Phase-2 may upgrade this by introducing `/auth/register-device` that requires the client to sign a Relay challenge with the device key, raising the app session to a proof-of-possession model (`../contract.md` open TODO `T-AUTH-POP`).
 
 ## Shared Envelope
 
-All realtime messages use one envelope:
-
-- `type`
-- `seq`
-- `ts`
-- `body`
-
-Where:
-
-- `type` is the event family
-- `seq` is per-socket monotonic
-- `ts` is Relay-generated time
-- `body` is the event payload
+Implemented Step 2 realtime messages use a compact JSON envelope with `type`, optional `protocol_version`, optional `request_id`, and event-specific fields. Future rendezvous/fallback work may add sequencing once those streams exist.
 
 ## Startup Snapshots
 
@@ -100,7 +81,7 @@ After authentication succeeds:
 
 1. app sends `app_register`
 2. Relay sends `daemon_snapshot`
-3. Relay sends `realtime_ready`
+3. Relay sends later visibility updates as live daemon state changes
 
 #### `app_register`
 
@@ -118,7 +99,7 @@ Recommended fields:
 
 It does not contain sessions.
 
-Relay determines the Android device identity from the authenticated app-session JWT, then uses that `device_fingerprint` plus the authenticated account session to compute pairing-derived visibility.
+Relay determines the Android device identity from the authenticated server-side app session, then uses that `device_fingerprint` plus the authenticated account session to compute pairing-derived visibility.
 
 The app learns its current subscription tier through authenticated Relay app APIs, not through realtime per-session policy snapshots.
 
@@ -179,14 +160,16 @@ Relay carries pairing transport, but the daemon remains the trust root.
 Event responsibilities:
 
 - `pair_invitation_reserve` is sent from daemon to Relay to reserve a short-lived `correlation_id`
-- `pair_invitation_reserved` is sent from Relay to daemon carrying the reserved `correlation_id`
+- `pair_invitation_reserved` is sent from Relay to daemon carrying the reserved `correlation_id` request id and Relay-authenticated `account_id`
 - `pair_response_submit` is sent from Android to Relay carrying the signed pairing response
 - `pair_response_forward` is sent from Relay to the addressed daemon
 - `pair_completed` is sent from daemon to Relay after both sides have stored trust locally and the SAS has been confirmed
 - `paired_device_visible` is sent from Relay to Android after `pair_completed`
 - `paired_device_revoked` is sent from Relay to Android when the daemon revokes a previously paired device
 
-Relay's pairing state is a derived authorization copy. It MUST be invalidated when the daemon revokes trust, and Relay MUST NOT grant new presence visibility, signaling routing, or fallback tunnel issuance to a revoked device.
+Implemented Step 2 supports app registration, daemon trusted-roster registration, app-side daemon snapshots, account-bound pairing invitation reservation, `pair_response_submit` / `pair_response_forward` routing for reserved live correlations, `pair_completed` visibility grants, and `paired_device_revoked`. Transport/session events are intentionally absent.
+
+Relay's pairing state is a derived live authorization copy. It MUST be invalidated when the daemon revokes trust, and Relay MUST NOT grant new presence visibility, signaling routing, or fallback tunnel issuance to a revoked device.
 
 ### Rendezvous
 

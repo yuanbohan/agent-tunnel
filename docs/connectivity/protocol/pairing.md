@@ -24,7 +24,7 @@ Each side owns one persistent device key pair.
 
 Recommended phase-1 model:
 
-- daemon key pair stored in daemon-local state
+- daemon key pair stored in daemon-local state as `connectivity_identity.json` with mode `0600`
 - Android key pair generated on first authenticated app setup
 - Android private key stored with Android Keystore where available
 
@@ -67,31 +67,32 @@ Recommended invitation payload:
 - `relay_base_url`
 - `signature`
 
-The daemon signs the invitation so Android can verify that the QR payload originated from the daemon identity it is about to trust.
+The daemon signs the invitation so Android can verify that the invitation payload originated from the daemon identity it is about to trust.
 
 ## Pairing Flow
 
-1. daemon creates the invitation locally
-2. daemon requests or reserves a short-lived `correlation_id` with Relay
-3. CLI renders the invitation as a QR code
-4. Android scans the QR
-5. Android verifies:
+1. daemon reserves a short-lived `correlation_id` with Relay
+2. Relay replies with the authenticated `account_id`
+3. daemon creates the signed invitation locally
+4. CLI prints the invitation JSON payload
+5. Android imports the invitation payload
+6. Android verifies:
    - invitation signature
    - invitation `account_id` matches the currently authenticated Relay account
    - expiry
-6. Android signs:
+7. Android signs:
    - `invitation_id`
    - `nonce`
    - `android_pubkey`
    - `relay_asserted_account_id`
-7. Android sends pairing response to Relay with the `correlation_id`
-8. Relay forwards that response to the addressed daemon
-9. daemon verifies the response locally
-10. daemon and Android both display the same 6-digit SAS
-11. user confirms the numbers match
-12. daemon stores Android trust locally
-13. Android stores daemon trust locally
-14. daemon informs Relay that pairing is now valid for presence visibility
+8. Android sends pairing response to Relay with the `correlation_id`
+9. Relay forwards that response to the addressed daemon
+10. daemon verifies the response locally and stores it as pending
+11. daemon and Android both display the same 6-digit SAS
+12. user confirms the numbers match
+13. daemon stores Android trust locally
+14. Android stores daemon trust locally
+15. daemon informs Relay that pairing is now valid for presence visibility
 
 Relay participates in message transport only. It does not decide trust.
 
@@ -102,13 +103,13 @@ The trust boundary is intentionally split:
 - device identity is daemon-verifiable
 - account identity is Relay-asserted and transcript-bound
 
-The `account_id` Android signs comes from **the `sub` claim of the Android app's own JWT** — i.e., the value Relay told *Android* the account is. It is not a value Relay later inserts into `pair_response_forward` to the daemon.
+The `account_id` Android signs comes from the authenticated account associated with the Android app's opaque Relay app session. It is not a value Relay later inserts into `pair_response_forward` to the daemon.
 
 Pairing transcript rules:
 
-- Android signs `(invitation_id || nonce || android_pubkey || android_jwt_sub)` with its device key
-- the signature plus `android_jwt_sub` travels through Relay inside `pair_response_submit`
-- daemon receives the response via `pair_response_forward`, verifies Android's signature over those exact bytes, and compares `android_jwt_sub` against `invitation.account_id`
+- Android signs `(invitation_id || nonce || android_pubkey || account_id)` with its device key
+- the signature plus `account_id` travels through Relay inside `pair_response_submit`
+- daemon receives the response via `pair_response_forward`, verifies Android's signature over those exact bytes, and compares `account_id` against `invitation.account_id`
 
 This closes the account-substitution attack: even if Relay tries to hand the daemon a different account assertion, the value covered by Android's signature is the one Android believed during its login. Relay cannot rewrite that field without breaking the signature.
 
@@ -218,7 +219,7 @@ This is why later transport authentication no longer needs repeated human confir
 
 The daemon persists, with file mode `0600` under `~/.tunnel/`:
 
-- daemon Ed25519 device key pair (file `~/.tunnel/identity.json`)
+- daemon Ed25519 device key pair (`connectivity_identity.json`)
 - trusted Android roster:
   - Android device fingerprint
   - Android display name
@@ -312,7 +313,7 @@ To support actionable UI, both daemon and Android implementations SHOULD surface
 | Code | Meaning | User-facing recovery |
 |---|---|---|
 | `pairing_invitation_expired` | invitation `expires_at` is in the past | run `tunnel daemon pair` again to mint a new invitation |
-| `pairing_invitation_invalid` | QR could not be parsed or its signature did not verify | re-scan or check the daemon CLI output |
+| `pairing_invitation_invalid` | invitation payload could not be parsed or its signature did not verify | re-import or check the daemon CLI output |
 | `pairing_invitation_consumed` | invitation has already completed once | mint a new invitation |
 | `pairing_account_mismatch` | Android is logged into a different account than the invitation binds | log in with the matching account |
 | `pairing_relay_unreachable` | Relay could not be reached for response transport | check network and retry |

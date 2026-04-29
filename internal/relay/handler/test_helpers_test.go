@@ -47,6 +47,7 @@ const (
 	OperatorInviteDisablePath = handlertypes.OperatorInviteDisablePath
 	OperatorInviteListPath    = handlertypes.OperatorInviteListPath
 	OperatorDeleteUserPath    = handlertypes.OperatorDeleteUserPath
+	OperatorUserTierPath      = handlertypes.OperatorUserTierPath
 )
 
 var (
@@ -169,12 +170,13 @@ func (s *fakeStore) RegisterUser(_ context.Context, params auth.RegisterUserPara
 		return auth.User{}, auth.ErrUsernameTaken
 	}
 	user := auth.User{
-		ID:           s.nextUserID,
-		Username:     params.UsernameNorm,
-		UsernameNorm: params.UsernameNorm,
-		PasswordHash: params.PasswordHash,
-		CreatedAt:    params.Now,
-		UpdatedAt:    params.Now,
+		ID:               s.nextUserID,
+		Username:         params.UsernameNorm,
+		UsernameNorm:     params.UsernameNorm,
+		PasswordHash:     params.PasswordHash,
+		SubscriptionTier: auth.SubscriptionTierFree,
+		CreatedAt:        params.Now,
+		UpdatedAt:        params.Now,
 	}
 	s.nextUserID++
 	s.usersByName[user.UsernameNorm] = user
@@ -231,6 +233,7 @@ func (s *fakeStore) CreateAppSession(_ context.Context, params auth.CreateAppSes
 		AccessExpiresAt:    params.AccessExpiresAt,
 		RefreshTokenDigest: params.RefreshTokenDigest,
 		RefreshExpiresAt:   params.RefreshExpiresAt,
+		DeviceFingerprint:  params.DeviceFingerprint,
 		CreatedAt:          params.Now,
 		UpdatedAt:          params.Now,
 	}
@@ -272,6 +275,9 @@ func (s *fakeStore) RotateAppSessionByRefreshToken(_ context.Context, params aut
 	}
 	if !session.RefreshExpiresAt.After(params.Now) {
 		return auth.AppSession{}, auth.ErrAppSessionExpired
+	}
+	if session.DeviceFingerprint != "" && session.DeviceFingerprint != params.DeviceFingerprint {
+		return auth.AppSession{}, auth.ErrAppSessionDeviceMismatch
 	}
 	if params.AbsoluteTTL > 0 {
 		absoluteExpiresAt := session.CreatedAt.Add(params.AbsoluteTTL)
@@ -433,6 +439,31 @@ func (s *fakeStore) DeleteUser(_ context.Context, usernameNorm string, actor str
 		CreatedAt:      now,
 	})
 	return auth.DeleteUserResult{UserID: user.ID, UsernameNorm: user.UsernameNorm}, nil
+}
+
+func (s *fakeStore) SetUserSubscriptionTier(_ context.Context, usernameNorm string, tier string, actor string, now time.Time) (auth.User, string, error) {
+	user, ok := s.usersByName[usernameNorm]
+	if !ok {
+		return auth.User{}, "", auth.ErrUserNotFound
+	}
+	previous := user.SubscriptionTier
+	if previous == "" {
+		previous = auth.SubscriptionTierFree
+	}
+	user.SubscriptionTier = tier
+	user.UpdatedAt = now
+	s.usersByName[usernameNorm] = user
+	s.usersByID[user.ID] = user
+	s.auditEvents = append(s.auditEvents, auth.AuditEvent{
+		ID:             int64(len(s.auditEvents) + 1),
+		EventType:      "user_subscription_tier_changed",
+		Actor:          actor,
+		TargetUserID:   int64Ptr(user.ID),
+		TargetUsername: user.UsernameNorm,
+		MetadataJSON:   `{"new_tier":"` + tier + `","previous_tier":"` + previous + `"}`,
+		CreatedAt:      now,
+	})
+	return user, previous, nil
 }
 
 type handlerTestEnv struct {

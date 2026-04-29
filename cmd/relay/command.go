@@ -34,6 +34,7 @@ type commandHandlers struct {
 	inviteDisable func(context.Context, inviteDisableConfig) error
 	inviteList    func(context.Context, inviteListConfig) error
 	userDelete    func(context.Context, userDeleteConfig) error
+	userTier      func(context.Context, userTierConfig) error
 }
 
 func defaultRuntimeEnv() runtimeEnv {
@@ -97,7 +98,8 @@ They use RELAY_OPERATOR_TOKEN and connect to RELAY_LISTEN_ADDR (default
 		Example: `  relay serve --listen-addr 127.0.0.1:8586
   relay invite create --count 3 --expires-in 7d
   relay invite disable --code AB2C3D
-  relay user delete --username alice`,
+  relay user delete --username alice
+  relay user tier alice pro`,
 		CompletionOptions: cobra.CompletionOptions{
 			DisableDefaultCmd: true,
 		},
@@ -291,6 +293,7 @@ running. They require RELAY_OPERATOR_TOKEN and use RELAY_LISTEN_ADDR
 	}
 	wrapFlagErrors(cmd)
 	cmd.AddCommand(newUserDeleteCmd(env, handlers))
+	cmd.AddCommand(newUserTierCmd(env, handlers))
 	return cmd
 }
 
@@ -321,6 +324,34 @@ Uses RELAY_LISTEN_ADDR when set, otherwise defaults to 127.0.0.1:8586.`,
 	wrapFlagErrors(cmd)
 	applyUserDeleteFlags(cmd.Flags(), &flags)
 	markFlagRequired(cmd, "username")
+	return cmd
+}
+
+func newUserTierCmd(env runtimeEnv, handlers commandHandlers) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "tier <username> <free|pro>",
+		Short: "Set a user's subscription tier",
+		Long: `Set a user's subscription tier through the relay's local-only operator API.
+
+Requires:
+  - RELAY_OPERATOR_TOKEN
+  - username
+  - tier, either free or pro
+
+Uses RELAY_LISTEN_ADDR when set, otherwise defaults to 127.0.0.1:8586.`,
+		Example:       `  relay user tier alice pro`,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		Args:          cobra.ExactArgs(2),
+		RunE: func(c *cobra.Command, args []string) error {
+			cfg, err := finalizeUserTierConfig(args[0], args[1], env.getenv)
+			if err != nil {
+				return err
+			}
+			return handlers.userTier(c.Context(), cfg)
+		},
+	}
+	wrapFlagErrors(cmd)
 	return cmd
 }
 
@@ -377,6 +408,9 @@ func newCommandHandlers(env runtimeEnv) commandHandlers {
 		},
 		userDelete: func(ctx context.Context, cfg userDeleteConfig) error {
 			return runUserDelete(ctx, newHTTPOperatorClient(cfg.RelayAddr, cfg.OperatorToken, env.httpClient), cfg, env.stdout)
+		},
+		userTier: func(ctx context.Context, cfg userTierConfig) error {
+			return runUserTier(ctx, newHTTPOperatorClient(cfg.RelayAddr, cfg.OperatorToken, env.httpClient), cfg, env.stdout)
 		},
 	}
 }

@@ -20,7 +20,7 @@ Defined in `pairing-protocol.md`. Emitted by daemon to Android (over the pairing
 | Code | Emitted By | Trigger | Recommended User-Facing String |
 |---|---|---|---|
 | `pairing_invitation_expired` | daemon | invitation `expires_at` is in the past | "This pairing code has expired. Run `tunnel daemon pair` again." |
-| `pairing_invitation_invalid` | Android (local) or daemon | QR could not be parsed; daemon signature verify failed | "Pairing code is invalid. Re-scan or check the daemon CLI." |
+| `pairing_invitation_invalid` | Android (local) or daemon | invitation payload could not be parsed; daemon signature verify failed | "Pairing code is invalid. Re-import or check the daemon CLI." |
 | `pairing_invitation_consumed` | daemon | invitation already completed once | "This pairing code has already been used. Mint a new one." |
 | `pairing_account_mismatch` | daemon | Relay-asserted Android account does not match invitation `account_id` | "You're signed in to a different account. Sign in with the matching account." |
 | `pairing_relay_unreachable` | Android (local) | Relay could not be reached for response transport | "Could not reach our servers. Check network and retry." |
@@ -48,6 +48,8 @@ Defined in `relay-protocol.md`. Returned by Relay over the realtime WebSocket or
 |---|---|---|---|
 | `relay_auth_failed` | Relay | account token invalid or expired | "Please sign in again." |
 | `relay_account_mismatch` | Relay | actor identity does not match expected | "Account mismatch. Sign out and sign in again." |
+| `invalid_device_fingerprint` | Relay | app login/refresh or connectivity websocket used a missing or malformed required device fingerprint | "Device identity is invalid. Sign in again." |
+| `pairing_correlation_not_found` | Relay | app submitted a pairing response for an unknown, expired, or cross-account correlation | "Pairing code expired. Run pairing again." |
 | `relay_rate_limited` | Relay | per-account or per-device rate limit exceeded | "Too many requests. Try again in a moment." Includes `retry_after_seconds`. |
 | `relay_daemon_offline` | Relay | requested daemon is not currently registered | "Computer is offline." |
 | `relay_invalid_payload` | Relay | malformed event payload | (internal; surface as generic error) |

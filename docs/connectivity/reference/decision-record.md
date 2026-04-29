@@ -142,9 +142,9 @@ That keeps one end-to-end security model while avoiding TURN.
 
 ## Phase-1 App Identity Simplification
 
-Confirmed on 2026-04-27: phase 1 uses a Relay-issued app-session JWT as the only app-side Relay authentication mechanism.
+Updated by Step 2 implementation on 2026-04-28: phase 1 uses the existing Relay-issued opaque app session as the only app-side Relay authentication mechanism. The planned JWT conversion was not necessary for the auth/pairing foundation.
 
-The JWT should carry:
+The server-side app session stores:
 
 - account identity
 - app-session identifier

@@ -68,6 +68,7 @@ func queryUser(ctx context.Context, db queryer, query string, args ...any) (auth
 		&user.Username,
 		&user.UsernameNorm,
 		&user.PasswordHash,
+		&user.SubscriptionTier,
 		&user.CreatedAt,
 		&user.UpdatedAt,
 	)
@@ -89,6 +90,7 @@ func queryAppSession(ctx context.Context, db queryer, query string, args ...any)
 		&session.AccessExpiresAt,
 		&session.RefreshTokenDigest,
 		&session.RefreshExpiresAt,
+		&session.DeviceFingerprint,
 		nullTimeDest(&session.RevokedAt),
 		&session.RevokeReason,
 		&session.CreatedAt,

@@ -8,10 +8,11 @@ This file covers:
 
 - public app-facing HTTP endpoints under `/api/...`
 - the client attach WebSocket
+- the Step 2 connectivity app/daemon WebSockets
 
 For lower-level wire details such as the binary attach packet format, also see [docs/protocol.md](./protocol.md).
 
-This document intentionally does not cover operator-only routes or the `tunnel`-owned agent sockets at `/agent/ws` and `/device/ws`.
+This document intentionally does not cover operator-only routes or the legacy `tunnel`-owned agent sockets at `/agent/ws` and `/device/ws`.
 
 ## Conventions
 
@@ -29,9 +30,9 @@ The relay currently uses three token classes:
 
 | Token | Used By | Where It Goes |
 |-------|---------|---------------|
-| App access token | mobile/web/native app clients | `Authorization: Bearer <access-token>` on app-facing `/api/...` routes and `GET /api/sessions/:sessionID/attach/ws` |
+| App access token | mobile/web/native app clients | `Authorization: Bearer <access-token>` on app-facing `/api/...` routes, `GET /api/sessions/:sessionID/attach/ws`, and `GET /api/connectivity/app/ws` |
 | App refresh token | app clients | JSON body for `POST /api/auth/refresh` |
-| Agent token | created by app clients, used later by `tunnel` | returned by `POST /api/agent-tokens`; used by `/agent/ws`, `/device/ws`, `GET /api/sessions`, and `POST /api/sessions/:sessionID/stop` |
+| Agent token | created by app clients, used later by `tunnel` | returned by `POST /api/agent-tokens`; used by `/agent/ws`, `/device/ws`, `/connectivity/daemon/ws`, `GET /api/sessions`, and `POST /api/sessions/:sessionID/stop` |
 
 ### JSON Request Rules
 
@@ -90,6 +91,7 @@ Code map (excerpt):
 | `1017` | `The request is forbidden.` |
 | `1018` | `The requested endpoint was not found.` |
 | `1019` | `The HTTP method is not allowed for this endpoint.` |
+| `1020` | `The device fingerprint is invalid.` |
 | `2001` | `The service is temporarily unavailable.` |
 | `2002` | `An unexpected internal error occurred.` |
 
@@ -330,9 +332,12 @@ Request:
 ```json
 {
   "username": "alice",
-  "password": "password123"
+  "password": "password123",
+  "device_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 }
 ```
+
+`device_fingerprint` is optional for legacy clients. Connectivity-capable app clients send a lower- or upper-case 64 character hex SHA-256 fingerprint of their Android public key. Fingerprint-bound sessions must refresh with the same fingerprint.
 
 Success:
 
@@ -365,6 +370,7 @@ Error responses:
 | Status | Body | Meaning |
 |--------|------|---------|
 | `400` | `{"code":1001,"message":"The request is invalid.","body":null}` | malformed JSON or request shape |
+| `400` | `{"code":1020,"message":"The device fingerprint is invalid.","body":null}` | `device_fingerprint` is present but not 64 hex characters |
 | `401` | `{"code":1011,"message":"The username or password is invalid.","body":null}` | username or password is wrong |
 | `500` | `{"code":2002,"message":"An unexpected internal error occurred.","body":null}` | unexpected server failure |
 | `503` | `{"code":2001,"message":"The service is temporarily unavailable.","body":null}` | auth service unavailable |
@@ -379,9 +385,12 @@ Request:
 
 ```json
 {
-  "refresh_token": "<refresh-token>"
+  "refresh_token": "<refresh-token>",
+  "device_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 }
 ```
+
+`device_fingerprint` is required when the original login bound the app session to a fingerprint. Refresh with a different fingerprint is rejected as an invalid session.
 
 Success:
 
@@ -415,7 +424,8 @@ Error responses:
 | Status | Body | Meaning |
 |--------|------|---------|
 | `400` | `{"code":1001,"message":"The request is invalid.","body":null}` | malformed JSON or request shape |
-| `401` | `{"code":1012,"message":"The session is invalid.","body":null}` | refresh token is unknown, expired, revoked, or the session has reached its 90-day absolute lifetime |
+| `400` | `{"code":1020,"message":"The device fingerprint is invalid.","body":null}` | `device_fingerprint` is present but not 64 hex characters |
+| `401` | `{"code":1012,"message":"The session is invalid.","body":null}` | refresh token is unknown, expired, revoked, fingerprint-mismatched, or the session has reached its 90-day absolute lifetime |
 | `500` | `{"code":2002,"message":"An unexpected internal error occurred.","body":null}` | unexpected server failure |
 | `503` | `{"code":2001,"message":"The service is temporarily unavailable.","body":null}` | auth service unavailable |
 
@@ -658,6 +668,86 @@ Error responses:
 | `404` | `{"code":1013,"message":"This agent token was not found.","body":null}` | token does not exist for this user or is already revoked |
 | `500` | `{"code":2002,"message":"An unexpected internal error occurred.","body":null}` | unexpected server failure |
 | `503` | `{"code":2001,"message":"The service is temporarily unavailable.","body":null}` | agent token service unavailable |
+
+### `GET /api/account/policy`
+
+Return the authenticated account's temporary policy tier.
+
+Auth: app access token
+
+Success:
+
+```json
+{
+  "code": 0,
+  "message": "success",
+  "body": {
+    "tier": "free"
+  }
+}
+```
+
+`tier` is currently `free` or `pro`. It is operator-managed placeholder state; there is no payment provider or daemon-side subscription enforcement in this revision.
+
+## Connectivity WebSockets
+
+These routes carry Step 2 connectivity control-plane state only. They do not carry terminal snapshots, live terminal bytes, structured input, fallback QUIC packets, session previews, or STUN/direct-UDP data.
+
+### `GET /api/connectivity/app/ws`
+
+Auth: fingerprint-bound app access token. Legacy app sessions without `device_fingerprint` are rejected with `403`.
+
+Client first sends:
+
+```json
+{
+  "type": "app_register",
+  "protocol_version": 1
+}
+```
+
+Relay replies with:
+
+```json
+{
+  "type": "daemon_snapshot",
+  "daemons": []
+}
+```
+
+Relay may later send `paired_device_visible`, `paired_device_revoked`, or `paired_device_removed`. App peers may submit `pair_response_submit` frames with a signed Android pairing response. The response must include the authenticated app account id and the app session's `device_fingerprint`; Relay forwards only through a live daemon-owned reserved correlation.
+
+### `GET /connectivity/daemon/ws`
+
+Auth: agent bearer token.
+
+Daemon first sends:
+
+```json
+{
+  "type": "daemon_register",
+  "protocol_version": 1,
+  "daemon": {
+    "device_id": "dev_abcd1234",
+    "display_name": "Yuanbo's MacBook Pro",
+    "platform_family": "macos",
+    "platform_id": "macos",
+    "daemon_public_key": "<hex-ed25519-public-key>",
+    "daemon_fingerprint": "<hex-sha256-public-key>",
+    "tunnel_version": "v0.1.0"
+  },
+  "trusted_devices": [
+    {
+      "fingerprint": "<android-device-fingerprint>",
+      "display_name": "Pixel"
+    }
+  ]
+}
+```
+
+Relay derives app-visible daemon presence from this live trusted roster and the authenticated app session fingerprint. Relay does not persist the roster durably; daemon reconnect rebuilds visibility.
+
+Daemon peers reserve pairing invitations with `pair_invitation_reserve` using the desired `correlation_id` as `request_id`. Relay replies with `pair_invitation_reserved` and an `account_id`; the daemon signs that account id into the invitation before returning it locally. Relay forwards app `pair_response_submit` messages as `pair_response_forward`. After local SAS confirmation stores Android trust, the daemon sends `pair_completed` with `android_fingerprint`, and Relay emits `paired_device_visible` to any matching online app peer.
 
 ### `GET /api/sessions`
 

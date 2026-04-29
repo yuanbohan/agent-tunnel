@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -69,6 +70,11 @@ var (
 	daemonStatus              = daemon.Status
 	daemonStop                = daemon.Stop
 	daemonDoctor              = daemon.Doctor
+	daemonPair                = daemon.Pair
+	daemonPendingPairing      = daemon.PendingPairing
+	daemonConfirmPairing      = daemon.ConfirmPendingPairing
+	daemonTrustedDevices      = daemon.TrustedDevices
+	daemonRevokeTrustedDevice = daemon.RevokeTrustedDevice
 	ensureDaemonTmuxAvailable = daemon.EnsureTmuxAvailable
 	openDaemonWorkspace       = daemon.OpenWorkspace
 	closeDaemonWorkspace      = daemon.CloseWorkspace
@@ -670,6 +676,114 @@ func runDaemonSessions(ctx context.Context, stdout, stderr io.Writer) error {
 		_, _ = fmt.Fprintf(w, "%s\t%d\t%d\n", session.Name, session.Windows, session.Attached)
 	}
 	return w.Flush()
+}
+
+func runDaemonPair(ctx context.Context, stdout, stderr io.Writer) error {
+	if err := ensureDaemonPlatformSupported(); err != nil {
+		return err
+	}
+	paths, err := resolveDaemonPaths()
+	if err != nil {
+		return err
+	}
+	invitation, err := daemonPair(ctx, paths)
+	if err != nil {
+		return err
+	}
+	payload, err := json.MarshalIndent(invitation, "", "  ")
+	if err != nil {
+		return err
+	}
+	_, _ = io.WriteString(stdout, string(payload))
+	_, _ = io.WriteString(stdout, "\n")
+	return nil
+}
+
+func runDaemonPairPending(ctx context.Context, stdout, stderr io.Writer) error {
+	if err := ensureDaemonPlatformSupported(); err != nil {
+		return err
+	}
+	paths, err := resolveDaemonPaths()
+	if err != nil {
+		return err
+	}
+	pending, err := daemonPendingPairing(ctx, paths)
+	if err != nil {
+		return err
+	}
+	if len(pending) == 0 {
+		_, _ = io.WriteString(stdout, "no pending pairing responses\n")
+		return nil
+	}
+	w := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(w, "INVITATION ID\tFINGERPRINT\tDISPLAY NAME\tSAS\tRECEIVED AT\tEXPIRES AT")
+	for _, response := range pending {
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%d\n",
+			response.InvitationID,
+			response.AndroidFingerprint,
+			daemonDisplayValue(response.AndroidDisplayName, "unknown"),
+			response.SAS,
+			response.ReceivedAt,
+			response.ExpiresAt,
+		)
+	}
+	return w.Flush()
+}
+
+func runDaemonPairConfirm(ctx context.Context, invitationID, sas string, stdout, stderr io.Writer) error {
+	if err := ensureDaemonPlatformSupported(); err != nil {
+		return err
+	}
+	paths, err := resolveDaemonPaths()
+	if err != nil {
+		return err
+	}
+	completion, err := daemonConfirmPairing(ctx, paths, invitationID, sas)
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(stdout, "paired %s\n", completion.Device.Fingerprint)
+	return nil
+}
+
+func runDaemonDevices(ctx context.Context, stdout, stderr io.Writer) error {
+	if err := ensureDaemonPlatformSupported(); err != nil {
+		return err
+	}
+	paths, err := resolveDaemonPaths()
+	if err != nil {
+		return err
+	}
+	devices, err := daemonTrustedDevices(ctx, paths)
+	if err != nil {
+		return err
+	}
+	if len(devices) == 0 {
+		_, _ = io.WriteString(stdout, "no paired devices\n")
+		return nil
+	}
+	w := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(w, "FINGERPRINT\tDISPLAY NAME\tPAIRED AT")
+	for _, device := range devices {
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%d\n", device.Fingerprint, daemonDisplayValue(device.DisplayName, "unknown"), device.PairedAt)
+	}
+	return w.Flush()
+}
+
+func runDaemonRevoke(ctx context.Context, fingerprint string, stdout, stderr io.Writer) error {
+	if err := ensureDaemonPlatformSupported(); err != nil {
+		return err
+	}
+	paths, err := resolveDaemonPaths()
+	if err != nil {
+		return err
+	}
+	device, err := daemonRevokeTrustedDevice(ctx, paths, fingerprint)
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(stdout, "revoked %s\n", device.Fingerprint)
+	return nil
 }
 
 func runDaemonDoctor(ctx context.Context, stdout, stderr io.Writer) error {

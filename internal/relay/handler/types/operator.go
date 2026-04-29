@@ -5,6 +5,7 @@ const (
 	OperatorInviteDisablePath = "/operator/invite-codes/disable"
 	OperatorInviteListPath    = "/operator/invite-codes/list"
 	OperatorDeleteUserPath    = "/operator/users/delete"
+	OperatorUserTierPath      = "/operator/users/tier"
 )
 
 type OperatorCreateInvitesRequest struct {
@@ -22,6 +23,17 @@ type OperatorDisableInviteRequest struct {
 
 type OperatorDeleteUserRequest struct {
 	Username string `json:"username"`
+}
+
+type OperatorSetUserTierRequest struct {
+	Username string `json:"username"`
+	Tier     string `json:"tier"`
+}
+
+type OperatorSetUserTierResponse struct {
+	Username     string `json:"username"`
+	PreviousTier string `json:"previous_tier"`
+	Tier         string `json:"tier"`
 }
 
 type OperatorInviteCodeListEntry struct {

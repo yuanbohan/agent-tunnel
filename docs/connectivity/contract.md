@@ -67,18 +67,18 @@ Detail: `ux/subscription.md`.
 
 ---
 
-### D4 — App Identity: JWT With Client-Supplied `device_fingerprint`
+### D4 — App Identity: Opaque App Session With Client-Supplied `device_fingerprint`
 
 - Android first-install generates a long-lived device key in Android Keystore. `device_fingerprint = sha256(public_key_raw)` is cached locally.
 - Login request body: `{ username, password, device_fingerprint }`.
-- Relay validates credentials and signs a JWT carrying `{ sub: account_id, device_fingerprint, sid, exp }`.
-- Relay persists `(account_id, sid, device_fingerprint)` server-side.
+- Relay validates credentials and returns the existing opaque app access/refresh tokens.
+- Relay persists `(account_id, app_session_id, device_fingerprint)` server-side.
 - Token refresh requires the same `device_fingerprint`; mismatch is rejected.
-- Phase 1 does **not** require a cryptographic proof that the JWT holder owns the device private key. Daemon-side security relies on pairing-pinned device keys, not JWT.
+- Phase 1 does **not** require a cryptographic proof that the app-session holder owns the device private key. Daemon-side security relies on pairing-pinned device keys, not app-session token format.
 
 **Phase-2 TODO**
 
-- Add `/auth/register-device` flow that requires the client to sign a Relay challenge with the device key, upgrading the JWT to a "proof-of-possession" model.
+- Add `/auth/register-device` flow that requires the client to sign a Relay challenge with the device key, upgrading the app session to a proof-of-possession model.
 
 Detail: `protocol/relay.md` § App Authentication Model.
 
@@ -142,10 +142,10 @@ device. If `quiche` packaging blocks, fall back to `kwik` per
 
 ### 1.1 — Pairing + Local Broker
 
-- daemon identity persistence (`~/.tunnel/identity.json`, mode 0600).
+- daemon identity persistence (`connectivity_identity.json` in the daemon state directory, mode 0600).
 - invitation persistence (`~/.tunnel/invitations.json`).
 - SAS computation with golden vectors checked in (≥ 3 cases) before any pairing UI is built.
-- `tunnel daemon pair` mints an invitation; QR rendering.
+- `tunnel daemon pair` reserves Relay correlation and prints a signed JSON invitation; QR rendering is deferred.
 - Test client (Go-only, no Android required) completes a full pair end-to-end through Relay.
 - `tunnel daemon ensure` auto-start path works from cold.
 - Local broker socket: `tunnel run` registers, pushes preview, daemon mirrors.
@@ -154,7 +154,7 @@ device. If `quiche` packaging blocks, fall back to `kwik` per
 
 ### 1.2 — Relay Control Plane + Fallback Transport
 
-- Relay WSS for app + daemon, JWT auth with `device_fingerprint`.
+- Relay WSS for app + daemon, app-session auth with `device_fingerprint`.
 - `daemon_register`, `app_register`, `daemon_snapshot`, presence churn.
 - `pair_response_submit` / `pair_response_forward`.
 - Fallback WSS-QUIC tunnel (no direct path yet).

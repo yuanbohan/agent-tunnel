@@ -53,11 +53,37 @@ func (c *AppClient) Register(inviteCode, username, password string) (RegisterRes
 }
 
 func (c *AppClient) Login(username, password string) (handlertypes.AppSessionResponse, error) {
+	return c.LoginWithDeviceFingerprint(username, password, "")
+}
+
+func (c *AppClient) LoginWithDeviceFingerprint(username, password, deviceFingerprint string) (handlertypes.AppSessionResponse, error) {
 	var out handlertypes.AppSessionResponse
-	err := c.doJSON(http.MethodPost, "/api/auth/login", "", map[string]string{
+	req := map[string]string{
 		"username": username,
 		"password": password,
-	}, http.StatusOK, &out)
+	}
+	if strings.TrimSpace(deviceFingerprint) != "" {
+		req["device_fingerprint"] = deviceFingerprint
+	}
+	err := c.doJSON(http.MethodPost, "/api/auth/login", "", req, http.StatusOK, &out)
+	return out, err
+}
+
+func (c *AppClient) RefreshWithDeviceFingerprint(refreshToken, deviceFingerprint string) (handlertypes.AppSessionResponse, error) {
+	var out handlertypes.AppSessionResponse
+	req := map[string]string{
+		"refresh_token": refreshToken,
+	}
+	if strings.TrimSpace(deviceFingerprint) != "" {
+		req["device_fingerprint"] = deviceFingerprint
+	}
+	err := c.doJSON(http.MethodPost, "/api/auth/refresh", "", req, http.StatusOK, &out)
+	return out, err
+}
+
+func (c *AppClient) AccountPolicy(accessToken string) (handlertypes.AccountPolicyResponse, error) {
+	var out handlertypes.AccountPolicyResponse
+	err := c.doJSON(http.MethodGet, "/api/account/policy", accessToken, nil, http.StatusOK, &out)
 	return out, err
 }
 

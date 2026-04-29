@@ -99,6 +99,8 @@ Examples:
   tunnel daemon open
   tunnel daemon close
   tunnel daemon sessions
+  tunnel daemon pair
+  tunnel daemon devices
   tunnel update
   tunnel rollback
   tunnel run claude
@@ -204,6 +206,9 @@ Commands:
   open        Open the daemon tmux workspace
   close       Close one open daemon tmux workspace view
   sessions    List daemon tmux sessions
+  pair        Create or confirm pairing invitations
+  devices     List paired Android devices
+  revoke      Revoke a paired Android device
 
 Flags:
   -h, --help       Show this help message and exit
@@ -219,6 +224,11 @@ Examples:
   tunnel daemon open
   tunnel daemon close
   tunnel daemon sessions
+  tunnel daemon pair
+  tunnel daemon pair pending
+  tunnel daemon pair confirm <invitation-id> <sas>
+  tunnel daemon devices
+  tunnel daemon revoke <fingerprint>
 `
 }
 
