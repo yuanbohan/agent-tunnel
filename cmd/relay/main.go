@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	relayconfig "yuanbohan/tunnel/internal/config"
+	stunserver "yuanbohan/tunnel/internal/connectivity/stun"
 	"yuanbohan/tunnel/internal/logx"
 )
 
@@ -17,21 +19,52 @@ func main() {
 	}
 }
 
-func logRelayStarted(listenAddr string) {
-	logx.Info("relay_started", logx.String("listen_addr", listenAddr))
+func logRelayStarted(listenAddr, stunListenAddr string) {
+	fields := []logx.Field{logx.String("listen_addr", listenAddr)}
+	if stunListenAddr != "" {
+		fields = append(fields, logx.String("stun_listen_addr", stunListenAddr))
+	}
+	logx.Info("relay_started", fields...)
 }
 
 func startRelay(
+	ctx context.Context,
 	handler http.Handler,
 	listen func(network, address string) (net.Listener, error),
+	listenPacket func(network, address string) (net.PacketConn, error),
 	serve func(*http.Server, net.Listener) error,
 ) error {
 	ln, err := listen("tcp", relayconfig.RelayListenAddr())
 	if err != nil {
 		return err
 	}
+	defer ln.Close()
 
-	logRelayStarted(ln.Addr().String())
+	var stunConn net.PacketConn
+	if stunListenAddr := relayconfig.RelaySTUNListenAddr(); stunListenAddr != "" {
+		if listenPacket == nil {
+			listenPacket = net.ListenPacket
+		}
+		stunConn, err = listenPacket("udp", stunListenAddr)
+		if err != nil {
+			return err
+		}
+	}
+
+	serveCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if stunConn != nil {
+		defer stunConn.Close()
+		go func() {
+			_ = (&stunserver.Server{}).Serve(serveCtx, stunConn)
+		}()
+	}
+
+	boundSTUNAddr := ""
+	if stunConn != nil {
+		boundSTUNAddr = stunConn.LocalAddr().String()
+	}
+	logRelayStarted(ln.Addr().String(), boundSTUNAddr)
 	return serve(newHTTPServer(handler), ln)
 }
 

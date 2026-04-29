@@ -19,13 +19,14 @@ import (
 )
 
 type runtimeEnv struct {
-	getenv     func(string) string
-	stdout     io.Writer
-	stderr     io.Writer
-	openDB     func(string) (*sql.DB, error)
-	httpClient *http.Client
-	listen     func(network, address string) (net.Listener, error)
-	serveHTTP  func(*http.Server, net.Listener) error
+	getenv       func(string) string
+	stdout       io.Writer
+	stderr       io.Writer
+	openDB       func(string) (*sql.DB, error)
+	httpClient   *http.Client
+	listen       func(network, address string) (net.Listener, error)
+	listenPacket func(network, address string) (net.PacketConn, error)
+	serveHTTP    func(*http.Server, net.Listener) error
 }
 
 type commandHandlers struct {
@@ -45,8 +46,9 @@ func defaultRuntimeEnv() runtimeEnv {
 		openDB: func(dsn string) (*sql.DB, error) {
 			return sql.Open("pgx", dsn)
 		},
-		httpClient: &http.Client{Timeout: 10 * time.Second},
-		listen:     net.Listen,
+		httpClient:   &http.Client{Timeout: 10 * time.Second},
+		listen:       net.Listen,
+		listenPacket: net.ListenPacket,
 		serveHTTP: func(srv *http.Server, ln net.Listener) error {
 			return srv.Serve(ln)
 		},
@@ -94,7 +96,8 @@ The public server entrypoint is "relay serve". It requires:
 The operator commands under "relay invite" and "relay user" are intentionally
 local-only. Run them on the relay host after "relay serve" is already running.
 They use RELAY_OPERATOR_TOKEN and connect to RELAY_LISTEN_ADDR (default
-127.0.0.1:8586).`,
+127.0.0.1:8586). The server also listens for Binding-only STUN on
+RELAY_STUN_LISTEN_ADDR (default 0.0.0.0:3478) unless disabled with "off".`,
 		Example: `  relay serve --listen-addr 127.0.0.1:8586
   relay invite create --count 3 --expires-in 7d
   relay invite disable --code AB2C3D
@@ -153,6 +156,7 @@ Required environment variables:
 
 Optional environment variables:
   - RELAY_LISTEN_ADDR (default 127.0.0.1:8586)
+  - RELAY_STUN_LISTEN_ADDR (default 0.0.0.0:3478, set to "off" to disable)
   - RELAY_LOG_FILE`,
 		Example: `  relay serve
   relay serve --listen-addr 127.0.0.1:8586
@@ -395,7 +399,7 @@ func newCommandHandlers(env runtimeEnv) commandHandlers {
 				return err
 			}
 
-			return startRelay(handler, env.listen, env.serveHTTP)
+			return startRelay(ctx, handler, env.listen, env.listenPacket, env.serveHTTP)
 		},
 		inviteCreate: func(ctx context.Context, cfg inviteCreateConfig) error {
 			return runInviteCreate(ctx, newHTTPOperatorClient(cfg.RelayAddr, cfg.OperatorToken, env.httpClient), cfg, env.stdout)

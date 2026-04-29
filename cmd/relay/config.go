@@ -12,10 +12,12 @@ import (
 )
 
 const defaultRelayListenAddr = relayconfig.DefaultRelayListenAddr
+const defaultRelaySTUNListenAddr = relayconfig.DefaultRelaySTUNListenAddr
 
 type serveConfig struct {
-	ListenAddr string
-	LogFile    string
+	ListenAddr     string
+	STUNListenAddr string
+	LogFile        string
 }
 
 type inviteCreateConfig struct {
@@ -79,6 +81,7 @@ func usagef(format string, args ...any) error {
 // applyServeFlags registers serve-subcommand flags on fs.
 func applyServeFlags(fs *pflag.FlagSet, cfg *serveConfig) {
 	fs.StringVarP(&cfg.ListenAddr, "listen-addr", "a", "", "relay listen address (env: RELAY_LISTEN_ADDR)")
+	fs.StringVar(&cfg.STUNListenAddr, "stun-listen-addr", "", `STUN UDP listen address, or "off" to disable (env: RELAY_STUN_LISTEN_ADDR)`)
 	fs.StringVarP(&cfg.LogFile, "log-file", "L", "", "append structured logs to this file (env: RELAY_LOG_FILE, default: stderr)")
 }
 
@@ -86,13 +89,16 @@ func finalizeServeConfig(cfg serveConfig, getenv func(string) string) (serveConf
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = envOrDefault(getenv, "RELAY_LISTEN_ADDR", defaultRelayListenAddr)
 	}
+	if cfg.STUNListenAddr == "" {
+		cfg.STUNListenAddr = envOrDefault(getenv, "RELAY_STUN_LISTEN_ADDR", defaultRelaySTUNListenAddr)
+	}
 	if cfg.LogFile == "" {
 		cfg.LogFile = envValue(getenv, "RELAY_LOG_FILE")
 	}
-	if err := relayconfig.SetupRelay(getenv, cfg.ListenAddr); err != nil {
+	if err := relayconfig.SetupRelay(getenv, cfg.ListenAddr, cfg.STUNListenAddr); err != nil {
 		return serveConfig{}, usagef("%v", err)
 	}
-	return serveConfig{ListenAddr: relayconfig.RelayListenAddr(), LogFile: cfg.LogFile}, nil
+	return serveConfig{ListenAddr: relayconfig.RelayListenAddr(), STUNListenAddr: relayconfig.RelaySTUNListenAddr(), LogFile: cfg.LogFile}, nil
 }
 
 func loadServeConfig(getenv func(string) string, args []string) (serveConfig, error) {

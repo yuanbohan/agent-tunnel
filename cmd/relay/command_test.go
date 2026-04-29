@@ -24,6 +24,9 @@ func TestRunWithHandlersDispatchesServeCommand(t *testing.T) {
 			if cfg.ListenAddr != "127.0.0.1:9999" {
 				t.Fatalf("ListenAddr = %q, want 127.0.0.1:9999", cfg.ListenAddr)
 			}
+			if cfg.STUNListenAddr != defaultRelaySTUNListenAddr {
+				t.Fatalf("STUNListenAddr = %q, want %q", cfg.STUNListenAddr, defaultRelaySTUNListenAddr)
+			}
 			if cfg.LogFile != "/tmp/relay.log" {
 				t.Fatalf("LogFile = %q, want /tmp/relay.log", cfg.LogFile)
 			}
@@ -141,6 +144,7 @@ func TestRunWithHandlersHelpExplainsServerAndLocalOperatorRequirements(t *testin
 		`RELAY_OPERATOR_TOKEN`,
 		`local-only`,
 		`RELAY_LISTEN_ADDR`,
+		`RELAY_STUN_LISTEN_ADDR`,
 		`relay invite disable --code AB2C3D`,
 		`relay user tier alice pro`,
 	} {
