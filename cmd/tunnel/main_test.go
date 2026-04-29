@@ -58,6 +58,8 @@ func (f *fakeLocalRegistration) WriteOutput(data []byte) error {
 	return nil
 }
 
+func (f *fakeLocalRegistration) BindHub(*session.Hub) {}
+
 func stubDetectGitBranch(t *testing.T, branch string) {
 	t.Helper()
 

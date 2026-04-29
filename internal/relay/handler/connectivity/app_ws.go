@@ -12,13 +12,14 @@ import (
 	relayauth "yuanbohan/tunnel/internal/relay/auth"
 	relayconnectivity "yuanbohan/tunnel/internal/relay/connectivity"
 	"yuanbohan/tunnel/internal/relay/handler/api"
+	"yuanbohan/tunnel/internal/relay/handler/httpx"
 	"yuanbohan/tunnel/internal/relay/handler/middleware"
 	handlerws "yuanbohan/tunnel/internal/relay/handler/ws"
 )
 
 var upgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 
-func App(registry *relayconnectivity.Registry) gin.HandlerFunc {
+func App(registry *relayconnectivity.Registry, appAuth *relayauth.AppAuthService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		app := middleware.AuthenticatedApp(c)
 		if app.Session.DeviceFingerprint == "" {
@@ -44,13 +45,18 @@ func App(registry *relayconnectivity.Registry) gin.HandlerFunc {
 			_ = conn.WriteJSON(protocol.ConnectivityErrorFrame(register.RequestID, "invalid_register"))
 			return
 		}
-
 		peer := newWSPeer(conn)
-		snapshot := registry.RegisterApp(relayconnectivity.AppOwner{
+		snapshot, ok := registry.RegisterAppIfValid(relayconnectivity.AppOwner{
 			UserID:            app.User.ID,
 			AppSessionID:      app.Session.ID,
 			DeviceFingerprint: app.Session.DeviceFingerprint,
-		}, peer)
+			SessionCreatedAt:  app.Session.CreatedAt,
+		}, peer, func() bool {
+			return appAuthStillValid(c, appAuth, app)
+		})
+		if !ok {
+			return
+		}
 		defer registry.DisconnectApp(peer)
 		if err := peer.SendJSON(protocol.ConnectivityDaemonSnapshotFrame(snapshot)); err != nil {
 			return
@@ -66,6 +72,9 @@ func App(registry *relayconnectivity.Registry) gin.HandlerFunc {
 			}
 			switch frame.Type {
 			case "pair_response_submit":
+				if !appAuthStillValid(c, appAuth, app) {
+					return
+				}
 				if frame.PairingResponse == nil {
 					_ = peer.SendJSON(protocol.ConnectivityErrorFrame(frame.RequestID, "invalid_pairing_response"))
 					continue
@@ -79,12 +88,53 @@ func App(registry *relayconnectivity.Registry) gin.HandlerFunc {
 					_ = peer.SendJSON(protocol.ConnectivityErrorFrame(frame.RequestID, "pairing_account_mismatch"))
 					continue
 				}
-				if err := registry.ForwardPairingResponse(app.User.ID, frame.PairingResponse.CorrelationID, *frame.PairingResponse); err != nil {
+				if err := registry.ForwardPairingResponseFromApp(relayconnectivity.AppOwner{
+					UserID:            app.User.ID,
+					AppSessionID:      app.Session.ID,
+					DeviceFingerprint: app.Session.DeviceFingerprint,
+					SessionCreatedAt:  app.Session.CreatedAt,
+				}, peer, frame.PairingResponse.CorrelationID, *frame.PairingResponse); err != nil {
 					_ = peer.SendJSON(protocol.ConnectivityErrorFrame(frame.RequestID, "pairing_correlation_not_found"))
 				}
+			case "relay_tunnel_request":
+				if !appAuthStillValid(c, appAuth, app) {
+					return
+				}
+				ready, err := registry.RequestRelayTunnelFromApp(relayconnectivity.AppOwner{
+					UserID:            app.User.ID,
+					AppSessionID:      app.Session.ID,
+					DeviceFingerprint: app.Session.DeviceFingerprint,
+					SessionCreatedAt:  app.Session.CreatedAt,
+				}, peer, frame.DaemonID, frame.AttemptID, frame.RequestID, 30*time.Second)
+				if err != nil {
+					if err == relayconnectivity.ErrRelayTunnelRateLimited {
+						_ = peer.SendJSON(protocol.ConnectivityErrorFrameWithRetryAfter(frame.RequestID, "relay_rate_limited", int(relayconnectivity.RelayTunnelRequestWindow.Seconds())))
+						continue
+					}
+					_ = peer.SendJSON(protocol.ConnectivityErrorFrame(frame.RequestID, "relay_tunnel_unavailable"))
+					continue
+				}
+				_ = peer.SendJSON(ready)
 			default:
 				_ = peer.SendJSON(protocol.ConnectivityErrorFrame(frame.RequestID, "unsupported_event"))
 			}
 		}
 	}
+}
+
+func appAuthStillValid(c *gin.Context, appAuth *relayauth.AppAuthService, authenticated relayauth.AuthenticatedApp) bool {
+	if appAuth == nil {
+		return false
+	}
+	token, ok := httpx.BearerTokenFromRequest(c.Request)
+	if !ok {
+		return false
+	}
+	current, err := appAuth.AuthenticateAccessToken(c.Request.Context(), token)
+	if err != nil {
+		return false
+	}
+	return current.User.ID == authenticated.User.ID &&
+		current.Session.ID == authenticated.Session.ID &&
+		current.Session.DeviceFingerprint == authenticated.Session.DeviceFingerprint
 }

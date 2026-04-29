@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"yuanbohan/tunnel/internal/protocol"
 )
 
 func TestRunWritesStatusAndAnswersControlRequests(t *testing.T) {
@@ -181,6 +183,44 @@ func TestRunCleansUpPersistedStateOnSocketStartupFailure(t *testing.T) {
 	}
 	if _, statErr := os.Stat(paths.PIDFile); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("PID file stat error = %v, want not exists", statErr)
+	}
+}
+
+func TestSendConnectivityEventBlockingWaitsForConsumer(t *testing.T) {
+	state := &runtimeState{
+		connectivityEvents: make(chan protocol.ConnectivityFrame),
+	}
+	received := make(chan protocol.ConnectivityFrame, 1)
+	go func() {
+		received <- <-state.connectivityEvents
+	}()
+
+	frame := protocol.ConnectivityFrame{
+		Type:               "paired_device_revoked",
+		AndroidFingerprint: "android-a",
+	}
+	if !state.sendConnectivityEventBlocking(context.Background(), frame) {
+		t.Fatal("sendConnectivityEventBlocking returned false with an active consumer")
+	}
+	select {
+	case got := <-received:
+		if got.Type != frame.Type || got.AndroidFingerprint != frame.AndroidFingerprint {
+			t.Fatalf("received frame = %#v, want %#v", got, frame)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("consumer did not receive connectivity event")
+	}
+}
+
+func TestSendConnectivityEventBlockingReturnsFalseWhenCanceled(t *testing.T) {
+	state := &runtimeState{
+		connectivityEvents: make(chan protocol.ConnectivityFrame),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if state.sendConnectivityEventBlocking(ctx, protocol.ConnectivityPairCompletedFrame("android-a")) {
+		t.Fatal("sendConnectivityEventBlocking returned true after context cancellation")
 	}
 }
 

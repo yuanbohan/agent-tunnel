@@ -35,6 +35,8 @@ Defined in `transport-protocol.md`. Carried in the `error` frame on the control 
 | Code | Emitted By | Trigger | Recommended User-Facing String |
 |---|---|---|---|
 | `protocol_version_mismatch` | either | `hello.protocol_version` differs from local supported version | "App and computer versions are incompatible. Update one or both." |
+| `invalid_frame` | either | frame type, length, or stream placement is invalid for the current connection state | "Connection protocol error. Try again." |
+| `invalid_payload` | either | JSON payload cannot be decoded for the frame type, or required fields are missing | "Connection protocol error. Try again." |
 | `device_not_trusted` | daemon | requesting device is no longer paired / trusted by the daemon | "This device is no longer trusted by the computer." |
 | `session_unavailable` | daemon | session no longer exists or is not in an attachable state | "This session is not available." |
 | `daemon_busy` | daemon | temporary daemon-side rejection | "Computer is busy. Try again shortly." |
@@ -50,6 +52,9 @@ Defined in `relay-protocol.md`. Returned by Relay over the realtime WebSocket or
 | `relay_account_mismatch` | Relay | actor identity does not match expected | "Account mismatch. Sign out and sign in again." |
 | `invalid_device_fingerprint` | Relay | app login/refresh or connectivity websocket used a missing or malformed required device fingerprint | "Device identity is invalid. Sign in again." |
 | `pairing_correlation_not_found` | Relay | app submitted a pairing response for an unknown, expired, or cross-account correlation | "Pairing code expired. Run pairing again." |
+| `relay_tunnel_unavailable` | Relay | fallback tunnel setup requested an unpaired, offline, wrong-account, or otherwise unavailable daemon/attempt | "Could not open relay fallback. Try again." |
+| `relay_tunnel_token_invalid` | Relay | fallback tunnel websocket used a missing, expired, reused, or actor-mismatched one-time token | "Could not open relay fallback. Try again." |
+| `interactive_not_granted` | daemon transport | input or resize arrived before an `interactive_granted` lifetime for that session on the current QUIC connection | "Reconnect to the session and try again." |
 | `relay_rate_limited` | Relay | per-account or per-device rate limit exceeded | "Too many requests. Try again in a moment." Includes `retry_after_seconds`. |
 | `relay_daemon_offline` | Relay | requested daemon is not currently registered | "Computer is offline." |
 | `relay_invalid_payload` | Relay | malformed event payload | (internal; surface as generic error) |

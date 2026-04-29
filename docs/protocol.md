@@ -30,11 +30,15 @@ All protocol timestamps are Unix timestamps represented as JSON integers in seco
 | `GET /healthz` | Health probe | None | HTTP | Health check for relay reachability through direct access or the public nginx front door |
 | `GET /api/devices` | Client | Bearer | HTTP | Current live device snapshot for the authenticated user |
 | `POST /api/devices/:deviceID/launch` | Client | Bearer | HTTP | Ask one currently online device daemon to launch `tunnel run <command>` and wait for the resulting session to become `session_ready` |
+| `GET /api/account/policy` | Client | Bearer | HTTP | Current account policy tier used by official app clients |
+| `GET /api/connectivity/app/ws` | Client | Bearer | WebSocket | Fingerprint-bound app connectivity control plane for daemon visibility, pairing response forwarding, and fallback tunnel setup |
 | `GET /api/sessions` | Client | Bearer | HTTP | Current live session snapshot for the authenticated user |
 | `POST /api/sessions/:id/stop` | Client | Bearer | HTTP | Ask the owning online agent to stop one live session |
 | `GET /api/sessions/:id/attach/ws` | Client | Bearer | WebSocket | Attach to one live session owned by the authenticated user for snapshot, live bytes, resize events, and session-scoped structured input |
 | `GET /agent/ws` | Agent | Bearer | WebSocket | Agent registration, attach control, resize metadata, structured input forwarding, and client-routed terminal byte delivery |
 | `GET /device/ws` | Device daemon | Bearer | WebSocket | Device registration plus launch request/result routing for one online machine |
+| `GET /connectivity/daemon/ws` | Device daemon | Bearer | WebSocket | Daemon connectivity control plane for trusted roster registration, pairing invitation correlation, revocation, and fallback tunnel readiness |
+| `GET /connectivity/tunnel/ws?token=...` | App and device daemon | Tunnel token | WebSocket | Opaque binary packet tunnel used by Relay fallback QUIC transport |
 
 Removed from the product contract:
 

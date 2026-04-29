@@ -224,8 +224,11 @@ fi
 http_check_remote "website-root" "200" "/" "<!doctype html\\|<html"
 http_check_remote "healthz" "200" "/healthz" '"status":"ok"'
 http_check_remote "api-sessions" "401" "/api/sessions" '"code":1016'
+http_check_websocket_auth "connectivity-app-ws" "401" "/api/connectivity/app/ws"
 http_check_websocket_auth "agent-ws" "401" "/agent/ws"
 http_check_websocket_auth "device-ws" "401" "/device/ws"
+http_check_websocket_auth "connectivity-daemon-ws" "401" "/connectivity/daemon/ws"
+http_check_websocket_auth "connectivity-tunnel-ws" "403" "/connectivity/tunnel/ws?token=invalid"
 
 printf '\n📋 Summary\n'
 print_results_table

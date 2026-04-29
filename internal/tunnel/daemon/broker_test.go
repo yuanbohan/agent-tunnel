@@ -60,6 +60,144 @@ func TestBrokerServerRegistersSessionAndCachesLatestPreview(t *testing.T) {
 	}
 }
 
+func TestBrokerPublishesSessionAndPreviewEvents(t *testing.T) {
+	broker := NewBroker()
+	events, cancel := broker.Subscribe()
+	defer cancel()
+	owner := &brokerConnection{}
+
+	session := BrokerSession{SessionID: "sess-1", CWD: "/repo", CommandPreview: "codex", StartedAt: 10}
+	broker.register(session, owner)
+	event := readBrokerEvent(t, events)
+	if event.Type != BrokerEventSessionUpsert || event.SessionID != "sess-1" || event.Session.SessionID != "sess-1" {
+		t.Fatalf("register event = %#v, want session_upsert sess-1", event)
+	}
+
+	broker.updatePreview("sess-1", "latest output", 11, owner)
+	event = readBrokerEvent(t, events)
+	if event.Type != BrokerEventPreview || event.SessionID != "sess-1" || event.Session.LatestPreview != "latest output" || event.Session.UpdatedAt != 11 {
+		t.Fatalf("preview event = %#v, want preview update", event)
+	}
+
+	broker.remove("sess-1", owner)
+	event = readBrokerEvent(t, events)
+	if event.Type != BrokerEventSessionGone || event.SessionID != "sess-1" {
+		t.Fatalf("remove event = %#v, want session_gone sess-1", event)
+	}
+}
+
+func TestBrokerInteractiveOwnershipDeniesDuplicateOwners(t *testing.T) {
+	broker := NewBroker()
+	owner := &brokerConnection{}
+	broker.register(BrokerSession{SessionID: "sess-1", CWD: "/repo", CommandPreview: "codex", StartedAt: 10}, owner)
+
+	firstInteractive := &struct{ id int }{id: 1}
+	secondInteractive := &struct{ id int }{id: 2}
+	if err := broker.GrantInteractive("sess-1", firstInteractive); err != nil {
+		t.Fatalf("first GrantInteractive returned error: %v", err)
+	}
+	if err := broker.GrantInteractive("sess-1", secondInteractive); !errors.Is(err, ErrBrokerInteractiveBusy) {
+		t.Fatalf("second GrantInteractive err = %v, want ErrBrokerInteractiveBusy", err)
+	}
+	broker.ReleaseInteractive("sess-1", firstInteractive)
+	if err := broker.GrantInteractive("sess-1", secondInteractive); err != nil {
+		t.Fatalf("GrantInteractive after release returned error: %v", err)
+	}
+}
+
+func TestBrokerCancelSubscribeDoesNotRaceEmitWithClosedChannel(t *testing.T) {
+	broker := NewBroker()
+	_, cancel := broker.Subscribe()
+	cancel()
+	for i := 0; i < 100; i++ {
+		broker.emit(BrokerEvent{Type: BrokerEventSessionGone, SessionID: "sess-1"})
+	}
+}
+
+func TestBrokerRoutesRemoteCommandsToSessionOwner(t *testing.T) {
+	broker := NewBroker()
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	owner := &brokerConnection{conn: serverConn}
+	broker.register(BrokerSession{SessionID: "sess-1", CWD: "/repo", CommandPreview: "codex", StartedAt: 10}, owner)
+	interactiveOwner := &struct{ id int }{id: 1}
+	if err := broker.GrantInteractive("sess-1", interactiveOwner); err != nil {
+		t.Fatalf("GrantInteractive returned error: %v", err)
+	}
+
+	routeErr := make(chan error, 1)
+	go func() {
+		routeErr <- broker.RouteInputText("sess-1", interactiveOwner, "echo hi", true)
+	}()
+	var got BrokerFrame
+	if err := json.NewDecoder(clientConn).Decode(&got); err != nil {
+		t.Fatalf("Decode input frame returned error: %v", err)
+	}
+	if got.Type != brokerFrameInputText || got.SessionID != "sess-1" || got.Text != "echo hi" || !got.Submit {
+		t.Fatalf("input frame = %#v, want submitted input_text", got)
+	}
+	if err := <-routeErr; err != nil {
+		t.Fatalf("RouteInputText returned error: %v", err)
+	}
+
+	go func() {
+		routeErr <- broker.RouteResize("sess-1", interactiveOwner, 100, 30)
+	}()
+	if err := json.NewDecoder(clientConn).Decode(&got); err != nil {
+		t.Fatalf("Decode resize frame returned error: %v", err)
+	}
+	if got.Type != brokerFrameResize || got.SessionID != "sess-1" || got.Cols != 100 || got.Rows != 30 {
+		t.Fatalf("resize frame = %#v, want 100x30 resize", got)
+	}
+	if err := <-routeErr; err != nil {
+		t.Fatalf("RouteResize returned error: %v", err)
+	}
+}
+
+func TestBrokerRejectsStaleInteractiveOwnerAfterSessionReRegister(t *testing.T) {
+	broker := NewBroker()
+	firstClient, firstServer := net.Pipe()
+	defer firstClient.Close()
+	defer firstServer.Close()
+	firstSessionOwner := &brokerConnection{conn: firstServer}
+	broker.register(BrokerSession{SessionID: "sess-1", CWD: "/repo", CommandPreview: "codex", StartedAt: 10}, firstSessionOwner)
+	staleInteractiveOwner := &struct{ id int }{id: 1}
+	if err := broker.GrantInteractive("sess-1", staleInteractiveOwner); err != nil {
+		t.Fatalf("GrantInteractive stale owner returned error: %v", err)
+	}
+	broker.remove("sess-1", firstSessionOwner)
+
+	secondClient, secondServer := net.Pipe()
+	defer secondClient.Close()
+	defer secondServer.Close()
+	secondSessionOwner := &brokerConnection{conn: secondServer}
+	broker.register(BrokerSession{SessionID: "sess-1", CWD: "/repo", CommandPreview: "codex", StartedAt: 11}, secondSessionOwner)
+	currentInteractiveOwner := &struct{ id int }{id: 2}
+	if err := broker.GrantInteractive("sess-1", currentInteractiveOwner); err != nil {
+		t.Fatalf("GrantInteractive current owner returned error: %v", err)
+	}
+
+	if err := broker.RouteInputText("sess-1", staleInteractiveOwner, "echo stale", true); !errors.Is(err, ErrBrokerInteractiveNotGranted) {
+		t.Fatalf("stale RouteInputText err = %v, want ErrBrokerInteractiveNotGranted", err)
+	}
+
+	routeErr := make(chan error, 1)
+	go func() {
+		routeErr <- broker.RouteInputText("sess-1", currentInteractiveOwner, "echo current", true)
+	}()
+	var got BrokerFrame
+	if err := json.NewDecoder(secondClient).Decode(&got); err != nil {
+		t.Fatalf("Decode current frame returned error: %v", err)
+	}
+	if got.Type != brokerFrameInputText || got.Text != "echo current" {
+		t.Fatalf("current frame = %#v, want current input", got)
+	}
+	if err := <-routeErr; err != nil {
+		t.Fatalf("current RouteInputText returned error: %v", err)
+	}
+}
+
 func TestBrokerServerRemovesSessionWhenConnectionCloses(t *testing.T) {
 	paths := testPaths(t)
 	if err := EnsureRuntimeDirs(paths); err != nil {
@@ -387,6 +525,17 @@ func waitForBrokerSnapshot(t *testing.T, broker *Broker, want int) []BrokerSessi
 	}
 	t.Fatalf("snapshot = %#v, want %d entries", snapshot, want)
 	return nil
+}
+
+func readBrokerEvent(t *testing.T, events <-chan BrokerEvent) BrokerEvent {
+	t.Helper()
+	select {
+	case event := <-events:
+		return event
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for broker event")
+		return BrokerEvent{}
+	}
 }
 
 func TestVerifyBrokerSocketRejectsUnsafePermissions(t *testing.T) {

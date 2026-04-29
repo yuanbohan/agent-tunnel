@@ -4,6 +4,7 @@ import (
 	"crypto/subtle"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"yuanbohan/tunnel/internal/logx"
@@ -67,7 +68,27 @@ func RequestTarget(r *http.Request) string {
 	if r == nil || r.URL == nil {
 		return ""
 	}
-	return r.URL.RequestURI()
+	redacted := *r.URL
+	redacted.RawQuery = RedactSensitiveQuery(redacted.Query()).Encode()
+	return redacted.RequestURI()
+}
+
+func RedactSensitiveQuery(values url.Values) url.Values {
+	if len(values) == 0 {
+		return values
+	}
+	redacted := make(url.Values, len(values))
+	for key, value := range values {
+		copied := append([]string(nil), value...)
+		switch strings.ToLower(strings.TrimSpace(key)) {
+		case "token", "access_token", "refresh_token":
+			for i := range copied {
+				copied[i] = "<redacted>"
+			}
+		}
+		redacted[key] = copied
+	}
+	return redacted
 }
 
 func RequestLogFields(r *http.Request) []logx.Field {

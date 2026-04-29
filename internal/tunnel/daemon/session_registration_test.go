@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"yuanbohan/tunnel/internal/protocol"
+	tunnelsession "yuanbohan/tunnel/internal/tunnel/session"
 )
 
 func TestSessionRegistrationClientRegistersAndPushesPreview(t *testing.T) {
@@ -49,6 +50,38 @@ func TestSessionRegistrationClientRegistersAndPushesPreview(t *testing.T) {
 	got := snapshot[0]
 	if got.SessionID != "sess-1" || got.DeviceID != "dev-1" || got.Label != "api-fix" || got.CommandPreview != "codex --profile prod" || got.LatestPreview != "hello from terminal" {
 		t.Fatalf("snapshot = %#v, want registered session with preview", got)
+	}
+}
+
+func TestSessionRegistrationClientRoutesBrokerCommandsToHub(t *testing.T) {
+	client := NewSessionRegistrationClient(testPaths(t), protocol.SessionInfo{SessionID: "sess-1"})
+	var inputs [][]byte
+	var resize [2]int
+	hub := tunnelsession.NewHub(func(data []byte) error {
+		inputs = append(inputs, append([]byte(nil), data...))
+		return nil
+	}, func(cols, rows int) error {
+		resize = [2]int{cols, rows}
+		return nil
+	})
+
+	client.handleBrokerFrame(BrokerFrame{Type: brokerFrameInputText, SessionID: "sess-1", Text: "echo hi", Submit: true})
+	if len(inputs) != 0 {
+		t.Fatalf("inputs = %#v, want queued command before BindHub", inputs)
+	}
+	client.BindHub(hub)
+	if len(inputs) != 2 || string(inputs[0]) != "echo hi" || string(inputs[1]) != "\r" {
+		t.Fatalf("inputs after BindHub = %#v, want submitted text chunks", inputs)
+	}
+
+	client.handleBrokerFrame(BrokerFrame{Type: brokerFrameInputKey, SessionID: "sess-1", Key: "TAB"})
+	if len(inputs) != 3 || string(inputs[2]) != "\t" {
+		t.Fatalf("inputs after key = %#v, want tab", inputs)
+	}
+
+	client.handleBrokerFrame(BrokerFrame{Type: brokerFrameResize, SessionID: "sess-1", Cols: 120, Rows: 40})
+	if resize != [2]int{120, 40} {
+		t.Fatalf("resize = %v, want 120x40", resize)
 	}
 }
 

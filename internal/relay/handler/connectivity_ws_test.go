@@ -137,6 +137,173 @@ func TestConnectivityAppWebSocketClosesOnLogout(t *testing.T) {
 	assertConnectivityClosed(t, appConn)
 }
 
+func TestConnectivityAppWebSocketCannotRegisterAfterLogout(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	env.registerUser(t, "alice", "password123", "AB2C3D")
+	appSession, err := env.appAuth.LoginWithDeviceFingerprint(context.Background(), "alice", "password123", strings.Repeat("a", 64))
+	if err != nil {
+		t.Fatalf("Login returned error: %v", err)
+	}
+	handler := env.handler(nil)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	wsBase := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	appConn := dialConnectivityWS(t, wsBase+"/api/connectivity/app/ws", appSession.AccessToken)
+	defer appConn.Close()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil)
+	req.Header.Set("Authorization", bearerAuth(appSession.AccessToken))
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("logout status = %d, want 200", rec.Code)
+	}
+	if err := appConn.WriteJSON(protocol.ConnectivityAppRegisterFrame()); err != nil {
+		t.Fatalf("app register WriteJSON returned error: %v", err)
+	}
+	assertConnectivityClosed(t, appConn)
+}
+
+func TestConnectivityRelayTunnelForwardsOpaqueBinaryPackets(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	appFingerprint := strings.Repeat("a", 64)
+	appSession, err := env.appAuth.LoginWithDeviceFingerprint(context.Background(), "alice", "password123", appFingerprint)
+	if err != nil {
+		t.Fatalf("Login returned error: %v", err)
+	}
+	agentToken := env.createAgentToken(t, user.ID, "Laptop")
+	handler := env.handler(nil)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	wsBase := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	daemonConn := dialConnectivityWS(t, wsBase+"/connectivity/daemon/ws", agentToken.Plaintext)
+	defer daemonConn.Close()
+	if err := daemonConn.WriteJSON(protocol.ConnectivityDaemonRegisterFrame(protocol.ConnectivityDaemonInfo{
+		DeviceID:          "dev-1",
+		DisplayName:       "Laptop",
+		DaemonPublicKey:   strings.Repeat("b", 64),
+		DaemonFingerprint: strings.Repeat("c", 64),
+	}, []protocol.ConnectivityTrustedAndroid{{Fingerprint: appFingerprint, DisplayName: "Pixel"}})); err != nil {
+		t.Fatalf("daemon WriteJSON returned error: %v", err)
+	}
+
+	appConn := dialConnectivityWS(t, wsBase+"/api/connectivity/app/ws", appSession.AccessToken)
+	defer appConn.Close()
+	if err := appConn.WriteJSON(protocol.ConnectivityAppRegisterFrame()); err != nil {
+		t.Fatalf("app register WriteJSON returned error: %v", err)
+	}
+	var snapshot protocol.ConnectivityFrame
+	readConnectivityFrame(t, appConn, &snapshot)
+	if snapshot.Type != "daemon_snapshot" || len(snapshot.Daemons) != 1 {
+		t.Fatalf("snapshot = %#v, want one visible daemon", snapshot)
+	}
+
+	if err := appConn.WriteJSON(protocol.ConnectivityFrame{
+		Type:      "relay_tunnel_request",
+		RequestID: "request-1",
+		AttemptID: "attempt-1",
+		DaemonID:  "dev-1",
+	}); err != nil {
+		t.Fatalf("relay_tunnel_request WriteJSON returned error: %v", err)
+	}
+	var daemonReady protocol.ConnectivityFrame
+	readConnectivityFrame(t, daemonConn, &daemonReady)
+	if daemonReady.Type != "relay_tunnel_ready" || daemonReady.Actor != "daemon" || daemonReady.TunnelToken == "" {
+		t.Fatalf("daemon ready = %#v, want daemon tunnel token", daemonReady)
+	}
+	var appReady protocol.ConnectivityFrame
+	readConnectivityFrame(t, appConn, &appReady)
+	if appReady.Type != "relay_tunnel_ready" || appReady.Actor != "android" || appReady.TunnelToken == "" {
+		t.Fatalf("app ready = %#v, want android tunnel token", appReady)
+	}
+
+	appTunnel := dialTunnelWS(t, wsBase+"/connectivity/tunnel/ws?token="+appReady.TunnelToken)
+	defer appTunnel.Close()
+	daemonTunnel := dialTunnelWS(t, wsBase+"/connectivity/tunnel/ws?token="+daemonReady.TunnelToken)
+	defer daemonTunnel.Close()
+
+	appPayload := []byte("encrypted-quic-packet-from-app")
+	if err := appTunnel.WriteMessage(websocket.BinaryMessage, appPayload); err != nil {
+		t.Fatalf("app tunnel WriteMessage returned error: %v", err)
+	}
+	messageType, payload := readTunnelMessage(t, daemonTunnel)
+	if messageType != websocket.BinaryMessage || string(payload) != string(appPayload) {
+		t.Fatalf("daemon tunnel message type=%d payload=%q, want app payload", messageType, payload)
+	}
+
+	daemonPayload := []byte("encrypted-quic-packet-from-daemon")
+	if err := daemonTunnel.WriteMessage(websocket.BinaryMessage, daemonPayload); err != nil {
+		t.Fatalf("daemon tunnel WriteMessage returned error: %v", err)
+	}
+	messageType, payload = readTunnelMessage(t, appTunnel)
+	if messageType != websocket.BinaryMessage || string(payload) != string(daemonPayload) {
+		t.Fatalf("app tunnel message type=%d payload=%q, want daemon payload", messageType, payload)
+	}
+}
+
+func TestConnectivityRelayTunnelRejectsReusedToken(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	appFingerprint := strings.Repeat("a", 64)
+	appSession, err := env.appAuth.LoginWithDeviceFingerprint(context.Background(), "alice", "password123", appFingerprint)
+	if err != nil {
+		t.Fatalf("Login returned error: %v", err)
+	}
+	agentToken := env.createAgentToken(t, user.ID, "Laptop")
+	server := httptest.NewServer(env.handler(nil))
+	defer server.Close()
+	wsBase := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	daemonConn := dialConnectivityWS(t, wsBase+"/connectivity/daemon/ws", agentToken.Plaintext)
+	defer daemonConn.Close()
+	if err := daemonConn.WriteJSON(protocol.ConnectivityDaemonRegisterFrame(protocol.ConnectivityDaemonInfo{
+		DeviceID:          "dev-1",
+		DaemonPublicKey:   strings.Repeat("b", 64),
+		DaemonFingerprint: strings.Repeat("c", 64),
+	}, []protocol.ConnectivityTrustedAndroid{{Fingerprint: appFingerprint}})); err != nil {
+		t.Fatalf("daemon WriteJSON returned error: %v", err)
+	}
+	appConn := dialConnectivityWS(t, wsBase+"/api/connectivity/app/ws", appSession.AccessToken)
+	defer appConn.Close()
+	if err := appConn.WriteJSON(protocol.ConnectivityAppRegisterFrame()); err != nil {
+		t.Fatalf("app register WriteJSON returned error: %v", err)
+	}
+	var snapshot protocol.ConnectivityFrame
+	readConnectivityFrame(t, appConn, &snapshot)
+	if err := appConn.WriteJSON(protocol.ConnectivityFrame{Type: "relay_tunnel_request", RequestID: "request-1", AttemptID: "attempt-1", DaemonID: "dev-1"}); err != nil {
+		t.Fatalf("relay_tunnel_request WriteJSON returned error: %v", err)
+	}
+	var daemonReady protocol.ConnectivityFrame
+	readConnectivityFrame(t, daemonConn, &daemonReady)
+	var appReady protocol.ConnectivityFrame
+	readConnectivityFrame(t, appConn, &appReady)
+
+	first := dialTunnelWS(t, wsBase+"/connectivity/tunnel/ws?token="+appReady.TunnelToken)
+	defer first.Close()
+	headers := http.Header{}
+	second, resp, err := websocket.DefaultDialer.Dial(wsBase+"/connectivity/tunnel/ws?token="+appReady.TunnelToken, headers)
+	if second != nil {
+		_ = second.Close()
+	}
+	if err == nil {
+		t.Fatal("second tunnel dial succeeded, want reused token rejection")
+	}
+	if resp == nil || resp.StatusCode != http.StatusForbidden {
+		status := 0
+		if resp != nil {
+			status = resp.StatusCode
+		}
+		t.Fatalf("reused token status = %d, want 403", status)
+	}
+	_ = daemonReady
+}
+
 func TestConnectivityDaemonWebSocketClosesOnAgentTokenRevoke(t *testing.T) {
 	env := newHandlerTestEnv(t)
 	env.addInvite(t, "AB2C3D")
@@ -176,6 +343,41 @@ func TestConnectivityDaemonWebSocketClosesOnAgentTokenRevoke(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("revoke status = %d, want 200", rec.Code)
+	}
+	assertConnectivityClosed(t, daemonConn)
+}
+
+func TestConnectivityDaemonWebSocketCannotRegisterAfterAgentTokenRevoke(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	appSession, err := env.appAuth.Login(context.Background(), "alice", "password123")
+	if err != nil {
+		t.Fatalf("Login returned error: %v", err)
+	}
+	agentToken := env.createAgentToken(t, user.ID, "Laptop")
+	handler := env.handler(nil)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	wsBase := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	daemonConn := dialConnectivityWS(t, wsBase+"/connectivity/daemon/ws", agentToken.Plaintext)
+	defer daemonConn.Close()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/agent-tokens/"+agentToken.Record.ID, nil)
+	req.Header.Set("Authorization", bearerAuth(appSession.AccessToken))
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("revoke status = %d, want 200", rec.Code)
+	}
+	if err := daemonConn.WriteJSON(protocol.ConnectivityDaemonRegisterFrame(protocol.ConnectivityDaemonInfo{
+		DeviceID:          "dev-1",
+		DisplayName:       "Laptop",
+		DaemonPublicKey:   strings.Repeat("b", 64),
+		DaemonFingerprint: strings.Repeat("c", 64),
+	}, nil)); err != nil {
+		t.Fatalf("daemon register WriteJSON returned error: %v", err)
 	}
 	assertConnectivityClosed(t, daemonConn)
 }
@@ -315,6 +517,32 @@ func dialConnectivityWS(t *testing.T, url, token string) *websocket.Conn {
 		t.Fatalf("Dial %s status %d error: %v", url, status, err)
 	}
 	return conn
+}
+
+func dialTunnelWS(t *testing.T, url string) *websocket.Conn {
+	t.Helper()
+	conn, resp, err := websocket.DefaultDialer.Dial(url, nil)
+	if err != nil {
+		status := 0
+		if resp != nil {
+			status = resp.StatusCode
+		}
+		t.Fatalf("Dial tunnel %s status %d error: %v", url, status, err)
+	}
+	return conn
+}
+
+func readTunnelMessage(t *testing.T, conn *websocket.Conn) (int, []byte) {
+	t.Helper()
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline returned error: %v", err)
+	}
+	messageType, payload, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("ReadMessage returned error: %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Time{})
+	return messageType, payload
 }
 
 func readConnectivityFrame(t *testing.T, conn *websocket.Conn, out *protocol.ConnectivityFrame) {

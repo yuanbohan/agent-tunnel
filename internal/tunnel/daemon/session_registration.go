@@ -15,8 +15,11 @@ import (
 )
 
 const defaultPreviewThrottle = 250 * time.Millisecond
+const defaultBrokerSubmitEnterGap = 120 * time.Millisecond
 
 var brokerWriteTimeout = 2 * time.Second
+
+const defaultPendingBrokerCommandLimit = 128
 
 type SessionRegistrationClient struct {
 	paths   Paths
@@ -40,6 +43,10 @@ type SessionRegistrationClient struct {
 	lastSentPreview string
 	conn            net.Conn
 	encoder         *json.Encoder
+
+	hubMu           sync.Mutex
+	hub             *tunnelsession.Hub
+	pendingCommands []BrokerFrame
 }
 
 func NewSessionRegistrationClient(paths Paths, info protocol.SessionInfo) *SessionRegistrationClient {
@@ -124,6 +131,20 @@ func (c *SessionRegistrationClient) WriteOutput(data []byte) error {
 	return nil
 }
 
+func (c *SessionRegistrationClient) BindHub(hub *tunnelsession.Hub) {
+	if c == nil || hub == nil {
+		return
+	}
+	c.hubMu.Lock()
+	c.hub = hub
+	pending := append([]BrokerFrame(nil), c.pendingCommands...)
+	c.pendingCommands = nil
+	c.hubMu.Unlock()
+	for _, frame := range pending {
+		c.deliverBrokerCommand(hub, frame)
+	}
+}
+
 func (c *SessionRegistrationClient) Run(ctx context.Context) {
 	if c == nil {
 		return
@@ -158,12 +179,12 @@ func (c *SessionRegistrationClient) Close() error {
 	}
 	var err error
 	c.closeOnce.Do(func() {
-		close(c.done)
 		err = c.writeFrame(BrokerFrame{
 			Type:      brokerFrameSessionGone,
 			SessionID: c.session.SessionID,
 			UpdatedAt: protocol.UnixTimestamp(c.now().UTC()),
 		})
+		close(c.done)
 		c.mu.Lock()
 		if c.conn != nil {
 			_ = c.conn.Close()
@@ -208,12 +229,15 @@ func (c *SessionRegistrationClient) runOnce(ctx context.Context) error {
 
 	readErr := make(chan error, 1)
 	go func() {
-		var frame BrokerFrame
-		err := json.NewDecoder(conn).Decode(&frame)
-		if err == nil {
-			err = errors.New("broker connection closed")
+		decoder := json.NewDecoder(conn)
+		for {
+			var frame BrokerFrame
+			if err := decoder.Decode(&frame); err != nil {
+				readErr <- err
+				return
+			}
+			c.handleBrokerFrame(frame)
 		}
-		readErr <- err
 	}()
 
 	var timer *time.Timer
@@ -321,6 +345,49 @@ func (c *SessionRegistrationClient) runOnce(ctx context.Context) error {
 			}
 			pending = ""
 		}
+	}
+}
+
+func (c *SessionRegistrationClient) handleBrokerFrame(frame BrokerFrame) {
+	switch frame.Type {
+	case brokerFrameInputText, brokerFrameInputKey, brokerFrameResize:
+		c.routeBrokerCommand(frame)
+	default:
+	}
+}
+
+func (c *SessionRegistrationClient) routeBrokerCommand(frame BrokerFrame) {
+	c.hubMu.Lock()
+	hub := c.hub
+	if hub == nil {
+		if len(c.pendingCommands) >= defaultPendingBrokerCommandLimit {
+			c.pendingCommands = c.pendingCommands[1:]
+		}
+		c.pendingCommands = append(c.pendingCommands, frame)
+		c.hubMu.Unlock()
+		return
+	}
+	c.hubMu.Unlock()
+	c.deliverBrokerCommand(hub, frame)
+}
+
+func (c *SessionRegistrationClient) deliverBrokerCommand(hub *tunnelsession.Hub, frame BrokerFrame) {
+	if hub == nil {
+		return
+	}
+	switch frame.Type {
+	case brokerFrameInputText:
+		if frame.Submit {
+			_ = hub.WriteInputSequenceWithGap(defaultBrokerSubmitEnterGap, tunnelsession.EncodeRemoteSubmitInput(frame.Text)...)
+			return
+		}
+		_ = hub.WriteInput(tunnelsession.EncodeRemoteTextInput(frame.Text))
+	case brokerFrameInputKey:
+		if data, ok := tunnelsession.EncodeRemoteKeyInput(frame.Key); ok {
+			_ = hub.WriteInput(data)
+		}
+	case brokerFrameResize:
+		_ = hub.Resize(frame.Cols, frame.Rows)
 	}
 }
 

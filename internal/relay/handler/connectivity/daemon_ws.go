@@ -8,12 +8,14 @@ import (
 	"github.com/gin-gonic/gin"
 	"yuanbohan/tunnel/internal/config"
 	"yuanbohan/tunnel/internal/protocol"
+	relayauth "yuanbohan/tunnel/internal/relay/auth"
 	relayconnectivity "yuanbohan/tunnel/internal/relay/connectivity"
+	"yuanbohan/tunnel/internal/relay/handler/httpx"
 	"yuanbohan/tunnel/internal/relay/handler/middleware"
 	handlerws "yuanbohan/tunnel/internal/relay/handler/ws"
 )
 
-func Daemon(registry *relayconnectivity.Registry) gin.HandlerFunc {
+func Daemon(registry *relayconnectivity.Registry, agentTokens *relayauth.AgentTokenService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authenticated := middleware.AuthenticatedAgent(c)
 
@@ -40,13 +42,16 @@ func Daemon(registry *relayconnectivity.Registry) gin.HandlerFunc {
 			_ = conn.WriteJSON(protocol.ConnectivityErrorFrame(register.RequestID, "invalid_register"))
 			return
 		}
-
 		peer := newWSPeer(conn)
 		owner := relayconnectivity.DaemonOwner{
 			UserID:       authenticated.User.ID,
 			AgentTokenID: authenticated.Token.ID,
 		}
-		registry.RegisterDaemon(owner, *register.Daemon, register.TrustedDevices, peer)
+		if _, ok := registry.RegisterDaemonIfValid(owner, *register.Daemon, register.TrustedDevices, peer, func() bool {
+			return agentAuthStillValid(c, agentTokens, authenticated)
+		}); !ok {
+			return
+		}
 		defer registry.DisconnectDaemon(register.Daemon.DeviceID, peer)
 
 		stopPings := handlerws.StartPingLoop(conn, config.RelayAgentPingInterval(), config.RelayAgentPingWriteTimeout())
@@ -87,4 +92,19 @@ func Daemon(registry *relayconnectivity.Registry) gin.HandlerFunc {
 			}
 		}
 	}
+}
+
+func agentAuthStillValid(c *gin.Context, agentTokens *relayauth.AgentTokenService, authenticated relayauth.AuthenticatedAgentToken) bool {
+	if agentTokens == nil {
+		return false
+	}
+	token, ok := httpx.BearerTokenFromRequest(c.Request)
+	if !ok {
+		return false
+	}
+	current, err := agentTokens.Authenticate(c.Request.Context(), token)
+	if err != nil {
+		return false
+	}
+	return current.User.ID == authenticated.User.ID && current.Token.ID == authenticated.Token.ID
 }

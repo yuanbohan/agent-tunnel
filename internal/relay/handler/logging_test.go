@@ -162,6 +162,25 @@ func TestHandlerAccessLogsRequestsAndSkipsHealthz(t *testing.T) {
 	}
 }
 
+func TestHandlerAccessLogRedactsQueryTokens(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	logs := &syncBuffer{}
+	handler := env.handler(logs)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/connectivity/tunnel/ws?token=secret-token&attempt_id=a", nil)
+	handler.ServeHTTP(rec, req)
+
+	entry := findLogEntryByEventAndPath(t, readLogEntries(t, logs), "http_request_completed", "/connectivity/tunnel/ws")
+	target := logString(entry, "target")
+	if strings.Contains(target, "secret-token") {
+		t.Fatalf("target leaked token: %q", target)
+	}
+	if !strings.Contains(target, "token=%3Credacted%3E") {
+		t.Fatalf("target = %q, want redacted token", target)
+	}
+}
+
 func TestHandlerLogsWebSocketUpgradeFailureWithoutLifecycle(t *testing.T) {
 	env := newHandlerTestEnv(t)
 	env.addInvite(t, "AB2C3D")

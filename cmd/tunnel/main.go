@@ -55,6 +55,7 @@ type relayConnector interface {
 
 type localSessionRegistration interface {
 	session.OutputSink
+	BindHub(hub *session.Hub)
 	Run(context.Context)
 	Close() error
 }
@@ -289,6 +290,9 @@ func runTunnelSession(ctx context.Context, stdin io.Reader, parsed runArgs, stdo
 	defer started.Close()
 
 	relay.BindHub(started.Hub)
+	if localRegistration != nil {
+		localRegistration.BindHub(started.Hub)
+	}
 
 	if parsed.Verbose {
 		fmt.Fprint(stderr, startupBanner(command.Name, sessionID))

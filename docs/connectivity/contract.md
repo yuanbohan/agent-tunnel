@@ -159,9 +159,14 @@ device. If `quiche` packaging blocks, fall back to `kwik` per
 - `daemon_register`, `app_register`, `daemon_snapshot`, presence churn.
 - `pair_response_submit` / `pair_response_forward`.
 - Fallback WSS-QUIC tunnel (no direct path yet).
-- Android `quiche` client connects via fallback only, runs full session list + preview + interactive flow.
+- Go mobile-simulator client connects via fallback only, runs the Android-facing
+  session list, preview, interactive request, input, and reconnect flow.
+- Android companion implementation validates the same contract in Step 6 once
+  the production Android repository is in scope.
 
-**Exit criterion**: Android can list sessions, view preview, attach interactive, send input on fallback path against a real daemon. No direct-path code on this milestone.
+**Exit criterion**: repository tests prove the fallback-only transport contract
+with a Go daemon side and Go mobile-simulator side, including Relay-opaque
+packet forwarding. Android production runtime compatibility remains Step 6.
 
 ### 1.3 — Direct Path + STUN + Degradation
 

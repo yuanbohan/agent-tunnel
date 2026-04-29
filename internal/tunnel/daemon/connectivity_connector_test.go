@@ -24,6 +24,16 @@ func TestConnectivityDaemonWebSocketURL(t *testing.T) {
 	}
 }
 
+func TestConnectivityTunnelWebSocketURL(t *testing.T) {
+	got, err := connectivityTunnelWebSocketURL("https://relay.example.com/base/", "tok+123")
+	if err != nil {
+		t.Fatalf("connectivityTunnelWebSocketURL returned error: %v", err)
+	}
+	if got != "wss://relay.example.com/base/connectivity/tunnel/ws?token=tok%2B123" {
+		t.Fatalf("url = %q, want connectivity tunnel websocket URL", got)
+	}
+}
+
 func TestConnectivityConnectorRegisterFrameIncludesTrustedRoster(t *testing.T) {
 	paths := testPaths(t)
 	identity, err := ReadOrCreateConnectivityIdentity(paths)
@@ -176,6 +186,67 @@ func TestConnectivityConnectorStoresForwardedPairingResponsePendingConfirmation(
 	}
 	if pending[0].SAS != sas || pending[0].AndroidFingerprint != android.Fingerprint {
 		t.Fatalf("pending = %#v, want SAS %s for Android", pending[0], sas)
+	}
+}
+
+func TestConnectivityConnectorDropsStalePairCompletedAfterLocalRevoke(t *testing.T) {
+	paths := testPaths(t)
+	identity, err := ReadOrCreateConnectivityIdentity(paths)
+	if err != nil {
+		t.Fatalf("ReadOrCreateConnectivityIdentity returned error: %v", err)
+	}
+	fingerprint := strings.Repeat("a", 64)
+	if err := UpsertTrustedAndroidDevice(paths, TrustedAndroidDevice{
+		Fingerprint: fingerprint,
+		DisplayName: "Pixel",
+		PairedAt:    1,
+	}); err != nil {
+		t.Fatalf("UpsertTrustedAndroidDevice returned error: %v", err)
+	}
+	state := newConnectivityConnectorTestState(paths, identity)
+	state.connectivityEvents <- protocol.ConnectivityPairCompletedFrame(fingerprint)
+	if _, err := RevokeTrustedAndroidDevice(paths, fingerprint); err != nil {
+		t.Fatalf("RevokeTrustedAndroidDevice returned error: %v", err)
+	}
+
+	checked := make(chan struct{}, 1)
+	server := newConnectivityConnectorTestRelay(t, func(conn *websocket.Conn) {
+		defer func() {
+			select {
+			case checked <- struct{}{}:
+			default:
+			}
+		}()
+		var register protocol.ConnectivityFrame
+		if err := conn.ReadJSON(&register); err != nil {
+			t.Errorf("Read register returned error: %v", err)
+			return
+		}
+		if len(register.TrustedDevices) != 0 {
+			t.Errorf("TrustedDevices = %#v, want revoked device omitted", register.TrustedDevices)
+			return
+		}
+		if err := conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond)); err != nil {
+			t.Errorf("SetReadDeadline returned error: %v", err)
+			return
+		}
+		var event protocol.ConnectivityFrame
+		if err := conn.ReadJSON(&event); err == nil {
+			t.Errorf("ReadJSON returned event %#v, want stale pair_completed dropped", event)
+		}
+	})
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	connector := newConnectivityConnector(server.URL, "token", paths, state)
+	go connector.Run(ctx)
+
+	select {
+	case <-checked:
+		cancel()
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for stale event check")
 	}
 }
 
