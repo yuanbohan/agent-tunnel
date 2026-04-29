@@ -118,6 +118,7 @@ func (c *connectivityConnector) serveOnce(ctx context.Context) error {
 						return writeConnectivityConnectorJSON(conn, value)
 					})
 					if err != nil {
+						c.state.setConnectivityPath("direct", "direct_attempt_failed")
 						c.state.setLastFailure("direct_attempt_failed", false)
 					}
 				}(frame)
@@ -242,7 +243,9 @@ func (c *connectivityConnector) handleRelayTunnelReady(ctx context.Context, fram
 		DaemonFingerprint:  daemonIdentity.Fingerprint,
 		AndroidFingerprint: android.Fingerprint,
 		PathKind:           "relay",
+		AttemptID:          frame.AttemptID,
 	}
+	c.state.setConnectivityPath("relay", "")
 	return transport.Serve(ctx, quicConn)
 }
 

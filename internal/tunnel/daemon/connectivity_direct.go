@@ -99,6 +99,8 @@ func (c *connectivityConnector) handleRendezvousHint(ctx context.Context, hint p
 		DaemonFingerprint:  daemonIdentity.Fingerprint,
 		AndroidFingerprint: android.Fingerprint,
 		PathKind:           "direct",
+		AttemptID:          hint.AttemptID,
 	}
+	c.state.setConnectivityPath("direct", "")
 	return transport.Serve(ctx, quicConn)
 }

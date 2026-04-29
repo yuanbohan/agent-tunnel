@@ -26,7 +26,7 @@ func TestPayloadsRoundTripAndIgnoreFutureFields(t *testing.T) {
 		{name: "input_text", payload: InputText{SessionID: "session-1", Text: "echo hi"}, want: InputText{SessionID: "session-1", Text: "echo hi"}},
 		{name: "input_key", payload: InputKey{SessionID: "session-1", Key: "enter"}, want: InputKey{SessionID: "session-1", Key: "enter"}},
 		{name: "resize", payload: Resize{SessionID: "session-1", Cols: 100, Rows: 30}, want: Resize{SessionID: "session-1", Cols: 100, Rows: 30}},
-		{name: "path_state", payload: PathState{PathKind: PathRelay}, want: PathState{PathKind: PathRelay}},
+		{name: "path_state", payload: PathState{AttemptID: "attempt-1", PathKind: PathRelay, FallbackReason: "direct_timeout", DirectSetupLatencyMS: 3000, RelaySetupLatencyMS: 120}, want: PathState{AttemptID: "attempt-1", PathKind: PathRelay, FallbackReason: "direct_timeout", DirectSetupLatencyMS: 3000, RelaySetupLatencyMS: 120}},
 		{name: "error", payload: Error{Code: "protocol_version_mismatch", Message: "bad version"}, want: Error{Code: "protocol_version_mismatch", Message: "bad version"}},
 		{name: "snapshot_begin", payload: SnapshotBegin{SessionID: "session-1", Cols: 120, Rows: 40}, want: SnapshotBegin{SessionID: "session-1", Cols: 120, Rows: 40}},
 		{name: "snapshot_end", payload: SnapshotEnd{SessionID: "session-1", ChunkCount: 2}, want: SnapshotEnd{SessionID: "session-1", ChunkCount: 2}},

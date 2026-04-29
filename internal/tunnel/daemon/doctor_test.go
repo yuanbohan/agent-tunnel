@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -55,7 +56,9 @@ func TestDoctorReturnsHealthyExitCodeWhenChecksAreOK(t *testing.T) {
 		return nil
 	}
 	tmuxLookPathFn = func(string) (string, error) { return "/usr/bin/tmux", nil }
-	listWorkspaceFn = func(context.Context, Paths) ([]WorkspaceSession, error) { return []WorkspaceSession{{Name: "launch_1"}}, nil }
+	listWorkspaceFn = func(context.Context, Paths) ([]WorkspaceSession, error) {
+		return []WorkspaceSession{{Name: "launch_1"}}, nil
+	}
 
 	report := BuildDoctorReport(context.Background(), paths, StatusInfo{
 		Running:        true,
@@ -88,5 +91,23 @@ func TestWorkspaceCheckReportsReachableWorkspace(t *testing.T) {
 	}
 	if check.Detail != "the daemon-managed tmux workspace is reachable and currently has 1 session(s)" {
 		t.Fatalf("Detail = %q, want workspace explanation", check.Detail)
+	}
+}
+
+func TestConnectivityPathCheckReportsPathWithoutSessionContent(t *testing.T) {
+	check := connectivityPathCheck(StatusInfo{
+		LastConnectivityPath:    "relay",
+		LastConnectivityFailure: "direct_timeout",
+	})
+	if check.Status != CheckStatusWarn {
+		t.Fatalf("Status = %q, want warn", check.Status)
+	}
+	if !strings.Contains(check.Detail, "relay") || !strings.Contains(check.Detail, "direct_timeout") {
+		t.Fatalf("Detail = %q, want path and failure", check.Detail)
+	}
+	for _, forbidden := range []string{"preview", "snapshot", "live bytes", "input text"} {
+		if strings.Contains(check.Detail, forbidden) {
+			t.Fatalf("Detail = %q, want no session content term %q", check.Detail, forbidden)
+		}
 	}
 }

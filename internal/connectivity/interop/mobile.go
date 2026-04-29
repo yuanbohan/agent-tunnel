@@ -51,6 +51,7 @@ type ProbeScript struct {
 	MobileHello        Hello
 	DaemonHello        Hello
 	SessionIndex       SessionIndex
+	PathState          sessionproto.PathState
 	InteractiveRequest InteractiveRequest
 	InteractiveGranted InteractiveGranted
 	SnapshotBegin      SnapshotBegin
@@ -132,7 +133,7 @@ func (c MobileClient) Run(ctx context.Context, conn *quic.Conn, script ProbeScri
 		return fmt.Errorf("%w: daemon hello=%#v", ErrUnexpectedFrame, daemonHello)
 	}
 
-	sessionIndex, err := readJSONFrame[SessionIndex](control, frame.TypeSessionIndex, c.maxPayload())
+	sessionIndex, err := c.readSessionIndexAfterOptionalPathState(control, script)
 	if err != nil {
 		return err
 	}
@@ -194,6 +195,38 @@ func (c MobileClient) Run(ctx context.Context, conn *quic.Conn, script ProbeScri
 		return fmt.Errorf("%w: live bytes len=%d", ErrUnexpectedFrame, len(live))
 	}
 	return nil
+}
+
+func (c MobileClient) readSessionIndexAfterOptionalPathState(control io.Reader, script ProbeScript) (SessionIndex, error) {
+	var sessionIndex SessionIndex
+	got, err := frame.Read(control, c.maxPayload())
+	if err != nil {
+		return sessionIndex, err
+	}
+	if got.Type == frame.TypePathState {
+		var pathState sessionproto.PathState
+		if err := json.Unmarshal(got.Payload, &pathState); err != nil {
+			return sessionIndex, err
+		}
+		expected := script.PathState
+		if expected.PathKind == "" {
+			expected.PathKind = script.DaemonHello.PathKind
+		}
+		if expected.PathKind != "" && pathState.PathKind != expected.PathKind {
+			return sessionIndex, fmt.Errorf("%w: path state=%#v", ErrUnexpectedFrame, pathState)
+		}
+		got, err = frame.Read(control, c.maxPayload())
+		if err != nil {
+			return sessionIndex, err
+		}
+	}
+	if got.Type != frame.TypeSessionIndex {
+		return sessionIndex, fmt.Errorf("%w: type=0x%02x want=0x%02x payload_len=%d", ErrUnexpectedFrame, got.Type, frame.TypeSessionIndex, len(got.Payload))
+	}
+	if err := json.Unmarshal(got.Payload, &sessionIndex); err != nil {
+		return sessionIndex, err
+	}
+	return sessionIndex, nil
 }
 
 func (c MobileClient) configs() (*tls.Config, *quic.Config, error) {

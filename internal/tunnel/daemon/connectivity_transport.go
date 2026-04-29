@@ -31,6 +31,10 @@ type ConnectivityTransport struct {
 	DaemonFingerprint  string
 	AndroidFingerprint string
 	PathKind           string
+	AttemptID          string
+	FallbackReason     string
+	DirectSetupLatency time.Duration
+	RelaySetupLatency  time.Duration
 	MaxPayload         int
 }
 
@@ -78,6 +82,15 @@ func (t *ConnectivityTransport) Serve(ctx context.Context, conn *quic.Conn) erro
 	}); err != nil {
 		return err
 	}
+	if err := writeConnectivityJSON(control, frame.TypePathState, sessionproto.PathState{
+		AttemptID:            t.AttemptID,
+		PathKind:             pathKind,
+		FallbackReason:       t.FallbackReason,
+		DirectSetupLatencyMS: durationMillis(t.DirectSetupLatency),
+		RelaySetupLatencyMS:  durationMillis(t.RelaySetupLatency),
+	}); err != nil {
+		return err
+	}
 	interactiveOwner := &struct{ id int }{id: 1}
 	defer t.Broker.ReleaseInteractiveOwner(interactiveOwner)
 
@@ -110,6 +123,13 @@ func (t *ConnectivityTransport) Serve(ctx context.Context, conn *quic.Conn) erro
 		}
 		return err
 	}
+}
+
+func durationMillis(duration time.Duration) int {
+	if duration <= 0 {
+		return 0
+	}
+	return int(duration / time.Millisecond)
 }
 
 func isConnectivityNormalClose(err error) bool {

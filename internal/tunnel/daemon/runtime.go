@@ -417,6 +417,14 @@ func (s *runtimeState) clearLastFailure() {
 	_ = s.persist()
 }
 
+func (s *runtimeState) setConnectivityPath(pathKind, failure string) {
+	s.mu.Lock()
+	s.status.LastConnectivityPath = strings.TrimSpace(pathKind)
+	s.status.LastConnectivityFailure = strings.TrimSpace(failure)
+	s.mu.Unlock()
+	_ = s.persist()
+}
+
 func (s *runtimeState) sendConnectivityEvent(frame protocol.ConnectivityFrame) bool {
 	if s == nil || s.connectivityEvents == nil {
 		return false
