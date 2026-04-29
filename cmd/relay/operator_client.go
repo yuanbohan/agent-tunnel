@@ -24,6 +24,7 @@ type operatorClient interface {
 	DisableInvite(ctx context.Context, code string) error
 	DeleteUser(ctx context.Context, username string) error
 	ListInvites(ctx context.Context) ([]handlertypes.OperatorInviteCodeListEntry, error)
+	SetUserTier(ctx context.Context, username string, tier string) (handlertypes.OperatorSetUserTierResponse, error)
 }
 
 type operatorAPIError struct {
@@ -94,6 +95,17 @@ func (c *httpOperatorClient) ListInvites(ctx context.Context) ([]handlertypes.Op
 		return nil, err
 	}
 	return resp.Invites, nil
+}
+
+func (c *httpOperatorClient) SetUserTier(ctx context.Context, username string, tier string) (handlertypes.OperatorSetUserTierResponse, error) {
+	var resp handlertypes.OperatorSetUserTierResponse
+	if err := c.doJSON(ctx, http.MethodPost, handlertypes.OperatorUserTierPath, handlertypes.OperatorSetUserTierRequest{
+		Username: username,
+		Tier:     tier,
+	}, http.StatusOK, &resp); err != nil {
+		return handlertypes.OperatorSetUserTierResponse{}, err
+	}
+	return resp, nil
 }
 
 func (c *httpOperatorClient) doJSON(ctx context.Context, method, path string, requestBody any, wantStatus int, responseBody any) error {

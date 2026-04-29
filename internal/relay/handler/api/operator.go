@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	relayconnectivity "yuanbohan/tunnel/internal/relay/connectivity"
 	"yuanbohan/tunnel/internal/relay/handler/types"
 	"yuanbohan/tunnel/internal/relay/operator"
 	"yuanbohan/tunnel/internal/relay/session"
@@ -95,7 +96,7 @@ func DisableInvite(operatorSvc *operator.OperatorService) gin.HandlerFunc {
 	}
 }
 
-func DeleteUser(operatorSvc *operator.OperatorService, registry *session.Registry) gin.HandlerFunc {
+func DeleteUser(operatorSvc *operator.OperatorService, registry *session.Registry, connectivityRegistry *relayconnectivity.Registry) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if operatorSvc == nil || registry == nil {
 			WriteJSONError(c.Writer, http.StatusServiceUnavailable, "service_unavailable")
@@ -114,6 +115,39 @@ func DeleteUser(operatorSvc *operator.OperatorService, registry *session.Registr
 			return
 		}
 		registry.DisconnectUserSessions(result.UserID, "account_deleted")
+		if connectivityRegistry != nil {
+			connectivityRegistry.DisconnectUser(result.UserID, "account_deleted")
+		}
 		WriteJSON(c.Writer, http.StatusOK, nil)
+	}
+}
+
+func SetUserTier(operatorSvc *operator.OperatorService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if operatorSvc == nil {
+			WriteJSONError(c.Writer, http.StatusServiceUnavailable, "service_unavailable")
+			return
+		}
+
+		var req types.OperatorSetUserTierRequest
+		if err := DecodeJSONBody(c.Writer, c.Request, &req); err != nil {
+			WriteJSONError(c.Writer, http.StatusBadRequest, "invalid_request")
+			return
+		}
+
+		user, previousTier, err := operatorSvc.SetUserSubscriptionTier(c.Request.Context(), req.Username, req.Tier)
+		if err != nil {
+			WriteOperatorError(c.Writer, err)
+			return
+		}
+		tier := user.SubscriptionTier
+		if tier == "" {
+			tier = "free"
+		}
+		WriteJSON(c.Writer, http.StatusOK, types.OperatorSetUserTierResponse{
+			Username:     user.UsernameNorm,
+			PreviousTier: previousTier,
+			Tier:         tier,
+		})
 	}
 }

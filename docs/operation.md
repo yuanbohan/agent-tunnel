@@ -86,6 +86,7 @@ sudo docker compose --env-file .env exec relay relay invite create --count 3 --e
 sudo docker compose --env-file .env exec relay relay invite list
 sudo docker compose --env-file .env exec relay relay invite disable --code AB2C3D
 sudo docker compose --env-file .env exec relay relay user delete --username alice
+sudo docker compose --env-file .env exec relay relay user tier alice pro
 ```
 
 The operator routes remain outside the public `/api/` namespace and should not be exposed through nginx.
@@ -129,6 +130,31 @@ sudo docker compose --env-file .env exec postgres sh -lc 'psql -U "$POSTGRES_USE
 ```
 
 The legacy `relay-migrate` binary may still exist on older hosts for local compatibility work, but it is not part of the Docker Compose deployment path.
+
+Step 2 connectivity auth/pairing requires this manual SQL on existing databases before deploying a Relay binary that reads the new columns:
+
+```sql
+alter table users
+  add column if not exists subscription_tier text not null default 'free';
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'users_subscription_tier_check'
+  ) then
+    alter table users
+      add constraint users_subscription_tier_check
+      check (subscription_tier in ('free', 'pro'));
+  end if;
+end $$;
+
+alter table app_sessions
+  add column if not exists device_fingerprint text not null default '';
+
+create index if not exists app_sessions_user_device_fingerprint_idx
+  on app_sessions (user_id, device_fingerprint)
+  where device_fingerprint <> '';
+```
 
 ## Troubleshooting
 

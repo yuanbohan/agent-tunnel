@@ -2,30 +2,52 @@ package auth
 
 import (
 	"errors"
+	"strings"
 	"time"
 )
 
 var (
-	ErrUserNotFound       = errors.New("user not found")
-	ErrUsernameTaken      = errors.New("username already taken")
-	ErrInviteCodeNotFound = errors.New("invite code not found")
-	ErrInviteCodeExpired  = errors.New("invite code expired")
-	ErrInviteCodeDisabled = errors.New("invite code disabled")
-	ErrInviteCodeConsumed = errors.New("invite code consumed")
-	ErrAppSessionNotFound = errors.New("app session not found")
-	ErrAppSessionExpired  = errors.New("app session expired")
-	ErrAppSessionRevoked  = errors.New("app session revoked")
-	ErrAgentTokenNotFound = errors.New("agent token not found")
-	ErrAgentTokenRevoked  = errors.New("agent token revoked")
+	ErrUserNotFound             = errors.New("user not found")
+	ErrUsernameTaken            = errors.New("username already taken")
+	ErrInviteCodeNotFound       = errors.New("invite code not found")
+	ErrInviteCodeExpired        = errors.New("invite code expired")
+	ErrInviteCodeDisabled       = errors.New("invite code disabled")
+	ErrInviteCodeConsumed       = errors.New("invite code consumed")
+	ErrAppSessionNotFound       = errors.New("app session not found")
+	ErrAppSessionExpired        = errors.New("app session expired")
+	ErrAppSessionRevoked        = errors.New("app session revoked")
+	ErrAppSessionDeviceMismatch = errors.New("app session device fingerprint mismatch")
+	ErrInvalidDeviceFingerprint = errors.New("invalid device fingerprint")
+	ErrInvalidSubscriptionTier  = errors.New("invalid subscription tier")
+	ErrAgentTokenNotFound       = errors.New("agent token not found")
+	ErrAgentTokenRevoked        = errors.New("agent token revoked")
 )
 
+const (
+	SubscriptionTierFree = "free"
+	SubscriptionTierPro  = "pro"
+)
+
+func NormalizeSubscriptionTier(raw string) (string, error) {
+	tier := strings.ToLower(strings.TrimSpace(raw))
+	switch tier {
+	case "":
+		return SubscriptionTierFree, nil
+	case SubscriptionTierFree, SubscriptionTierPro:
+		return tier, nil
+	default:
+		return "", ErrInvalidSubscriptionTier
+	}
+}
+
 type User struct {
-	ID           int64
-	Username     string
-	UsernameNorm string
-	PasswordHash string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	ID               int64
+	Username         string
+	UsernameNorm     string
+	PasswordHash     string
+	SubscriptionTier string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 type AppSession struct {
@@ -35,6 +57,7 @@ type AppSession struct {
 	AccessExpiresAt    time.Time
 	RefreshTokenDigest string
 	RefreshExpiresAt   time.Time
+	DeviceFingerprint  string
 	RevokedAt          *time.Time
 	RevokeReason       string
 	CreatedAt          time.Time
@@ -91,11 +114,13 @@ type CreateAppSessionParams struct {
 	AccessExpiresAt    time.Time
 	RefreshTokenDigest string
 	RefreshExpiresAt   time.Time
+	DeviceFingerprint  string
 	Now                time.Time
 }
 
 type RotateAppSessionParams struct {
 	RefreshTokenDigest    string
+	DeviceFingerprint     string
 	NewAccessTokenDigest  string
 	NewAccessExpiresAt    time.Time
 	NewRefreshTokenDigest string

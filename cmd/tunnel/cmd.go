@@ -390,6 +390,67 @@ func newDaemonCmd() *cobra.Command {
 			return runDaemonSessions(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	})
+	pairCmd := &cobra.Command{
+		Use:           "pair",
+		Short:         "Create a pairing invitation",
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runDaemonPair(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+		},
+	}
+	pairCmd.AddCommand(&cobra.Command{
+		Use:           "pending",
+		Short:         "List pending pairing responses",
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runDaemonPairPending(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+		},
+	})
+	pairCmd.AddCommand(&cobra.Command{
+		Use:   "confirm <invitation-id> <sas>",
+		Short: "Confirm a pending pairing response",
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) != 2 {
+				return usageWithHelp(daemonHelpText(), "expected invitation id and SAS")
+			}
+			return nil
+		},
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runDaemonPairConfirm(cmd.Context(), args[0], args[1], cmd.OutOrStdout(), cmd.ErrOrStderr())
+		},
+	})
+	cmd.AddCommand(pairCmd)
+	cmd.AddCommand(&cobra.Command{
+		Use:           "devices",
+		Short:         "List paired Android devices",
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runDaemonDevices(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
+		Use:   "revoke <fingerprint>",
+		Short: "Revoke a paired Android device",
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) != 1 {
+				return usageWithHelp(daemonHelpText(), "expected exactly one device fingerprint")
+			}
+			return nil
+		},
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runDaemonRevoke(cmd.Context(), args[0], cmd.OutOrStdout(), cmd.ErrOrStderr())
+		},
+	})
 	internalCmd := &cobra.Command{
 		Use:           "internal-run",
 		Hidden:        true,

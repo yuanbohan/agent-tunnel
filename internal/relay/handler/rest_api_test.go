@@ -328,6 +328,97 @@ func TestHandlerRegisterLoginRefreshLogoutFlow(t *testing.T) {
 	}
 }
 
+func TestHandlerBindsAppSessionRefreshToDeviceFingerprint(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	env.registerUser(t, "alice", "password123", "AB2C3D")
+	handler := env.handler(nil)
+
+	fingerprint := strings.Repeat("a", relayauth.DeviceFingerprintHexLength)
+	loginRec := httptest.NewRecorder()
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"username":"alice","password":"password123","device_fingerprint":"`+strings.ToUpper(fingerprint)+`"}`))
+	handler.ServeHTTP(loginRec, loginReq)
+	if loginRec.Code != http.StatusOK {
+		t.Fatalf("login status = %d, want 200", loginRec.Code)
+	}
+
+	var loginResp appSessionResponse
+	decodeAPIEnvelopeFromRecorder(t, loginRec, http.StatusOK, &loginResp)
+	refreshRec := httptest.NewRecorder()
+	refreshReq := httptest.NewRequest(http.MethodPost, "/api/auth/refresh", strings.NewReader(`{"refresh_token":"`+loginResp.RefreshToken+`","device_fingerprint":"`+fingerprint+`"}`))
+	handler.ServeHTTP(refreshRec, refreshReq)
+	if refreshRec.Code != http.StatusOK {
+		t.Fatalf("refresh status = %d, want 200", refreshRec.Code)
+	}
+
+	var refreshResp appSessionResponse
+	decodeAPIEnvelopeFromRecorder(t, refreshRec, http.StatusOK, &refreshResp)
+	mismatchedRec := httptest.NewRecorder()
+	mismatchedFingerprint := strings.Repeat("b", relayauth.DeviceFingerprintHexLength)
+	mismatchedReq := httptest.NewRequest(http.MethodPost, "/api/auth/refresh", strings.NewReader(`{"refresh_token":"`+refreshResp.RefreshToken+`","device_fingerprint":"`+mismatchedFingerprint+`"}`))
+	handler.ServeHTTP(mismatchedRec, mismatchedReq)
+	decodeAPIErrorEnvelopeFromRecorder(t, mismatchedRec, http.StatusUnauthorized, handlerresponse.CodeInvalidSession, "The session is invalid.")
+}
+
+func TestHandlerRejectsInvalidDeviceFingerprint(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	env.registerUser(t, "alice", "password123", "AB2C3D")
+	handler := env.handler(nil)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"username":"alice","password":"password123","device_fingerprint":"not-hex"}`))
+	handler.ServeHTTP(rec, req)
+	decodeAPIErrorEnvelopeFromRecorder(t, rec, http.StatusBadRequest, handlerresponse.CodeInvalidDeviceFingerprint, "The device fingerprint is invalid.")
+}
+
+func TestHandlerAccountPolicyReflectsOperatorTier(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	env.registerUser(t, "alice", "password123", "AB2C3D")
+	issued := env.login(t, "alice", "password123")
+	handler := env.handler(nil)
+
+	policyRec := httptest.NewRecorder()
+	policyReq := httptest.NewRequest(http.MethodGet, "/api/account/policy", nil)
+	policyReq.Header.Set("Authorization", bearerAuth(issued.AccessToken))
+	handler.ServeHTTP(policyRec, policyReq)
+	if policyRec.Code != http.StatusOK {
+		t.Fatalf("initial policy status = %d, want 200", policyRec.Code)
+	}
+	var policy handlertypes.AccountPolicyResponse
+	decodeAPIEnvelopeFromRecorder(t, policyRec, http.StatusOK, &policy)
+	if policy.Tier != relayauth.SubscriptionTierFree {
+		t.Fatalf("initial tier = %q, want free", policy.Tier)
+	}
+
+	operatorRec := httptest.NewRecorder()
+	operatorReq := httptest.NewRequest(http.MethodPost, OperatorUserTierPath, strings.NewReader(`{"username":"alice","tier":"pro"}`))
+	operatorReq.RemoteAddr = "127.0.0.1:1234"
+	operatorReq.Header.Set("Authorization", bearerAuth(env.operatorTok))
+	handler.ServeHTTP(operatorRec, operatorReq)
+	if operatorRec.Code != http.StatusOK {
+		t.Fatalf("operator tier status = %d, want 200", operatorRec.Code)
+	}
+	var updated handlertypes.OperatorSetUserTierResponse
+	decodeAPIEnvelopeFromRecorder(t, operatorRec, http.StatusOK, &updated)
+	if updated.Username != "alice" || updated.PreviousTier != "free" || updated.Tier != "pro" {
+		t.Fatalf("operator tier response = %#v, want alice free -> pro", updated)
+	}
+
+	policyRec = httptest.NewRecorder()
+	policyReq = httptest.NewRequest(http.MethodGet, "/api/account/policy", nil)
+	policyReq.Header.Set("Authorization", bearerAuth(issued.AccessToken))
+	handler.ServeHTTP(policyRec, policyReq)
+	if policyRec.Code != http.StatusOK {
+		t.Fatalf("updated policy status = %d, want 200", policyRec.Code)
+	}
+	decodeAPIEnvelopeFromRecorder(t, policyRec, http.StatusOK, &policy)
+	if policy.Tier != relayauth.SubscriptionTierPro {
+		t.Fatalf("updated tier = %q, want pro", policy.Tier)
+	}
+}
+
 func TestHandlerRefreshClampsExpiresInAtAbsoluteSessionBoundary(t *testing.T) {
 	env := newHandlerTestEnv(t)
 	env.addInvite(t, "AB2C3D")

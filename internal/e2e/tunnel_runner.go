@@ -40,8 +40,11 @@ func startTunnelProcess(binary string, cfg TunnelConfig) (*TunnelProcess, error)
 	cmd := exec.Command(binary, "run", "--label", cfg.Label, cfg.LauncherName)
 	cmd.Env = append([]string(nil), os.Environ()...)
 	cmd.Env = append(cmd.Env, "TUNNEL_BASE_URL="+cfg.BaseURL)
+	cmd.Env = append(cmd.Env, "TUNNEL_UPDATE_DISABLED=1")
 	if strings.TrimSpace(cfg.AgentToken) != "" {
 		cmd.Env = append(cmd.Env, "TUNNEL_AUTH_TOKEN="+cfg.AgentToken)
+	} else {
+		cmd.Env = append(cmd.Env, "TUNNEL_AUTH_TOKEN=")
 	}
 	if strings.TrimSpace(cfg.HomeDir) != "" {
 		cmd.Env = append(cmd.Env, "HOME="+cfg.HomeDir)

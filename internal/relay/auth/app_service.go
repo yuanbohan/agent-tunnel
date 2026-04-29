@@ -79,11 +79,22 @@ func (s *AppAuthService) Register(ctx context.Context, username, password, invit
 }
 
 func (s *AppAuthService) Login(ctx context.Context, username, password string) (IssuedAppSession, error) {
+	return s.LoginWithDeviceFingerprint(ctx, username, password, "")
+}
+
+func (s *AppAuthService) LoginWithDeviceFingerprint(ctx context.Context, username, password, deviceFingerprint string) (IssuedAppSession, error) {
 	usernameNorm, err := NormalizeUsername(username)
 	if err != nil {
 		return IssuedAppSession{}, ErrInvalidCredentials
 	}
+	fingerprint, err := NormalizeDeviceFingerprint(deviceFingerprint)
+	if err != nil {
+		return IssuedAppSession{}, ErrInvalidDeviceFingerprint
+	}
+	return s.login(ctx, usernameNorm, password, fingerprint)
+}
 
+func (s *AppAuthService) login(ctx context.Context, usernameNorm, password, fingerprint string) (IssuedAppSession, error) {
 	user, err := s.store.FindUserByUsername(ctx, usernameNorm)
 	if err != nil {
 		if errors.Is(err, ErrUserNotFound) {
@@ -98,7 +109,7 @@ func (s *AppAuthService) Login(ctx context.Context, username, password string) (
 		return IssuedAppSession{}, err
 	}
 
-	return s.issueSession(ctx, user)
+	return s.issueSession(ctx, user, fingerprint)
 }
 
 func (s *AppAuthService) AuthenticateAccessToken(ctx context.Context, accessToken string) (AuthenticatedApp, error) {
@@ -114,6 +125,18 @@ func (s *AppAuthService) AuthenticateAccessToken(ctx context.Context, accessToke
 }
 
 func (s *AppAuthService) Refresh(ctx context.Context, refreshToken string) (IssuedAppSession, error) {
+	return s.RefreshWithDeviceFingerprint(ctx, refreshToken, "")
+}
+
+func (s *AppAuthService) RefreshWithDeviceFingerprint(ctx context.Context, refreshToken, deviceFingerprint string) (IssuedAppSession, error) {
+	fingerprint, err := NormalizeDeviceFingerprint(deviceFingerprint)
+	if err != nil {
+		return IssuedAppSession{}, ErrInvalidDeviceFingerprint
+	}
+	return s.refresh(ctx, refreshToken, fingerprint)
+}
+
+func (s *AppAuthService) refresh(ctx context.Context, refreshToken, fingerprint string) (IssuedAppSession, error) {
 	accessToken, err := GenerateOpaqueToken(32)
 	if err != nil {
 		return IssuedAppSession{}, err
@@ -126,6 +149,7 @@ func (s *AppAuthService) Refresh(ctx context.Context, refreshToken string) (Issu
 
 	session, err := s.store.RotateAppSessionByRefreshToken(ctx, RotateAppSessionParams{
 		RefreshTokenDigest:    s.digester.Digest(refreshToken),
+		DeviceFingerprint:     fingerprint,
 		NewAccessTokenDigest:  s.digester.Digest(accessToken),
 		NewAccessExpiresAt:    now.Add(s.accessTTL),
 		NewRefreshTokenDigest: s.digester.Digest(newRefreshToken),
@@ -168,7 +192,7 @@ func (s *AppAuthService) ChangePassword(ctx context.Context, auth AuthenticatedA
 	return s.store.ChangeUserPassword(ctx, auth.User.ID, passwordHash, s.now())
 }
 
-func (s *AppAuthService) issueSession(ctx context.Context, user User) (IssuedAppSession, error) {
+func (s *AppAuthService) issueSession(ctx context.Context, user User, deviceFingerprint string) (IssuedAppSession, error) {
 	sessionID, err := GenerateOpaqueID("appsess", 16)
 	if err != nil {
 		return IssuedAppSession{}, err
@@ -190,6 +214,7 @@ func (s *AppAuthService) issueSession(ctx context.Context, user User) (IssuedApp
 		AccessExpiresAt:    now.Add(s.accessTTL),
 		RefreshTokenDigest: s.digester.Digest(refreshToken),
 		RefreshExpiresAt:   now.Add(s.refreshTTL),
+		DeviceFingerprint:  deviceFingerprint,
 		Now:                now,
 	})
 	if err != nil {

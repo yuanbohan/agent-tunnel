@@ -66,19 +66,19 @@ sequenceDiagram
     participant AndroidConn as Android ConnMgr
 
     User->>DaemonCLI: run `tunnel daemon pair`
-    DaemonCLI->>DaemonConn: create one-time invitation
     DaemonConn->>RelayRT: reserve short-lived correlation_id
-    RelayRT-->>DaemonConn: correlation_id
+    RelayRT-->>DaemonConn: correlation_id + account_id
+    DaemonCLI->>DaemonConn: create one-time invitation
     DaemonConn-->>DaemonCLI: invitation payload\n(account_id, daemon_id, daemon_pubkey,\ninvitation_id, nonce, expires_at,\ncorrelation_id, signature)
-    DaemonCLI-->>User: render QR code
+    DaemonCLI-->>User: print JSON invitation payload
 
-    User->>AndroidUI: scan QR
+    User->>AndroidUI: import invitation payload
     AndroidUI->>AndroidConn: parse invitation
     AndroidConn->>AndroidConn: verify daemon signature\nverify expiry
     AndroidConn->>AndroidConn: sign(invitation_id || nonce || android_pubkey || relay_asserted_account_id)
     AndroidConn->>RelayRT: pair_response_submit\n(correlation_id, android_pubkey, signature, account_id)
     RelayRT->>DaemonConn: pair_response_forward\n(+ relay_asserted_account_id)
-    DaemonConn->>DaemonConn: verify invitation still valid\nverify Android signature\nverify Relay-asserted account matches invitation
+    DaemonConn->>DaemonConn: verify invitation still valid\nverify Android signature\nverify account matches invitation\nstore pending response
 
     DaemonConn->>DaemonConn: derive SAS from:\ndaemon_pubkey, android_pubkey,\ninvitation_id, nonce
     AndroidConn->>AndroidConn: derive same SAS from:\ndaemon_pubkey, android_pubkey,\ninvitation_id, nonce

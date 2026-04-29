@@ -7,12 +7,14 @@ type RegisterRequest struct {
 }
 
 type LoginRequest struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
+	Username          string `json:"username"`
+	Password          string `json:"password"`
+	DeviceFingerprint string `json:"device_fingerprint,omitempty"`
 }
 
 type RefreshRequest struct {
-	RefreshToken string `json:"refresh_token"`
+	RefreshToken      string `json:"refresh_token"`
+	DeviceFingerprint string `json:"device_fingerprint,omitempty"`
 }
 
 type ChangePasswordRequest struct {
@@ -25,4 +27,10 @@ type AppSessionResponse struct {
 	RefreshToken string `json:"refresh_token"`
 	ExpiresIn    int64  `json:"expires_in"`
 	TokenType    string `json:"token_type"`
+	AccountID    string `json:"account_id"`
+}
+
+type AccountPolicyResponse struct {
+	AccountID string `json:"account_id"`
+	Tier      string `json:"tier"`
 }

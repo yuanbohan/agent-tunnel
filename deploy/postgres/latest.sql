@@ -5,6 +5,7 @@ create table if not exists users (
     username text not null,
     username_norm text not null unique,
     password_hash text not null,
+    subscription_tier text not null default 'free' check (subscription_tier in ('free', 'pro')),
     created_at timestamptz not null,
     updated_at timestamptz not null
 );
@@ -32,6 +33,7 @@ create table if not exists app_sessions (
     access_expires_at timestamptz not null,
     refresh_token_digest text not null unique,
     refresh_expires_at timestamptz not null,
+    device_fingerprint text not null default '',
     revoked_at timestamptz,
     revoke_reason text not null default '',
     created_at timestamptz not null,
@@ -39,6 +41,9 @@ create table if not exists app_sessions (
 );
 
 create index if not exists app_sessions_user_id_idx on app_sessions(user_id);
+create index if not exists app_sessions_user_device_fingerprint_idx
+    on app_sessions(user_id, device_fingerprint)
+    where device_fingerprint <> '';
 create index if not exists app_sessions_access_expires_at_idx on app_sessions(access_expires_at);
 create index if not exists app_sessions_refresh_expires_at_idx on app_sessions(refresh_expires_at);
 

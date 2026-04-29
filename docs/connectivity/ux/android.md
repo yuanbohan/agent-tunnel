@@ -53,16 +53,16 @@ Recommended device identity model:
 - the public-key fingerprint (`device_fingerprint = sha256(public_key_raw)`) is the long-lived device identity reported to Relay
 - reinstalling the app deletes the device key; the user must re-pair every daemon
 
-## Login And JWT
+## Login And App Session
 
 Per `../contract.md` D4:
 
 1. login request body includes `device_fingerprint` alongside credentials
-2. Relay returns a JWT with claims `{ sub: account_id, device_fingerprint, sid, exp }`
-3. JWT is the only Relay-side authentication mechanism in phase 1
+2. Relay returns opaque app access and refresh tokens
+3. the server-side app session stores `account_id`, session id, expiry, and `device_fingerprint`
 4. token refresh must include the same `device_fingerprint`; Relay rejects mismatch
 
-Phase 1 does not require an additional per-WebSocket device-key proof. Daemon-side security relies on pairing-pinned device keys, not the JWT.
+Phase 1 does not require an additional per-WebSocket device-key proof. Daemon-side security relies on pairing-pinned device keys, not the app-session token format.
 
 ## Daemon Lifecycle Expectation
 
@@ -75,10 +75,10 @@ Phase 1 does not require an additional per-WebSocket device-key proof. Daemon-si
 ## Pairing Flow
 
 1. user is logged in on Android
-2. user runs `tunnel daemon pair` on the computer; daemon mints an invitation and renders a QR
-3. user scans the QR with the Android app
+2. user runs `tunnel daemon pair` on the computer; daemon mints a signed JSON invitation
+3. user imports the invitation with the Android app (QR rendering is deferred)
 4. app validates the daemon-signed invitation locally
-5. app signs the invitation challenge with its persistent device key, including the JWT-asserted `account_id`
+5. app signs the invitation challenge with its persistent device key, including the Relay-authenticated `account_id`
 6. app sends the pairing response through Relay
 7. app displays the SAS
 8. user confirms matching SAS with the daemon screen (active confirmation, ≥ 1s delay, no auto-prefocus)
@@ -98,7 +98,7 @@ Treat the realtime WebSocket as daemon presence and rendezvous only.
 2. Relay sends `daemon_snapshot`
 3. Relay sends `realtime_ready`
 
-The app learns its subscription tier through authenticated Relay app APIs, not through realtime per-session policy events. The authenticated app-session JWT already carries `account_id` and `device_fingerprint`.
+The app learns its subscription tier through authenticated Relay app APIs, not through realtime per-session policy events. Relay derives `account_id` and `device_fingerprint` from the authenticated server-side app session.
 
 ### App Sends
 

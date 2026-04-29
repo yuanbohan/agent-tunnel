@@ -115,7 +115,8 @@ Pairing rules:
 - Android must already be logged in
 - same-account devices are not automatically trusted
 - trust is daemon-scoped
-- `tunnel daemon pair` creates a short-lived, one-time invitation
+- `tunnel daemon pair` reserves a live Relay correlation, receives the authenticated account id, and creates a short-lived, one-time invitation
+- forwarded Android responses remain pending until local SAS confirmation
 - the daemon is the trust root for device approval
 - Relay may carry pairing messages, but it does not decide trust
 - both sides persist the other side's public-key fingerprint locally after successful pairing
@@ -291,7 +292,7 @@ This closes the remaining "Relay swapped keys during pairing transport" class of
 | Relay swaps device keys during pairing transport | 6-digit SAS confirmed by the user on both screens before trust is finalized | User must actively confirm |
 | Relay tampers with rendezvous candidates | Inner QUIC/TLS handshake will fail against a wrong endpoint; cert pinning catches the substitution | Relay can force-downgrade the path from direct to fallback; confidentiality is preserved on either path |
 | Network attacker captures past traffic and later steals the long-lived device key | TLS 1.3 ECDHE per connection provides forward secrecy on session keys | Past sessions remain secret; future sessions can be impersonated until the affected key is revoked |
-| QR invitation is photographed by a bystander | Invitation is one-time, expires quickly, and is bound to a specific Android device key by signature | Invitation alone cannot pair an attacker's device |
+| Invitation payload is observed by a bystander | Invitation is one-time, expires quickly, and is bound to a specific Android device key by signature | Invitation alone cannot pair an attacker's device |
 | Pairing response is replayed by Relay | Invitation is single-use; reuse fails closed | None |
 | Daemon device key is exfiltrated from the host | User must revoke and re-pair devices operationally | No in-band automatic recovery in phase 1 |
 | Android device key is stolen with the device | Daemon-side revoke removes trust and terminates active transport | Brief in-flight packets may still arrive until close propagates |

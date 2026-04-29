@@ -11,13 +11,14 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 - `cmd/relay` is the standalone relay server. It exposes authenticated HTTP and WebSocket APIs for external clients, authenticates app clients with bearer app sessions, authenticates agents with user-owned bearer agent tokens, keeps operator maintenance routes local-only outside the public `/api/` namespace, persists accounts and auth state in PostgreSQL, and maintains live in-memory routing only for online sessions and online device daemons. It does not retain transcript history. It starts via explicit subcommands such as `serve`, `invite create`, `invite disable`, and `user delete`.
 - `cmd/migrate` builds the standalone relay schema migrator used by legacy/local PostgreSQL schema workflows. Docker Compose relay deployments do not run it automatically.
 - `internal/tunnel/session/` owns PTY lifecycle, Hub fanout, local terminal attach, resize/input forwarding, and the terminal mirror used for attach snapshots.
-- `internal/tunnel/daemon/` owns the explicit background daemon started by `tunnel daemon ...`, including the local control socket, persisted device identity, dedicated tmux workspace, doctor/status behavior, and device-side relay connector.
+- `internal/tunnel/daemon/` owns the explicit background daemon started by `tunnel daemon ...`, including the local control socket, persisted device identity, persisted connectivity identity, trusted Android pairing state, dedicated tmux workspace, doctor/status behavior, device-side relay connector, and connectivity relay connector.
 - `internal/protocol/` defines attach-oriented wire types: agent registration, attach control, optional submit anchors on snapshot completion, live submit-anchor controls, session info, structured input, and client-routed terminal-byte packets.
 - `internal/protocol/` also defines device-oriented wire types for device registration and launch request/result routing.
 - `internal/tunnel/connector/` is the mandatory outbound connector from a local `tunnel` process to `/agent/ws` on the relay. It registers sessions, publishes resize metadata, answers attach-open/attach-close control, records submit anchors for future fresh attaches, emits live submit anchors for attached clients, and routes client-scoped terminal bytes.
 - `internal/relay/auth/` owns invite codes, usernames/passwords, app sessions, and agent token services.
 - `internal/relay/operator/` owns operator-only invite and user maintenance services.
 - `internal/relay/device/` owns live in-memory online-device routing, device listing, and launch-request coordination.
+- `internal/relay/connectivity/` owns live in-memory connectivity app/daemon peers, paired-daemon visibility derived from daemon-local trusted rosters, and short-lived pairing response correlations.
 - `internal/relay/session/` owns live session ownership, stop control routing, attach routing, and attach-session indexing.
 - `internal/config/` owns relay process configuration loaded during relay startup.
 - `internal/logx/` owns the global structured logger setup used across the relay.
@@ -42,6 +43,7 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 - After startup, relay unavailability must not interrupt local terminal work. The connector keeps retrying relay registration with backoff, and local sessions continue running unchanged while remote visibility and input are unavailable.
 - The agent is the authority for current terminal state. It maintains the headless terminal mirror and produces attach snapshots from that mirror.
 - Remote viewing is session-scoped: clients discover sessions with `GET /api/sessions` and attach with `GET /api/sessions/:id/attach/ws`.
+- Connectivity pairing visibility is device-fingerprint scoped: fingerprint-bound app sessions connect to `GET /api/connectivity/app/ws`, daemons connect to `GET /connectivity/daemon/ws`, and Relay derives live visibility from daemon `pair_completed` events plus the daemon-reported trusted Android roster on reconnect.
 - Session discovery includes metadata such as `git_branch`, optional local daemon `device_id`, relay-controlled `launch_source`, `platform_family`, `platform_id`, and normalized `computer_name`.
 - Remote launch is device-scoped: clients discover devices with `GET /api/devices` and request new session creation with `POST /api/devices/:id/launch`, which requires per-launch `cwd`, may include optional `label`, and succeeds only when the new session becomes `session_ready`. Session shutdown is the unified `POST /api/sessions/:id/stop` operation for any owned live session.
 - Browser attach clients must be same-origin with the relay host; native clients that omit `Origin` remain supported.
@@ -55,6 +57,7 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 - If the owning agent disconnects, the relay removes that session from discovery immediately. If the same running agent reconnects later with the same `session_id`, the session becomes discoverable again.
 - If an app session logs out or a password change revokes app sessions, the relay closes the affected app-side attaches but does not disconnect the owning agent session.
 - Relay state is live-only and in-memory. If the owning agent socket disappears, the relay removes the session immediately.
+- Connectivity trust remains daemon-local. Relay does not persist trusted Android rosters; daemon reconnect rebuilds live visibility from `pairing_state.json`.
 - Protocol-facing timestamps such as `started_at` are Unix timestamps encoded as JSON integer seconds.
 - The relay is content-opaque. It may forward output bytes, attach control, snapshot submit-anchor metadata, and live submit-anchor metadata generated by the owning agent, but it must not emulate the terminal or derive previews, anchors, or other message semantics from terminal content.
 - PTY size remains local-terminal-owned in this phase. Remote clients follow forwarded resize events and do not become size authority.

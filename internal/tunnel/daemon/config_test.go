@@ -50,14 +50,16 @@ func testPaths(t *testing.T) Paths {
 		_ = os.RemoveAll(root)
 	})
 	return Paths{
-		ConfigDir:  filepath.Join(root, "c"),
-		ConfigFile: filepath.Join(root, "c", "daemon.json"),
-		StateDir:   filepath.Join(root, "s"),
-		RuntimeDir: filepath.Join(root, "r"),
-		SocketPath: filepath.Join(root, "r", "d.sock"),
-		TmuxSocketPath: filepath.Join(root, "r", "tmux.sock"),
-		PIDFile:    filepath.Join(root, "s", "pid"),
-		StatusFile: filepath.Join(root, "s", "status.json"),
-		DeviceFile: filepath.Join(root, "s", "device.json"),
+		ConfigDir:                filepath.Join(root, "c"),
+		ConfigFile:               filepath.Join(root, "c", "daemon.json"),
+		StateDir:                 filepath.Join(root, "s"),
+		RuntimeDir:               filepath.Join(root, "r"),
+		SocketPath:               filepath.Join(root, "r", "d.sock"),
+		TmuxSocketPath:           filepath.Join(root, "r", "tmux.sock"),
+		PIDFile:                  filepath.Join(root, "s", "pid"),
+		StatusFile:               filepath.Join(root, "s", "status.json"),
+		DeviceFile:               filepath.Join(root, "s", "device.json"),
+		ConnectivityIdentityFile: filepath.Join(root, "s", "connectivity_identity.json"),
+		PairingStateFile:         filepath.Join(root, "s", "pairing_state.json"),
 	}
 }

@@ -127,12 +127,44 @@ func TestHTTPOperatorClientListInvites(t *testing.T) {
 	}
 }
 
+func TestHTTPOperatorClientSetUserTier(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != handlertypes.OperatorUserTierPath {
+			t.Fatalf("path = %q, want %s", r.URL.Path, handlertypes.OperatorUserTierPath)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer operator-secret" {
+			t.Fatalf("Authorization = %q, want bearer token", got)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("ReadAll returned error: %v", err)
+		}
+		if got := strings.TrimSpace(string(body)); got != `{"username":"alice","tier":"pro"}` {
+			t.Fatalf("body = %q, want operator tier payload", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"code":0,"message":"success","body":{"username":"alice","previous_tier":"free","tier":"pro"}}`))
+	}))
+	defer server.Close()
+
+	client := newHTTPOperatorClient(server.URL, "operator-secret", server.Client())
+	updated, err := client.SetUserTier(context.Background(), "alice", "pro")
+	if err != nil {
+		t.Fatalf("SetUserTier returned error: %v", err)
+	}
+	if updated.Username != "alice" || updated.PreviousTier != "free" || updated.Tier != "pro" {
+		t.Fatalf("updated = %#v, want alice free -> pro", updated)
+	}
+}
+
 func TestOperatorAPIPathsStayOutsidePublicAPINamespace(t *testing.T) {
 	paths := []string{
 		handlertypes.OperatorInviteCodesPath,
 		handlertypes.OperatorInviteDisablePath,
 		handlertypes.OperatorInviteListPath,
 		handlertypes.OperatorDeleteUserPath,
+		handlertypes.OperatorUserTierPath,
 	}
 	for _, path := range paths {
 		if strings.HasPrefix(path, "/api/") {

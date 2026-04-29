@@ -38,6 +38,9 @@ The daemon surface is explicit and lives under `tunnel daemon ...`:
 - `open`: attach to an existing daemon-managed tmux session from the current terminal. If no daemon-managed sessions exist, do not open tmux; tell the user there are no sessions to open.
 - `close`: detach one currently open client from the daemon tmux workspace. If no workspace view is open, report that there is no open workspace to close and exit successfully.
 - `sessions`: list sessions in the dedicated tmux workspace without adding custom session management.
+- `pair`: ask the running daemon to create a signed short-lived pairing invitation.
+- `devices`: list daemon-local trusted Android devices.
+- `revoke <fingerprint>`: mark one daemon-local trusted Android device revoked and best-effort notify Relay live visibility.
 
 Do not add daemon commands that create a custom tmux dashboard, picker, alias system, per-session close/open workflow, or terminal-recipe workflow unless the product scope is explicitly changed first. Use account-level session stop for destructive session shutdown; keep `close` reserved for the local workspace view lifecycle.
 
@@ -46,10 +49,20 @@ Do not add daemon commands that create a custom tmux dashboard, picker, alias sy
 Daemon-owned local state is split by purpose:
 
 - Config: user-editable daemon config, including the first-token command allowlist.
-- State: persisted device identity and last daemon status.
+- State: persisted device identity, connectivity identity, pairing invitations, trusted Android roster, and last daemon status.
 - Runtime: local control socket, PID file, and dedicated tmux socket path.
 
 The stable `device_id` belongs to machine-local daemon state. It should survive daemon restarts and be reused when the same machine daemon reconnects.
+
+The connectivity identity is a separate long-lived Ed25519 identity stored in `connectivity_identity.json` with file mode `0600`. Its SHA-256 public-key fingerprint is exposed as `daemon_fingerprint` in daemon status and connectivity registration. It is the pairing trust root and future QUIC pinning identity; it is distinct from the legacy `device_id` routing/display identifier.
+
+Pairing state is stored in `pairing_state.json` with file mode `0600`. It contains short-lived invitation records, consumed invitation markers retained until expiry, pending Android responses awaiting SAS confirmation, and the trusted Android roster. Relay does not own this durable trust state.
+
+`tunnel daemon pair` requires the local daemon control socket and a live connectivity Relay reservation. The daemon receives the Relay-authenticated account id for the reservation, signs the invitation transcript with its connectivity identity, persists invitation state, and returns the JSON invitation payload to the CLI. QR rendering is not implemented in this revision.
+
+When Relay forwards a signed Android pairing response, the daemon verifies it and stores it as a pending response. `tunnel daemon pair pending` lists pending responses and their derived SAS values; `tunnel daemon pair confirm <invitation-id> <sas>` consumes the invitation, stores Android trust, and sends `pair_completed` to Relay when the connectivity socket is online. A mismatched SAS consumes the invitation without storing trust.
+
+`tunnel daemon revoke <fingerprint>` updates daemon-local trust first. If the connectivity Relay socket is online, the daemon sends `paired_device_revoked`; if Relay is offline, the next daemon connectivity registration omits the revoked fingerprint, so Relay cannot rebuild visibility for that Android device.
 
 The tmux socket path is part of the workspace identity. Daemon shutdown must remove daemon runtime control state, but must not kill the tmux server or delete surviving tmux sessions.
 
@@ -130,7 +143,7 @@ The relay only reflects the latest live device metadata. It must clear device pr
 
 Daemon start uses the same runtime auth precedence as `tunnel run`: `TUNNEL_AUTH_TOKEN` first, then saved local auth in `~/.tunnel/auth.json`.
 
-The daemon authenticates to `/device/ws` with a user-owned agent token. If that token is revoked, the relay must close matching device sockets and remove those devices from discovery.
+The daemon authenticates to `/device/ws` and `/connectivity/daemon/ws` with a user-owned agent token. If that token is revoked, the relay must close matching device sockets and remove those devices from discovery.
 
 Launch command authorization is intentionally narrow: only the first parsed command token is checked against the daemon allowlist. The rest of the command string is passed as launcher arguments after shell parsing. Any future expansion to command profiles, placeholders, per-command schemas, or interactive confirmation is outside this contract until separately specified.
 

@@ -140,6 +140,8 @@ func assertHelpText(t *testing.T, text string) {
 		"tunnel daemon open",
 		"tunnel daemon close",
 		"tunnel daemon sessions",
+		"tunnel daemon pair",
+		"tunnel daemon devices",
 		"tunnel run claude",
 		"tunnel run -l api-fix codex --profile prod",
 	} {
@@ -1134,6 +1136,145 @@ func TestRunWithArgsPrintsDaemonStartHelp(t *testing.T) {
 	}
 	if got := stdout.String(); got != daemonStartHelpText() {
 		t.Fatalf("stdout = %q, want daemonStartHelpText()", got)
+	}
+}
+
+func TestRunDaemonPairPrintsInvitationJSON(t *testing.T) {
+	setTestEnv(t)
+
+	oldResolvePaths := resolveDaemonPaths
+	oldPair := daemonPair
+	t.Cleanup(func() {
+		resolveDaemonPaths = oldResolvePaths
+		daemonPair = oldPair
+	})
+	resolveDaemonPaths = func() (daemon.Paths, error) { return daemon.Paths{}, nil }
+	daemonPair = func(context.Context, daemon.Paths) (daemon.PairInvitation, error) {
+		return daemon.PairInvitation{
+			Version:           1,
+			InvitationID:      "pair_123",
+			CorrelationID:     "corr_123",
+			DaemonFingerprint: strings.Repeat("a", 64),
+		}, nil
+	}
+
+	var stdout bytes.Buffer
+	if err := runDaemonPair(context.Background(), &stdout, io.Discard); err != nil {
+		t.Fatalf("runDaemonPair returned error: %v", err)
+	}
+	if !strings.Contains(stdout.String(), `"invitation_id": "pair_123"`) {
+		t.Fatalf("stdout = %q, want invitation JSON", stdout.String())
+	}
+}
+
+func TestRunDaemonPairPendingPrintsPendingResponses(t *testing.T) {
+	setTestEnv(t)
+
+	oldResolvePaths := resolveDaemonPaths
+	oldPending := daemonPendingPairing
+	t.Cleanup(func() {
+		resolveDaemonPaths = oldResolvePaths
+		daemonPendingPairing = oldPending
+	})
+	resolveDaemonPaths = func() (daemon.Paths, error) { return daemon.Paths{}, nil }
+	daemonPendingPairing = func(context.Context, daemon.Paths) ([]daemon.PendingPairingResponse, error) {
+		return []daemon.PendingPairingResponse{{
+			InvitationID:       "pair_123",
+			AndroidFingerprint: strings.Repeat("a", 64),
+			AndroidDisplayName: "Pixel",
+			SAS:                "123456",
+			ReceivedAt:         100,
+			ExpiresAt:          200,
+		}}, nil
+	}
+
+	var stdout bytes.Buffer
+	if err := runDaemonPairPending(context.Background(), &stdout, io.Discard); err != nil {
+		t.Fatalf("runDaemonPairPending returned error: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "pair_123") || !strings.Contains(stdout.String(), "123456") {
+		t.Fatalf("stdout = %q, want pending pairing row", stdout.String())
+	}
+}
+
+func TestRunDaemonPairConfirmPrintsPairedFingerprint(t *testing.T) {
+	setTestEnv(t)
+
+	oldResolvePaths := resolveDaemonPaths
+	oldConfirm := daemonConfirmPairing
+	t.Cleanup(func() {
+		resolveDaemonPaths = oldResolvePaths
+		daemonConfirmPairing = oldConfirm
+	})
+	fingerprint := strings.Repeat("c", 64)
+	resolveDaemonPaths = func() (daemon.Paths, error) { return daemon.Paths{}, nil }
+	daemonConfirmPairing = func(_ context.Context, _ daemon.Paths, invitationID, sas string) (daemon.PairingCompletion, error) {
+		if invitationID != "pair_123" || sas != "123456" {
+			t.Fatalf("confirm args = %q %q, want pair_123 123456", invitationID, sas)
+		}
+		return daemon.PairingCompletion{Device: daemon.TrustedAndroidDevice{Fingerprint: fingerprint}}, nil
+	}
+
+	var stdout bytes.Buffer
+	if err := runDaemonPairConfirm(context.Background(), "pair_123", "123456", &stdout, io.Discard); err != nil {
+		t.Fatalf("runDaemonPairConfirm returned error: %v", err)
+	}
+	if got := stdout.String(); got != "paired "+fingerprint+"\n" {
+		t.Fatalf("stdout = %q, want paired fingerprint", got)
+	}
+}
+
+func TestRunDaemonDevicesPrintsTrustedDevices(t *testing.T) {
+	setTestEnv(t)
+
+	oldResolvePaths := resolveDaemonPaths
+	oldDevices := daemonTrustedDevices
+	t.Cleanup(func() {
+		resolveDaemonPaths = oldResolvePaths
+		daemonTrustedDevices = oldDevices
+	})
+	resolveDaemonPaths = func() (daemon.Paths, error) { return daemon.Paths{}, nil }
+	daemonTrustedDevices = func(context.Context, daemon.Paths) ([]daemon.TrustedAndroidDevice, error) {
+		return []daemon.TrustedAndroidDevice{{
+			Fingerprint: strings.Repeat("a", 64),
+			DisplayName: "Pixel",
+			PairedAt:    123,
+		}}, nil
+	}
+
+	var stdout bytes.Buffer
+	if err := runDaemonDevices(context.Background(), &stdout, io.Discard); err != nil {
+		t.Fatalf("runDaemonDevices returned error: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "Pixel") || !strings.Contains(stdout.String(), strings.Repeat("a", 64)) {
+		t.Fatalf("stdout = %q, want trusted device row", stdout.String())
+	}
+}
+
+func TestRunDaemonRevokePrintsRevokedFingerprint(t *testing.T) {
+	setTestEnv(t)
+
+	oldResolvePaths := resolveDaemonPaths
+	oldRevoke := daemonRevokeTrustedDevice
+	t.Cleanup(func() {
+		resolveDaemonPaths = oldResolvePaths
+		daemonRevokeTrustedDevice = oldRevoke
+	})
+	fingerprint := strings.Repeat("b", 64)
+	resolveDaemonPaths = func() (daemon.Paths, error) { return daemon.Paths{}, nil }
+	daemonRevokeTrustedDevice = func(_ context.Context, _ daemon.Paths, got string) (daemon.TrustedAndroidDevice, error) {
+		if got != fingerprint {
+			t.Fatalf("fingerprint = %q, want %q", got, fingerprint)
+		}
+		return daemon.TrustedAndroidDevice{Fingerprint: fingerprint}, nil
+	}
+
+	var stdout bytes.Buffer
+	if err := runDaemonRevoke(context.Background(), fingerprint, &stdout, io.Discard); err != nil {
+		t.Fatalf("runDaemonRevoke returned error: %v", err)
+	}
+	if got := stdout.String(); got != "revoked "+fingerprint+"\n" {
+		t.Fatalf("stdout = %q, want revoked fingerprint", got)
 	}
 }
 

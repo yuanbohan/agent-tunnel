@@ -42,6 +42,13 @@ type userDeleteConfig struct {
 	Username      string
 }
 
+type userTierConfig struct {
+	RelayAddr     string
+	OperatorToken string
+	Username      string
+	Tier          string
+}
+
 type inviteCreateFlags struct {
 	Count     int
 	ExpiresIn string
@@ -231,6 +238,36 @@ func loadUserDeleteConfig(getenv func(string) string, args []string) (userDelete
 		return userDeleteConfig{}, usagef("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
 	return finalizeUserDeleteConfig(flags, getenv)
+}
+
+func finalizeUserTierConfig(username, tier string, getenv func(string) string) (userTierConfig, error) {
+	cfg := userTierConfig{
+		RelayAddr:     envOrDefault(getenv, "RELAY_LISTEN_ADDR", defaultRelayListenAddr),
+		OperatorToken: envValue(getenv, "RELAY_OPERATOR_TOKEN"),
+		Username:      username,
+		Tier:          tier,
+	}
+	switch {
+	case cfg.OperatorToken == "":
+		return userTierConfig{}, usagef("missing RELAY_OPERATOR_TOKEN")
+	case strings.TrimSpace(cfg.Username) == "":
+		return userTierConfig{}, usagef("missing username")
+	case strings.TrimSpace(cfg.Tier) == "":
+		return userTierConfig{}, usagef("missing tier")
+	}
+	return cfg, nil
+}
+
+func loadUserTierConfig(getenv func(string) string, args []string) (userTierConfig, error) {
+	fs := newFlagSet("user tier")
+	if err := fs.Parse(args); err != nil {
+		return userTierConfig{}, usagef("%v", err)
+	}
+	remaining := fs.Args()
+	if len(remaining) != 2 {
+		return userTierConfig{}, usagef("accepts 2 arg(s), received %d", len(remaining))
+	}
+	return finalizeUserTierConfig(remaining[0], remaining[1], getenv)
 }
 
 func parseInviteExpiryDays(raw string) (int, error) {

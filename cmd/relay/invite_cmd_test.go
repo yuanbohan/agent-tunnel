@@ -3,8 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
-	"testing"
 	"strings"
+	"testing"
 
 	handlertypes "yuanbohan/tunnel/internal/relay/handler/types"
 )
@@ -38,6 +38,10 @@ func (s *inviteClientStub) DeleteUser(_ context.Context, username string) error 
 
 func (s *inviteClientStub) ListInvites(_ context.Context) ([]handlertypes.OperatorInviteCodeListEntry, error) {
 	return s.listCodes, nil
+}
+
+func (s *inviteClientStub) SetUserTier(_ context.Context, username string, tier string) (handlertypes.OperatorSetUserTierResponse, error) {
+	return handlertypes.OperatorSetUserTierResponse{}, nil
 }
 
 func TestRunInviteCreatePrintsReturnedCodes(t *testing.T) {

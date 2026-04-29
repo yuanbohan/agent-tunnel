@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"yuanbohan/tunnel/internal/protocol"
 )
 
 const readySignalEnv = "TUNNEL_DAEMON_READY_FD"
@@ -32,17 +34,19 @@ type StartOptions struct {
 }
 
 type StartResult struct {
-	AlreadyRunning bool
-	Status         StatusInfo
+	AlreadyRunning    bool
+	Status            StatusInfo
 	PreservedSessions int
 }
 
 type runtimeState struct {
-	mu       sync.RWMutex
-	status   StatusInfo
-	stopCh   chan struct{}
-	stopOnce sync.Once
-	paths    Paths
+	mu                  sync.RWMutex
+	status              StatusInfo
+	stopCh              chan struct{}
+	stopOnce            sync.Once
+	paths               Paths
+	connectivityEvents  chan protocol.ConnectivityFrame
+	connectivityReplies map[string]chan protocol.ConnectivityFrame
 }
 
 func StartBackground(ctx context.Context, options StartOptions) (StartResult, error) {
@@ -161,25 +165,35 @@ func Run(ctx context.Context, options RuntimeOptions, readyWriter io.Writer) err
 	if err != nil {
 		return err
 	}
+	connectivityIdentity, err := readOrCreateConnectivityIdentityFn(options.Paths)
+	if err != nil {
+		return err
+	}
+	if _, err := LoadPairingState(options.Paths); err != nil {
+		return err
+	}
 
 	metadata := collectDeviceMetadataFn()
 	state := &runtimeState{
 		status: StatusInfo{
-			Running:          true,
-			PID:              os.Getpid(),
-			StartedAt:        time.Now().UTC().Unix(),
-			BaseURL:          options.BaseURL,
-			DeviceID:         identity.DeviceID,
-			DisplayName:      metadata.DisplayName,
-			Hostname:         metadata.Hostname,
-			PlatformFamily:   metadata.PlatformFamily,
-			PlatformID:       metadata.PlatformID,
-			RelayConnected:   false,
-			LaunchHealth:     LaunchHealthHealthy,
-			WorkspaceBackend: workspaceBackendTmux,
+			Running:           true,
+			PID:               os.Getpid(),
+			StartedAt:         time.Now().UTC().Unix(),
+			BaseURL:           options.BaseURL,
+			DeviceID:          identity.DeviceID,
+			DaemonFingerprint: connectivityIdentity.Fingerprint,
+			DisplayName:       metadata.DisplayName,
+			Hostname:          metadata.Hostname,
+			PlatformFamily:    metadata.PlatformFamily,
+			PlatformID:        metadata.PlatformID,
+			RelayConnected:    false,
+			LaunchHealth:      LaunchHealthHealthy,
+			WorkspaceBackend:  workspaceBackendTmux,
 		},
-		stopCh: make(chan struct{}),
-		paths:  options.Paths,
+		stopCh:              make(chan struct{}),
+		paths:               options.Paths,
+		connectivityEvents:  make(chan protocol.ConnectivityFrame, 16),
+		connectivityReplies: make(map[string]chan protocol.ConnectivityFrame),
 	}
 	if err := state.persist(); err != nil {
 		return err
@@ -201,6 +215,58 @@ func Run(ctx context.Context, options RuntimeOptions, readyWriter io.Writer) err
 		case actionDoctor:
 			report := BuildDoctorReport(requestCtx, options.Paths, state.snapshot())
 			return Response{Doctor: &report}
+		case actionPair:
+			correlationID, err := newOpaqueID("corr", 12)
+			if err != nil {
+				return Response{Error: err.Error()}
+			}
+			reserveCtx, cancel := context.WithTimeout(requestCtx, 5*time.Second)
+			accountID, err := state.reservePairing(reserveCtx, correlationID)
+			cancel()
+			if err != nil {
+				return Response{Error: err.Error()}
+			}
+			invitation, err := CreatePairInvitation(options.Paths, PairInvitationOptions{
+				BaseURL:        options.BaseURL,
+				DeviceID:       identity.DeviceID,
+				DisplayName:    metadata.DisplayName,
+				AccountID:      accountID,
+				CorrelationID:  correlationID,
+				DaemonIdentity: connectivityIdentity,
+			})
+			if err != nil {
+				return Response{Error: err.Error()}
+			}
+			return Response{PairInvitation: &invitation}
+		case actionPendingPairing:
+			pending, err := ListPendingPairingResponses(options.Paths)
+			if err != nil {
+				return Response{Error: err.Error()}
+			}
+			return Response{PendingPairing: pending}
+		case actionConfirmPendingPairing:
+			completion, err := ConfirmPendingPairingResponse(options.Paths, request.InvitationID, request.SAS, time.Now().UTC())
+			if err != nil {
+				return Response{Error: err.Error()}
+			}
+			state.sendConnectivityEvent(protocol.ConnectivityPairCompletedFrame(completion.Device.Fingerprint))
+			return Response{PairCompletion: &completion}
+		case actionDevices:
+			devices, err := ListTrustedAndroidDevices(options.Paths)
+			if err != nil {
+				return Response{Error: err.Error()}
+			}
+			return Response{TrustedDevices: devices}
+		case actionRevokeDevice:
+			revoked, err := RevokeTrustedAndroidDevice(options.Paths, request.DeviceFingerprint)
+			if err != nil {
+				return Response{Error: err.Error()}
+			}
+			state.sendConnectivityEvent(protocol.ConnectivityFrame{
+				Type:               "paired_device_revoked",
+				AndroidFingerprint: revoked.Fingerprint,
+			})
+			return Response{TrustedDevice: &revoked}
 		case actionStop:
 			state.stop()
 			state.markStopped()
@@ -222,6 +288,7 @@ func Run(ctx context.Context, options RuntimeOptions, readyWriter io.Writer) err
 		serverErrCh <- server.Serve(ctx)
 	}()
 	go newDeviceConnector(options.BaseURL, options.AuthToken, state).Run(ctx, newLaunchHandler(options.BaseURL, options.AuthToken, options.Paths, state))
+	go newConnectivityConnector(options.BaseURL, options.AuthToken, options.Paths, state).Run(ctx)
 
 	if readyWriter != nil {
 		if _, err := io.WriteString(readyWriter, "ready\n"); err != nil {
@@ -306,6 +373,79 @@ func (s *runtimeState) clearLastFailure() {
 	_ = s.persist()
 }
 
+func (s *runtimeState) sendConnectivityEvent(frame protocol.ConnectivityFrame) bool {
+	if s == nil || s.connectivityEvents == nil {
+		return false
+	}
+	select {
+	case s.connectivityEvents <- frame:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *runtimeState) reservePairing(ctx context.Context, correlationID string) (string, error) {
+	correlationID = strings.TrimSpace(correlationID)
+	if correlationID == "" {
+		return "", errors.New("missing pairing correlation id")
+	}
+	replyCh := s.registerConnectivityReply(correlationID)
+	defer s.unregisterConnectivityReply(correlationID)
+	if !s.sendConnectivityEvent(protocol.ConnectivityFrame{
+		Type:      "pair_invitation_reserve",
+		RequestID: correlationID,
+	}) {
+		return "", errors.New("relay pairing reservation unavailable")
+	}
+	select {
+	case <-ctx.Done():
+		return "", errors.New("relay pairing reservation timed out")
+	case frame := <-replyCh:
+		if frame.Type == "pair_invitation_reserved" && strings.TrimSpace(frame.AccountID) != "" {
+			return strings.TrimSpace(frame.AccountID), nil
+		}
+		if frame.Type == "error" && frame.Reason != "" {
+			return "", fmt.Errorf("relay pairing reservation failed: %s", frame.Reason)
+		}
+		return "", errors.New("relay pairing reservation failed")
+	}
+}
+
+func (s *runtimeState) registerConnectivityReply(requestID string) chan protocol.ConnectivityFrame {
+	ch := make(chan protocol.ConnectivityFrame, 1)
+	s.mu.Lock()
+	if s.connectivityReplies == nil {
+		s.connectivityReplies = make(map[string]chan protocol.ConnectivityFrame)
+	}
+	s.connectivityReplies[requestID] = ch
+	s.mu.Unlock()
+	return ch
+}
+
+func (s *runtimeState) unregisterConnectivityReply(requestID string) {
+	s.mu.Lock()
+	delete(s.connectivityReplies, requestID)
+	s.mu.Unlock()
+}
+
+func (s *runtimeState) deliverConnectivityReply(frame protocol.ConnectivityFrame) bool {
+	if frame.RequestID == "" {
+		return false
+	}
+	s.mu.RLock()
+	ch := s.connectivityReplies[frame.RequestID]
+	s.mu.RUnlock()
+	if ch == nil {
+		return false
+	}
+	select {
+	case ch <- frame:
+	default:
+	}
+	return true
+}
+
 func cleanupStaleRuntime(paths Paths) error {
 	if status, err := LoadStatus(paths); err == nil {
 		if status.PID > 0 && processRunning(status.PID) {
@@ -344,6 +484,14 @@ func currentRunningStatus(ctx context.Context, paths Paths) (StatusInfo, error) 
 }
 
 func writeJSONFile(path string, value any) error {
+	return writeJSONFileMode(path, value, 0o644)
+}
+
+func writePrivateJSONFile(path string, value any) error {
+	return writeJSONFileMode(path, value, 0o600)
+}
+
+func writeJSONFileMode(path string, value any, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -370,7 +518,7 @@ func writeJSONFile(path string, value any) error {
 		_ = os.Remove(tmpPath)
 		return err
 	}
-	if err := os.Chmod(tmpPath, 0o644); err != nil {
+	if err := os.Chmod(tmpPath, mode); err != nil {
 		_ = os.Remove(tmpPath)
 		return err
 	}

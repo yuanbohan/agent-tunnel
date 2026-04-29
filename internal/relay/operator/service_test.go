@@ -34,6 +34,10 @@ func (s *batchStoreStub) DeleteUser(context.Context, string, string, time.Time) 
 	return auth.DeleteUserResult{}, nil
 }
 
+func (s *batchStoreStub) SetUserSubscriptionTier(context.Context, string, string, string, time.Time) (auth.User, string, error) {
+	return auth.User{}, "", nil
+}
+
 func TestOperatorServiceCreateInviteCodesBatchesWrites(t *testing.T) {
 	store := &batchStoreStub{}
 

@@ -443,6 +443,31 @@ sudo docker compose --env-file .env exec postgres sh -lc 'psql -U "$POSTGRES_USE
 
 The legacy `relay-migrate` binary and numbered SQL migration files may still exist for local compatibility work, but they are not part of the Docker Compose production deployment path.
 
+Step 2 connectivity auth/pairing requires this manual SQL on existing Docker Compose databases before deploying the matching Relay image:
+
+```sql
+alter table users
+  add column if not exists subscription_tier text not null default 'free';
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'users_subscription_tier_check'
+  ) then
+    alter table users
+      add constraint users_subscription_tier_check
+      check (subscription_tier in ('free', 'pro'));
+  end if;
+end $$;
+
+alter table app_sessions
+  add column if not exists device_fingerprint text not null default '';
+
+create index if not exists app_sessions_user_device_fingerprint_idx
+  on app_sessions (user_id, device_fingerprint)
+  where device_fingerprint <> '';
+```
+
 ## Release Update Checklist
 
 For a normal Relay-only update, run the private repo `Release` workflow, select `relay`, and enter `v0.1.1`. The workflow resolves source tag `relay-v0.1.1`, verifies the image, and then creates or validates that source tag before push.
