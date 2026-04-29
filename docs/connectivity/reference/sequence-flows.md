@@ -127,11 +127,10 @@ sequenceDiagram
     AndroidConn->>STUN: Binding Request
     STUN-->>AndroidConn: Binding Response\n(public A_ip:A_port)
 
-    DaemonConn->>STUN: Binding Request
-    STUN-->>DaemonConn: Binding Response\n(public D_ip:D_port)
-
     AndroidConn->>RelayRT: rendezvous_open\n(daemon_id, attempt_id, A_ip:A_port, private addrs)
     RelayRT->>DaemonConn: rendezvous_hint\n(Android candidates)
+    DaemonConn->>STUN: Binding Request
+    STUN-->>DaemonConn: Binding Response\n(public D_ip:D_port)
     DaemonConn->>RelayRT: rendezvous_hint\n(daemon_id, attempt_id, D_ip:D_port, private addrs)
     RelayRT->>AndroidConn: rendezvous_hint\n(Daemon candidates)
 
@@ -148,6 +147,7 @@ sequenceDiagram
     AndroidConn->>DaemonConn: open control stream
     AndroidConn->>DaemonConn: hello(path=direct)
     DaemonConn->>AndroidConn: hello(path=direct)
+    DaemonConn->>AndroidConn: path_state(path=direct, attempt_id)
     DaemonBroker->>DaemonConn: current session roster
     DaemonConn->>AndroidConn: session_index
     AndroidConn->>AndroidConn: apply local free/pro rule
@@ -211,6 +211,7 @@ sequenceDiagram
     AndroidConn->>DaemonConn: open control stream
     AndroidConn->>DaemonConn: hello(path=relay)
     DaemonConn->>AndroidConn: hello(path=relay)
+    DaemonConn->>AndroidConn: path_state(path=relay, fallback_reason)
     DaemonBroker->>DaemonConn: current session roster
     DaemonConn->>AndroidConn: session_index
     AndroidConn->>AndroidConn: apply local free/pro rule

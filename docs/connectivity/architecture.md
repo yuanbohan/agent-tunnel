@@ -2,7 +2,7 @@
 
 ## Status
 
-This document records the current architecture direction for direct session connectivity. It is a design anchor for future implementation, not a statement that the repository already ships this transport.
+This document records the current architecture direction for direct session connectivity. The Go repository now implements the Step 5 server-side/STUN, Relay rendezvous, daemon-side direct path, Go simulator direct-first behavior, and Relay fallback proof points. Production Android direct-path compatibility is still Step 6 work.
 
 For the canonical phase-1 must-ship contract, see `contract.md`. When this document and `contract.md` disagree, `contract.md` wins.
 

@@ -170,13 +170,15 @@ packet forwarding. Android production runtime compatibility remains Step 6.
 
 ### 1.3 — Direct Path + STUN + Degradation
 
-- Self-hosted STUN listener.
-- `rendezvous_open` / `rendezvous_hint`.
-- UDP hole-punch + direct QUIC handshake with a 3s deadline.
-- On failure, transition to the fallback path from 1.2 without restarting the connection state machine.
-- Path badge in UI.
+- Self-hosted STUN listener in the Relay binary and Compose deployment.
+- `rendezvous_open` / `rendezvous_hint` / `rendezvous_close` live-only Relay control-plane events.
+- Go simulator and daemon-side direct UDP QUIC path with a 3s direct attempt default.
+- On direct timeout/failure, transition to the fallback path from 1.2 using a fresh relay QUIC handshake and the same session protocol.
+- Path badge data via `hello.path_kind` and `path_state`.
 
-**Exit criterion**: cone-NAT deployments achieve ≥ 80% direct success on a measurement panel of ≥ 20 test pairings; symmetric NATs cleanly fall back.
+**Repository exit criterion**: repository tests prove controlled local direct success and direct-timeout fallback with a Go daemon side and Go mobile-simulator side, while Relay remains content-opaque.
+
+**Production measurement gate**: before claiming production Android direct-path completeness, cone-NAT deployments should achieve ≥ 80% direct success on a measurement panel of ≥ 20 test pairings; symmetric NATs must cleanly fall back. That production validation is Step 6/Step 7 work.
 
 ---
 

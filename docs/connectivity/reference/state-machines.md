@@ -32,11 +32,11 @@ stateDiagram-v2
 - `connecting_direct → connecting_relay` is sequential, not happy-eyeballs; the deadline is an implementation default, not a wire-level constant
 - `connecting_* → offline` happens immediately if Relay presence marks the daemon offline before the transport finishes connecting
 - `reconnecting` uses exponential backoff with jitter; exact timing is an implementation default
-- the path badge shown in the UI is derived directly from this state: `connected_direct → "Direct"`, `connected_relay → "Relay"`, others → status word
+- the path badge shown in the UI is derived from this state and confirmed by transport diagnostics: `connected_direct → "Direct"`, `connected_relay → "Relay"`, others → status word
 
 ### Daemon-Side Mirror
 
-The daemon also maintains a per-Android-connection state, but its state space is narrower: it only knows whether a QUIC connection currently exists for a given Android device fingerprint. There is no daemon-side notion of `connecting_direct` vs `connecting_relay`; the daemon accepts QUIC packets from either carrier and treats them identically.
+The daemon also maintains a per-Android-connection state, but its state space is narrower. It can attempt a direct UDP listener after a Relay rendezvous hint and can serve a Relay tunnel fallback, but once QUIC/TLS is accepted it treats both carriers identically and reports only advisory path diagnostics (`direct` or `relay`).
 
 ## Per-Session UI Lifecycle
 

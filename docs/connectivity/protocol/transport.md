@@ -252,10 +252,11 @@ JSON was chosen over CBOR / protobuf for phase 1 to keep tcpdump output and cust
 The control stream MUST follow this fixed ordering after the QUIC connection becomes ready:
 
 1. `hello` is the first frame on the control stream from each side
-2. the daemon sends `session_index` immediately after exchanging `hello`
-3. only after `session_index` may the daemon emit `session_upsert`, `session_gone`, `preview_snapshot`, `interactive_granted`, `interactive_denied`, or `path_state`
+2. the daemon sends `path_state` immediately after its `hello`
+3. the daemon sends `session_index` immediately after `path_state`
+4. only after `session_index` may the daemon emit `session_upsert`, `session_gone`, `preview_snapshot`, `interactive_granted`, or `interactive_denied`
 
-Android MUST NOT process daemon session or preview frames until `session_index` has been received and applied.
+Android may process `path_state` before `session_index`, but MUST NOT process daemon session or preview frames until `session_index` has been received and applied.
 
 Phase-1 frame families:
 
@@ -435,6 +436,14 @@ Optional daemon-to-app advisory frame used to confirm the current path:
 
 - `direct`
 - `relay`
+
+Current fields:
+
+- `attempt_id`
+- `path_kind`
+- `fallback_reason`
+- `direct_setup_latency_ms`
+- `relay_setup_latency_ms`
 
 The authoritative source of the path badge is the Android connection manager.
 

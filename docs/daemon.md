@@ -9,7 +9,7 @@ This document is the implementation contract for `tunnel daemon`. It exists to k
 
 ## Purpose
 
-`tunnel daemon` is the authenticated machine-local background runtime for remote launch, connectivity pairing, and the local session broker. It keeps long-lived device/connectivity connections to the relay, receives launch requests for that machine, creates new `tunnel run <command>` sessions inside a dedicated local tmux workspace when tmux is available, and reports immediate launch validation results back to the relay.
+`tunnel daemon` is the authenticated machine-local background runtime for remote launch, connectivity pairing, direct/relay session connectivity, and the local session broker. It keeps long-lived device/connectivity connections to the relay, receives launch requests for that machine, creates new `tunnel run <command>` sessions inside a dedicated local tmux workspace when tmux is available, and reports immediate launch validation results back to the relay.
 
 The daemon does not replace `tunnel run`. Direct local sessions still start through `tunnel run <command>`, own their PTY locally, register with `/agent/ws`, and remain the authority for terminal state. During startup, `tunnel run` also best-effort ensures the daemon is running and registers metadata plus latest preview over the daemon-local broker socket.
 
@@ -23,6 +23,8 @@ The daemon does not replace `tunnel run`. Direct local sessions still start thro
 - The relay must stay live-only for devices. It stores currently connected device metadata and in-flight launch correlation only.
 - The relay must not own tmux state, terminal state, transcript history, launch history, last failures, stop history, or offline device inventory.
 - The local broker is daemon-local and live-only. It may cache latest preview text in memory, but Relay must not receive that preview through the broker path.
+- Direct connectivity attempts use Relay rendezvous hints and daemon-local UDP sockets, then serve the same pinned QUIC/TLS session protocol as Relay fallback.
+- Daemon status and doctor may report last connectivity path and failure reason, but must not report preview text, snapshots, live bytes, or input text.
 - `tunnel daemon open` and `tunnel daemon sessions` must target the tmux workspace directly and must not require the daemon control socket to be online.
 - `tunnel daemon close` must only detach one open local view of the daemon tmux workspace. It must not stop the daemon, kill tmux, or terminate a launched session.
 - A device may have at most one in-flight launch request. Concurrent launch attempts must fail with `busy` rather than queue.
@@ -67,6 +69,12 @@ Pairing state is stored in `pairing_state.json` with file mode `0600`. It contai
 When Relay forwards a signed Android pairing response, the daemon verifies it and stores it as a pending response. `tunnel daemon pair pending` lists pending responses and their derived SAS values; `tunnel daemon pair confirm <invitation-id> <sas>` consumes the invitation, stores Android trust, and sends `pair_completed` to Relay when the connectivity socket is online. A mismatched SAS consumes the invitation without storing trust.
 
 `tunnel daemon revoke <fingerprint>` updates daemon-local trust first. If the connectivity Relay socket is online, the daemon sends `paired_device_revoked`; if Relay is offline, the next daemon connectivity registration omits the revoked fingerprint, so Relay cannot rebuild visibility for that Android device.
+
+After Relay forwards an app `rendezvous_hint`, the daemon validates local trust,
+opens a direct UDP socket, emits daemon candidates with the same `attempt_id`,
+sends UDP probes to app candidates, and accepts pinned QUIC/TLS. If direct does
+not complete before the direct attempt deadline, clients can fall back to the
+existing Relay tunnel without changing the session protocol.
 
 The tmux socket path is part of the workspace identity. Daemon shutdown must remove daemon runtime control state, but must not kill the tmux server or delete surviving tmux sessions.
 
@@ -152,6 +160,11 @@ Do not collapse these into generic errors. If a new failure mode becomes client-
 - `degraded`: recent local failures indicate launch may not work.
 
 Daemon process readiness is separate from launch readiness. Missing `tmux` at daemon startup must produce a running daemon with `launch_health: "degraded"` and `last_failure: "tmux_not_found"` so pairing, connectivity realtime, control, and local broker registration can still run. Human `tunnel daemon start` output warns about degraded launch readiness, while `--json` status output carries the structured values.
+
+Connectivity diagnostics are separate from launch health. `last_connectivity_path`
+is advisory (`direct` or `relay`), and `last_connectivity_failure` records the
+last path-level failure such as `direct_attempt_failed`. These fields are for
+debugging path setup only and must remain content-free.
 
 Only workspace or launch-substrate failures should degrade launch health. Validation failures caused by the request itself, such as disallowed command or invalid cwd, may update `last_failure` but should not mark the device globally degraded.
 

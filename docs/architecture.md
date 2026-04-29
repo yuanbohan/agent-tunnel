@@ -10,7 +10,7 @@ Separately, `tunnel daemon` owns one background machine runtime. That daemon has
 
 `docs/daemon.md` is the daemon-specific implementation contract. Changes to daemon lifecycle, tmux workspace ownership, launch validation, health reporting, or failure reasons must keep that contract aligned with this architecture document and the public API/protocol docs.
 
-The relay exposes authenticated APIs so external clients can register accounts, log in, manage agent tokens, discover live sessions, discover live devices, attach to one online session, request that one online device daemon create a new session, stop any owned live session, and use the connectivity control-plane WebSockets for pairing and paired-daemon visibility. Operator maintenance routes stay outside the public `/api/` namespace and are intended for host-local use only. PostgreSQL is the durable source of truth for users, invite codes, app sessions, app-session device fingerprints, account subscription tiers, agent tokens, and operator audit records. App auth uses opaque bearer access tokens with a nominal 24-hour lifetime, rotating refresh tokens with a 30-day sliding lifetime, and a 90-day absolute session lifetime anchored at the original login. The relay is not the terminal-state authority and it does not retain transcript history. Live session discovery includes best-effort Git branch metadata for the startup `cwd`, optional local daemon identity through `device_id`, relay-controlled `launch_source`, and device identity metadata such as `platform_family`, `platform_id`, and normalized `computer_name`.
+The relay exposes authenticated APIs so external clients can register accounts, log in, manage agent tokens, discover live sessions, discover live devices, attach to one online session, request that one online device daemon create a new session, stop any owned live session, and use the connectivity control-plane WebSockets for pairing, paired-daemon visibility, direct rendezvous hints, and Relay fallback tunnel setup. `relay serve` also owns the Binding-only STUN UDP listener used for direct candidate discovery when enabled. Operator maintenance routes stay outside the public `/api/` namespace and are intended for host-local use only. PostgreSQL is the durable source of truth for users, invite codes, app sessions, app-session device fingerprints, account subscription tiers, agent tokens, and operator audit records. App auth uses opaque bearer access tokens with a nominal 24-hour lifetime, rotating refresh tokens with a 30-day sliding lifetime, and a 90-day absolute session lifetime anchored at the original login. The relay is not the terminal-state authority and it does not retain transcript history. Live session discovery includes best-effort Git branch metadata for the startup `cwd`, optional local daemon identity through `device_id`, relay-controlled `launch_source`, and device identity metadata such as `platform_family`, `platform_id`, and normalized `computer_name`.
 
 For hosted deployments, the security invariant is strict user scoping: the user who owns the agent token also owns the live session, `GET /api/sessions` returns only that user's sessions, and cross-user attach attempts resolve as not found.
 
@@ -111,7 +111,8 @@ It owns:
 - synchronously evicting live sessions when a user is deleted or an agent token is revoked
 - closing affected app-side attaches when an app session logs out or a password change revokes app sessions, without disconnecting the owning agent
 - tracking only currently online `/device/ws` connections and the transient request-correlation state needed to turn one launch request into one `session_ready` result or timeout
-- tracking only currently online `/connectivity/daemon/ws` and `/api/connectivity/app/ws` peers for paired-daemon visibility and pairing response forwarding; trusted Android rosters are daemon-local and are rebuilt into Relay visibility when the daemon reconnects
+- tracking only currently online `/connectivity/daemon/ws` and `/api/connectivity/app/ws` peers for paired-daemon visibility, pairing response forwarding, and short-lived direct rendezvous hint exchange; trusted Android rosters are daemon-local and are rebuilt into Relay visibility when the daemon reconnects
+- issuing short-lived, actor-specific fallback tunnel tokens and forwarding fallback WebSocket binary messages as opaque encrypted QUIC packets
 
 The relay does not own:
 
@@ -121,6 +122,7 @@ The relay does not own:
 - snapshot generation
 - preview rendering
 - content interpretation of terminal output
+- content interpretation of direct rendezvous hints or fallback QUIC packets
 - end-to-end guarantees that a remote client observed every PTY byte
 - creation or ownership of local tmux workspace sessions on device daemons
 - offline device inventory
