@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -247,6 +248,59 @@ func TestConnectivityConnectorDropsStalePairCompletedAfterLocalRevoke(t *testing
 		cancel()
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for stale event check")
+	}
+}
+
+func TestConnectivityConnectorHandlesRendezvousHintWithDirectCandidate(t *testing.T) {
+	paths := testPaths(t)
+	identity, err := ReadOrCreateConnectivityIdentity(paths)
+	if err != nil {
+		t.Fatalf("ReadOrCreateConnectivityIdentity returned error: %v", err)
+	}
+	android, err := pairtest.NewAndroidClient("Pixel")
+	if err != nil {
+		t.Fatalf("NewAndroidClient returned error: %v", err)
+	}
+	if err := UpsertTrustedAndroidDevice(paths, TrustedAndroidDevice{
+		Fingerprint: android.Fingerprint,
+		PublicKey:   hex.EncodeToString(android.PublicKey),
+		DisplayName: "Pixel",
+		PairedAt:    1,
+	}); err != nil {
+		t.Fatalf("UpsertTrustedAndroidDevice returned error: %v", err)
+	}
+	state := newConnectivityConnectorTestState(paths, identity)
+	connector := newConnectivityConnector("https://relay.example.com", "token", paths, state)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var outbound protocol.ConnectivityFrame
+	err = connector.handleRendezvousHint(ctx, protocol.ConnectivityFrame{
+		Type:               "rendezvous_hint",
+		Actor:              "android",
+		RequestID:          "request-1",
+		AttemptID:          "attempt-1",
+		DaemonID:           "dev-1",
+		AndroidFingerprint: android.Fingerprint,
+		PublicUDPAddr:      "127.0.0.1:9",
+		PrivateUDPAddrs:    []string{"127.0.0.1:9"},
+	}, func(value any) error {
+		var ok bool
+		outbound, ok = value.(protocol.ConnectivityFrame)
+		if !ok {
+			t.Fatalf("outbound value = %#v, want ConnectivityFrame", value)
+		}
+		cancel()
+		return nil
+	})
+	if err == nil {
+		t.Fatal("handleRendezvousHint err = nil, want canceled accept after candidate write")
+	}
+	if outbound.Type != "rendezvous_hint" || outbound.Actor != "daemon" || outbound.AttemptID != "attempt-1" || outbound.AndroidFingerprint != android.Fingerprint {
+		t.Fatalf("outbound = %#v, want daemon rendezvous hint", outbound)
+	}
+	if outbound.PublicUDPAddr == "" || outbound.ExpiresAt == 0 {
+		t.Fatalf("outbound = %#v, want public address and expiry", outbound)
 	}
 }
 

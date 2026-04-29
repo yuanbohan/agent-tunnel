@@ -105,6 +105,105 @@ func TestGoMobileSimulatorValidatesProtocolDataOverRelayCarrier(t *testing.T) {
 	}
 }
 
+func TestGoMobileSimulatorDirectFirstUsesDirectWhenHandshakeSucceeds(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	script := probeScript(interop.PathDirect)
+
+	serverTLS, clientTLS := interopTLSConfigs(t)
+	serverPacketConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatalf("ListenUDP server returned error: %v", err)
+	}
+	listener, err := quic.Listen(serverPacketConn, serverTLS, transport.QUICConfig())
+	if err != nil {
+		t.Fatalf("quic.Listen returned error: %v", err)
+	}
+	defer listener.Close()
+
+	serverErr := make(chan error, 1)
+	clientDone := make(chan struct{})
+	go func() {
+		serverErr <- runDaemonProbe(ctx, listener, script, clientDone)
+	}()
+
+	clientPacketConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatalf("ListenUDP client returned error: %v", err)
+	}
+	defer clientPacketConn.Close()
+	client := interop.MobileClient{TLSConfig: clientTLS}
+	result, err := client.DialDirectFirst(ctx, interop.DirectFirstDial{
+		DirectPacketConn: clientPacketConn,
+		DirectAddr:       serverPacketConn.LocalAddr(),
+		DirectScript:     script,
+		Deadline:         time.Second,
+	})
+	close(clientDone)
+	if err != nil {
+		t.Fatalf("DialDirectFirst returned error: %v", err)
+	}
+	if result.PathKind != interop.PathDirect {
+		t.Fatalf("result = %#v, want direct path", result)
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatalf("daemon probe returned error: %v", err)
+	}
+}
+
+func TestGoMobileSimulatorDirectFirstFallsBackToRelayAfterDirectTimeout(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	fallbackScript := probeScript(interop.PathRelay)
+
+	relay := carrier.NewRelay()
+	fallbackClientPacketConn := relay.NewPacketConn("android")
+	fallbackServerPacketConn := relay.NewPacketConn("daemon")
+	defer fallbackClientPacketConn.Close()
+	defer fallbackServerPacketConn.Close()
+
+	serverTLS, clientTLS := interopTLSConfigs(t)
+	listener, err := quic.Listen(fallbackServerPacketConn, serverTLS, transport.QUICConfig())
+	if err != nil {
+		t.Fatalf("quic.Listen returned error: %v", err)
+	}
+	defer listener.Close()
+
+	serverErr := make(chan error, 1)
+	clientDone := make(chan struct{})
+	go func() {
+		serverErr <- runDaemonProbe(ctx, listener, fallbackScript, clientDone)
+	}()
+
+	directPacketConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatalf("ListenUDP direct returned error: %v", err)
+	}
+	defer directPacketConn.Close()
+	unreachable := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 1}
+
+	client := interop.MobileClient{TLSConfig: clientTLS}
+	result, err := client.DialDirectFirst(ctx, interop.DirectFirstDial{
+		DirectPacketConn:   directPacketConn,
+		DirectAddr:         unreachable,
+		DirectScript:       probeScript(interop.PathDirect),
+		FallbackPacketConn: fallbackClientPacketConn,
+		FallbackAddr:       fallbackServerPacketConn.LocalAddr(),
+		FallbackScript:     fallbackScript,
+		Deadline:           50 * time.Millisecond,
+	})
+	close(clientDone)
+	if err != nil {
+		t.Fatalf("DialDirectFirst returned error: %v", err)
+	}
+	if result.PathKind != interop.PathRelay || result.FallbackReason != "direct_timeout" {
+		t.Fatalf("result = %#v, want relay direct_timeout", result)
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatalf("daemon probe returned error: %v", err)
+	}
+}
+
 func TestMobileClientRequiresTLSConfig(t *testing.T) {
 	err := interop.MobileClient{}.DialAddr(context.Background(), "127.0.0.1:1", interop.ProbeScript{})
 	if err != interop.ErrMissingTLSConfig {

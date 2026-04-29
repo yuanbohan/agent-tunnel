@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -88,6 +89,7 @@ func (c *connectivityConnector) serveOnce(ctx context.Context) error {
 	if err := writeConnectivityConnectorJSON(conn, register); err != nil {
 		return err
 	}
+	writeMu := &sync.Mutex{}
 
 	readErr := make(chan error, 1)
 	go func() {
@@ -108,6 +110,17 @@ func (c *connectivityConnector) serveOnce(ctx context.Context) error {
 						c.state.setLastFailure("relay_tunnel_failed", false)
 					}
 				}(frame)
+			case "rendezvous_hint":
+				go func(frame protocol.ConnectivityFrame) {
+					err := c.handleRendezvousHint(ctx, frame, func(value any) error {
+						writeMu.Lock()
+						defer writeMu.Unlock()
+						return writeConnectivityConnectorJSON(conn, value)
+					})
+					if err != nil {
+						c.state.setLastFailure("direct_attempt_failed", false)
+					}
+				}(frame)
 			default:
 			}
 		}
@@ -123,9 +136,12 @@ func (c *connectivityConnector) serveOnce(ctx context.Context) error {
 			if !c.shouldForwardConnectivityEvent(frame) {
 				continue
 			}
+			writeMu.Lock()
 			if err := writeConnectivityConnectorJSON(conn, frame); err != nil {
+				writeMu.Unlock()
 				return err
 			}
+			writeMu.Unlock()
 		}
 	}
 }

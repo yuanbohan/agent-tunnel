@@ -10,9 +10,11 @@ import (
 	"io"
 	"net"
 	"reflect"
+	"time"
 
 	"github.com/quic-go/quic-go"
 
+	"yuanbohan/tunnel/internal/connectivity/direct"
 	"yuanbohan/tunnel/internal/connectivity/frame"
 	"yuanbohan/tunnel/internal/connectivity/sessionproto"
 	"yuanbohan/tunnel/internal/connectivity/transport"
@@ -57,6 +59,16 @@ type ProbeScript struct {
 	LiveBytes          []byte
 }
 
+type DirectFirstDial struct {
+	DirectPacketConn   net.PacketConn
+	DirectAddr         net.Addr
+	FallbackPacketConn net.PacketConn
+	FallbackAddr       net.Addr
+	DirectScript       ProbeScript
+	FallbackScript     ProbeScript
+	Deadline           time.Duration
+}
+
 func (c MobileClient) DialAddr(ctx context.Context, addr string, script ProbeScript) error {
 	tlsConfig, quicConfig, err := c.configs()
 	if err != nil {
@@ -83,6 +95,20 @@ func (c MobileClient) DialPacketConn(ctx context.Context, packetConn net.PacketC
 	}
 	defer conn.CloseWithError(0, "done")
 	return c.Run(ctx, conn, script)
+}
+
+func (c MobileClient) DialDirectFirst(ctx context.Context, opts DirectFirstDial) (direct.AttemptResult, error) {
+	return direct.RunDirectFirst(ctx, func(ctx context.Context) error {
+		if opts.DirectPacketConn == nil || opts.DirectAddr == nil {
+			return direct.ErrSTUNUnexpectedResponse
+		}
+		return c.DialPacketConn(ctx, opts.DirectPacketConn, opts.DirectAddr, opts.DirectScript)
+	}, func(ctx context.Context, _ string) error {
+		if opts.FallbackPacketConn == nil || opts.FallbackAddr == nil {
+			return direct.ErrSTUNUnexpectedResponse
+		}
+		return c.DialPacketConn(ctx, opts.FallbackPacketConn, opts.FallbackAddr, opts.FallbackScript)
+	}, opts.Deadline)
 }
 
 func (c MobileClient) Run(ctx context.Context, conn *quic.Conn, script ProbeScript) error {
