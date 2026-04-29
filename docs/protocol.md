@@ -134,13 +134,11 @@ The attach contract is:
 4. the agent atomically:
    - captures the current terminal size
    - serializes the current terminal state into snapshot bytes, including up to 10,000 lines of bounded normal-buffer scrollback when the mirror still has it
-   - maps any still-valid submit anchors into the serialized snapshot buffer coordinates
-   - registers that attached client for subsequent live-byte and live submit-anchor delivery
+   - registers that attached client for subsequent live-byte delivery
 5. the agent sends `attach_ready`
 6. the agent sends snapshot bytes
-7. the agent sends `snapshot_done`, optionally carrying bounded submit anchors
+7. the agent sends `snapshot_done`
 8. subsequent terminal byte packets on that attach are live PTY bytes
-9. subsequent `submit_anchor` controls on that attach are live submit-anchor updates from the same Tunnel-owned anchor index
 
 The no-gap rule:
 
@@ -183,14 +181,7 @@ Notes:
 
 ```json
 {
-  "type": "snapshot_done",
-  "submit_anchors": [
-    {
-      "id": "submit-1",
-      "line": 42,
-      "submitted_at": 1775131200
-    }
-  ]
+  "type": "snapshot_done"
 }
 ```
 
@@ -198,35 +189,9 @@ Notes:
 
 - this marks the end of the initial current-state snapshot
 - the snapshot phase may include up to 10,000 lines of bounded agent-local normal-buffer scrollback ahead of the current viewport
-- `submit_anchors` is optional and omitted when no valid anchors are available
-- each submit anchor is a local or remote `ENTER` submit-position hint outside a bracketed-paste region, not a guarantee of the exact Codex-rendered user-message block
-- `id` is an opaque session-local identifier that is stable only while the running agent retains that anchor; clients must not treat it as durable across process exit, a new `session_id`, or anchor expiry
-- `line` is a 0-based row in the terminal buffer after the client applies the snapshot bytes that preceded this `snapshot_done`
-- `submitted_at` is a Unix timestamp encoded as JSON integer seconds
-- submit anchors are agent-local, bounded to at most 256 valid entries, non-durable, and omitted when they no longer map into the retained snapshot context
 - after this point, all subsequent binary frames are live PTY bytes
 - binary bytes before `snapshot_done` and after `snapshot_done` should both be fed into the same terminal emulator in arrival order
 - clients should ignore unknown control-message fields for forward compatibility
-
-#### `submit_anchor`
-
-```json
-{
-  "type": "submit_anchor",
-  "submit_anchor": {
-    "id": "submit-2",
-    "line": 45,
-    "submitted_at": 1775131300
-  }
-}
-```
-
-Notes:
-
-- this is a live incremental event for already attached clients after a local or remote input write sends an `ENTER` carriage return outside a bracketed-paste region
-- `submit_anchor` uses the same content-free shape, opaque session-local id, and non-durable Tunnel-owned retention model as `snapshot_done.submit_anchors`
-- `line` is a 0-based row in the attached client's current terminal buffer at the point this control is received, not a snapshot-relative row from a past attach
-- clients should reconcile any missed live events or local provisional dots from the next fresh `snapshot_done.submit_anchors` after reconnect
 
 #### `resize`
 
@@ -315,8 +280,6 @@ Rules:
 - when `submit` is `true`, the PTY owner must preserve ordering so the PTY receives `text` first and then one trailing carriage return as one serialized operation for that session
 - when `submit` is `true`, the PTY owner appends exactly one trailing carriage return (`\r`) beyond the provided text body
 - the appended carriage return must match the PTY-owner handling for `input_key("ENTER")`
-- the trailing carriage return can create a bounded submit anchor for future fresh attaches and live `submit_anchor` controls for currently attached clients
-- if the provided `text` itself contains a carriage return (`\r`) outside a bracketed-paste region, that byte is also Enter-bearing PTY input and can create a bounded submit anchor even when `submit` is `false`
 
 ### `input_key`
 
@@ -351,7 +314,7 @@ Notes:
 
 - plain text characters such as `"a"` or `"C"` should use `input_text`
 - `input_key` is for non-text key semantics only
-- `input_key { "key": "ENTER" }` sends the same carriage return as `input_text { "submit": true }` and can create a bounded submit anchor for snapshots and live attached clients
+- `input_key { "key": "ENTER" }` sends the same carriage return as `input_text { "submit": true }`
 - modifier combinations such as Ctrl/Alt/Shift shortcuts are out of scope for this protocol revision
 
 ## HTTP Error Behavior For Attach
@@ -511,42 +474,13 @@ Notes:
 ```json
 {
   "type": "snapshot_done",
-  "client_id": "4d2c6ec8-787a-49c9-b9a0-5dbd8d31b7b1",
-  "submit_anchors": [
-    {
-      "id": "submit-1",
-      "line": 42,
-      "submitted_at": 1775131200
-    }
-  ]
+  "client_id": "4d2c6ec8-787a-49c9-b9a0-5dbd8d31b7b1"
 }
 ```
 
 Notes:
 
 - this marks the boundary between snapshot bytes and live bytes for that attached client
-- `submit_anchors` is optional, content-free metadata generated by the owning agent from local or remote input that sends an `ENTER` carriage return outside a bracketed-paste region
-- the relay forwards valid anchors to the attached client without inspecting terminal bytes or storing transcript history, omitting invalid entries and capping the list at 256 entries
-
-### `submit_anchor`
-
-```json
-{
-  "type": "submit_anchor",
-  "client_id": "4d2c6ec8-787a-49c9-b9a0-5dbd8d31b7b1",
-  "submit_anchor": {
-    "id": "submit-2",
-    "line": 45,
-    "submitted_at": 1775131300
-  }
-}
-```
-
-Notes:
-
-- this routes one live submit anchor to one already attached client
-- the relay forwards a valid anchor only when the websocket still owns the session and the target `client_id` is currently attached
-- invalid anchors are dropped rather than forwarded
 
 ### `attach_close`
 
@@ -689,8 +623,6 @@ This keeps terminal behavior close to the PTY owner and avoids embedding termina
 - clients should create a fresh terminal emulator state when opening a fresh attach
 - clients should size the terminal emulator on `attached` before feeding binary bytes
 - clients should treat `snapshot_done` as the boundary after which binary bytes are live PTY output
-- clients should interpret any `snapshot_done.submit_anchors[].line` only after applying the preceding snapshot bytes
-- clients should interpret any live `submit_anchor.line` against the terminal buffer state current when that control is received, then reconcile from the next fresh snapshot after reconnect
 - the Android client expects a `baseUrl` with an explicit scheme such as `http://...`
 - clients may validate relay availability with `GET /api/sessions` or fallback `GET /healthz`
 
@@ -698,7 +630,6 @@ This keeps terminal behavior close to the PTY owner and avoids embedding termina
 
 - there is no output-history API in this protocol revision
 - reconnect recovery restores the current terminal state plus up to 10,000 lines of bounded agent-local normal-buffer scrollback when available, not missed transcript history
-- submit anchors are bounded agent-local navigation metadata, not transcript history or TUI semantic parsing
 - the relay remains content-opaque with respect to PTY output
 - the local terminal remains the most complete live session view
 - attached clients for the same session observe the same PTY and therefore the same session-wide terminal size

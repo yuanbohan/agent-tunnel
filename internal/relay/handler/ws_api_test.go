@@ -5,7 +5,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -262,17 +261,13 @@ func TestDeviceWebSocketLaunchRequestRoundTrip(t *testing.T) {
 	if err := agentConn.WriteJSON(protocol.AttachReadyFrame(open.ClientID, 120, 40)); err != nil {
 		t.Fatalf("WriteJSON attach_ready returned error: %v", err)
 	}
-	anchors := []protocol.SubmitAnchor{
-		{ID: "submit-1", Line: 2, SubmittedAt: 1775131200},
-		{ID: "submit-2", Line: 5, SubmittedAt: 1775131300},
-	}
-	if err := agentConn.WriteJSON(protocol.SnapshotDoneFrame(open.ClientID, anchors...)); err != nil {
+	if err := agentConn.WriteJSON(protocol.SnapshotDoneFrame(open.ClientID)); err != nil {
 		t.Fatalf("WriteJSON snapshot_done returned error: %v", err)
 	}
 	if attached := readAttachControl(t, attachConn); attached.Type != "attached" {
 		t.Fatalf("attached = %#v, want attached", attached)
 	}
-	if done := readAttachControl(t, attachConn); done.Type != "snapshot_done" || !reflect.DeepEqual(done.SubmitAnchors, anchors) {
+	if done := readAttachControl(t, attachConn); done.Type != "snapshot_done" {
 		t.Fatalf("snapshot_done = %#v, want snapshot_done", done)
 	}
 
@@ -555,13 +550,6 @@ func TestAttachWebSocketForwardsSnapshotLiveBytesAndInputForOwner(t *testing.T) 
 	}
 	if done := readAttachControl(t, attachConn); done.Type != "snapshot_done" {
 		t.Fatalf("snapshot_done = %#v, want snapshot_done", done)
-	}
-	liveAnchor := protocol.SubmitAnchor{ID: "submit-1", Line: 2, SubmittedAt: 1775131200}
-	if err := agentConn.WriteJSON(protocol.SubmitAnchorFrame(open.ClientID, liveAnchor)); err != nil {
-		t.Fatalf("WriteJSON submit_anchor returned error: %v", err)
-	}
-	if live := readAttachControl(t, attachConn); live.Type != "submit_anchor" || live.SubmitAnchor == nil || *live.SubmitAnchor != liveAnchor {
-		t.Fatalf("submit_anchor = %#v, want live anchor %#v", live, liveAnchor)
 	}
 
 	if err := attachConn.WriteJSON(protocol.EncodeClientInputText("hello", true)); err != nil {

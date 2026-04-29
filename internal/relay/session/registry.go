@@ -394,7 +394,7 @@ func (r *Registry) RouteAttachReadyIfOwner(sessionID string, owner AgentPeer, cl
 	return true
 }
 
-func (r *Registry) RouteSnapshotDoneIfOwner(sessionID string, owner AgentPeer, clientID string, anchors ...protocol.SubmitAnchor) bool {
+func (r *Registry) RouteSnapshotDoneIfOwner(sessionID string, owner AgentPeer, clientID string) bool {
 	r.mu.RLock()
 	live, ok := r.sessions[sessionID]
 	if !ok || live.peer != owner {
@@ -407,31 +407,7 @@ func (r *Registry) RouteSnapshotDoneIfOwner(sessionID string, owner AgentPeer, c
 	if !ok {
 		return false
 	}
-	if err := client.SendControl(protocol.SnapshotDoneMessage(anchors...)); err != nil {
-		return r.DetachClient(sessionID, clientID, "slow_client")
-	}
-	return true
-}
-
-func (r *Registry) RouteSubmitAnchorIfOwner(sessionID string, owner AgentPeer, clientID string, anchor protocol.SubmitAnchor) bool {
-	msg := protocol.SubmitAnchorMessage(anchor)
-	if msg.SubmitAnchor == nil {
-		return false
-	}
-
-	r.mu.RLock()
-	live, ok := r.sessions[sessionID]
-	if !ok || live.peer != owner {
-		r.mu.RUnlock()
-		return false
-	}
-	client, ok := live.attached[clientID]
-	r.mu.RUnlock()
-
-	if !ok {
-		return false
-	}
-	if err := client.SendControl(msg); err != nil {
+	if err := client.SendControl(protocol.SnapshotDoneMessage()); err != nil {
 		return r.DetachClient(sessionID, clientID, "slow_client")
 	}
 	return true

@@ -10,8 +10,6 @@ type OutputSink interface {
 	WriteOutput([]byte) error
 }
 
-type InputObserver func([]byte) func(error)
-
 type Hub struct {
 	writeInput func([]byte) error
 	resizePTY  func(int, int) error
@@ -23,7 +21,6 @@ type Hub struct {
 	cols    int
 	rows    int
 	resizes map[string]func(int, int)
-	input   InputObserver
 }
 
 func NewHub(writeInput func([]byte) error, resizePTY func(int, int) error) *Hub {
@@ -79,11 +76,7 @@ func (h *Hub) WriteInputSequenceWithGap(gap time.Duration, chunks ...[]byte) err
 			continue
 		}
 		cp := append([]byte(nil), chunk...)
-		finishInput := h.observeInput(cp)
 		err := h.writeInput(cp)
-		if finishInput != nil {
-			finishInput(err)
-		}
 		if err != nil {
 			return err
 		}
@@ -101,22 +94,6 @@ func hasNonEmptyChunk(chunks [][]byte) bool {
 		}
 	}
 	return false
-}
-
-func (h *Hub) SetInputObserver(observer InputObserver) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.input = observer
-}
-
-func (h *Hub) observeInput(data []byte) func(error) {
-	h.mu.RLock()
-	observer := h.input
-	h.mu.RUnlock()
-	if observer == nil {
-		return nil
-	}
-	return observer(append([]byte(nil), data...))
 }
 
 func (h *Hub) Resize(cols, rows int) error {
