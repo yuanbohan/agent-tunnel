@@ -4,9 +4,9 @@ This document describes the current system shape for the attach-based protocol.
 
 ## System Shape
 
-`tunnel` owns the real local agent process, its PTY, and the authoritative current terminal state for that session. Built-in CLI commands own the top-level namespace, and local command launch happens only through `tunnel run <command>`. Every PATH-resolved launcher command follows the same path: one local PTY child, one session hub, one headless terminal mirror, one outbound relay connector, and no launcher-specific sidecar.
+`tunnel` owns the real local agent process, its PTY, and the authoritative current terminal state for that session. Built-in CLI commands own the top-level namespace, and local command launch happens only through `tunnel run <command>`. Every PATH-resolved launcher command follows the same path: one local PTY child, one session hub, one headless terminal mirror, one outbound relay connector, and no launcher-specific sidecar. In the connectivity path, `tunnel run` also best-effort registers metadata and a throttled bounded latest preview with the local daemon broker after verifying the daemon Relay base URL and auth-context fingerprint, but it remains the PTY and mirror owner.
 
-Separately, `tunnel daemon` owns one explicit background device-launch runtime on a machine with local `tmux`. That daemon has its own local control socket, its own live relay connector on `/device/ws`, a connectivity connector on `/connectivity/daemon/ws`, and its own dedicated tmux workspace used to create future `tunnel run <command>` sessions. The daemon is the state authority for device launch behavior and paired Android trust. The relay only brokers currently online daemon connections, live connectivity visibility derived from daemon-local trusted rosters, and short-lived correlations needed to turn one launch request into one later `session_ready` result.
+Separately, `tunnel daemon` owns one background machine runtime. That daemon has its own local control socket, a separate long-lived local broker socket for `tunnel run` registrations, its own live relay connector on `/device/ws`, a connectivity connector on `/connectivity/daemon/ws`, and its own dedicated tmux workspace used to create future remote-launched `tunnel run <command>` sessions when tmux is available. The daemon is the state authority for device launch behavior, paired Android trust, and live local broker roster/cache. The relay only brokers currently online daemon connections, live connectivity visibility derived from daemon-local trusted rosters, and short-lived correlations needed to turn one launch request into one later `session_ready` result.
 
 `docs/daemon.md` is the daemon-specific implementation contract. Changes to daemon lifecycle, tmux workspace ownership, launch validation, health reporting, or failure reasons must keep that contract aligned with this architecture document and the public API/protocol docs.
 
@@ -79,7 +79,7 @@ It owns:
 - terminal-native login that exchanges relay username/password for one locally saved agent token in `~/.tunnel/auth.json`
 - persistent CLI state under `~/.tunnel/`, with `settings.json` as the user-editable settings file and `updater.json` as internal updater state
 - runtime auth precedence for `tunnel run`: `TUNNEL_AUTH_TOKEN` first, then `~/.tunnel/auth.json`
-- runtime auth precedence for `tunnel daemon start`: `TUNNEL_AUTH_TOKEN` first, then `~/.tunnel/auth.json`
+- runtime auth precedence for daemon startup, whether explicit through `tunnel daemon start` or best-effort from `tunnel run`: `TUNNEL_AUTH_TOKEN` first, then `~/.tunnel/auth.json`
 - automatic startup-update disable through `TUNNEL_UPDATE_DISABLED` or `~/.tunnel/settings.json` `env` overrides
 - launcher resolution
 - PTY lifecycle and local terminal raw mode
@@ -241,11 +241,11 @@ Closing the agent process ends the session. A later agent launch starts a differ
 
 The device-launch lifecycle is separate from session attach:
 
-1. `tunnel daemon start` creates a background runtime on one desktop machine.
-2. That runtime ensures local `tmux` is available, persists a stable `device_id`, and connects to `/device/ws`.
+1. `tunnel run` may best-effort auto-start the background daemon for local broker registration; `tunnel daemon start` remains available for explicit lifecycle management. Broker reconnects are local-only and must continue to verify the daemon Relay base URL and auth-context fingerprint before sending session metadata or preview.
+2. That runtime persists a stable `device_id`, connects to `/device/ws`, connects to `/connectivity/daemon/ws`, and serves local control plus broker sockets.
 3. `GET /api/devices` lists only currently connected devices for the owning user.
 4. `POST /api/devices/:id/launch` routes one request to that live device daemon and assigns a relay-scoped `request_id`.
-5. The daemon decides locally whether the request is allowed, whether it is already busy, whether the requested `cwd` is valid, and whether a new tmux-backed session can be created.
+5. The daemon decides locally whether the request is allowed, whether it is already busy, whether local `tmux` is available, whether the requested `cwd` is valid, and whether a new tmux-backed session can be created.
 6. If the daemon accepts the launch locally, it starts a new tmux session running `tunnel run <command>` with the requested cwd and optional label, and it passes the launch correlation forward.
 7. The later `tunnel run <command>` process registers a normal session on `/agent/ws`, includes that launch correlation, and supplies its own platform and computer identity metadata as part of the session registration.
 8. The relay completes the pending mobile launch request as `session_ready` when it sees the matching session registration, marks the live session with `launch_source: "mobile"`, or returns a structured timeout failure if that registration does not arrive in time.
@@ -255,7 +255,7 @@ The device-launch lifecycle is separate from session attach:
 ## Package Map
 
 - `cmd/tunnel`: local `tunnel` entrypoint
-- `internal/tunnel/daemon/`: local daemon control socket, persisted device identity, persisted connectivity identity, pairing/trusted Android state, tmux workspace management, doctor/status reporting, relay device connector, and connectivity connector
+- `internal/tunnel/daemon/`: local daemon control socket, local broker socket and live roster/cache, persisted device identity, persisted connectivity identity, pairing/trusted Android state, tmux workspace management, doctor/status reporting, relay device connector, and connectivity connector
 - `internal/tunnel/session/`: PTY ownership, local terminal handling, hub fanout, resize state, and terminal mirror
 - `internal/tunnel/connector/`: outbound relay connection, session registration, attach routing, and resize signaling
 - `cmd/relay`: relay entrypoint

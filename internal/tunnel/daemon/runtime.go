@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +20,8 @@ import (
 
 const readySignalEnv = "TUNNEL_DAEMON_READY_FD"
 const daemonAuthTokenEnv = "TUNNEL_AUTH_TOKEN"
+
+var daemonStartupLockTimeout = 10 * time.Second
 
 type RuntimeOptions struct {
 	Paths     Paths
@@ -45,21 +48,31 @@ type runtimeState struct {
 	stopCh              chan struct{}
 	stopOnce            sync.Once
 	paths               Paths
+	broker              *Broker
 	connectivityEvents  chan protocol.ConnectivityFrame
 	connectivityReplies map[string]chan protocol.ConnectivityFrame
 }
 
 func StartBackground(ctx context.Context, options StartOptions) (StartResult, error) {
+	if err := EnsureRuntimeDirs(options.Paths); err != nil {
+		return StartResult{}, err
+	}
+	releaseLock, err := acquireStartupLock(ctx, options.Paths)
+	if err != nil {
+		return StartResult{}, err
+	}
+	defer releaseLock()
+
 	status, err := currentRunningStatus(ctx, options.Paths)
 	if err == nil && status.Running {
 		return StartResult{AlreadyRunning: true, Status: status}, nil
 	}
-	if err := EnsureTmuxAvailable(); err != nil {
-		return StartResult{}, err
-	}
-	preservedSessions, err := CountWorkspaceSessions(ctx, options.Paths)
-	if err != nil {
-		return StartResult{}, err
+	preservedSessions := 0
+	if err := EnsureTmuxAvailable(); err == nil {
+		preservedSessions, err = CountWorkspaceSessions(ctx, options.Paths)
+		if err != nil {
+			return StartResult{}, err
+		}
 	}
 
 	if err := cleanupStaleRuntime(options.Paths); err != nil {
@@ -157,9 +170,6 @@ func Run(ctx context.Context, options RuntimeOptions, readyWriter io.Writer) err
 	if strings.TrimSpace(options.AuthToken) == "" {
 		return errors.New("missing auth token")
 	}
-	if err := EnsureTmuxAvailable(); err != nil {
-		return err
-	}
 
 	identity, err := readOrCreateDeviceIdentityFn(options.Paths)
 	if err != nil {
@@ -174,24 +184,36 @@ func Run(ctx context.Context, options RuntimeOptions, readyWriter io.Writer) err
 	}
 
 	metadata := collectDeviceMetadataFn()
+	launchHealth := LaunchHealthHealthy
+	lastFailure := ""
+	if err := EnsureTmuxAvailable(); err != nil {
+		if !errors.Is(err, ErrTmuxNotFound) {
+			return err
+		}
+		launchHealth = LaunchHealthDegraded
+		lastFailure = "tmux_not_found"
+	}
 	state := &runtimeState{
 		status: StatusInfo{
-			Running:           true,
-			PID:               os.Getpid(),
-			StartedAt:         time.Now().UTC().Unix(),
-			BaseURL:           options.BaseURL,
-			DeviceID:          identity.DeviceID,
-			DaemonFingerprint: connectivityIdentity.Fingerprint,
-			DisplayName:       metadata.DisplayName,
-			Hostname:          metadata.Hostname,
-			PlatformFamily:    metadata.PlatformFamily,
-			PlatformID:        metadata.PlatformID,
-			RelayConnected:    false,
-			LaunchHealth:      LaunchHealthHealthy,
-			WorkspaceBackend:  workspaceBackendTmux,
+			Running:                true,
+			PID:                    os.Getpid(),
+			StartedAt:              time.Now().UTC().Unix(),
+			BaseURL:                options.BaseURL,
+			AuthContextFingerprint: AuthContextFingerprint(options.AuthToken),
+			DeviceID:               identity.DeviceID,
+			DaemonFingerprint:      connectivityIdentity.Fingerprint,
+			DisplayName:            metadata.DisplayName,
+			Hostname:               metadata.Hostname,
+			PlatformFamily:         metadata.PlatformFamily,
+			PlatformID:             metadata.PlatformID,
+			RelayConnected:         false,
+			LaunchHealth:           launchHealth,
+			WorkspaceBackend:       workspaceBackendTmux,
+			LastFailure:            lastFailure,
 		},
 		stopCh:              make(chan struct{}),
 		paths:               options.Paths,
+		broker:              NewBroker(),
 		connectivityEvents:  make(chan protocol.ConnectivityFrame, 16),
 		connectivityReplies: make(map[string]chan protocol.ConnectivityFrame),
 	}
@@ -200,6 +222,7 @@ func Run(ctx context.Context, options RuntimeOptions, readyWriter io.Writer) err
 	}
 	defer func() {
 		_ = os.Remove(options.Paths.SocketPath)
+		_ = os.Remove(options.Paths.BrokerSocketPath)
 		_ = os.Remove(options.Paths.PIDFile)
 		state.markStopped()
 	}()
@@ -257,6 +280,8 @@ func Run(ctx context.Context, options RuntimeOptions, readyWriter io.Writer) err
 				return Response{Error: err.Error()}
 			}
 			return Response{TrustedDevices: devices}
+		case actionBrokerSessions:
+			return Response{BrokerSessions: state.broker.Snapshot()}
 		case actionRevokeDevice:
 			revoked, err := RevokeTrustedAndroidDevice(options.Paths, request.DeviceFingerprint)
 			if err != nil {
@@ -282,10 +307,21 @@ func Run(ctx context.Context, options RuntimeOptions, readyWriter io.Writer) err
 	defer func() {
 		_ = server.Close()
 	}()
+	brokerServer, err := NewBrokerServer(options.Paths.BrokerSocketPath, state.broker)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = brokerServer.Close()
+	}()
 
 	serverErrCh := make(chan error, 1)
 	go func() {
 		serverErrCh <- server.Serve(ctx)
+	}()
+	brokerErrCh := make(chan error, 1)
+	go func() {
+		brokerErrCh <- brokerServer.Serve(ctx)
 	}()
 	go newDeviceConnector(options.BaseURL, options.AuthToken, state).Run(ctx, newLaunchHandler(options.BaseURL, options.AuthToken, options.Paths, state))
 	go newConnectivityConnector(options.BaseURL, options.AuthToken, options.Paths, state).Run(ctx)
@@ -305,6 +341,8 @@ func Run(ctx context.Context, options RuntimeOptions, readyWriter io.Writer) err
 	case <-state.stopCh:
 		return nil
 	case err := <-serverErrCh:
+		return err
+	case err := <-brokerErrCh:
 		return err
 	}
 }
@@ -452,12 +490,80 @@ func cleanupStaleRuntime(paths Paths) error {
 			return nil
 		}
 	}
-	for _, path := range []string{paths.SocketPath, paths.PIDFile} {
+	for _, path := range []string{paths.SocketPath, paths.BrokerSocketPath, paths.PIDFile} {
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 	}
 	return nil
+}
+
+func acquireStartupLock(ctx context.Context, paths Paths) (func(), error) {
+	lockPath := filepath.Join(paths.RuntimeDir, defaultStartupLockFileName)
+	deadline := time.NewTimer(daemonStartupLockTimeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		release, err := tryAcquireStartupLock(lockPath)
+		if err == nil {
+			return release, nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return nil, err
+		}
+		cleanupStaleStartupLock(lockPath)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-deadline.C:
+			return nil, errors.New("timed out waiting for daemon startup lock")
+		case <-ticker.C:
+		}
+	}
+}
+
+func tryAcquireStartupLock(lockPath string) (func(), error) {
+	tmpFile, err := os.CreateTemp(filepath.Dir(lockPath), ".startup.lock.*")
+	if err != nil {
+		return nil, err
+	}
+	tmpPath := tmpFile.Name()
+	cleanupTmp := true
+	defer func() {
+		if cleanupTmp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err := fmt.Fprintf(tmpFile, "%d\n", os.Getpid()); err != nil {
+		_ = tmpFile.Close()
+		return nil, err
+	}
+	if err := tmpFile.Close(); err != nil {
+		return nil, err
+	}
+	if err := os.Link(tmpPath, lockPath); err != nil {
+		return nil, err
+	}
+	cleanupTmp = false
+	_ = os.Remove(tmpPath)
+
+	return func() {
+		_ = os.Remove(lockPath)
+	}, nil
+}
+
+func cleanupStaleStartupLock(lockPath string) {
+	payload, err := os.ReadFile(lockPath)
+	if err != nil {
+		return
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(payload)))
+	if err != nil || pid <= 0 || !processRunning(pid) {
+		_ = os.Remove(lockPath)
+	}
 }
 
 func currentRunningStatus(ctx context.Context, paths Paths) (StatusInfo, error) {

@@ -18,11 +18,18 @@ type runArgs struct {
 	Verbose         bool
 	Label           string
 	BaseURL         string
+	DaemonMode      string
 	LaunchSource    string
 	LaunchRequestID string
 	Launcher        string
 	LauncherArgs    []string
 }
+
+const (
+	runDaemonModeAuto     = "auto"
+	runDaemonModeOff      = "off"
+	runDaemonModeRequired = "required"
+)
 
 type sessionCommandArgs struct {
 	BaseURL string
@@ -150,7 +157,7 @@ Flags:
 
 func runHelpText() string {
 	return fmt.Sprintf(`Usage:
-  tunnel run [-l label] [--base-url url] <command> [args...]
+  tunnel run [-l label] [--base-url url] [--daemon auto|off|required] <command> [args...]
   tunnel run --help
 
 Arguments:
@@ -162,6 +169,7 @@ Flags:
   -v, --verbose    Print relay connection status on successful startup
   -l, --label      Optional session label for relay clients
       --base-url   Relay base URL (fallback: %s, default: %s)
+      --daemon     Daemon broker mode: auto, off, or required (default: auto)
 
 Environment:
   %s  Higher-priority auth token override for tunnel run
@@ -203,6 +211,7 @@ Commands:
   status      Show daemon status
   stop        Stop the background daemon
   doctor      Run daemon diagnostics
+  broker      Inspect daemon local broker state
   open        Open the daemon tmux workspace
   close       Close one open daemon tmux workspace view
   sessions    List daemon tmux sessions
@@ -221,6 +230,7 @@ Examples:
   tunnel daemon status
   tunnel daemon stop
   tunnel daemon doctor
+  tunnel daemon broker sessions --json
   tunnel daemon open
   tunnel daemon close
   tunnel daemon sessions
@@ -234,12 +244,13 @@ Examples:
 
 func daemonStartHelpText() string {
 	return fmt.Sprintf(`Usage:
-  tunnel daemon start [--base-url url]
+  tunnel daemon start [--base-url url] [--json]
   tunnel daemon start --help
 
 Flags:
   -h, --help       Show this help message and exit
       --base-url   Relay base URL (fallback: %s, default: %s)
+      --json       Print daemon status as JSON
 `, tunnelBaseURLEnv, defaultTunnelBaseURL)
 }
 

@@ -1,0 +1,421 @@
+package daemon
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	tunnelsession "yuanbohan/tunnel/internal/tunnel/session"
+)
+
+func TestBrokerServerRegistersSessionAndCachesLatestPreview(t *testing.T) {
+	paths := testPaths(t)
+	if err := EnsureRuntimeDirs(paths); err != nil {
+		t.Fatalf("EnsureRuntimeDirs returned error: %v", err)
+	}
+	broker := NewBroker()
+	server, err := NewBrokerServer(paths.BrokerSocketPath, broker)
+	if err != nil {
+		t.Fatalf("NewBrokerServer returned error: %v", err)
+	}
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = server.Serve(ctx)
+	}()
+
+	conn := dialBrokerForTest(t, paths.BrokerSocketPath)
+	defer conn.Close()
+	encoder := json.NewEncoder(conn)
+	session := BrokerSession{
+		SessionID:      "sess-1",
+		Label:          "api-fix",
+		CommandPreview: "codex --profile prod",
+		CWD:            "/repo",
+		GitBranch:      "main",
+		StartedAt:      1_700_000_000,
+		UpdatedAt:      1_700_000_001,
+	}
+	if err := encoder.Encode(BrokerFrame{Type: brokerFrameRegisterSession, Session: &session}); err != nil {
+		t.Fatalf("register Encode returned error: %v", err)
+	}
+	if err := encoder.Encode(BrokerFrame{Type: brokerFramePreviewUpdate, SessionID: "sess-1", Preview: "latest output", UpdatedAt: 1_700_000_002}); err != nil {
+		t.Fatalf("preview Encode returned error: %v", err)
+	}
+
+	snapshot := waitForBrokerSnapshot(t, broker, 1)
+	got := snapshot[0]
+	if got.SessionID != "sess-1" || got.Label != "api-fix" || got.CommandPreview != "codex --profile prod" || got.CWD != "/repo" || got.GitBranch != "main" || got.StartedAt != 1_700_000_000 || got.UpdatedAt != 1_700_000_002 || !got.Online {
+		t.Fatalf("snapshot = %#v, want registered session metadata", got)
+	}
+	if got.LatestPreview != "latest output" {
+		t.Fatalf("LatestPreview = %q, want latest output", got.LatestPreview)
+	}
+}
+
+func TestBrokerServerRemovesSessionWhenConnectionCloses(t *testing.T) {
+	paths := testPaths(t)
+	if err := EnsureRuntimeDirs(paths); err != nil {
+		t.Fatalf("EnsureRuntimeDirs returned error: %v", err)
+	}
+	broker := NewBroker()
+	server, err := NewBrokerServer(paths.BrokerSocketPath, broker)
+	if err != nil {
+		t.Fatalf("NewBrokerServer returned error: %v", err)
+	}
+	defer server.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = server.Serve(ctx)
+	}()
+
+	conn := dialBrokerForTest(t, paths.BrokerSocketPath)
+	session := BrokerSession{SessionID: "sess-1", CWD: "/repo", CommandPreview: "codex", StartedAt: 1}
+	if err := json.NewEncoder(conn).Encode(BrokerFrame{Type: brokerFrameRegisterSession, Session: &session}); err != nil {
+		t.Fatalf("Encode returned error: %v", err)
+	}
+	_ = conn.Close()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(broker.Snapshot()) == 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("snapshot = %#v, want session removed after connection close", broker.Snapshot())
+}
+
+func TestBrokerServerDuplicateRegistrationReplacesPreviousOwner(t *testing.T) {
+	paths := testPaths(t)
+	if err := EnsureRuntimeDirs(paths); err != nil {
+		t.Fatalf("EnsureRuntimeDirs returned error: %v", err)
+	}
+	broker := NewBroker()
+	server, err := NewBrokerServer(paths.BrokerSocketPath, broker)
+	if err != nil {
+		t.Fatalf("NewBrokerServer returned error: %v", err)
+	}
+	defer server.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = server.Serve(ctx)
+	}()
+
+	first := dialBrokerForTest(t, paths.BrokerSocketPath)
+	defer first.Close()
+	firstSession := BrokerSession{SessionID: "sess-1", Label: "old", CWD: "/repo", CommandPreview: "codex", StartedAt: 1}
+	if err := json.NewEncoder(first).Encode(BrokerFrame{Type: brokerFrameRegisterSession, Session: &firstSession}); err != nil {
+		t.Fatalf("first Encode returned error: %v", err)
+	}
+	waitForBrokerSnapshot(t, broker, 1)
+
+	second := dialBrokerForTest(t, paths.BrokerSocketPath)
+	defer second.Close()
+	secondSession := BrokerSession{SessionID: "sess-1", Label: "new", CWD: "/repo", CommandPreview: "claude", StartedAt: 2}
+	if err := json.NewEncoder(second).Encode(BrokerFrame{Type: brokerFrameRegisterSession, Session: &secondSession}); err != nil {
+		t.Fatalf("second Encode returned error: %v", err)
+	}
+
+	var snapshot []BrokerSessionSnapshot
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		snapshot = broker.Snapshot()
+		if len(snapshot) == 1 && snapshot[0].Label == "new" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(snapshot) != 1 {
+		t.Fatalf("snapshot = %#v, want one replacement entry", snapshot)
+	}
+	if snapshot[0].Label != "new" || snapshot[0].CommandPreview != "claude" || snapshot[0].StartedAt != 2 {
+		t.Fatalf("snapshot = %#v, want replacement metadata", snapshot[0])
+	}
+}
+
+func TestBrokerServerReregisterOnSameConnectionRemovesOldSession(t *testing.T) {
+	paths := testPaths(t)
+	if err := EnsureRuntimeDirs(paths); err != nil {
+		t.Fatalf("EnsureRuntimeDirs returned error: %v", err)
+	}
+	broker := NewBroker()
+	server, err := NewBrokerServer(paths.BrokerSocketPath, broker)
+	if err != nil {
+		t.Fatalf("NewBrokerServer returned error: %v", err)
+	}
+	defer server.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = server.Serve(ctx)
+	}()
+
+	conn := dialBrokerForTest(t, paths.BrokerSocketPath)
+	defer conn.Close()
+	encoder := json.NewEncoder(conn)
+	firstSession := BrokerSession{SessionID: "sess-1", Label: "old", CWD: "/repo", CommandPreview: "codex", StartedAt: 1}
+	if err := encoder.Encode(BrokerFrame{Type: brokerFrameRegisterSession, Session: &firstSession}); err != nil {
+		t.Fatalf("first Encode returned error: %v", err)
+	}
+	waitForBrokerSnapshot(t, broker, 1)
+
+	secondSession := BrokerSession{SessionID: "sess-2", Label: "new", CWD: "/repo", CommandPreview: "claude", StartedAt: 2}
+	if err := encoder.Encode(BrokerFrame{Type: brokerFrameRegisterSession, Session: &secondSession}); err != nil {
+		t.Fatalf("second Encode returned error: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		snapshot := broker.Snapshot()
+		if len(snapshot) == 1 && snapshot[0].SessionID == "sess-2" {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("snapshot = %#v, want old session removed after same-connection reregister", broker.Snapshot())
+}
+
+func TestBrokerServerBlankReregisterDoesNotOrphanPreviousSession(t *testing.T) {
+	paths := testPaths(t)
+	if err := EnsureRuntimeDirs(paths); err != nil {
+		t.Fatalf("EnsureRuntimeDirs returned error: %v", err)
+	}
+	broker := NewBroker()
+	server, err := NewBrokerServer(paths.BrokerSocketPath, broker)
+	if err != nil {
+		t.Fatalf("NewBrokerServer returned error: %v", err)
+	}
+	defer server.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = server.Serve(ctx)
+	}()
+
+	conn := dialBrokerForTest(t, paths.BrokerSocketPath)
+	encoder := json.NewEncoder(conn)
+	session := BrokerSession{SessionID: "sess-1", CWD: "/repo", CommandPreview: "codex", StartedAt: 1}
+	if err := encoder.Encode(BrokerFrame{Type: brokerFrameRegisterSession, Session: &session}); err != nil {
+		t.Fatalf("register Encode returned error: %v", err)
+	}
+	waitForBrokerSnapshot(t, broker, 1)
+	blankSession := BrokerSession{SessionID: "   ", CWD: "/repo", CommandPreview: "codex", StartedAt: 1}
+	if err := encoder.Encode(BrokerFrame{Type: brokerFrameRegisterSession, Session: &blankSession}); err != nil {
+		t.Fatalf("blank register Encode returned error: %v", err)
+	}
+	_ = conn.Close()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(broker.Snapshot()) == 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("snapshot = %#v, want previous session removed after connection close", broker.Snapshot())
+}
+
+func TestBrokerServerIgnoresUnknownFramesBeforeRegistration(t *testing.T) {
+	paths := testPaths(t)
+	if err := EnsureRuntimeDirs(paths); err != nil {
+		t.Fatalf("EnsureRuntimeDirs returned error: %v", err)
+	}
+	broker := NewBroker()
+	server, err := NewBrokerServer(paths.BrokerSocketPath, broker)
+	if err != nil {
+		t.Fatalf("NewBrokerServer returned error: %v", err)
+	}
+	defer server.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = server.Serve(ctx)
+	}()
+
+	conn := dialBrokerForTest(t, paths.BrokerSocketPath)
+	defer conn.Close()
+	if err := json.NewEncoder(conn).Encode(BrokerFrame{Type: brokerFramePreviewUpdate, SessionID: "missing", Preview: "secret"}); err != nil {
+		t.Fatalf("Encode returned error: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if snapshot := broker.Snapshot(); len(snapshot) != 0 {
+		t.Fatalf("snapshot = %#v, want no roster entries", snapshot)
+	}
+}
+
+func TestBrokerServerBoundsIncomingPreview(t *testing.T) {
+	paths := testPaths(t)
+	if err := EnsureRuntimeDirs(paths); err != nil {
+		t.Fatalf("EnsureRuntimeDirs returned error: %v", err)
+	}
+	broker := NewBroker()
+	server, err := NewBrokerServer(paths.BrokerSocketPath, broker)
+	if err != nil {
+		t.Fatalf("NewBrokerServer returned error: %v", err)
+	}
+	defer server.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = server.Serve(ctx)
+	}()
+
+	conn := dialBrokerForTest(t, paths.BrokerSocketPath)
+	defer conn.Close()
+	encoder := json.NewEncoder(conn)
+	session := BrokerSession{SessionID: "sess-1", CWD: "/repo", CommandPreview: "codex", StartedAt: 1}
+	if err := encoder.Encode(BrokerFrame{Type: brokerFrameRegisterSession, Session: &session}); err != nil {
+		t.Fatalf("register Encode returned error: %v", err)
+	}
+	oversized := strings.Repeat("x", tunnelsession.DefaultPreviewMaxChars+500)
+	if err := encoder.Encode(BrokerFrame{Type: brokerFramePreviewUpdate, SessionID: "sess-1", Preview: oversized}); err != nil {
+		t.Fatalf("preview Encode returned error: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		snapshot := broker.Snapshot()
+		if len(snapshot) == 1 && snapshot[0].LatestPreview != "" {
+			if got := len([]rune(snapshot[0].LatestPreview)); got > tunnelsession.DefaultPreviewMaxChars {
+				t.Fatalf("LatestPreview length = %d, want <= %d", got, tunnelsession.DefaultPreviewMaxChars)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("snapshot = %#v, want bounded latest preview", broker.Snapshot())
+}
+
+func TestBrokerServerClosesConnectionsThatNeverRegister(t *testing.T) {
+	oldTimeout := brokerRegistrationTimeout
+	brokerRegistrationTimeout = 20 * time.Millisecond
+	t.Cleanup(func() {
+		brokerRegistrationTimeout = oldTimeout
+	})
+
+	paths := testPaths(t)
+	if err := EnsureRuntimeDirs(paths); err != nil {
+		t.Fatalf("EnsureRuntimeDirs returned error: %v", err)
+	}
+	server, err := NewBrokerServer(paths.BrokerSocketPath, NewBroker())
+	if err != nil {
+		t.Fatalf("NewBrokerServer returned error: %v", err)
+	}
+	defer server.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = server.Serve(ctx)
+	}()
+
+	conn := dialBrokerForTest(t, paths.BrokerSocketPath)
+	defer conn.Close()
+	if err := conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond)); err != nil {
+		t.Fatalf("SetReadDeadline returned error: %v", err)
+	}
+	buffer := make([]byte, 1)
+	_, err = conn.Read(buffer)
+	if err == nil {
+		t.Fatal("Read error = nil, want connection close")
+	}
+	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		t.Fatalf("Read error = %v, want server-side close before client deadline", err)
+	}
+}
+
+func TestNewBrokerServerRejectsNonSocketPath(t *testing.T) {
+	paths := testPaths(t)
+	if err := EnsureRuntimeDirs(paths); err != nil {
+		t.Fatalf("EnsureRuntimeDirs returned error: %v", err)
+	}
+	if err := os.WriteFile(paths.BrokerSocketPath, []byte("not-a-socket"), 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	_, err := NewBrokerServer(paths.BrokerSocketPath, NewBroker())
+	if err == nil {
+		t.Fatal("NewBrokerServer error = nil, want non-socket path failure")
+	}
+	if !strings.Contains(err.Error(), "not a unix socket") {
+		t.Fatalf("error = %q, want non-socket path guidance", err)
+	}
+	payload, readErr := os.ReadFile(paths.BrokerSocketPath)
+	if readErr != nil {
+		t.Fatalf("ReadFile returned error: %v", readErr)
+	}
+	if string(payload) != "not-a-socket" {
+		t.Fatalf("payload = %q, want original file preserved", string(payload))
+	}
+}
+
+func dialBrokerForTest(t *testing.T, socketPath string) net.Conn {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		conn, err := net.Dial("unix", socketPath)
+		if err == nil {
+			return conn
+		}
+		lastErr = err
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("Dial(%s) failed: %v", socketPath, lastErr)
+	return nil
+}
+
+func waitForBrokerSnapshot(t *testing.T, broker *Broker, want int) []BrokerSessionSnapshot {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var snapshot []BrokerSessionSnapshot
+	for time.Now().Before(deadline) {
+		snapshot = broker.Snapshot()
+		if len(snapshot) == want {
+			return snapshot
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("snapshot = %#v, want %d entries", snapshot, want)
+	return nil
+}
+
+func TestVerifyBrokerSocketRejectsUnsafePermissions(t *testing.T) {
+	paths := testPaths(t)
+	if err := EnsureRuntimeDirs(paths); err != nil {
+		t.Fatalf("EnsureRuntimeDirs returned error: %v", err)
+	}
+	listener, err := net.Listen("unix", paths.BrokerSocketPath)
+	if err != nil {
+		t.Fatalf("Listen returned error: %v", err)
+	}
+	defer listener.Close()
+	if err := os.Chmod(paths.BrokerSocketPath, 0o666); err != nil {
+		t.Fatalf("Chmod returned error: %v", err)
+	}
+	if err := verifyBrokerSocket(paths.BrokerSocketPath); err == nil {
+		t.Fatal("verifyBrokerSocket error = nil, want owner-only permission rejection")
+	}
+}
+
+func TestVerifyBrokerSocketRejectsNonSocket(t *testing.T) {
+	paths := testPaths(t)
+	if err := EnsureRuntimeDirs(paths); err != nil {
+		t.Fatalf("EnsureRuntimeDirs returned error: %v", err)
+	}
+	if err := os.WriteFile(paths.BrokerSocketPath, []byte("x"), 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	if err := verifyBrokerSocket(paths.BrokerSocketPath); err == nil || errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("verifyBrokerSocket error = %v, want non-socket rejection", err)
+	}
+}

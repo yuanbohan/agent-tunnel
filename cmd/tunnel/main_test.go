@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -30,6 +31,31 @@ type fakeRelayConnector struct {
 	launchContext protocol.LaunchContext
 	stopHandler   func()
 	stateCh       chan connector.State
+}
+
+type fakeLocalRegistration struct {
+	runCalledCh   chan struct{}
+	runCalledOnce sync.Once
+	closeCalled   bool
+	output        [][]byte
+}
+
+func (f *fakeLocalRegistration) Run(context.Context) {
+	if f.runCalledCh != nil {
+		f.runCalledOnce.Do(func() {
+			close(f.runCalledCh)
+		})
+	}
+}
+
+func (f *fakeLocalRegistration) Close() error {
+	f.closeCalled = true
+	return nil
+}
+
+func (f *fakeLocalRegistration) WriteOutput(data []byte) error {
+	f.output = append(f.output, append([]byte(nil), data...))
+	return nil
 }
 
 func stubDetectGitBranch(t *testing.T, branch string) {
@@ -93,11 +119,21 @@ func (f *fakeRelayConnector) WriteOutput([]byte) error {
 func setTestEnv(t *testing.T) {
 	t.Helper()
 	oldReadSessionDeviceIdentity := readSessionDeviceIdentity
+	oldEnsureTunnelRunDaemon := ensureTunnelRunDaemon
+	oldNewSessionRegistration := newSessionRegistration
 	readSessionDeviceIdentity = func(daemon.Paths) (daemon.DeviceIdentity, error) {
 		return daemon.DeviceIdentity{}, os.ErrNotExist
 	}
+	ensureTunnelRunDaemon = func(context.Context, string, string) (daemon.Paths, bool) {
+		return daemon.Paths{}, false
+	}
+	newSessionRegistration = func(daemon.Paths, string, string, protocol.SessionInfo) localSessionRegistration {
+		return &fakeLocalRegistration{}
+	}
 	t.Cleanup(func() {
 		readSessionDeviceIdentity = oldReadSessionDeviceIdentity
+		ensureTunnelRunDaemon = oldEnsureTunnelRunDaemon
+		newSessionRegistration = oldNewSessionRegistration
 	})
 	for _, kv := range [][2]string{
 		{"TUNNEL_BASE_URL", "http://127.0.0.1:8586"},
@@ -560,6 +596,184 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
 	}
 }
 
+func TestRunWithArgsAddsDaemonBrokerRegistrationSinkWhenDaemonAvailable(t *testing.T) {
+	setTestEnv(t)
+
+	oldResolve := resolveLauncher
+	oldPrepare := prepareLocalTerminal
+	oldStartSession := startSession
+	oldStartLocalTerminal := startLocalTerminal
+	oldWaitForExit := waitForExit
+	oldNewConnector := newConnector
+	oldEnsureTunnelRunDaemon := ensureTunnelRunDaemon
+	oldNewSessionRegistration := newSessionRegistration
+	t.Cleanup(func() {
+		resolveLauncher = oldResolve
+		prepareLocalTerminal = oldPrepare
+		startSession = oldStartSession
+		startLocalTerminal = oldStartLocalTerminal
+		waitForExit = oldWaitForExit
+		newConnector = oldNewConnector
+		ensureTunnelRunDaemon = oldEnsureTunnelRunDaemon
+		newSessionRegistration = oldNewSessionRegistration
+	})
+
+	resolveLauncher = func(name string, args []string) (launcher.Command, error) {
+		return launcher.Command{Name: name, Path: "/usr/bin/codex", Args: append([]string(nil), args...)}, nil
+	}
+	prepareLocalTerminal = func() (*session.LocalTerminal, error) {
+		return &session.LocalTerminal{}, nil
+	}
+	newConnector = func(url, token string, info protocol.SessionInfo) relayConnector {
+		return &fakeRelayConnector{waitConnected: true, state: connector.StateConnected}
+	}
+	ensureTunnelRunDaemon = func(ctx context.Context, baseURL, authToken string) (daemon.Paths, bool) {
+		if baseURL != "http://127.0.0.1:8586" || authToken != "test-token" {
+			t.Fatalf("ensure daemon got baseURL=%q authToken=%q", baseURL, authToken)
+		}
+		return daemon.Paths{BrokerSocketPath: "/tmp/broker.sock"}, true
+	}
+	registration := &fakeLocalRegistration{runCalledCh: make(chan struct{})}
+	newSessionRegistration = func(paths daemon.Paths, baseURL, authToken string, info protocol.SessionInfo) localSessionRegistration {
+		if paths.BrokerSocketPath != "/tmp/broker.sock" {
+			t.Fatalf("BrokerSocketPath = %q, want /tmp/broker.sock", paths.BrokerSocketPath)
+		}
+		if baseURL != "http://127.0.0.1:8586" {
+			t.Fatalf("baseURL = %q, want http://127.0.0.1:8586", baseURL)
+		}
+		if authToken != "test-token" {
+			t.Fatalf("authToken = %q, want test-token", authToken)
+		}
+		if info.SessionID == "" || info.CommandPreview != "codex" {
+			t.Fatalf("session info = %#v, want generated metadata", info)
+		}
+		return registration
+	}
+
+	wantErr := errors.New("start session failed")
+	var gotSinks map[string]session.OutputSink
+	startSession = func(_ context.Context, path string, args []string, sinks map[string]session.OutputSink) (*session.Running, error) {
+		gotSinks = sinks
+		return nil, wantErr
+	}
+	waitForExit = func(context.Context, <-chan struct{}, <-chan error) error {
+		return nil
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err := runWithArgs([]string{"tunnel", "run", "codex"}, &stdout, &stderr)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("runWithArgs error = %v, want %v", err, wantErr)
+	}
+	if gotSinks["daemon-broker"] != registration {
+		t.Fatalf("initial sinks = %#v, want daemon-broker registration sink", gotSinks)
+	}
+	select {
+	case <-registration.runCalledCh:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("local registration Run was not called")
+	}
+	if !registration.closeCalled {
+		t.Fatal("local registration Close was not called")
+	}
+}
+
+func TestRunWithArgsDaemonOffSkipsLocalRegistration(t *testing.T) {
+	setTestEnv(t)
+
+	oldResolve := resolveLauncher
+	oldPrepare := prepareLocalTerminal
+	oldStartSession := startSession
+	oldWaitForExit := waitForExit
+	oldNewConnector := newConnector
+	oldEnsureTunnelRunDaemon := ensureTunnelRunDaemon
+	t.Cleanup(func() {
+		resolveLauncher = oldResolve
+		prepareLocalTerminal = oldPrepare
+		startSession = oldStartSession
+		waitForExit = oldWaitForExit
+		newConnector = oldNewConnector
+		ensureTunnelRunDaemon = oldEnsureTunnelRunDaemon
+	})
+
+	resolveLauncher = func(name string, args []string) (launcher.Command, error) {
+		return launcher.Command{Name: name, Path: "/usr/bin/codex", Args: append([]string(nil), args...)}, nil
+	}
+	prepareLocalTerminal = func() (*session.LocalTerminal, error) {
+		return &session.LocalTerminal{}, nil
+	}
+	newConnector = func(url, token string, info protocol.SessionInfo) relayConnector {
+		return &fakeRelayConnector{waitConnected: true, state: connector.StateConnected}
+	}
+	ensureTunnelRunDaemon = func(context.Context, string, string) (daemon.Paths, bool) {
+		t.Fatal("ensureTunnelRunDaemon should not be called with --daemon off")
+		return daemon.Paths{}, false
+	}
+
+	wantErr := errors.New("start session failed")
+	var gotSinks map[string]session.OutputSink
+	startSession = func(_ context.Context, path string, args []string, sinks map[string]session.OutputSink) (*session.Running, error) {
+		gotSinks = sinks
+		return nil, wantErr
+	}
+	waitForExit = func(context.Context, <-chan struct{}, <-chan error) error {
+		return nil
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err := runWithArgs([]string{"tunnel", "run", "--daemon", "off", "codex"}, &stdout, &stderr)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("runWithArgs error = %v, want %v", err, wantErr)
+	}
+	if _, ok := gotSinks["daemon-broker"]; ok {
+		t.Fatalf("initial sinks = %#v, want no daemon-broker sink", gotSinks)
+	}
+}
+
+func TestRunWithArgsDaemonRequiredFailsWhenUnavailable(t *testing.T) {
+	setTestEnv(t)
+
+	oldResolve := resolveLauncher
+	oldPrepare := prepareLocalTerminal
+	oldStartSession := startSession
+	oldNewConnector := newConnector
+	oldEnsureTunnelRunDaemon := ensureTunnelRunDaemon
+	t.Cleanup(func() {
+		resolveLauncher = oldResolve
+		prepareLocalTerminal = oldPrepare
+		startSession = oldStartSession
+		newConnector = oldNewConnector
+		ensureTunnelRunDaemon = oldEnsureTunnelRunDaemon
+	})
+
+	resolveLauncher = func(name string, args []string) (launcher.Command, error) {
+		return launcher.Command{Name: name, Path: "/usr/bin/codex", Args: append([]string(nil), args...)}, nil
+	}
+	prepareLocalTerminal = func() (*session.LocalTerminal, error) {
+		t.Fatal("prepareLocalTerminal should not be called when required daemon is unavailable")
+		return nil, nil
+	}
+	startSession = func(context.Context, string, []string, map[string]session.OutputSink) (*session.Running, error) {
+		t.Fatal("startSession should not be called when required daemon is unavailable")
+		return nil, nil
+	}
+	newConnector = func(url, token string, info protocol.SessionInfo) relayConnector {
+		return &fakeRelayConnector{waitConnected: true, state: connector.StateConnected}
+	}
+	ensureTunnelRunDaemon = func(context.Context, string, string) (daemon.Paths, bool) {
+		return daemon.Paths{}, false
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err := runWithArgs([]string{"tunnel", "run", "--daemon", "required", "codex"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "daemon broker registration required") {
+		t.Fatalf("runWithArgs error = %v, want required daemon error", err)
+	}
+}
+
 func TestRunDaemonStartUsesStoredAuthFallback(t *testing.T) {
 	store := &fakeStore{
 		authPath: "/tmp/.tunnel/auth.json",
@@ -568,15 +782,12 @@ func TestRunDaemonStartUsesStoredAuthFallback(t *testing.T) {
 	oldNewStore := newAuthStore
 	oldResolvePaths := resolveDaemonPaths
 	oldStartDaemon := startDaemon
-	oldEnsureDaemonTmuxAvailable := ensureDaemonTmuxAvailable
 	t.Cleanup(func() {
 		newAuthStore = oldNewStore
 		resolveDaemonPaths = oldResolvePaths
 		startDaemon = oldStartDaemon
-		ensureDaemonTmuxAvailable = oldEnsureDaemonTmuxAvailable
 	})
 	newAuthStore = func() authStore { return store }
-	ensureDaemonTmuxAvailable = func() error { return nil }
 	resolveDaemonPaths = func() (daemon.Paths, error) {
 		return daemon.Paths{}, nil
 	}
@@ -612,15 +823,12 @@ func TestRunDaemonStartPrefersEnvAuthOverride(t *testing.T) {
 	oldNewStore := newAuthStore
 	oldResolvePaths := resolveDaemonPaths
 	oldStartDaemon := startDaemon
-	oldEnsureDaemonTmuxAvailable := ensureDaemonTmuxAvailable
 	t.Cleanup(func() {
 		newAuthStore = oldNewStore
 		resolveDaemonPaths = oldResolvePaths
 		startDaemon = oldStartDaemon
-		ensureDaemonTmuxAvailable = oldEnsureDaemonTmuxAvailable
 	})
 	newAuthStore = func() authStore { return store }
-	ensureDaemonTmuxAvailable = func() error { return nil }
 	resolveDaemonPaths = func() (daemon.Paths, error) {
 		return daemon.Paths{}, nil
 	}
@@ -648,21 +856,88 @@ func TestRunDaemonStartPrefersEnvAuthOverride(t *testing.T) {
 	}
 }
 
+func TestEnsureDaemonForTunnelRunRejectsDifferentAuthContext(t *testing.T) {
+	oldResolvePaths := resolveDaemonPaths
+	oldDaemonStatus := daemonStatus
+	oldStartDaemon := startDaemon
+	t.Cleanup(func() {
+		resolveDaemonPaths = oldResolvePaths
+		daemonStatus = oldDaemonStatus
+		startDaemon = oldStartDaemon
+	})
+
+	paths := daemon.Paths{BrokerSocketPath: "/tmp/broker.sock"}
+	resolveDaemonPaths = func() (daemon.Paths, error) {
+		return paths, nil
+	}
+	daemonStatus = func(context.Context, daemon.Paths) (daemon.StatusInfo, error) {
+		return daemon.StatusInfo{
+			Running:                true,
+			BaseURL:                "https://relay.example.com",
+			AuthContextFingerprint: daemon.AuthContextFingerprint("token-a"),
+		}, nil
+	}
+	startDaemon = func(context.Context, daemon.StartOptions) (daemon.StartResult, error) {
+		t.Fatal("startDaemon should not be called when daemon is already running")
+		return daemon.StartResult{}, nil
+	}
+
+	gotPaths, ok := ensureDaemonForTunnelRun(context.Background(), "https://relay.example.com", "token-b")
+	if ok {
+		t.Fatal("ensureDaemonForTunnelRun ok = true, want auth-context mismatch skip")
+	}
+	if gotPaths.BrokerSocketPath != paths.BrokerSocketPath {
+		t.Fatalf("paths = %#v, want resolved daemon paths", gotPaths)
+	}
+}
+
+func TestEnsureDaemonForTunnelRunAcceptsMatchingAuthContext(t *testing.T) {
+	oldResolvePaths := resolveDaemonPaths
+	oldDaemonStatus := daemonStatus
+	oldStartDaemon := startDaemon
+	t.Cleanup(func() {
+		resolveDaemonPaths = oldResolvePaths
+		daemonStatus = oldDaemonStatus
+		startDaemon = oldStartDaemon
+	})
+
+	paths := daemon.Paths{BrokerSocketPath: "/tmp/broker.sock"}
+	resolveDaemonPaths = func() (daemon.Paths, error) {
+		return paths, nil
+	}
+	daemonStatus = func(context.Context, daemon.Paths) (daemon.StatusInfo, error) {
+		return daemon.StatusInfo{
+			Running:                true,
+			BaseURL:                "https://relay.example.com",
+			AuthContextFingerprint: daemon.AuthContextFingerprint("token-a"),
+		}, nil
+	}
+	startDaemon = func(context.Context, daemon.StartOptions) (daemon.StartResult, error) {
+		t.Fatal("startDaemon should not be called when daemon is already running")
+		return daemon.StartResult{}, nil
+	}
+
+	gotPaths, ok := ensureDaemonForTunnelRun(context.Background(), "https://relay.example.com", "token-a")
+	if !ok {
+		t.Fatal("ensureDaemonForTunnelRun ok = false, want matching auth context")
+	}
+	if gotPaths.BrokerSocketPath != paths.BrokerSocketPath {
+		t.Fatalf("paths = %#v, want resolved daemon paths", gotPaths)
+	}
+}
+
 func TestRunDaemonStartReturnsExistingDaemonWithoutResolvingAuth(t *testing.T) {
 	oldResolvePaths := resolveDaemonPaths
 	oldDaemonStatus := daemonStatus
 	oldNewStore := newAuthStore
 	oldStartDaemon := startDaemon
-	oldEnsureDaemonTmuxAvailable := ensureDaemonTmuxAvailable
 	t.Cleanup(func() {
 		resolveDaemonPaths = oldResolvePaths
 		daemonStatus = oldDaemonStatus
 		newAuthStore = oldNewStore
 		startDaemon = oldStartDaemon
-		ensureDaemonTmuxAvailable = oldEnsureDaemonTmuxAvailable
 	})
 
-	ensureDaemonTmuxAvailable = func() error { return nil }
 	resolveDaemonPaths = func() (daemon.Paths, error) {
 		return daemon.Paths{}, nil
 	}
@@ -691,16 +966,13 @@ func TestRunDaemonStartRejectsChangingBaseURLWhileDaemonIsRunning(t *testing.T) 
 	oldDaemonStatus := daemonStatus
 	oldNewStore := newAuthStore
 	oldStartDaemon := startDaemon
-	oldEnsureDaemonTmuxAvailable := ensureDaemonTmuxAvailable
 	t.Cleanup(func() {
 		resolveDaemonPaths = oldResolvePaths
 		daemonStatus = oldDaemonStatus
 		newAuthStore = oldNewStore
 		startDaemon = oldStartDaemon
-		ensureDaemonTmuxAvailable = oldEnsureDaemonTmuxAvailable
 	})
 
-	ensureDaemonTmuxAvailable = func() error { return nil }
 	resolveDaemonPaths = func() (daemon.Paths, error) {
 		return daemon.Paths{}, nil
 	}
@@ -755,19 +1027,75 @@ func TestRunDaemonStatusPrintsFriendlyMessageWhenDaemonNotStarted(t *testing.T) 
 	}
 }
 
-func TestRunDaemonStartPrintsTmuxInstallGuidanceWhenTmuxMissing(t *testing.T) {
-	oldEnsureDaemonTmuxAvailable := ensureDaemonTmuxAvailable
+func TestRunDaemonStatusJSON(t *testing.T) {
+	oldResolvePaths := resolveDaemonPaths
+	oldDaemonStatus := daemonStatus
 	t.Cleanup(func() {
-		ensureDaemonTmuxAvailable = oldEnsureDaemonTmuxAvailable
+		resolveDaemonPaths = oldResolvePaths
+		daemonStatus = oldDaemonStatus
 	})
-	ensureDaemonTmuxAvailable = func() error { return daemon.ErrTmuxNotFound }
 
-	err := runDaemonStart(context.Background(), "http://127.0.0.1:8586", io.Discard, io.Discard)
-	if err == nil {
-		t.Fatal("runDaemonStart error = nil, want tmux guidance")
+	resolveDaemonPaths = func() (daemon.Paths, error) {
+		return daemon.Paths{}, nil
 	}
-	if !strings.Contains(err.Error(), "tmux is required for `tunnel daemon`") {
-		t.Fatalf("error = %q, want tmux install guidance", err.Error())
+	daemonStatus = func(context.Context, daemon.Paths) (daemon.StatusInfo, error) {
+		return daemon.StatusInfo{
+			Running:      true,
+			PID:          42,
+			DeviceID:     "dev_123",
+			BaseURL:      "https://relay.example.com",
+			LaunchHealth: daemon.LaunchHealthHealthy,
+		}, nil
+	}
+
+	var stdout bytes.Buffer
+	if err := runDaemonStatusWithOptions(context.Background(), &stdout, io.Discard, true); err != nil {
+		t.Fatalf("runDaemonStatusWithOptions returned error: %v", err)
+	}
+	var status daemon.StatusInfo
+	if err := json.Unmarshal(stdout.Bytes(), &status); err != nil {
+		t.Fatalf("status JSON unmarshal returned error: %v\n%s", err, stdout.String())
+	}
+	if !status.Running || status.PID != 42 || status.DeviceID != "dev_123" {
+		t.Fatalf("status = %#v, want JSON daemon status", status)
+	}
+}
+
+func TestRunDaemonStartDoesNotRequireTmuxForDaemonProcess(t *testing.T) {
+	t.Setenv(tunnelAuthTokenEnv, "env-token")
+	oldResolvePaths := resolveDaemonPaths
+	oldDaemonStatus := daemonStatus
+	oldStartDaemon := startDaemon
+	t.Cleanup(func() {
+		resolveDaemonPaths = oldResolvePaths
+		daemonStatus = oldDaemonStatus
+		startDaemon = oldStartDaemon
+	})
+	resolveDaemonPaths = func() (daemon.Paths, error) {
+		return daemon.Paths{}, nil
+	}
+	daemonStatus = func(context.Context, daemon.Paths) (daemon.StatusInfo, error) {
+		return daemon.StatusInfo{}, daemon.ErrNotRunning
+	}
+	startDaemon = func(context.Context, daemon.StartOptions) (daemon.StartResult, error) {
+		return daemon.StartResult{
+			Status: daemon.StatusInfo{
+				Running:      true,
+				PID:          42,
+				DeviceID:     "dev_started",
+				LaunchHealth: daemon.LaunchHealthDegraded,
+				LastFailure:  "tmux_not_found",
+			},
+		}, nil
+	}
+
+	var stdout bytes.Buffer
+	if err := runDaemonStart(context.Background(), "http://127.0.0.1:8586", &stdout, io.Discard); err != nil {
+		t.Fatalf("runDaemonStart returned error: %v", err)
+	}
+	want := "daemon started (pid=42 device_id=dev_started)\nwarning: launch readiness is degraded (tmux_not_found); remote launch may be unavailable\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("stdout = %q, want daemon-started message", got)
 	}
 }
 
@@ -1248,6 +1576,41 @@ func TestRunDaemonDevicesPrintsTrustedDevices(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "Pixel") || !strings.Contains(stdout.String(), strings.Repeat("a", 64)) {
 		t.Fatalf("stdout = %q, want trusted device row", stdout.String())
+	}
+}
+
+func TestRunDaemonBrokerSessionsJSON(t *testing.T) {
+	setTestEnv(t)
+
+	oldResolvePaths := resolveDaemonPaths
+	oldBrokerSessions := daemonBrokerSessions
+	t.Cleanup(func() {
+		resolveDaemonPaths = oldResolvePaths
+		daemonBrokerSessions = oldBrokerSessions
+	})
+	resolveDaemonPaths = func() (daemon.Paths, error) { return daemon.Paths{}, nil }
+	daemonBrokerSessions = func(context.Context, daemon.Paths) ([]daemon.BrokerSessionSnapshot, error) {
+		return []daemon.BrokerSessionSnapshot{{
+			BrokerSession: daemon.BrokerSession{
+				SessionID: "sess-1",
+				Label:     "api-fix",
+				CWD:       "/repo",
+				UpdatedAt: 123,
+			},
+			LatestPreview: "ready",
+		}}, nil
+	}
+
+	var stdout bytes.Buffer
+	if err := runDaemonBrokerSessions(context.Background(), &stdout, io.Discard, true); err != nil {
+		t.Fatalf("runDaemonBrokerSessions returned error: %v", err)
+	}
+	var sessions []daemon.BrokerSessionSnapshot
+	if err := json.Unmarshal(stdout.Bytes(), &sessions); err != nil {
+		t.Fatalf("broker sessions JSON unmarshal returned error: %v\n%s", err, stdout.String())
+	}
+	if len(sessions) != 1 || sessions[0].SessionID != "sess-1" || sessions[0].LatestPreview != "ready" {
+		t.Fatalf("sessions = %#v, want broker session JSON", sessions)
 	}
 }
 

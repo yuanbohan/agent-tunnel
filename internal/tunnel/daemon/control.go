@@ -19,25 +19,27 @@ const (
 	actionConfirmPendingPairing = "confirm_pending_pairing"
 	actionDevices               = "devices"
 	actionRevokeDevice          = "revoke_device"
+	actionBrokerSessions        = "broker_sessions"
 )
 
 var ErrNotRunning = errors.New("daemon is not running")
 
 type StatusInfo struct {
-	Running           bool   `json:"running"`
-	PID               int    `json:"pid,omitempty"`
-	StartedAt         int64  `json:"started_at,omitempty"`
-	BaseURL           string `json:"base_url,omitempty"`
-	DeviceID          string `json:"device_id,omitempty"`
-	DaemonFingerprint string `json:"daemon_fingerprint,omitempty"`
-	DisplayName       string `json:"display_name,omitempty"`
-	Hostname          string `json:"hostname,omitempty"`
-	PlatformFamily    string `json:"platform_family,omitempty"`
-	PlatformID        string `json:"platform_id,omitempty"`
-	RelayConnected    bool   `json:"relay_connected"`
-	LaunchHealth      string `json:"launch_health,omitempty"`
-	WorkspaceBackend  string `json:"workspace_backend,omitempty"`
-	LastFailure       string `json:"last_failure,omitempty"`
+	Running                bool   `json:"running"`
+	PID                    int    `json:"pid,omitempty"`
+	StartedAt              int64  `json:"started_at,omitempty"`
+	BaseURL                string `json:"base_url,omitempty"`
+	AuthContextFingerprint string `json:"auth_context_fingerprint,omitempty"`
+	DeviceID               string `json:"device_id,omitempty"`
+	DaemonFingerprint      string `json:"daemon_fingerprint,omitempty"`
+	DisplayName            string `json:"display_name,omitempty"`
+	Hostname               string `json:"hostname,omitempty"`
+	PlatformFamily         string `json:"platform_family,omitempty"`
+	PlatformID             string `json:"platform_id,omitempty"`
+	RelayConnected         bool   `json:"relay_connected"`
+	LaunchHealth           string `json:"launch_health,omitempty"`
+	WorkspaceBackend       string `json:"workspace_backend,omitempty"`
+	LastFailure            string `json:"last_failure,omitempty"`
 }
 
 type Request struct {
@@ -55,6 +57,7 @@ type Response struct {
 	PairCompletion *PairingCompletion       `json:"pair_completion,omitempty"`
 	TrustedDevices []TrustedAndroidDevice   `json:"trusted_devices,omitempty"`
 	TrustedDevice  *TrustedAndroidDevice    `json:"trusted_device,omitempty"`
+	BrokerSessions []BrokerSessionSnapshot  `json:"broker_sessions,omitempty"`
 	Error          string                   `json:"error,omitempty"`
 }
 
@@ -242,6 +245,17 @@ func TrustedDevices(ctx context.Context, paths Paths) ([]TrustedAndroidDevice, e
 		return nil, errors.New(response.Error)
 	}
 	return response.TrustedDevices, nil
+}
+
+func BrokerSessions(ctx context.Context, paths Paths) ([]BrokerSessionSnapshot, error) {
+	response, err := request(ctx, paths.SocketPath, Request{Action: actionBrokerSessions})
+	if err != nil {
+		return nil, fmt.Errorf("%w; start it with `tunnel daemon start`", ErrNotRunning)
+	}
+	if response.Error != "" {
+		return nil, errors.New(response.Error)
+	}
+	return response.BrokerSessions, nil
 }
 
 func RevokeTrustedDevice(ctx context.Context, paths Paths, fingerprint string) (TrustedAndroidDevice, error) {
