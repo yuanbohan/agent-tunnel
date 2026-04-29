@@ -149,6 +149,16 @@ STUN Binding Requests are unreliable UDP datagrams. Implementations should retry
 
 If STUN cannot return a public address within that budget, the connection manager should skip direct UDP and move to relay fallback.
 
+The Go Step 5 direct helper performs STUN discovery on the same UDP socket that
+will later back the direct QUIC attempt. This avoids learning a NAT mapping for
+one local port and then dialing QUIC from a different port. Candidate hints are
+bounded before they enter Relay realtime messages:
+
+- `public_udp_addr` is the STUN-observed address for the direct socket.
+- `private_udp_addrs` includes only private, link-local IPv6, and explicitly
+  test-allowed loopback/documentation addresses.
+- duplicate private candidates are normalized, sorted, and capped.
+
 ### NAT Traversal Limitations
 
 The minimal STUN-based scheme works for cone NATs.

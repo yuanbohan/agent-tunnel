@@ -96,9 +96,14 @@ func BuildBindingResponse(request []byte, from net.Addr) ([]byte, bool) {
 }
 
 func ParseXORMappedAddress(message []byte) (*net.UDPAddr, error) {
+	addr, _, err := ParseBindingSuccess(message)
+	return addr, err
+}
+
+func ParseBindingSuccess(message []byte) (*net.UDPAddr, [transactionIDLen]byte, error) {
 	transactionID, err := responseTransactionID(message)
 	if err != nil {
-		return nil, err
+		return nil, transactionID, err
 	}
 
 	attrs := message[headerLen:]
@@ -108,18 +113,19 @@ func ParseXORMappedAddress(message []byte) (*net.UDPAddr, error) {
 		valueStart := 4
 		valueEnd := valueStart + attrLen
 		if valueEnd > len(attrs) {
-			return nil, errInvalidMessage
+			return nil, transactionID, errInvalidMessage
 		}
 		if attrType == xorMappedAddress {
-			return parseXORMappedAddressValue(attrs[valueStart:valueEnd], transactionID)
+			addr, err := parseXORMappedAddressValue(attrs[valueStart:valueEnd], transactionID)
+			return addr, transactionID, err
 		}
 		padded := valueEnd + padding(attrLen)
 		if padded > len(attrs) {
-			return nil, errInvalidMessage
+			return nil, transactionID, errInvalidMessage
 		}
 		attrs = attrs[padded:]
 	}
-	return nil, errInvalidMessage
+	return nil, transactionID, errInvalidMessage
 }
 
 func bindingTransactionID(message []byte) ([transactionIDLen]byte, bool) {
