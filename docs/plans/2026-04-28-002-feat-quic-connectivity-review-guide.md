@@ -205,7 +205,7 @@ Each PR should:
 - Direct UDP
 - STUN
 - UDP relay
-- Payment enforcement beyond app-visible tier state
+- Payment enforcement beyond the Relay-exposed tier and official-app-local trusted-computer count rule
 
 **Independent acceptance:**
 

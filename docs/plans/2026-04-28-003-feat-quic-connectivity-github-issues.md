@@ -74,7 +74,7 @@ available, and `tunnel run` remaining the PTY/session source of truth.
 ## Scope Notes
 
 - Do not use legacy Relay attach compatibility or retirement as a planning dimension for this program.
-- Subscription is temporarily operator-managed through Relay; real payment integration is future work.
+- Account tier is temporarily operator-managed through Relay; real payment integration is future work.
 - Do not start Go implementation work from this umbrella issue. Work should happen through child issues.
 ```
 
@@ -285,7 +285,7 @@ adding NAT/direct UDP complexity.
 - Direct UDP
 - STUN
 - UDP relay
-- Payment enforcement beyond app-visible tier state
+- Payment enforcement beyond the Relay-exposed tier and official-app-local trusted-computer count rule
 
 ## Acceptance Checklist
 

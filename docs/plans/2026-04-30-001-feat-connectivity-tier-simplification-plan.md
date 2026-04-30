@@ -12,6 +12,8 @@ origin: docs/brainstorms/2026-04-30-connectivity-tier-simplification-requirement
 
 Replace the old session-level Free/Pro model with a computer-count policy contract. The implementation should remove sticky first-attach, locked-row, and preview-gating semantics from active connectivity docs and tests, keep Relay/daemon session transport entitlement-free, and leave Android as the owner of active-computer and downgrade-resolution state.
 
+Implementation note: this plan is now completed. The "Current" and "must be rewritten" wording below records the state at planning time; the active connectivity docs now describe trusted-computer count policy rather than session-level tier policy.
+
 ---
 
 ## Problem Frame

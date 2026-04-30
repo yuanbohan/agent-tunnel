@@ -56,7 +56,7 @@ The broader connectivity program is moving terminal traffic away from Relay-term
 
 - Do not implement direct UDP, STUN, NAT traversal, direct-first deadlines, or direct-vs-relay path badge behavior in this step.
 - Do not implement UDP relay or production fallback latency SLO enforcement.
-- Do not add payment enforcement beyond the existing Relay-exposed tier and official-app-local sticky first-attach rule.
+- Do not add payment enforcement beyond the existing Relay-exposed tier and official-app-local trusted-computer count rule.
 - Do not make Relay the owner of session lists, preview text, attach state, terminal state, or per-session subscription decisions.
 - Do not rewrite or retire the existing `/agent/ws`, `/device/ws`, `/api/sessions`, or `/api/sessions/:id/attach/ws` surfaces as part of Step 4.
 - Do not claim production Android compatibility from this repository alone; the acceptance path here is Go simulated app plus stable docs for Android.
@@ -479,7 +479,7 @@ sequenceDiagram
 - **State lifecycle risks:** attempt tokens must be expired and single-use; active tunnels must close on app logout, password change, agent-token revoke, daemon disconnect, or paired-device revoke; interactive broker state must release on mobile disconnect.
 - **API surface parity:** docs must distinguish existing Relay attach from new connectivity fallback. Existing `/api/sessions` and attach routes remain available but are not used by Step 4 simulator.
 - **Integration coverage:** unit tests alone will not prove the feature. The plan requires a fallback simulator path that crosses Relay realtime, Relay tunnel, WebSocket carrier, quic-go, daemon transport, broker, and local session registration.
-- **Unchanged invariants:** Relay remains content-opaque; daemon remains subscription-unaware; official app remains the free/pro enforcement point; `tunnel run` remains PTY owner; reconnect recovery remains fresh snapshot only.
+- **Unchanged invariants:** Relay remains content-opaque; daemon remains tier-unaware; official app remains the trusted-computer tier enforcement point; `tunnel run` remains PTY owner; reconnect recovery remains fresh snapshot only.
 
 ---
 
