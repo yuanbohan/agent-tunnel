@@ -21,7 +21,7 @@ This plan intentionally separates the program into large, reviewable steps. Each
 
 The origin requirements define the long-term need to separate Relay control-plane duties from terminal data-plane traffic: direct mobile-to-computer transport should be preferred, Relay forwarding should remain as encrypted fallback, and the PTY owner on the computer should remain authoritative for snapshot, live bytes, input, and session lifecycle (see origin: `docs/brainstorms/2026-04-23-direct-attach-control-plane-requirements.md`).
 
-The later `docs/connectivity/` documents refine that into a concrete phase-1 contract: QUIC/TLS 1.3 with device-key pinning, `quic-go` on daemon, Cloudflare `quiche` on Android, WSS-tunneled QUIC fallback before direct STUN, daemon-owned session discovery, sticky first-attach subscription behavior in the official app, and Relay reduced to auth, daemon presence, pairing transport, rendezvous, subscription tier exposure, and opaque fallback packet relay.
+The later `docs/connectivity/` documents refine that into a concrete phase-1 contract: QUIC/TLS 1.3 with device-key pinning, `quic-go` on daemon, Cloudflare `quiche` on Android, WSS-tunneled QUIC fallback before direct STUN, daemon-owned session discovery, a trusted-computer-count tier rule in the official app, and Relay reduced to auth, daemon presence, pairing transport, rendezvous, account tier exposure, and opaque fallback packet relay.
 
 The current repository still implements a Relay-centered model: `/agent/ws`, `/device/ws`, `/api/sessions`, and `/api/sessions/:id/attach/ws` carry session discovery, attach control, terminal bytes, input, launch, and stop. This program focuses on the new daemon-mediated connectivity stack; preserving, retiring, or redesigning the old attach surface is not a planning dimension for this feature split.
 
@@ -36,7 +36,7 @@ The current repository still implements a Relay-centered model: `/agent/ws`, `/d
 - R16-R17. Prefer contracts and abstractions that advance direct plus encrypted fallback instead of optimizing the existing Relay attach path alone.
 - D1. Use WSS-tunneled QUIC fallback first; defer UDP relay unless production fallback latency fails the documented SLO.
 - D2. Auto-start the daemon from `tunnel run` without making users manage daemon lifecycle manually.
-- D3. Enforce free/pro only in the official app through sticky first-attach per connected daemon card.
+- D3. Enforce Free / Pro only in the official app through trusted-computer count: Free has one active trusted computer; Pro has up to ten trusted computers.
 - D4. Bind app sessions to `device_fingerprint` in phase 1 without per-WebSocket proof of possession.
 - D5. Use one bidirectional control stream plus daemon-initiated unidirectional interactive streams.
 - D6. Use length-framed JSON control payloads and raw bytes only for snapshot/live chunks.
@@ -54,7 +54,7 @@ The current repository still implements a Relay-centered model: `/agent/ws`, `/d
 - This plan is a program plan for the current Go repository. It includes Android acceptance gates, but the production Android codebase is not present in this workspace. Before Android production implementation begins, create or update a companion Android plan with concrete repo-relative Android file paths.
 - Do not make existing Relay attach compatibility or retirement part of this program's high-level scope. Implementation PRs should avoid unrelated changes to that surface unless a step explicitly requires a route or protocol change.
 - Do not implement UDP relay in phase 1.
-- Do not implement daemon-side per-session ACLs or subscription enforcement in phase 1.
+- Do not implement daemon-side per-session ACLs or tier enforcement in phase 1.
 - Do not implement payment or upgrade purchase flow in phase 1. Relay operators may temporarily set a user to `free` or `pro`; this is a FIXME to replace with a real payment-backed subscription flow later.
 - Do not add missed-byte replay; reconnect recovery is fresh `session_index`, preview resubscribe, interactive re-request, and fresh snapshot.
 - Do not describe the root `README.md`, `AGENTS.md`, or `CLAUDE.md` as if QUIC connectivity has shipped before implementation reaches user-visible parity.
@@ -78,7 +78,7 @@ The current repository still implements a Relay-centered model: `/agent/ws`, `/d
 - `internal/tunnel/session/hub.go` and `internal/tunnel/session/terminal_mirror.go` already provide PTY fanout, input serialization, resize tracking, snapshot serialization, and viewport text.
 - `internal/tunnel/daemon/runtime.go`, `control.go`, `paths.go`, `recipe.go`, and `connector.go` own daemon lifecycle, local control socket, persisted device identity, status, tmux launch, and current `/device/ws` connection.
 - `internal/relay/handler/new.go` wires the current REST/WebSocket surface; new connectivity endpoints must be added in parallel with `/agent/ws`, `/device/ws`, and `/api/sessions/:id/attach/ws`.
-- `internal/relay/auth/app_service.go`, `internal/relay/auth/types.go`, `internal/relay/store/postgres/auth_repository.go`, and `deploy/postgres/latest.sql` must change together for `device_fingerprint`, JWT/session storage, and subscription tier.
+- `internal/relay/auth/app_service.go`, `internal/relay/auth/types.go`, `internal/relay/store/postgres/auth_repository.go`, and `deploy/postgres/latest.sql` must change together for `device_fingerprint`, JWT/session storage, and account tier.
 - `internal/relay/device/registry.go` and `internal/relay/session/registry.go` are live in-memory registries. New pairing-derived daemon visibility and relay-tunnel attempt state should follow that live-only style unless a schema-backed state is explicitly required.
 - `docs/daemon.md` currently says daemon start fails early when tmux is unavailable. Connectivity auto-start creates a conflict: the daemon's connectivity core should run even when launch health is degraded, or `tunnel run` auto-start will regress local launch.
 - `docs/plans/2026-04-24-001-feat-session-connectivity-program-plan.md` is superseded and should not be edited. It is only a breadcrumb from the old WebRTC direction.
@@ -109,7 +109,7 @@ The current repository still implements a Relay-centered model: `/agent/ws`, `/d
 | Shared primitives | Add isolated `internal/connectivity/...` packages before daemon/Relay integration | SAS, identity certificate construction, frame codec, QUIC config, and packet carrier tests are security-sensitive and should not be buried inside daemon or handler code. |
 | Daemon startup | Split daemon connectivity core from tmux launch health | `tunnel run` auto-start requires a daemon that can broker local sessions even when tmux is missing. Tmux should degrade remote launch health, not necessarily prevent the connectivity broker from running. |
 | Relay app identity | Add `device_fingerprint` to app-session auth before pairing | Pairing account binding depends on the Android JWT/session's account and fingerprint; bolting this on after pairing would create migration churn. |
-| Subscription storage | Add a temporary Relay operator-managed tier surface, defaulting to `free` | Payment is deferred, but Android still needs a reliable `free`/`pro` input. Operators can upgrade/downgrade users manually for now; this should be marked as a FIXME for future payment-backed subscription ownership. |
+| Account tier storage | Add a temporary Relay operator-managed tier surface, defaulting to `free` | Payment is deferred, but Android still needs a reliable `free`/`pro` input for trusted-computer limits. Operators can upgrade/downgrade users manually for now; this should be marked as a FIXME for future payment-backed ownership. |
 | Pairing visibility refresh | Step 2 must spec and implement daemon-to-Relay visibility refresh after reconnect | Current docs say Relay should not be the durable trust DB, but do not fully specify how Relay rebuilds daemon visibility after restart. The daemon-local trusted roster should refresh Relay's live derived visibility. |
 | Fallback before direct | Implement WSS-tunneled QUIC before STUN/direct | `contract.md` orders 1.2 before 1.3. Fallback-only makes session protocol, stream routing, and Android UI testable without NAT variability. |
 | STUN implementation | Self-host Binding-only STUN in the Relay edge footprint | The docs explicitly avoid public third-party STUN and TURN. STUN belongs later with direct path work and deployment changes. |
@@ -123,7 +123,7 @@ The current repository still implements a Relay-centered model: `/agent/ws`, `/d
 
 - QUIC library direction: `quic-go` on daemon and Cloudflare `quiche` via JNI on Android, with `kwik` only as fallback if packaging blocks.
 - Fallback carrier: WSS-tunneled QUIC, not TURN/coturn and not a Relay-visible session byte pipe.
-- Subscription enforcement: official-app sticky first-attach only; Relay exposes tier, daemon stays subscription-unaware.
+- Tier enforcement: official-app trusted-computer count only; Relay exposes tier, daemon stays tier-unaware.
 - First branch scope: interop spike and reusable primitives, not production daemon/Relay behavior.
 - Existing Relay attach posture: ignore as a product planning dimension for this program unless a concrete implementation step must touch it.
 
@@ -240,7 +240,7 @@ Do not start Step 2 until this step's handoff is reviewed and merged.
 Goal: establish the trusted device/account foundation. This step changes Relay auth and pairing transport but does not yet expose session traffic over QUIC.
 
 Exit summary:
-- App auth accepts and persists `device_fingerprint`, token refresh rejects mismatches, and Relay exposes current subscription tier.
+- App auth accepts and persists `device_fingerprint`, token refresh rejects mismatches, and Relay exposes current account tier.
 - Daemon has persistent Ed25519 identity and trusted Android roster.
 - `tunnel daemon pair`, SAS golden vectors, invitation persistence, QR output, revoke/list commands, and Go-only pair test client work through Relay.
 - Relay maintains live pairing-derived daemon visibility and can rebuild it from daemon-local trust after reconnect.
@@ -282,7 +282,7 @@ Goal: complete production Android behavior in the companion app once its reposit
 
 Exit summary:
 - Android plan names concrete production file paths, tests, and manual acceptance gates.
-- Official app login, pairing, daemon cards, free/pro sticky first-attach, preview subscriptions, interactive terminal focus, reconnect recovery, and account-switch cleanup match the documented state machines.
+- Official app login, pairing, trusted-computer policy, session preview subscriptions, interactive terminal focus, reconnect recovery, and account-switch cleanup match the documented state machines.
 - Android path badge distinguishes direct vs relay without implying different encryption.
 - Any Android-specific deviations are reflected back into `docs/connectivity/ux/android.md`, `docs/connectivity/ux/subscription.md`, and sequence/state docs.
 
@@ -370,9 +370,9 @@ Exit summary:
 
 ---
 
-- U2. **Relay app identity and subscription policy foundation**
+- U2. **Relay app identity and account tier foundation**
 
-**Goal:** Add the Relay-side account/device/policy substrate required by pairing and official-app sticky first-attach behavior.
+**Goal:** Add the Relay-side account/device/policy substrate required by pairing and official-app trusted-computer behavior.
 
 **Requirements:** R10, R14, D3, D4
 
@@ -412,7 +412,7 @@ Exit summary:
 - Extend login and refresh request validation to require a normalized Android `device_fingerprint` for connectivity-capable app clients while preserving any compatibility behavior the existing API still needs.
 - Persist app-session `device_fingerprint` server-side and reject refresh when it differs from the original session fingerprint.
 - Introduce `free`/`pro` tier storage and authenticated policy API needed by Android; default existing users to `free`.
-- Add an operator-only maintenance operation to set a user's temporary subscription tier to `free` or `pro`. This is intentionally not a payment system and should be documented as a FIXME to replace with real billing/subscription ownership later.
+- Add an operator-only maintenance operation to set a user's temporary account tier to `free` or `pro`. This is intentionally not a payment system and should be documented as a FIXME to replace with real billing ownership later.
 - Make the app access token a signed JWT carrying at least `sub`, `device_fingerprint`, `sid`, and `exp`, while keeping server-side session lookup/revocation semantics intact so logout and password change still close affected app-side connections.
 - Keep refresh tokens opaque and server-rotated unless implementation uncovers a stronger reason to change them.
 - Include manual SQL guidance for existing PostgreSQL deployments because production Compose does not run automatic migrations.
@@ -437,7 +437,7 @@ Exit summary:
 
 **Verification:**
 - Pairing implementation can rely on authenticated account id plus app-session fingerprint as Relay-side Android identity.
-- Android can fetch subscription tier without any daemon or session transport being online.
+- Android can fetch account tier without any daemon or session transport being online.
 
 ---
 
@@ -605,7 +605,7 @@ Exit summary:
 - Test: `internal/protocol/connectivity_test.go`
 
 **Approach:**
-- Add app-side and daemon-side realtime handling for presence, tunnel request/ready, pairing visibility updates, and subscription tier fetch coordination.
+- Add app-side and daemon-side realtime handling for presence, tunnel request/ready, pairing visibility updates, and account tier fetch coordination.
 - Issue short-lived, single-use tunnel tokens bound to `attempt_id`, actor type, authenticated identity, and daemon id.
 - Implement Relay tunnel as paired WebSockets that forward opaque encrypted QUIC packet payloads without decoding connectivity frames.
 - On daemon transport, open one bidirectional control stream after QUIC handshake; exchange `hello`; send full `session_index` before any deltas.
@@ -704,7 +704,7 @@ Exit summary:
 
 ---
 
-- U7. **Android companion integration and subscription UX**
+- U7. **Android companion integration and tier UX**
 
 **Goal:** Complete production mobile behavior in the Android repo once its path is available, while keeping this Go repo as the protocol and Relay/daemon source of truth.
 
@@ -722,7 +722,7 @@ Exit summary:
 
 **Approach:**
 - Create a separate Android implementation plan in the Android repo before coding production UI.
-- Preserve the official app rules from `docs/connectivity/ux/android.md`: login before connectivity, daemon cards first, lazy daemon-card connection, no preview cache, sticky first-attach for free tier, pro preview subscribe for every live session in opened card.
+- Preserve the official app rules from `docs/connectivity/ux/android.md`: login before connectivity, trusted-computer policy before daemon transport, no preview cache, Free Replace Computer, Pro ten-computer limit, downgrade resolution, and identical session behavior inside one active computer.
 - Bind Android device identity to app-session login and pairing; do not rely on Relay as the cryptographic endpoint.
 - Implement terminal focus discipline so only one terminal view receives input even when multiple interactive streams exist.
 - Keep path badge copy explicit that direct and relay share the same encryption.
@@ -734,12 +734,13 @@ Exit summary:
 
 **Test scenarios:**
 - Test expectation: Android production test file paths are unavailable in this workspace. The companion Android plan must add concrete unit, instrumentation, and manual acceptance paths before implementation.
-- Happy path: free user opens daemon card, sees all rows locked before first attach, confirms first session, then only that session receives preview/interactive.
-- Edge case: sticky unlocked session disappears; free state clears and no auto-rollover occurs.
-- Happy path: pro user opens daemon card and auto-subscribes previews for every live session in that card.
-- Error path: locked free row explains the current unlocked session and does not silently switch.
+- Happy path: Free user with one active trusted computer auto-connects it when online and sees the full session roster.
+- Edge case: Free Replace Computer failure, cancellation, or SAS mismatch leaves the old trust active.
+- Happy path: Pro user auto-connects online trusted computers up to ten.
+- Error path: Pro user at ten trusted computers is asked to remove one before pairing another.
+- Downgrade: Pro-to-Free with multiple trusted computers requires choosing one active computer before multi-computer auto-connect.
 - Reconnect: app replays preview subscriptions and interactive requests after daemon transport reconnect, then rebuilds terminal views from fresh snapshots.
-- Account switch: Relay and daemon transports close, app-local unlock state clears, daemon-local trust remains until revoke.
+- Account switch: Relay and daemon transports close, account-derived local policy state clears, daemon-local trust remains until revoke.
 
 **Verification:**
 - Android behavior matches the documented state machines before the feature is marketed as available.
@@ -798,10 +799,10 @@ Exit summary:
 
 - **Interaction graph:** `cmd/tunnel run`, daemon runtime, daemon local sockets, Relay app auth, Relay realtime WebSockets, Relay tunnel WebSockets, STUN UDP listener, terminal mirror, and external Android client all participate. Changes must be reviewed as multi-surface even when each branch is scoped.
 - **Error propagation:** Pairing, Relay auth, transport, policy, QUIC/TLS, STUN, and broker errors need stable codes from `docs/connectivity/reference/error-codes.md`; raw library errors should be logged diagnostically and mapped before reaching users.
-- **State lifecycle risks:** Device identity, app sessions, subscription tier, invitation roster, trusted Android roster, live visibility, tunnel tokens, local session roster, preview cache, and interactive lifetimes all have different durability. The plan keeps durable trust local to daemon and live routing mostly in memory.
+- **State lifecycle risks:** Device identity, app sessions, account tier, invitation roster, trusted Android roster, live visibility, tunnel tokens, local session roster, preview cache, and interactive lifetimes all have different durability. The plan keeps durable trust local to daemon and live routing mostly in memory.
 - **API surface:** New realtime/tunnel APIs must be documented in `docs/api.md` when their concrete routes land. Existing Relay attach surfaces are outside this program's review scope unless a step explicitly modifies them.
 - **Integration coverage:** Unit tests are not enough. Each step needs at least one cross-layer harness: pairing through Relay, broker registration from `tunnel run`, fallback transport from simulated app to daemon, and direct path with STUN/rendezvous.
-- **Unchanged invariants:** Relay must not parse terminal payloads in the new fallback; `tunnel run` remains PTY owner; local terminal remains authoritative; subscription state must not influence pairing, TLS pinning, or path selection.
+- **Unchanged invariants:** Relay must not parse terminal payloads in the new fallback; `tunnel run` remains PTY owner; local terminal remains authoritative; account tier must not influence pairing, TLS pinning, or path selection.
 
 ---
 
@@ -814,7 +815,7 @@ Exit summary:
 | Daemon auto-start conflicts with tmux requirement | High | Medium | U4 explicitly splits connectivity core from launch health and updates `docs/daemon.md`. |
 | Relay visibility after restart is underspecified | Medium | High | U3 must amend the relay protocol with daemon-to-Relay visibility refresh before implementation. |
 | App auth migration breaks existing clients | Medium | High | U2 should preserve compatibility where required, add clear docs, and include manual SQL for deployed databases. |
-| Free/pro app-only enforcement is bypassable | High | Low in phase 1 | The docs already accept this tradeoff; do not represent it as daemon-enforced security. |
+| Free / Pro app-only computer-count enforcement is bypassable | High | Low in phase 1 | The docs already accept this tradeoff; do not represent it as daemon-enforced security. |
 | WSS fallback latency is poor | Medium | Medium | Keep it as degraded path, measure p95 input RTT, and use the documented UDP relay escalation trigger. |
 | Private address rendezvous leaks too much host info | Medium | Medium | Cap and filter `private_udp_addrs`; log only bounded diagnostics. |
 | Existing Relay attach concerns distract from the new stack | Medium | Medium | Keep this program scoped to new connectivity; do not add legacy preservation or retirement work to child issues unless it is separately approved. |

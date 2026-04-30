@@ -1,5 +1,5 @@
 ---
-title: step 02: App identity, subscription surface, pairing, and visibility
+title: step 02: App identity, account tier surface, pairing, and visibility
 type: handoff
 status: completed
 date: 2026-04-28
@@ -19,7 +19,7 @@ traffic.
 ## Major Modules
 
 - App session device fingerprint binding
-- Temporary operator-managed subscription tier surface
+- Temporary operator-managed account tier surface
 - Daemon long-term identity
 - Pairing invitations and SAS confirmation
 - Trusted Android device roster
@@ -49,7 +49,7 @@ traffic.
 - [x] Revoking a device removes visibility and active trust state.
 - [x] Relay restart/daemon reconnect rebuilds live visibility from daemon-local trust.
 - [x] Android can fetch `free` or `pro` policy state.
-- [x] Operator can upgrade or downgrade a user's temporary subscription tier without a payment system.
+- [x] Operator can upgrade or downgrade a user's temporary account tier without a payment system.
 
 ## Implementation Summary
 

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -388,6 +389,7 @@ func TestHandlerAccountPolicyReflectsOperatorTier(t *testing.T) {
 	}
 	var policy handlertypes.AccountPolicyResponse
 	decodeAPIEnvelopeFromRecorder(t, policyRec, http.StatusOK, &policy)
+	assertAccountPolicyResponseShape(t, policyRec)
 	if policy.Tier != relayauth.SubscriptionTierFree {
 		t.Fatalf("initial tier = %q, want free", policy.Tier)
 	}
@@ -414,8 +416,30 @@ func TestHandlerAccountPolicyReflectsOperatorTier(t *testing.T) {
 		t.Fatalf("updated policy status = %d, want 200", policyRec.Code)
 	}
 	decodeAPIEnvelopeFromRecorder(t, policyRec, http.StatusOK, &policy)
+	assertAccountPolicyResponseShape(t, policyRec)
 	if policy.Tier != relayauth.SubscriptionTierPro {
 		t.Fatalf("updated tier = %q, want pro", policy.Tier)
+	}
+}
+
+func assertAccountPolicyResponseShape(t *testing.T, recorder *httptest.ResponseRecorder) {
+	t.Helper()
+	var env apiEnvelope
+	if err := json.Unmarshal(recorder.Body.Bytes(), &env); err != nil {
+		t.Fatalf("decode policy envelope: %v", err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(env.Body, &fields); err != nil {
+		t.Fatalf("decode policy body: %v", err)
+	}
+	if len(fields) != 2 {
+		t.Fatalf("account policy fields = %#v, want only account_id and tier", fields)
+	}
+	if _, ok := fields["account_id"]; !ok {
+		t.Fatalf("account policy fields = %#v, missing account_id", fields)
+	}
+	if _, ok := fields["tier"]; !ok {
+		t.Fatalf("account policy fields = %#v, missing tier", fields)
 	}
 }
 

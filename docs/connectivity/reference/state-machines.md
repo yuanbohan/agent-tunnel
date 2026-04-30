@@ -2,16 +2,16 @@
 
 ## Status
 
-This document collects the three core state machines of the QUIC session-connectivity architecture in one place. State names match the transport and UI concepts used elsewhere in `docs/connectivity/`.
+This document collects the core state machines of the QUIC session-connectivity architecture. Tier policy is computer-scoped only; there is no per-session tier state.
 
 ## Per-Daemon Transport State
 
-This state is owned by the Android connection manager. Each daemon connection has one independent instance of this state machine. The state name is also surfaced in the UI as the daemon-card status.
+This state is owned by the Android connection manager. Each daemon connection has one independent instance of this state machine. The state name is also surfaced in the UI as the computer-card status.
 
 ```mermaid
 stateDiagram-v2
     [*] --> offline
-    offline --> connecting_direct: daemon visible online,<br/>rendezvous starts
+    offline --> connecting_direct: active trusted computer online,<br/>rendezvous starts
     connecting_direct --> offline: daemon goes offline<br/>via Relay presence
     connecting_direct --> connected_direct: QUIC/TLS handshake OK<br/>over direct UDP
     connecting_direct --> connecting_relay: direct attempt<br/>deadline expired
@@ -28,108 +28,104 @@ stateDiagram-v2
 
 ### Transition Rules
 
-- `offline → connecting_direct` happens when Relay presence shows the daemon online and the app chooses to connect to it
-- `connecting_direct → connecting_relay` is sequential, not happy-eyeballs; the deadline is an implementation default, not a wire-level constant
-- `connecting_* → offline` happens immediately if Relay presence marks the daemon offline before the transport finishes connecting
-- `reconnecting` uses exponential backoff with jitter; exact timing is an implementation default
-- the path badge shown in the UI is derived from this state and confirmed by transport diagnostics: `connected_direct → "Direct"`, `connected_relay → "Relay"`, others → status word
+- `offline -> connecting_direct` happens only for a trusted computer the current tier allows Android to connect.
+- `connecting_direct -> connecting_relay` is sequential, not happy-eyeballs; the deadline is an implementation default.
+- `connecting_* -> offline` happens immediately if Relay presence marks the daemon offline before the transport finishes connecting.
+- `reconnecting` uses exponential backoff with jitter.
+- the path badge is derived from this state and confirmed by transport diagnostics: `connected_direct -> "Direct"`, `connected_relay -> "Relay"`, others -> status word.
 
 ### Daemon-Side Mirror
 
-The daemon also maintains a per-Android-connection state, but its state space is narrower. It can attempt a direct UDP listener after a Relay rendezvous hint and can serve a Relay tunnel fallback, but once QUIC/TLS is accepted it treats both carriers identically and reports only advisory path diagnostics (`direct` or `relay`).
+The daemon also maintains a per-Android-connection state, but once QUIC/TLS is accepted it treats direct and relay carriers identically and reports only advisory path diagnostics (`direct` or `relay`).
 
 ## Per-Session UI Lifecycle
 
-This state is owned per `(daemon, session)` pair on the Android side. Multiple sessions on the same daemon connection can each be in different states.
+This state is owned per `(computer, session)` pair on Android. Multiple sessions on the same daemon connection can each be in different states.
 
 ```mermaid
 stateDiagram-v2
     [*] --> absent
-    absent --> visible_locked: session appears,<br/>no sticky unlock yet
-    absent --> visible_unlocked: session appears,<br/>session_id == unlocked_session_id<br/>or tier = pro
-    visible_locked --> visible_unlocked: user first-attaches this row<br/>or restored sticky session matches
-    visible_unlocked --> visible_locked: sticky unlock cleared<br/>or another session becomes sticky
-    visible_unlocked --> preview_active: preview_snapshot arrives<br/>for subscribed row
-    preview_active --> visible_unlocked: preview_unsubscribe or<br/>preview cleared
-    visible_unlocked --> interactive_pending: interactive_request sent
+    absent --> visible: session appears in session_index or session_upsert
+    visible --> preview_active: preview_snapshot arrives<br/>for subscribed row
+    preview_active --> visible: preview_unsubscribe or<br/>preview cleared
+    visible --> interactive_pending: interactive_request sent
     preview_active --> interactive_pending: interactive_request sent
     interactive_pending --> interactive_active: interactive_granted +<br/>stream observed
-    interactive_pending --> preview_active: interactive_denied(daemon_busy or device_not_trusted)<br/>and preview still subscribed
-    interactive_pending --> visible_unlocked: interactive_denied(daemon_busy or device_not_trusted)<br/>and no preview subscription
+    interactive_pending --> preview_active: interactive_denied<br/>and preview still subscribed
+    interactive_pending --> visible: interactive_denied<br/>and no preview subscription
     interactive_pending --> absent: interactive_denied(session_unavailable)<br/>followed by session_gone
     interactive_active --> preview_active: interactive_release sent<br/>and preview remains subscribed
-    interactive_active --> visible_unlocked: interactive_release sent<br/>and no preview subscription
-    visible_locked --> absent: session_gone received
-    visible_unlocked --> absent: session_gone received
+    interactive_active --> visible: interactive_release sent<br/>and no preview subscription
+    visible --> absent: session_gone received
     preview_active --> absent: session_gone received
     interactive_active --> absent: session_gone received
 ```
 
 ### State Meanings
 
-- `absent` — the session is not currently present in the daemon roster
-- `visible_locked` — the row is visible in the official app but not currently usable under the local free/pro product rule
-- `visible_unlocked` — the row is currently usable, but no live preview is being shown yet
-- `preview_active` — the app subscribed to preview and is receiving live preview snapshots for this session
-- `interactive_pending` — the app sent `interactive_request` and is awaiting daemon response
-- `interactive_active` — daemon opened an interactive stream; snapshot and live bytes are flowing
+- `absent` - the session is not currently present in the daemon roster.
+- `visible` - the row is visible and usable in the official app because its computer is active.
+- `preview_active` - the app subscribed to preview and is receiving live preview snapshots for this session.
+- `interactive_pending` - the app sent `interactive_request` and is awaiting daemon response.
+- `interactive_active` - daemon opened an interactive stream; snapshot and live bytes are flowing.
 
 ### Rules
 
-- the lock/unlock decision is app-local in phase 1; neither Relay nor daemon tracks this per session
-- on free tier, before the user has chosen a session, all rows may remain `visible_locked`
-- on free tier, at most one row per connected daemon card is `visible_unlocked` at a time
-- on free tier, roster updates do not unlock a new row automatically; only a user first-attach or sticky restore does that
-- `interactive_denied(session_unavailable)` should be followed by row removal once `session_gone` is processed
+- Free and Pro use the same per-session UI lifecycle once the computer is active.
+- Android may choose which previews to subscribe to for performance or list UX, but not as a tier gate.
+- `interactive_denied(session_unavailable)` should be followed by row removal once `session_gone` is processed.
 
 ### Daemon-Side Mirror
 
-The daemon does not model `visible_locked` vs `visible_unlocked`.
-
-From the daemon's perspective a paired device may:
+From the daemon's perspective, a paired device may:
 
 - subscribe or unsubscribe preview for any session
 - request interactive for any session
 - receive grant / deny per session
 
-The phase-1 official app enforces the free/pro rule before sending those requests.
+The daemon does not model tier, active computer count, or selected sessions.
 
-## Per-Daemon Card Policy Lifecycle
+## Trusted-Computer Policy Lifecycle
 
-This state is owned by the official Android app per connected daemon card. It exists only to make the free-tier rule explicit.
+This state is owned by the official Android app per account.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> unknown
-    unknown --> pro_unrestricted: tier fetched = pro
-    unknown --> determining_free: tier fetched = free
-    determining_free --> no_live_sessions: daemon roster known,<br/>zero live sessions
-    determining_free --> waiting_for_first_attach: daemon roster known,<br/>live sessions visible
-    waiting_for_first_attach --> one_free_row_unlocked: user first-attaches one row
-    one_free_row_unlocked --> one_free_row_unlocked: daemon roster update<br/>keeps current unlocked row
-    one_free_row_unlocked --> waiting_for_first_attach: sticky unlocked session disappears
-    waiting_for_first_attach --> no_live_sessions: last live session disappears
-    no_live_sessions --> waiting_for_first_attach: new live session appears
-    pro_unrestricted --> determining_free: tier changes to free
-    determining_free --> unknown: reconnect / account reload
-    pro_unrestricted --> unknown: reconnect / account reload
+    [*] --> loading
+    loading --> free_none: tier = free,<br/>no trusted computer
+    loading --> free_active_one: tier = free,<br/>one active trusted computer
+    loading --> free_resolution_required: tier = free,<br/>multiple active trusted computers
+    loading --> pro_active: tier = pro,<br/>0-10 trusted computers
+
+    free_none --> replacing_or_pairing: user starts pairing
+    free_active_one --> replacing_or_pairing: user starts Replace Computer
+    replacing_or_pairing --> free_active_one: SAS succeeds,<br/>new trust becomes active
+    replacing_or_pairing --> free_none: SAS fails or canceled,<br/>no previous trust
+    replacing_or_pairing --> free_active_one: SAS fails or canceled,<br/>old trust remains active
+
+    free_resolution_required --> free_active_one: user chooses one computer
+    pro_active --> pro_limit_reached: trusted computer count = 10
+    pro_limit_reached --> pro_active: user removes a computer
+    pro_active --> free_resolution_required: tier changes to free,<br/>trusted count > 1
+    pro_active --> free_active_one: tier changes to free,<br/>trusted count = 1
+    pro_active --> free_none: tier changes to free,<br/>trusted count = 0
 ```
 
 ### Notes
 
-- Relay provides only the tier input for this machine
-- the roster input comes from one daemon's `session_index` / `session_upsert` / `session_gone`
-- on free tier, the app keeps one optional `unlocked_session_id` per connected daemon card
-- that sticky unlock is set only by the user's first interactive attach on that card
-- no manual switching exists in phase 1
-- when the sticky unlocked session disappears, the app returns to `waiting_for_first_attach`
+- Relay provides only the tier input for this machine.
+- Android local state provides trusted-computer inventory.
+- Free auto-connects only the one active trusted computer.
+- Pro auto-connects online trusted computers up to the ten-computer limit.
+- Downgrade resolution blocks multi-computer auto-connect until the user chooses one active computer.
+- Replace Computer is transactional: failed or canceled new pairing leaves the old active trust unchanged.
+- TODO: add daemon-side old-trust revoke after Replace Computer success.
 
 ## Cross-Reference
 
-- transport state names are listed in `transport-protocol.md`
-- free/pro product rules are described in `subscription-model.md`
 - preview and interactive frame behavior are in `../protocol/transport.md`
-- recommended UI behavior is in `../ux/android.md`
+- Free / Pro computer rules are described in `../ux/subscription.md`
+- recommended Android behavior is in `../ux/android.md`
 
 ## Related Documents
 

@@ -40,7 +40,7 @@ The full reasoning lives in `contract.md`. The headlines:
 
 - **Direct + WSS-tunneled QUIC fallback** (UDP relay deferred to phase 2 if perf gates trip).
 - **Daemon auto-starts** when the user runs `tunnel run`. The user does not manage daemon lifecycle directly.
-- **Free unlock = sticky first-attach** per daemon card. No auto-rollover.
+- **Free / Pro = trusted-computer count only**: Free has one active trusted computer; Pro has up to ten trusted computers. Session behavior inside one active computer is identical.
 - **Opaque app session** is bound server-side to `device_fingerprint`; client supplies it on login. Phase 1 does not require a per-WS device-key proof.
 - **Control stream = bidirectional, JSON-typed frames.** Interactive stream = unidirectional (daemon → Android), raw PTY bytes.
 - **Cloudflare quiche on Android, quic-go on daemon.** Step 1 validates the protocol/data layer with a Go mobile simulator; real Android `quiche` validation remains a TODO before Android compatibility is claimed.

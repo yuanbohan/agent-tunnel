@@ -335,7 +335,7 @@ Daemon does not need to encrypt or hash these fields, but it should not be carel
 
 #### Subscription Boundary
 
-The daemon is subscription-unaware. It exposes the full session roster to every paired device that holds a valid QUIC connection. The app decides what to render as locked vs. unlocked under its free/pro rule (`ux/subscription.md`).
+The daemon is tier-unaware. It exposes the full session roster to every paired device that holds a valid QUIC connection. The app applies the Free / Pro computer-count rule before opening daemon transports; once connected, individual session rows have no tier gate (`ux/subscription.md`).
 
 ### `preview_subscribe`
 

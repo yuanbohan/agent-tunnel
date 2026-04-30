@@ -20,10 +20,10 @@ The end state is:
 - Android connects to a trusted computer over QUIC/TLS.
 - Direct UDP is preferred when possible.
 - Relay fallback remains available, but Relay forwards only encrypted QUIC packets.
-- Relay owns account auth, daemon presence, pairing transport, rendezvous, subscription tier, and fallback setup.
+- Relay owns account auth, daemon presence, pairing transport, rendezvous, account tier, and fallback setup.
 - The local `tunnel run` process remains the PTY owner and source of truth for terminal state.
 - The daemon becomes the local mobile-facing gateway for sessions on that computer.
-- Free/pro behavior is enforced only in the official app in this phase.
+- Free / Pro trusted-computer behavior is enforced only in the official app in this phase.
 - Subscription status is temporarily managed by Relay operator actions. Real payment integration is a future replacement, not a dependency for this program.
 - Legacy Relay attach compatibility is not a planning dimension for this review guide. The program focuses on building the new connectivity stack.
 
@@ -108,7 +108,7 @@ Each PR should:
 **Major modules:**
 
 - App session device fingerprint binding
-- Temporary operator-managed subscription tier surface
+- Temporary operator-managed account tier surface
 - Daemon long-term identity
 - Pairing invitations and SAS confirmation
 - Trusted Android device roster
@@ -138,7 +138,7 @@ Each PR should:
 - Revoking a device removes visibility and closes active trust state.
 - Relay restart/daemon reconnect can rebuild live visibility from daemon-local trust.
 - Android can fetch `free` or `pro` policy state.
-- An operator can upgrade or downgrade a user's temporary subscription tier without a payment system.
+- An operator can upgrade or downgrade a user's temporary account tier without a payment system.
 
 **Why this split is important:** Pairing and account identity are prerequisites for every later transport, but they do not need session bytes to be implemented.
 
@@ -249,7 +249,7 @@ Each PR should:
 
 **Why this split is important:** Direct connectivity depends on network conditions and deployment. It should build on an already-working fallback path.
 
-## Step 6: Android Companion Integration And Subscription UX
+## Step 6: Android Companion Integration And Tier UX
 
 **Purpose:** Implement production Android behavior against the proven protocol.
 
@@ -258,9 +258,10 @@ Each PR should:
 - Android login-bound device identity
 - Pairing UI and SAS confirmation
 - Daemon card list
-- Lazy daemon-card connection
-- Free-tier sticky first-attach behavior
-- Pro-tier preview subscriptions
+- Free active trusted computer state
+- Free transactional Replace Computer
+- Pro trusted-computer limit
+- Pro downgrade-to-Free resolution
 - Terminal view and input focus discipline
 - Reconnect state rebuild
 - Account switch cleanup
@@ -269,22 +270,25 @@ Each PR should:
 **In scope:**
 
 - Production Android app behavior matches the documented UX/state machines.
-- Free/pro behavior is enforced in the app.
+- Free / Pro trusted-computer behavior is enforced in the app.
 - Reconnect rebuilds state from daemon snapshots and subscriptions.
 
 **Out of scope:**
 
-- Daemon-side subscription enforcement
+- Daemon-side tier enforcement
 - Billing purchase flow
 - New transport semantics
 - Go repo implementation details
 
 **Independent acceptance:**
 
-- Free user can unlock only one session per opened daemon card.
-- Pro user can see previews for all live sessions in the opened card.
+- Free auto-connects only the one active trusted computer.
+- Free Replace Computer keeps old trust active until new pairing SAS succeeds.
+- Pro auto-connects online trusted computers up to ten and blocks pairing the eleventh.
+- Pro downgrade to Free requires choosing one active computer.
+- Free and Pro session rows, preview, detail attach, reconnect, and path badge behavior are identical inside one active computer.
 - Only the focused terminal receives input.
-- Account switch closes transports and clears local unlocked state.
+- Account switch closes transports and clears account-derived local policy state.
 
 **Why this split is important:** Android work can be reviewed as product behavior once fallback/direct protocol foundations exist.
 
@@ -348,11 +352,11 @@ Umbrella:
 Child issues:
 
 1. Prove QUIC/TLS interop and connectivity primitives
-2. Add app identity, subscription tier, pairing, and daemon visibility
+2. Add app identity, account tier, pairing, and daemon visibility
 3. Add daemon local broker and `tunnel run` registration
 4. Add fallback-only QUIC session transport over Relay tunnel
 5. Add direct UDP, self-hosted STUN, and automatic fallback
-6. Integrate Android companion UX and subscription behavior
+6. Integrate Android companion UX and trusted-computer tier behavior
 7. Harden operations and update docs
 
 ## Review Recommendation

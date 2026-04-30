@@ -12,7 +12,7 @@ Relay owns only these protocol concerns:
 - pairing message transport
 - rendezvous hint exchange
 - fallback relay-tunnel setup
-- subscription tier exposure to the official app
+- account tier exposure to the official app
 
 Relay does not own:
 
@@ -35,7 +35,7 @@ They share one envelope style but do not necessarily receive the same startup sn
 Separately, Relay exposes:
 
 - fallback relay endpoint: `GET /connectivity/tunnel/ws?token=<single-use-token>`
-- authenticated app APIs that expose the current subscription tier
+- authenticated app APIs that expose the current account tier
 
 ## App Authentication Model
 
@@ -61,7 +61,7 @@ Relay uses the authenticated account plus the server-side app-session `device_fi
 
 - pairing-derived daemon visibility
 - pairing response routing
-- subscription-tier reads
+- account-tier reads
 
 ### Phase-1 Simplicity Tradeoff
 
@@ -101,7 +101,7 @@ It does not contain sessions.
 
 Relay determines the Android device identity from the authenticated server-side app session, then uses that `device_fingerprint` plus the authenticated account session to compute pairing-derived visibility.
 
-The app learns its current subscription tier through authenticated Relay app APIs, not through realtime per-session policy snapshots.
+The app learns its current account tier through authenticated Relay app APIs, not through realtime per-session policy snapshots.
 
 ### Daemon-Side
 
@@ -110,7 +110,7 @@ After daemon authentication succeeds:
 1. daemon sends `daemon_register`
 2. Relay accepts the registration and starts routing later control-plane frames
 
-The daemon-side socket does not need startup session or subscription state.
+The daemon-side socket does not need startup session or tier state.
 
 #### `daemon_register`
 
@@ -307,24 +307,28 @@ Fallback diagnostic fields are app-supplied metadata. Relay forwards them to
 both ready frames so the daemon can report them in the daemon-to-app
 `path_state`; Relay does not derive or verify transport path semantics.
 
-## Subscription Policy Surface
+## Account Policy Surface
 
-Relay is not the per-session subscription authority in phase 1.
+Relay is not the computer-selection or per-session entitlement authority in phase 1.
 
-Instead, Relay exposes the current app policy to the official app through authenticated app APIs.
+Instead, Relay exposes the current account tier to the official app through authenticated app APIs.
 
-Recommended minimal shape:
+Current minimal shape:
 
+- `account_id`
 - `tier`: `free` or `pro`
 
 Phase-1 rules:
 
-- Relay does not track any account-global chosen session row
+- `free` means the official app may keep 1 active trusted computer
+- `pro` means the official app may keep up to 10 trusted computers
+- Relay does not track active computer selection
+- Relay does not track any chosen session row
 - Relay does not issue per-session access tokens
-- Relay does not fan out per-session subscription decisions to daemons
-- daemon sockets do not receive subscription-policy updates
+- Relay does not fan out tier or session-policy decisions to daemons
+- daemon sockets do not receive tier-policy updates
 
-The official app uses `tier` together with daemon-owned `session_index` data to determine which rows are locked or usable.
+The official app uses `tier` together with Android-local trusted-computer state to decide which daemon transports it may open. Once a daemon transport is open, all sessions inside that computer are tier-neutral.
 
 ## Relay Tunnel Endpoint
 
@@ -352,7 +356,7 @@ Relay realtime must not carry:
 - interactive snapshot bytes
 - live terminal bytes
 - input payloads
-- daemon-side subscription grants
+- daemon-side tier grants
 
 Those belong to the daemon-owned end-to-end transport.
 
@@ -418,7 +422,7 @@ Relay failures affect:
 - transporting pairing responses
 - exchanging rendezvous hints
 - opening fallback relay tunnels
-- fetching current subscription tier
+- fetching current account tier
 
 Relay failures do not grant Relay the ability to read payloads.
 
@@ -428,7 +432,7 @@ When Relay is unavailable:
 - new pairing cannot complete
 - new direct rendezvous cannot start
 - fallback relay cannot start
-- the official app continues using the last known tier/policy until it can refresh it again
+- the official app continues using the last known tier and local trusted-computer policy until it can refresh again
 
 ## References
 

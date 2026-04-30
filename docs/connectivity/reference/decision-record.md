@@ -165,23 +165,23 @@ Tradeoff:
 
 That tradeoff is accepted for phase 1.
 
-## Phase-1 Daemon Card Connection Strategy
+## Phase-1 Trusted-Computer Connection Strategy
 
-Confirmed on 2026-04-27: the official app should not eagerly connect to every visible online daemon in phase 1.
+Updated on 2026-04-30: the official app applies tier policy at the trusted-computer level only.
 
-Instead:
+Rules:
 
-- Relay presence renders daemon cards
-- daemon transport starts only when the user opens a daemon card
-- once connected, free/pro rules are evaluated only within that card
-- pro may auto-subscribe preview for every live session in that opened card
+- Relay presence renders trusted computer cards.
+- Free opens the one active online trusted computer.
+- Pro opens online trusted computers up to the ten-computer limit.
+- Once connected, Free and Pro session behavior is identical inside that computer.
 
 Why this simplification was chosen:
 
-- keeps the first version smaller
-- avoids foreground fan-out to every visible daemon
-- avoids viewport and idle-eviction policy work
-- still gives a good pro experience once a daemon card is opened
+- keeps tier logic out of per-session UI
+- avoids Relay-owned active-session state
+- makes Replace Computer and downgrade resolution explicit product flows
+- keeps daemon and session transport tier-unaware
 
 Tradeoff:
 

@@ -52,17 +52,18 @@ Detail: `ux/android.md` § Daemon Lifecycle Expectation, `protocol/local-broker.
 
 ---
 
-### D3 — Free Unlock Rule: Sticky First-Attach
+### D3 — Tier Rule: Computer Count Only
 
-- Each connected daemon card has at most one unlocked session for the official app on free tier.
-- The first session the user explicitly attaches (i.e., the first `interactive_request` Android sends for that daemon card) becomes that card's unlocked session.
-- Once chosen, the unlocked session does not change as long as it is alive.
-- When the unlocked session ends, the next user-attach picks a new one. **No auto-rollover**.
-- All other rows render as locked. Tapping a locked row shows: "Free can only run 1 session per computer at a time. Wait for `<unlocked label>` to finish, or upgrade Pro."
+- Free may keep at most one active trusted computer.
+- Pro may keep up to ten trusted computers.
+- Inside an active trusted computer, Free and Pro have identical session behavior: rows, previews, detail attach, reconnect, and path badges are all available.
+- There is no session-level tier gating in phase 1. Do not implement Free-only session row states, preview restrictions, or per-session entitlement leases.
+- Free computer changes use transactional Replace Computer: the old trust stays active until the new pairing SAS succeeds. On success, Android locally deletes the old trust and marks the new computer active.
+- Pro downgrade to Free requires a resolution UI when multiple trusted computers exist. Until the user chooses one active computer, the app must not auto-connect multiple computers.
 
-This rule is enforced **only by the official app**. Daemon and Relay do not know about it.
+This rule is enforced by the official app's local trusted-computer state. Daemon and Relay remain tier-unaware for session transport. Relay exposes only the account `tier`.
 
-**Why this and not "oldest"**: aligns with user intent ("the one I clicked is the one I want to use"). Eliminates the rollover surprise. Trivial to implement: Android stores `(daemon_id → unlocked_session_id?)`.
+**Phase-2 TODO**: Replace Computer currently removes the old trust locally on Android only. Add daemon-side old-trust revoke later so the replaced computer removes that Android fingerprint from its daemon trust store.
 
 Detail: `ux/subscription.md`.
 
@@ -186,7 +187,7 @@ packet forwarding. Android production runtime compatibility remains Step 6.
 
 - UDP relay (deferred per D1 TODO).
 - Daemon-side per-session ACL (single-user assumption).
-- Per-session entitlement tokens / leases (replaced by D3).
+- Session-level tier gates and per-session entitlement tokens / leases (replaced by D3).
 - Multi-paired-device session handover.
 - Cross-device cursor / focus sync.
 - Preview cache on Android.
@@ -217,7 +218,7 @@ packet forwarding. Android production runtime compatibility remains Step 6.
 - `protocol/relay.md` — control plane events and rate limits.
 - `protocol/pairing.md` — invitation + SAS.
 - `protocol/local-broker.md` — daemon ↔ tunnel run.
-- `ux/subscription.md` — sticky-first-attach detail.
+- `ux/subscription.md` — Free / Pro computer-count product rule.
 - `ux/android.md` — Android client behavior reference.
 - `reference/decision-record.md` — historical decision rationale.
 - `_archive/2026-04-26-architect-review.md` — earlier review record.
