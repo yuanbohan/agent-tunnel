@@ -57,18 +57,3 @@ func TestSanitizePrivateUDPAddrsDeduplicatesAndCapsDeterministically(t *testing.
 		t.Fatalf("SanitizePrivateUDPAddrs = %#v, want %#v", got, want)
 	}
 }
-
-func TestNewCandidateSetNormalizesPublicAndPrivateCandidates(t *testing.T) {
-	got := NewCandidateSet(
-		&net.UDPAddr{IP: net.IPv4(203, 0, 113, 1), Port: 6000},
-		[]*net.UDPAddr{{IP: net.IPv4(10, 0, 0, 1), Port: 6000}},
-		PrivateAddressOptions{},
-	)
-
-	if got.PublicUDPAddr != "203.0.113.1:6000" {
-		t.Fatalf("PublicUDPAddr = %q, want 203.0.113.1:6000", got.PublicUDPAddr)
-	}
-	if !reflect.DeepEqual(got.PrivateUDPAddrs, []string{"10.0.0.1:6000"}) {
-		t.Fatalf("PrivateUDPAddrs = %#v, want one private candidate", got.PrivateUDPAddrs)
-	}
-}

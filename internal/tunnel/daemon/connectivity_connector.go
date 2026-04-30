@@ -4,9 +4,12 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +18,7 @@ import (
 	"github.com/quic-go/quic-go"
 	"yuanbohan/tunnel/internal/buildinfo"
 	"yuanbohan/tunnel/internal/connectivity/carrier"
+	"yuanbohan/tunnel/internal/connectivity/direct"
 	connidentity "yuanbohan/tunnel/internal/connectivity/identity"
 	connectivitypairing "yuanbohan/tunnel/internal/connectivity/pairing"
 	conntransport "yuanbohan/tunnel/internal/connectivity/transport"
@@ -29,20 +33,30 @@ const (
 )
 
 type connectivityConnector struct {
-	baseURL string
-	token   string
-	paths   Paths
-	state   *runtimeState
-	dialer  *websocket.Dialer
+	baseURL        string
+	token          string
+	paths          Paths
+	state          *runtimeState
+	dialer         *websocket.Dialer
+	stunDiscover   func(context.Context, *direct.UDPSocket) (*net.UDPAddr, error)
+	directMu       sync.Mutex
+	directAttempts map[string]directAttemptCancel
+}
+
+type directAttemptCancel struct {
+	androidFingerprint string
+	cancel             context.CancelFunc
 }
 
 func newConnectivityConnector(baseURL, token string, paths Paths, state *runtimeState) *connectivityConnector {
 	return &connectivityConnector{
-		baseURL: baseURL,
-		token:   token,
-		paths:   paths,
-		state:   state,
-		dialer:  websocket.DefaultDialer,
+		baseURL:        baseURL,
+		token:          token,
+		paths:          paths,
+		state:          state,
+		dialer:         websocket.DefaultDialer,
+		stunDiscover:   newConnectivitySTUNDiscoverer(baseURL),
+		directAttempts: make(map[string]directAttemptCancel),
 	}
 }
 
@@ -65,12 +79,16 @@ func (c *connectivityConnector) Run(ctx context.Context) {
 }
 
 func (c *connectivityConnector) serveOnce(ctx context.Context) error {
+	serveCtx, cancelServe := context.WithCancel(ctx)
+	defer cancelServe()
+	defer c.cancelAllDirectAttempts()
+
 	wsURL, err := connectivityDaemonWebSocketURL(c.baseURL)
 	if err != nil {
 		return err
 	}
 	headers := http.Header{"Authorization": {"Bearer " + c.token}}
-	conn, _, err := c.dialer.DialContext(ctx, wsURL, headers)
+	conn, _, err := c.dialer.DialContext(serveCtx, wsURL, headers)
 	if err != nil {
 		return err
 	}
@@ -106,22 +124,29 @@ func (c *connectivityConnector) serveOnce(ctx context.Context) error {
 				_ = c.handlePairResponseForward(frame)
 			case "relay_tunnel_ready":
 				go func(frame protocol.ConnectivityFrame) {
-					if err := c.handleRelayTunnelReady(ctx, frame); err != nil {
+					if err := c.handleRelayTunnelReady(serveCtx, frame); err != nil {
 						c.state.setLastFailure("relay_tunnel_failed", false)
 					}
 				}(frame)
 			case "rendezvous_hint":
 				go func(frame protocol.ConnectivityFrame) {
-					err := c.handleRendezvousHint(ctx, frame, func(value any) error {
+					err := c.handleRendezvousHint(serveCtx, frame, func(value any) error {
 						writeMu.Lock()
 						defer writeMu.Unlock()
 						return writeConnectivityConnectorJSON(conn, value)
 					})
 					if err != nil {
-						c.state.setConnectivityPath("direct", "direct_attempt_failed")
-						c.state.setLastFailure("direct_attempt_failed", false)
+						reason := connectivityDirectFailureReason(err)
+						c.state.setConnectivityPath("direct", reason)
+						c.state.setLastFailure(reason, false)
 					}
 				}(frame)
+			case "rendezvous_close":
+				c.cancelDirectAttempt(frame.AttemptID, frame.AndroidFingerprint)
+				c.state.cancelPendingDirectAttempts(frame.AttemptID, frame.AndroidFingerprint)
+			case "direct_session_close":
+				c.state.cancelPendingDirectAttempts(frame.AttemptID, frame.AndroidFingerprint)
+				c.state.cancelActiveDirectTransports(frame.AttemptID, frame.AndroidFingerprint)
 			default:
 			}
 		}
@@ -184,6 +209,127 @@ func (c *connectivityConnector) handlePairResponseForward(frame protocol.Connect
 	return err
 }
 
+func connectivityDirectFailureReason(err error) string {
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, direct.ErrSTUNTimeout):
+		return "stun_timeout"
+	case errors.Is(err, direct.ErrSTUNUnexpectedResponse):
+		return "stun_unavailable"
+	case errors.Is(err, context.Canceled):
+		return "direct_canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "direct_timeout"
+	default:
+		return "direct_attempt_failed"
+	}
+}
+
+func newConnectivitySTUNDiscoverer(baseURL string) func(context.Context, *direct.UDPSocket) (*net.UDPAddr, error) {
+	serverAddr, err := connectivitySTUNServerAddr(baseURL)
+	if err != nil {
+		return func(context.Context, *direct.UDPSocket) (*net.UDPAddr, error) {
+			return nil, err
+		}
+	}
+	client := direct.STUNClient{ServerAddr: serverAddr}
+	return client.Discover
+}
+
+func connectivitySTUNServerAddr(baseURL string) (*net.UDPAddr, error) {
+	if override := strings.TrimSpace(os.Getenv("TUNNEL_STUN_ADDR")); override != "" {
+		switch strings.ToLower(override) {
+		case "off", "disabled", "none", "false":
+			return nil, fmt.Errorf("stun disabled")
+		default:
+			return net.ResolveUDPAddr("udp", override)
+		}
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, err
+	}
+	host := parsed.Hostname()
+	if host == "" {
+		return nil, fmt.Errorf("missing relay host for stun discovery")
+	}
+	return net.ResolveUDPAddr("udp", net.JoinHostPort(host, "3478"))
+}
+
+func (c *connectivityConnector) registerDirectAttempt(attemptID, androidFingerprint string, cancel context.CancelFunc) {
+	attemptID = strings.TrimSpace(attemptID)
+	androidFingerprint = strings.ToLower(strings.TrimSpace(androidFingerprint))
+	if attemptID == "" || androidFingerprint == "" || cancel == nil {
+		return
+	}
+	c.directMu.Lock()
+	defer c.directMu.Unlock()
+	if c.directAttempts == nil {
+		c.directAttempts = make(map[string]directAttemptCancel)
+	}
+	key := directAttemptKey(attemptID, androidFingerprint)
+	if existing := c.directAttempts[key]; existing.cancel != nil {
+		existing.cancel()
+	}
+	c.directAttempts[key] = directAttemptCancel{androidFingerprint: androidFingerprint, cancel: cancel}
+}
+
+func (c *connectivityConnector) unregisterDirectAttempt(attemptID, androidFingerprint string) {
+	attemptID = strings.TrimSpace(attemptID)
+	androidFingerprint = strings.ToLower(strings.TrimSpace(androidFingerprint))
+	c.directMu.Lock()
+	delete(c.directAttempts, directAttemptKey(attemptID, androidFingerprint))
+	c.directMu.Unlock()
+}
+
+func (c *connectivityConnector) cancelDirectAttempt(attemptID, androidFingerprint string) {
+	attemptID = strings.TrimSpace(attemptID)
+	androidFingerprint = strings.ToLower(strings.TrimSpace(androidFingerprint))
+	if attemptID == "" {
+		return
+	}
+	c.directMu.Lock()
+	var attempts []directAttemptCancel
+	if androidFingerprint != "" {
+		key := directAttemptKey(attemptID, androidFingerprint)
+		if attempt := c.directAttempts[key]; attempt.cancel != nil {
+			attempts = append(attempts, attempt)
+			delete(c.directAttempts, key)
+		}
+	} else {
+		for key, attempt := range c.directAttempts {
+			if strings.HasPrefix(key, attemptID+"\x00") {
+				attempts = append(attempts, attempt)
+				delete(c.directAttempts, key)
+			}
+		}
+	}
+	c.directMu.Unlock()
+	for _, attempt := range attempts {
+		attempt.cancel()
+	}
+}
+
+func (c *connectivityConnector) cancelAllDirectAttempts() {
+	c.directMu.Lock()
+	attempts := make([]directAttemptCancel, 0, len(c.directAttempts))
+	for key, attempt := range c.directAttempts {
+		attempts = append(attempts, attempt)
+		delete(c.directAttempts, key)
+	}
+	c.directMu.Unlock()
+	for _, attempt := range attempts {
+		if attempt.cancel != nil {
+			attempt.cancel()
+		}
+	}
+}
+
+func directAttemptKey(attemptID, androidFingerprint string) string {
+	return strings.TrimSpace(attemptID) + "\x00" + strings.ToLower(strings.TrimSpace(androidFingerprint))
+}
+
 func (c *connectivityConnector) handleRelayTunnelReady(ctx context.Context, frame protocol.ConnectivityFrame) error {
 	if frame.Actor != "daemon" || strings.TrimSpace(frame.TunnelToken) == "" {
 		return nil
@@ -244,8 +390,11 @@ func (c *connectivityConnector) handleRelayTunnelReady(ctx context.Context, fram
 		AndroidFingerprint: android.Fingerprint,
 		PathKind:           "relay",
 		AttemptID:          frame.AttemptID,
+		FallbackReason:     frame.FallbackReason,
+		DirectSetupLatency: time.Duration(frame.DirectSetupLatencyMS) * time.Millisecond,
+		RelaySetupLatency:  time.Duration(frame.RelaySetupLatencyMS) * time.Millisecond,
 	}
-	c.state.setConnectivityPath("relay", "")
+	c.state.setConnectivityPath("relay", frame.FallbackReason)
 	return transport.Serve(ctx, quicConn)
 }
 
@@ -323,7 +472,7 @@ func (c *connectivityConnector) registerFrame() (protocol.ConnectivityFrame, err
 		})
 	}
 	status := c.state.snapshot()
-	return protocol.ConnectivityDaemonRegisterFrame(protocol.ConnectivityDaemonInfo{
+	frame := protocol.ConnectivityDaemonRegisterFrame(protocol.ConnectivityDaemonInfo{
 		DeviceID:          status.DeviceID,
 		DisplayName:       status.DisplayName,
 		PlatformFamily:    status.PlatformFamily,
@@ -331,7 +480,9 @@ func (c *connectivityConnector) registerFrame() (protocol.ConnectivityFrame, err
 		DaemonPublicKey:   fmt.Sprintf("%x", identity.PublicKey),
 		DaemonFingerprint: identity.Fingerprint,
 		TunnelVersion:     buildinfo.Version,
-	}, trusted), nil
+	}, trusted)
+	frame.DirectSessions = c.state.activeDirectSessions()
+	return frame, nil
 }
 
 func connectivityDaemonWebSocketURL(baseURL string) (string, error) {

@@ -204,16 +204,8 @@ func (c MobileClient) readSessionIndexAfterOptionalPathState(control io.Reader, 
 		return sessionIndex, err
 	}
 	if got.Type == frame.TypePathState {
-		var pathState sessionproto.PathState
-		if err := json.Unmarshal(got.Payload, &pathState); err != nil {
+		if err := c.validatePathState(got.Payload, script); err != nil {
 			return sessionIndex, err
-		}
-		expected := script.PathState
-		if expected.PathKind == "" {
-			expected.PathKind = script.DaemonHello.PathKind
-		}
-		if expected.PathKind != "" && pathState.PathKind != expected.PathKind {
-			return sessionIndex, fmt.Errorf("%w: path state=%#v", ErrUnexpectedFrame, pathState)
 		}
 		got, err = frame.Read(control, c.maxPayload())
 		if err != nil {
@@ -226,7 +218,34 @@ func (c MobileClient) readSessionIndexAfterOptionalPathState(control io.Reader, 
 	if err := json.Unmarshal(got.Payload, &sessionIndex); err != nil {
 		return sessionIndex, err
 	}
+	if script.PathState.PathKind != "" {
+		got, err = frame.Read(control, c.maxPayload())
+		if err != nil {
+			return sessionIndex, err
+		}
+		if got.Type != frame.TypePathState {
+			return sessionIndex, fmt.Errorf("%w: type=0x%02x want=0x%02x payload_len=%d", ErrUnexpectedFrame, got.Type, frame.TypePathState, len(got.Payload))
+		}
+		if err := c.validatePathState(got.Payload, script); err != nil {
+			return sessionIndex, err
+		}
+	}
 	return sessionIndex, nil
+}
+
+func (c MobileClient) validatePathState(payload []byte, script ProbeScript) error {
+	var pathState sessionproto.PathState
+	if err := json.Unmarshal(payload, &pathState); err != nil {
+		return err
+	}
+	expected := script.PathState
+	if expected.PathKind == "" {
+		expected.PathKind = script.DaemonHello.PathKind
+	}
+	if expected.PathKind != "" && pathState.PathKind != expected.PathKind {
+		return fmt.Errorf("%w: path state=%#v", ErrUnexpectedFrame, pathState)
+	}
+	return nil
 }
 
 func (c MobileClient) configs() (*tls.Config, *quic.Config, error) {

@@ -2,6 +2,7 @@ package direct
 
 import (
 	"net"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -16,8 +17,8 @@ func SendProbes(conn interface {
 	}
 	sent := 0
 	for _, raw := range candidates {
-		addr, err := net.ResolveUDPAddr("udp", strings.TrimSpace(raw))
-		if err != nil || addr == nil {
+		addr := parseLiteralUDPAddr(raw)
+		if addr == nil {
 			continue
 		}
 		if _, err := conn.WriteToUDP(ProbePayload, addr); err == nil {
@@ -25,6 +26,22 @@ func SendProbes(conn interface {
 		}
 	}
 	return sent
+}
+
+func parseLiteralUDPAddr(raw string) *net.UDPAddr {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(raw))
+	if err != nil {
+		return nil
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return nil
+	}
+	portNum, err := strconv.Atoi(port)
+	if err != nil || portNum <= 0 || portNum > 65535 {
+		return nil
+	}
+	return &net.UDPAddr{IP: ip, Port: portNum}
 }
 
 func ProbeBurst(conn interface {

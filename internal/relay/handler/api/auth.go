@@ -149,7 +149,7 @@ func Logout(appAuth *auth.AppAuthService, registry *session.Registry, attachSess
 		}
 		attachSessions.DisconnectAppSession(registry, app.Session.ID, "logged_out")
 		if connectivityRegistry != nil {
-			connectivityRegistry.DisconnectAppSession(app.Session.ID, "logged_out")
+			connectivityRegistry.DisconnectAppSession(app.Session.ID)
 		}
 		WriteJSON(c.Writer, http.StatusOK, nil)
 	}
@@ -178,7 +178,7 @@ func ChangePassword(appAuth *auth.AppAuthService, registry *session.Registry, at
 		}
 		attachSessions.DisconnectUser(registry, app.User.ID, "password_changed")
 		if connectivityRegistry != nil {
-			connectivityRegistry.DisconnectUser(app.User.ID, "password_changed")
+			connectivityRegistry.DisconnectUser(app.User.ID)
 		}
 		WriteJSON(c.Writer, http.StatusOK, nil)
 	}

@@ -99,7 +99,7 @@ It owns:
 
 - app-bearer auth, agent-token auth, and invite-gated account registration
 - binding each live session to the user who owns the authenticating agent token
-- fixed-token local-only operator control routes for invite creation, invite disable, and account deletion
+- fixed-token local-only operator control routes for invite creation, invite disable, account deletion, and account tier changes
 - current live-session snapshots for discovery
 - preserving session metadata for discovery, including startup-directory Git branch, optional local daemon `device_id`, and normalized computer identity
 - current online-session discovery and immediate offline removal when the owning agent disconnects
@@ -111,7 +111,7 @@ It owns:
 - synchronously evicting live sessions when a user is deleted or an agent token is revoked
 - closing affected app-side attaches when an app session logs out or a password change revokes app sessions, without disconnecting the owning agent
 - tracking only currently online `/device/ws` connections and the transient request-correlation state needed to turn one launch request into one `session_ready` result or timeout
-- tracking only currently online `/connectivity/daemon/ws` and `/api/connectivity/app/ws` peers for paired-daemon visibility, pairing response forwarding, and short-lived direct rendezvous hint exchange; trusted Android rosters are daemon-local and are rebuilt into Relay visibility when the daemon reconnects
+- tracking only currently online `/connectivity/daemon/ws` and `/api/connectivity/app/ws` peers for paired-daemon visibility, pairing response forwarding, short-lived direct rendezvous hint exchange, accepted direct-session close routing, and fallback/direct winner selection; trusted Android rosters are daemon-local and are rebuilt into Relay visibility when the daemon reconnects
 - issuing short-lived, actor-specific fallback tunnel tokens and forwarding fallback WebSocket binary messages as opaque encrypted QUIC packets
 
 The relay does not own:

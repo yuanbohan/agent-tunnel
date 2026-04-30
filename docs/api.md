@@ -693,6 +693,13 @@ Success:
 
 `tier` is currently `free` or `pro`. It is operator-managed placeholder state; there is no payment provider or daemon-side subscription enforcement in this revision.
 
+Error responses:
+
+| Status | Body | Notes |
+| --- | --- | --- |
+| `401` | `{"code":1016,"message":"The request is unauthorized.","body":null}` | missing or invalid app bearer token |
+| `500` | `{"code":2002,"message":"An unexpected internal error occurred.","body":null}` | unexpected account policy failure |
+
 ## Connectivity WebSockets
 
 These routes carry connectivity control-plane state. They do not carry terminal snapshots, live terminal bytes, structured input, fallback QUIC packets, session previews, or direct UDP packet data. Rendezvous frames may carry UDP candidate addresses only.
@@ -736,9 +743,17 @@ After a paired daemon is visible, app peers may open a direct-attempt rendezvous
 
 Relay forwards this to the daemon as `rendezvous_hint` with `actor: "android"`,
 `android_fingerprint`, and `expires_at`. The daemon sends its own
-`rendezvous_hint`; Relay forwards it to the app with `actor: "daemon"`.
-Either side may send `rendezvous_close` with `attempt_id` to remove live attempt
-state. Relay stores rendezvous state only in memory and expires it quickly.
+`rendezvous_hint` with the same `attempt_id` and `android_fingerprint`; Relay
+forwards it to that app with `actor: "daemon"`. Either side may send
+`rendezvous_close` with `attempt_id` to remove live attempt state; daemon-origin
+closes also include `android_fingerprint` for disambiguation. After the daemon
+accepts a direct QUIC/TLS connection, it reports `direct_session_open` with
+`attempt_id`, `daemon_id`, and `android_fingerprint`. Relay then treats direct
+as the winning path for that attempt and can later send `direct_session_close`
+to cancel the accepted daemon-local direct transport after logout, token
+revocation, trusted-device revocation, or account deletion. Relay stores
+rendezvous and accepted-direct state only in memory and expires or removes it
+through those lifecycle events.
 
 After a paired daemon is visible, app peers may request fallback tunnel setup:
 
@@ -747,7 +762,10 @@ After a paired daemon is visible, app peers may request fallback tunnel setup:
   "type": "relay_tunnel_request",
   "request_id": "req-1",
   "attempt_id": "attempt-uuid",
-  "daemon_id": "dev_abcd1234"
+  "daemon_id": "dev_abcd1234",
+  "fallback_reason": "direct_timeout",
+  "direct_setup_latency_ms": 3000,
+  "relay_setup_latency_ms": 120
 }
 ```
 
@@ -761,13 +779,23 @@ Relay replies to the app and sends a matching frame to the daemon:
   "daemon_id": "dev_abcd1234",
   "android_fingerprint": "<android-device-fingerprint>",
   "actor": "android",
-  "tunnel_token": "<single-use-token>"
+  "tunnel_token": "<single-use-token>",
+  "fallback_reason": "direct_timeout",
+  "direct_setup_latency_ms": 3000,
+  "relay_setup_latency_ms": 120
 }
 ```
 
 The daemon-side frame has `actor: "daemon"` and a different single-use token.
 Both frames include `android_fingerprint` so the daemon can select the trusted
-Android public key needed to pin the inner QUIC/TLS handshake.
+Android public key needed to pin the inner QUIC/TLS handshake. Diagnostic
+fields are optional, app-supplied values that let the daemon annotate the
+subsequent `path_state`; Relay forwards them without interpreting terminal or
+transport semantics.
+If fallback is accepted for an attempt while direct rendezvous is still pending,
+Relay removes that rendezvous and sends `rendezvous_close` to the daemon so only
+one path can win. If direct has already won and reported `direct_session_open`,
+Relay rejects fallback setup for that same app session, daemon, and `attempt_id`.
 Relay rejects tunnel setup for unpaired apps, wrong accounts, wrong device
 fingerprints, offline daemons, expired attempts, and rate-limited request bursts
 with an `error` frame.
@@ -822,14 +850,14 @@ Daemon first sends:
     "daemon_fingerprint": "<hex-sha256-public-key>",
     "tunnel_version": "v0.1.0"
   },
-  "trusted_devices": [
-    {
-      "fingerprint": "<android-device-fingerprint>",
-      "display_name": "Pixel"
-    }
-  ]
-}
-```
+	  "trusted_devices": [
+	    {
+	      "fingerprint": "<android-device-fingerprint>",
+	      "display_name": "Pixel"
+	    }
+	  ]
+	}
+	```
 
 Relay derives app-visible daemon presence from this live trusted roster and the authenticated app session fingerprint. Relay does not persist the roster durably; daemon reconnect rebuilds visibility.
 
@@ -837,8 +865,14 @@ Daemon peers reserve pairing invitations with `pair_invitation_reserve` using th
 
 Daemon peers receive `rendezvous_hint` when a paired app opens a direct attempt.
 Daemon peers may respond with their own `rendezvous_hint` containing
-`attempt_id`, `public_udp_addr`, and optional `private_udp_addrs`; Relay forwards
-only when the attempt is live and still belongs to that app/daemon pair.
+`attempt_id`, `android_fingerprint`, `public_udp_addr`, and optional
+`private_udp_addrs`; Relay forwards only when the attempt is live and still
+belongs to that app/daemon pair.
+
+Daemon peers send `direct_session_open` after accepting pinned QUIC/TLS for a
+live rendezvous attempt. Relay rejects stale, superseded, logged-out, or
+fallback-won direct opens by sending `direct_session_close`. Daemon peers should
+also send `direct_session_close` when an accepted direct transport ends locally.
 
 Daemon peers receive `relay_tunnel_ready` when a paired app requests fallback
 tunnel setup. The daemon redeems its daemon-scoped `tunnel_token` at the tunnel

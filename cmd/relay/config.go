@@ -49,6 +49,7 @@ type userTierConfig struct {
 	OperatorToken string
 	Username      string
 	Tier          string
+	JSON          bool
 }
 
 type inviteCreateFlags struct {
@@ -246,12 +247,13 @@ func loadUserDeleteConfig(getenv func(string) string, args []string) (userDelete
 	return finalizeUserDeleteConfig(flags, getenv)
 }
 
-func finalizeUserTierConfig(username, tier string, getenv func(string) string) (userTierConfig, error) {
+func finalizeUserTierConfig(username, tier string, jsonOutput bool, getenv func(string) string) (userTierConfig, error) {
 	cfg := userTierConfig{
 		RelayAddr:     envOrDefault(getenv, "RELAY_LISTEN_ADDR", defaultRelayListenAddr),
 		OperatorToken: envValue(getenv, "RELAY_OPERATOR_TOKEN"),
 		Username:      username,
 		Tier:          tier,
+		JSON:          jsonOutput,
 	}
 	switch {
 	case cfg.OperatorToken == "":
@@ -266,6 +268,7 @@ func finalizeUserTierConfig(username, tier string, getenv func(string) string) (
 
 func loadUserTierConfig(getenv func(string) string, args []string) (userTierConfig, error) {
 	fs := newFlagSet("user tier")
+	jsonOutput := fs.Bool("json", false, "print result as JSON")
 	if err := fs.Parse(args); err != nil {
 		return userTierConfig{}, usagef("%v", err)
 	}
@@ -273,7 +276,7 @@ func loadUserTierConfig(getenv func(string) string, args []string) (userTierConf
 	if len(remaining) != 2 {
 		return userTierConfig{}, usagef("accepts 2 arg(s), received %d", len(remaining))
 	}
-	return finalizeUserTierConfig(remaining[0], remaining[1], getenv)
+	return finalizeUserTierConfig(remaining[0], remaining[1], *jsonOutput, getenv)
 }
 
 func parseInviteExpiryDays(raw string) (int, error) {

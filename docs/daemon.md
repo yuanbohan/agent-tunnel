@@ -48,7 +48,18 @@ The daemon surface lives under `tunnel daemon ...`; `tunnel run` may also auto-s
 
 Do not add daemon commands that create a custom tmux dashboard, picker, alias system, per-session close/open workflow, or terminal-recipe workflow unless the product scope is explicitly changed first. Use account-level session stop for destructive session shutdown; keep `close` reserved for the local workspace view lifecycle.
 
-`start`, `status`, `doctor`, and `broker sessions` support JSON output for automation. Human `start` output may include warnings such as degraded launch readiness.
+`start`, `status`, `doctor`, `broker sessions`, `pair`, `pair pending`, `pair confirm`, `devices`, and `revoke` support JSON output for automation. JSON-capable daemon commands emit a single JSON error envelope on command failures while preserving a non-zero exit status:
+
+```json
+{
+  "error": {
+    "code": "daemon_not_running",
+    "message": "daemon not running"
+  }
+}
+```
+
+Stable daemon command error codes are `daemon_not_running`, `pairing_invitation_not_found`, `pairing_invitation_expired`, `pairing_invitation_consumed`, `pairing_sas_mismatch`, `trusted_device_not_found`, `invalid_android_fingerprint`, `connectivity_event_queue_unavailable`, and `daemon_command_failed`. `doctor --json` still returns its diagnostic report when checks complete; a non-zero diagnostic exit code is not replaced with an error envelope. Human `start` output may include warnings such as degraded launch readiness.
 
 ## Local State
 
@@ -72,9 +83,14 @@ When Relay forwards a signed Android pairing response, the daemon verifies it an
 
 After Relay forwards an app `rendezvous_hint`, the daemon validates local trust,
 opens a direct UDP socket, emits daemon candidates with the same `attempt_id`,
-sends UDP probes to app candidates, and accepts pinned QUIC/TLS. If direct does
-not complete before the direct attempt deadline, clients can fall back to the
-existing Relay tunnel without changing the session protocol.
+sends UDP probes to app candidates, and accepts pinned QUIC/TLS. Pending direct
+attempts stay cancellable by `rendezvous_close` and local trust revocation. Once
+QUIC/TLS is accepted, the daemon reports `direct_session_open` to Relay, serves
+the same session protocol independently of transient Relay control reconnects,
+and cancels the accepted session on local trust revocation or Relay
+`direct_session_close`. If direct does not complete before the direct attempt
+deadline, clients can fall back to the existing Relay tunnel without changing
+the session protocol.
 
 The tmux socket path is part of the workspace identity. Daemon shutdown must remove daemon runtime control state, but must not kill the tmux server or delete surviving tmux sessions.
 

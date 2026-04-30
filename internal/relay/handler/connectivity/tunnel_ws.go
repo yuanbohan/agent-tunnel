@@ -14,7 +14,7 @@ import (
 	handlerws "yuanbohan/tunnel/internal/relay/handler/ws"
 )
 
-const tunnelPairTimeout = 10 * time.Second
+const tunnelPairTimeout = 30 * time.Second
 
 type TunnelHub struct {
 	mu      sync.Mutex

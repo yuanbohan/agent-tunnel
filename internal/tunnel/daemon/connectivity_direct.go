@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"net"
-	"strconv"
 	"strings"
 	"time"
 
@@ -31,6 +30,12 @@ func (c *connectivityConnector) handleRendezvousHint(ctx context.Context, hint p
 	if err != nil {
 		return err
 	}
+	attemptCtx, cancelAttempt := context.WithCancel(ctx)
+	c.registerDirectAttempt(hint.AttemptID, android.Fingerprint, cancelAttempt)
+	unregisterPending := c.state.registerPendingDirectAttempt(hint.AttemptID, android.Fingerprint, cancelAttempt)
+	defer cancelAttempt()
+	defer c.unregisterDirectAttempt(hint.AttemptID, android.Fingerprint)
+	defer unregisterPending()
 	daemonIdentity, err := ReadConnectivityIdentity(c.paths)
 	if err != nil {
 		return err
@@ -48,9 +53,16 @@ func (c *connectivityConnector) handleRendezvousHint(ctx context.Context, hint p
 
 	local := socket.LocalUDPAddr()
 	private, _ := direct.CollectPrivateUDPAddrs(local.Port, direct.PrivateAddressOptions{AllowLoopback: true})
-	public := direct.NormalizeUDPAddr(local)
-	if local.IP.IsUnspecified() {
-		public = net.JoinHostPort("127.0.0.1", strconv.Itoa(local.Port))
+	if c.stunDiscover == nil {
+		return direct.ErrSTUNUnexpectedResponse
+	}
+	publicAddr, err := c.stunDiscover(attemptCtx, socket)
+	if err != nil {
+		return err
+	}
+	public := direct.NormalizeUDPAddr(publicAddr)
+	if _, err := c.trustedAndroidDevice(android.Fingerprint); err != nil {
+		return err
 	}
 	if write != nil {
 		if err := write(protocol.ConnectivityRendezvousHintFrame(
@@ -79,7 +91,7 @@ func (c *connectivityConnector) handleRendezvousHint(ctx context.Context, hint p
 	}
 	defer listener.Close()
 
-	acceptCtx, cancel := context.WithTimeout(ctx, connectivityDirectAcceptTimeout)
+	acceptCtx, cancel := context.WithTimeout(attemptCtx, connectivityDirectAcceptTimeout)
 	defer cancel()
 	stopCleanup := context.AfterFunc(acceptCtx, func() {
 		_ = listener.Close()
@@ -93,7 +105,17 @@ func (c *connectivityConnector) handleRendezvousHint(ctx context.Context, hint p
 	}
 	_ = stopCleanup()
 	cancel()
+	c.unregisterDirectAttempt(hint.AttemptID, android.Fingerprint)
+	unregisterPending()
 	defer quicConn.CloseWithError(0, "done")
+	if write != nil {
+		if err := write(protocol.ConnectivityDirectSessionOpenFrame(hint.RequestID, hint.AttemptID, hint.DaemonID, android.Fingerprint)); err != nil {
+			return err
+		}
+	}
+	if _, err := c.trustedAndroidDevice(android.Fingerprint); err != nil {
+		return err
+	}
 	transport := &ConnectivityTransport{
 		Broker:             c.state.broker,
 		DaemonFingerprint:  daemonIdentity.Fingerprint,
@@ -102,5 +124,13 @@ func (c *connectivityConnector) handleRendezvousHint(ctx context.Context, hint p
 		AttemptID:          hint.AttemptID,
 	}
 	c.state.setConnectivityPath("direct", "")
-	return transport.Serve(ctx, quicConn)
+	serveCtx, cancelServe := context.WithCancel(c.state.rootContext(ctx))
+	unregisterTransport := c.state.registerActiveDirectTransport(hint.AttemptID, android.Fingerprint, cancelServe)
+	defer unregisterTransport()
+	defer cancelServe()
+	err = transport.Serve(serveCtx, quicConn)
+	if write != nil {
+		_ = write(protocol.ConnectivityDirectSessionCloseFrame("", hint.AttemptID, hint.DaemonID, android.Fingerprint))
+	}
+	return err
 }

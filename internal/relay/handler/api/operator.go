@@ -116,7 +116,7 @@ func DeleteUser(operatorSvc *operator.OperatorService, registry *session.Registr
 		}
 		registry.DisconnectUserSessions(result.UserID, "account_deleted")
 		if connectivityRegistry != nil {
-			connectivityRegistry.DisconnectUser(result.UserID, "account_deleted")
+			connectivityRegistry.DisconnectUser(result.UserID)
 		}
 		WriteJSON(c.Writer, http.StatusOK, nil)
 	}

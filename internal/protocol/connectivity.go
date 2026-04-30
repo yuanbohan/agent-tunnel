@@ -5,24 +5,28 @@ import "encoding/json"
 const ConnectivityProtocolVersion = 1
 
 type ConnectivityFrame struct {
-	Type               string                       `json:"type"`
-	ProtocolVersion    int                          `json:"protocol_version,omitempty"`
-	RequestID          string                       `json:"request_id,omitempty"`
-	Reason             string                       `json:"reason,omitempty"`
-	RetryAfterSeconds  int                          `json:"retry_after_seconds,omitempty"`
-	AccountID          string                       `json:"account_id,omitempty"`
-	AttemptID          string                       `json:"attempt_id,omitempty"`
-	Actor              string                       `json:"actor,omitempty"`
-	DaemonID           string                       `json:"daemon_id,omitempty"`
-	TunnelToken        string                       `json:"tunnel_token,omitempty"`
-	PublicUDPAddr      string                       `json:"public_udp_addr,omitempty"`
-	PrivateUDPAddrs    []string                     `json:"private_udp_addrs,omitempty"`
-	ExpiresAt          int64                        `json:"expires_at,omitempty"`
-	Daemon             *ConnectivityDaemonInfo      `json:"daemon,omitempty"`
-	Daemons            []ConnectivityDaemonInfo     `json:"daemons,omitempty"`
-	TrustedDevices     []ConnectivityTrustedAndroid `json:"trusted_devices,omitempty"`
-	AndroidFingerprint string                       `json:"android_fingerprint,omitempty"`
-	PairingResponse    *ConnectivityPairingResponse `json:"pairing_response,omitempty"`
+	Type                 string                       `json:"type"`
+	ProtocolVersion      int                          `json:"protocol_version,omitempty"`
+	RequestID            string                       `json:"request_id,omitempty"`
+	Reason               string                       `json:"reason,omitempty"`
+	RetryAfterSeconds    int                          `json:"retry_after_seconds,omitempty"`
+	AccountID            string                       `json:"account_id,omitempty"`
+	AttemptID            string                       `json:"attempt_id,omitempty"`
+	Actor                string                       `json:"actor,omitempty"`
+	DaemonID             string                       `json:"daemon_id,omitempty"`
+	TunnelToken          string                       `json:"tunnel_token,omitempty"`
+	FallbackReason       string                       `json:"fallback_reason,omitempty"`
+	DirectSetupLatencyMS int                          `json:"direct_setup_latency_ms,omitempty"`
+	RelaySetupLatencyMS  int                          `json:"relay_setup_latency_ms,omitempty"`
+	PublicUDPAddr        string                       `json:"public_udp_addr,omitempty"`
+	PrivateUDPAddrs      []string                     `json:"private_udp_addrs,omitempty"`
+	ExpiresAt            int64                        `json:"expires_at,omitempty"`
+	Daemon               *ConnectivityDaemonInfo      `json:"daemon,omitempty"`
+	Daemons              []ConnectivityDaemonInfo     `json:"daemons,omitempty"`
+	TrustedDevices       []ConnectivityTrustedAndroid `json:"trusted_devices,omitempty"`
+	DirectSessions       []ConnectivityDirectSession  `json:"direct_sessions,omitempty"`
+	AndroidFingerprint   string                       `json:"android_fingerprint,omitempty"`
+	PairingResponse      *ConnectivityPairingResponse `json:"pairing_response,omitempty"`
 }
 
 func ConnectivityRendezvousHintFrame(requestID, attemptID, actor, daemonID, androidFingerprint, publicUDPAddr string, privateUDPAddrs []string, expiresAt int64) ConnectivityFrame {
@@ -36,6 +40,17 @@ func ConnectivityRendezvousHintFrame(requestID, attemptID, actor, daemonID, andr
 		PublicUDPAddr:      publicUDPAddr,
 		PrivateUDPAddrs:    privateUDPAddrs,
 		ExpiresAt:          expiresAt,
+	}
+}
+
+func ConnectivityRendezvousCloseFrame(requestID, attemptID, actor, daemonID, androidFingerprint string) ConnectivityFrame {
+	return ConnectivityFrame{
+		Type:               "rendezvous_close",
+		RequestID:          requestID,
+		AttemptID:          attemptID,
+		Actor:              actor,
+		DaemonID:           daemonID,
+		AndroidFingerprint: androidFingerprint,
 	}
 }
 
@@ -73,6 +88,11 @@ type ConnectivityDaemonInfo struct {
 type ConnectivityTrustedAndroid struct {
 	Fingerprint string `json:"fingerprint"`
 	DisplayName string `json:"display_name,omitempty"`
+}
+
+type ConnectivityDirectSession struct {
+	AttemptID          string `json:"attempt_id"`
+	AndroidFingerprint string `json:"android_fingerprint"`
 }
 
 type ConnectivityPairingResponse struct {
@@ -134,12 +154,28 @@ func ConnectivityPairInvitationReservedFrame(requestID, accountID string) Connec
 	return ConnectivityFrame{Type: "pair_invitation_reserved", RequestID: requestID, AccountID: accountID}
 }
 
-func ConnectivityPairResponseAcceptedFrame(requestID string) ConnectivityFrame {
-	return ConnectivityFrame{Type: "pair_response_accepted", RequestID: requestID}
-}
-
 func ConnectivityPairCompletedFrame(androidFingerprint string) ConnectivityFrame {
 	return ConnectivityFrame{Type: "pair_completed", AndroidFingerprint: androidFingerprint}
+}
+
+func ConnectivityDirectSessionOpenFrame(requestID, attemptID, daemonID, androidFingerprint string) ConnectivityFrame {
+	return ConnectivityFrame{
+		Type:               "direct_session_open",
+		RequestID:          requestID,
+		AttemptID:          attemptID,
+		DaemonID:           daemonID,
+		AndroidFingerprint: androidFingerprint,
+	}
+}
+
+func ConnectivityDirectSessionCloseFrame(requestID, attemptID, daemonID, androidFingerprint string) ConnectivityFrame {
+	return ConnectivityFrame{
+		Type:               "direct_session_close",
+		RequestID:          requestID,
+		AttemptID:          attemptID,
+		DaemonID:           daemonID,
+		AndroidFingerprint: androidFingerprint,
+	}
 }
 
 func ConnectivityRelayTunnelReadyFrame(requestID, attemptID, actor, daemonID, androidFingerprint, token string) ConnectivityFrame {
@@ -152,6 +188,14 @@ func ConnectivityRelayTunnelReadyFrame(requestID, attemptID, actor, daemonID, an
 		AndroidFingerprint: androidFingerprint,
 		TunnelToken:        token,
 	}
+}
+
+func ConnectivityRelayTunnelReadyFrameWithDiagnostics(requestID, attemptID, actor, daemonID, androidFingerprint, token, fallbackReason string, directSetupLatencyMS, relaySetupLatencyMS int) ConnectivityFrame {
+	frame := ConnectivityRelayTunnelReadyFrame(requestID, attemptID, actor, daemonID, androidFingerprint, token)
+	frame.FallbackReason = fallbackReason
+	frame.DirectSetupLatencyMS = directSetupLatencyMS
+	frame.RelaySetupLatencyMS = relaySetupLatencyMS
+	return frame
 }
 
 func ConnectivityErrorFrame(requestID, reason string) ConnectivityFrame {

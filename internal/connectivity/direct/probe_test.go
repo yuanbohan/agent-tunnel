@@ -19,7 +19,7 @@ func TestSendProbesWritesToValidCandidates(t *testing.T) {
 	}
 	defer sender.Close()
 
-	sent := SendProbes(sender, []string{"bad", receiver.LocalAddr().String()})
+	sent := SendProbes(sender, []string{"bad", "localhost:9", receiver.LocalAddr().String()})
 	if sent != 1 {
 		t.Fatalf("SendProbes = %d, want 1", sent)
 	}

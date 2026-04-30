@@ -225,10 +225,17 @@ Relay forwards the app hint to the paired online daemon as:
 
 The daemon answers with `rendezvous_hint` containing its candidate addresses.
 Relay forwards that hint to the app with `actor: "daemon"` and the same
-`attempt_id`. Either side may send `rendezvous_close` with `attempt_id` to
-remove live attempt state. Relay rejects unavailable, expired, unpaired,
-wrong-account, malformed, or superseded attempts with
-`reason: "rendezvous_unavailable"`.
+`attempt_id`. Daemon-origin `rendezvous_hint` and `rendezvous_close` frames
+MUST include `android_fingerprint` so Relay can disambiguate app-minted
+`attempt_id` values across paired Android devices. Either side may send
+`rendezvous_close` with `attempt_id` to remove live attempt state. After direct
+QUIC/TLS accept succeeds, the daemon sends `direct_session_open` with
+`attempt_id`, `daemon_id`, and `android_fingerprint`; Relay records that direct
+won the attempt. Relay sends `direct_session_close` to the daemon when that
+accepted direct path must be canceled because the app session, agent token,
+trusted Android device, or account is no longer authorized. Relay rejects
+unavailable, expired, unpaired, wrong-account, malformed, or superseded attempts
+with `reason: "rendezvous_unavailable"`.
 
 #### attempt_id Rules
 
@@ -245,13 +252,16 @@ Android and daemon SHOULD include private addresses in `private_udp_addrs` only 
 
 - `relay_tunnel_request`
 - `relay_tunnel_ready`
-- `relay_tunnel_closed`
 
-These events describe the WebSocket-over-HTTPS fallback tunnel lifecycle. They do not carry terminal semantics.
+These events describe fallback tunnel setup. Fallback tunnel teardown is
+signaled by closing the WebSocket; no close frame is emitted in Step 5. They do
+not carry terminal semantics.
 
 Phase-1 tunnel-token rules:
 
 - Step 4 fallback-only clients may send `relay_tunnel_request` immediately after choosing the fallback path. Step 5 direct-first clients send it only after the direct attempt is judged failed or timed out.
+- If Relay accepts fallback for an attempt that still has a pending direct rendezvous, Relay removes the rendezvous and sends `rendezvous_close` to the daemon before issuing fallback tokens.
+- If direct already won an attempt through `direct_session_open`, Relay rejects fallback for that same app session, daemon, and `attempt_id`.
 - Relay issues one short-lived, single-use tunnel token per side
 - each token is bound to:
   - `attempt_id`
@@ -269,6 +279,9 @@ Current Step 4 event payloads:
 - `request_id`
 - `attempt_id`
 - `daemon_id`
+- `fallback_reason` (optional)
+- `direct_setup_latency_ms` (optional)
+- `relay_setup_latency_ms` (optional)
 
 `relay_tunnel_ready` from Relay to each side:
 
@@ -278,6 +291,9 @@ Current Step 4 event payloads:
 - `android_fingerprint`
 - `actor` (`android` or `daemon`)
 - `tunnel_token`
+- `fallback_reason` (optional)
+- `direct_setup_latency_ms` (optional)
+- `relay_setup_latency_ms` (optional)
 
 Relay authorizes the request only when the app's authenticated account and
 server-side `device_fingerprint` currently have pairing-derived visibility to
@@ -286,6 +302,10 @@ the requested online daemon.
 `android_fingerprint` is included in both side-specific ready frames. The daemon
 uses it to look up the locally trusted Android public key before starting the
 inner pinned QUIC/TLS listener over the fallback packet tunnel.
+
+Fallback diagnostic fields are app-supplied metadata. Relay forwards them to
+both ready frames so the daemon can report them in the daemon-to-app
+`path_state`; Relay does not derive or verify transport path semantics.
 
 ## Subscription Policy Surface
 
@@ -363,12 +383,12 @@ Relay cannot decrypt either path because both terminate inside the daemon and An
 - `pair_completed`
 - `paired_device_revoked`
 - `rendezvous_hint`
+- `rendezvous_close`
 
 ### Daemon Receives
 
 - `pair_invitation_reserved`
 - `pair_response_forward`
-- `rendezvous_open`
 - `rendezvous_hint`
 - `rendezvous_close`
 - `relay_tunnel_ready`

@@ -8,25 +8,10 @@ import (
 
 const DefaultPrivateCandidateLimit = 8
 
-type CandidateSet struct {
-	PublicUDPAddr   string   `json:"public_udp_addr,omitempty"`
-	PrivateUDPAddrs []string `json:"private_udp_addrs,omitempty"`
-}
-
 type PrivateAddressOptions struct {
 	Limit             int
 	AllowLoopback     bool
 	AllowTestNetworks bool
-}
-
-func NewCandidateSet(public *net.UDPAddr, private []*net.UDPAddr, opts PrivateAddressOptions) CandidateSet {
-	candidates := CandidateSet{
-		PrivateUDPAddrs: SanitizePrivateUDPAddrs(private, opts),
-	}
-	if public != nil {
-		candidates.PublicUDPAddr = NormalizeUDPAddr(public)
-	}
-	return candidates
 }
 
 func SanitizePrivateUDPAddrs(addrs []*net.UDPAddr, opts PrivateAddressOptions) []string {

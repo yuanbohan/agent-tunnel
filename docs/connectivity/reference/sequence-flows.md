@@ -147,9 +147,9 @@ sequenceDiagram
     AndroidConn->>DaemonConn: open control stream
     AndroidConn->>DaemonConn: hello(path=direct)
     DaemonConn->>AndroidConn: hello(path=direct)
-    DaemonConn->>AndroidConn: path_state(path=direct, attempt_id)
     DaemonBroker->>DaemonConn: current session roster
     DaemonConn->>AndroidConn: session_index
+    DaemonConn->>AndroidConn: path_state(path=direct, attempt_id)
     AndroidConn->>AndroidConn: apply local free/pro rule
     AndroidConn-->>AndroidUI: render daemon card + session metadata\nbadge = Direct
 ```
@@ -211,9 +211,9 @@ sequenceDiagram
     AndroidConn->>DaemonConn: open control stream
     AndroidConn->>DaemonConn: hello(path=relay)
     DaemonConn->>AndroidConn: hello(path=relay)
-    DaemonConn->>AndroidConn: path_state(path=relay, fallback_reason)
     DaemonBroker->>DaemonConn: current session roster
     DaemonConn->>AndroidConn: session_index
+    DaemonConn->>AndroidConn: path_state(path=relay, fallback_reason)
     AndroidConn->>AndroidConn: apply local free/pro rule
     AndroidConn-->>AndroidUI: render session metadata\nbadge = Relay
 ```

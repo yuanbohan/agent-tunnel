@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -47,7 +48,7 @@ func startRelay(
 		}
 		stunConn, err = listenPacket("udp", stunListenAddr)
 		if err != nil {
-			return err
+			return fmt.Errorf("bind STUN UDP listener %q failed; set --stun-listen-addr/RELAY_STUN_LISTEN_ADDR to another address or \"off\" to disable: %w", stunListenAddr, err)
 		}
 	}
 
@@ -56,7 +57,9 @@ func startRelay(
 	if stunConn != nil {
 		defer stunConn.Close()
 		go func() {
-			_ = (&stunserver.Server{}).Serve(serveCtx, stunConn)
+			if err := (&stunserver.Server{}).Serve(serveCtx, stunConn); err != nil && serveCtx.Err() == nil {
+				logx.Warn("stun_server_stopped", logx.String("error", err.Error()))
+			}
 		}()
 	}
 

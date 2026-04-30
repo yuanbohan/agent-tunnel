@@ -57,20 +57,30 @@ func (c STUNClient) Discover(ctx context.Context, socket *UDPSocket) (*net.UDPAd
 	}
 
 	defer socket.SetReadDeadline(time.Time{})
+	stopCancelDeadline := context.AfterFunc(ctx, func() {
+		_ = socket.SetReadDeadline(time.Now())
+	})
+	defer stopCancelDeadline()
 	request := stunwire.BuildBindingRequest(transactionID)
 	buf := make([]byte, 1500)
 
 	for attempt := 0; attempt < retries; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if _, err := socket.WriteToUDP(request, c.ServerAddr); err != nil {
 			return nil, err
 		}
-		deadline := time.Now().Add(timeout)
+		deadline := readDeadlineFromContext(ctx, timeout)
 		for {
 			if err := socket.SetReadDeadline(deadline); err != nil {
 				return nil, err
 			}
 			n, from, err := socket.ReadFromUDP(buf)
 			if err != nil {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return nil, ctxErr
+				}
 				if errors.Is(err, os.ErrDeadlineExceeded) {
 					break
 				}
@@ -97,6 +107,14 @@ func (c STUNClient) Discover(ctx context.Context, socket *UDPSocket) (*net.UDPAd
 		}
 	}
 	return nil, ErrSTUNTimeout
+}
+
+func readDeadlineFromContext(ctx context.Context, timeout time.Duration) time.Time {
+	deadline := time.Now().Add(timeout)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		return ctxDeadline
+	}
+	return deadline
 }
 
 func sameUDPAddr(left, right *net.UDPAddr) bool {

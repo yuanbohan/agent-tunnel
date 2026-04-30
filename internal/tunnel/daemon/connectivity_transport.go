@@ -82,15 +82,6 @@ func (t *ConnectivityTransport) Serve(ctx context.Context, conn *quic.Conn) erro
 	}); err != nil {
 		return err
 	}
-	if err := writeConnectivityJSON(control, frame.TypePathState, sessionproto.PathState{
-		AttemptID:            t.AttemptID,
-		PathKind:             pathKind,
-		FallbackReason:       t.FallbackReason,
-		DirectSetupLatencyMS: durationMillis(t.DirectSetupLatency),
-		RelaySetupLatencyMS:  durationMillis(t.RelaySetupLatency),
-	}); err != nil {
-		return err
-	}
 	interactiveOwner := &struct{ id int }{id: 1}
 	defer t.Broker.ReleaseInteractiveOwner(interactiveOwner)
 
@@ -99,6 +90,15 @@ func (t *ConnectivityTransport) Serve(ctx context.Context, conn *quic.Conn) erro
 	snapshot, events, cancel := t.Broker.SnapshotAndSubscribe()
 	defer cancel()
 	if err := writeConnectivityJSON(control, frame.TypeSessionIndex, sessionproto.SessionIndex{Sessions: brokerSessionMetadata(snapshot)}); err != nil {
+		return err
+	}
+	if err := writeConnectivityJSON(control, frame.TypePathState, sessionproto.PathState{
+		AttemptID:            t.AttemptID,
+		PathKind:             pathKind,
+		FallbackReason:       t.FallbackReason,
+		DirectSetupLatencyMS: durationMillis(t.DirectSetupLatency),
+		RelaySetupLatencyMS:  durationMillis(t.RelaySetupLatency),
+	}); err != nil {
 		return err
 	}
 	subscribedPreviews := make(map[string]struct{})

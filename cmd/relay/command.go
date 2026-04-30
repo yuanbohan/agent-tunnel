@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -332,6 +334,7 @@ Uses RELAY_LISTEN_ADDR when set, otherwise defaults to 127.0.0.1:8586.`,
 }
 
 func newUserTierCmd(env runtimeEnv, handlers commandHandlers) *cobra.Command {
+	var jsonOutput bool
 	cmd := &cobra.Command{
 		Use:   "tier <username> <free|pro>",
 		Short: "Set a user's subscription tier",
@@ -343,20 +346,70 @@ Requires:
   - tier, either free or pro
 
 Uses RELAY_LISTEN_ADDR when set, otherwise defaults to 127.0.0.1:8586.`,
-		Example:       `  relay user tier alice pro`,
+		Example: `  relay user tier alice pro
+  relay user tier alice pro --json`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.ExactArgs(2),
 		RunE: func(c *cobra.Command, args []string) error {
-			cfg, err := finalizeUserTierConfig(args[0], args[1], env.getenv)
-			if err != nil {
-				return err
+			run := func() error {
+				cfg, err := finalizeUserTierConfig(args[0], args[1], jsonOutput, env.getenv)
+				if err != nil {
+					return err
+				}
+				return handlers.userTier(c.Context(), cfg)
 			}
-			return handlers.userTier(c.Context(), cfg)
+			if jsonOutput {
+				stdout := env.stdout
+				if stdout == nil {
+					stdout = io.Discard
+				}
+				return runOperatorJSONCommand(stdout, run)
+			}
+			return run()
 		},
 	}
 	wrapFlagErrors(cmd)
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "print result as JSON")
 	return cmd
+}
+
+type operatorCommandErrorEnvelope struct {
+	Error operatorCommandError `json:"error"`
+}
+
+type operatorCommandError struct {
+	Code       string `json:"code"`
+	Message    string `json:"message"`
+	StatusCode int    `json:"status_code,omitempty"`
+	Reason     string `json:"reason,omitempty"`
+}
+
+func runOperatorJSONCommand(stdout io.Writer, run func() error) error {
+	err := run()
+	if err == nil {
+		return nil
+	}
+	envelope := operatorCommandErrorEnvelope{
+		Error: operatorCommandError{
+			Code:    "operator_command_failed",
+			Message: err.Error(),
+		},
+	}
+	var apiErr operatorAPIError
+	if errors.As(err, &apiErr) {
+		envelope.Error.Code = "operator_api_error"
+		envelope.Error.StatusCode = apiErr.StatusCode
+		if apiErr.Reason != "" {
+			envelope.Error.Reason = apiErr.Reason
+		} else if apiErr.Code != 0 {
+			envelope.Error.Reason = fmt.Sprintf("%d", apiErr.Code)
+		}
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	_ = encoder.Encode(envelope)
+	return err
 }
 
 func newCommandHandlers(env runtimeEnv) commandHandlers {

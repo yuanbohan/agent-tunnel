@@ -201,7 +201,7 @@ tunnel rollback
 
 `tunnel run --daemon auto|off|required ...` controls only the daemon-local broker registration path. `auto` is the default best-effort mode, `off` preserves pure Relay-only local session startup, and `required` fails startup if a matching daemon broker cannot be reached.
 
-`tunnel daemon start --json`, `tunnel daemon status --json`, and `tunnel daemon doctor --json` expose machine-readable status for automation. Human `daemon start` output warns when launch readiness is degraded.
+`tunnel daemon start --json`, `tunnel daemon status --json`, `tunnel daemon doctor --json`, `tunnel daemon broker sessions --json`, `tunnel daemon pair`, `tunnel daemon pair pending --json`, `tunnel daemon pair confirm ... --json`, `tunnel daemon devices --json`, and `tunnel daemon revoke ... --json` expose machine-readable daemon state and pairing/trust results for automation. JSON-capable daemon commands return a single `{"error":{"code":"...","message":"..."}}` envelope on command failures while preserving a non-zero exit status. Human `daemon start` output warns when launch readiness is degraded.
 
 The daemon connectivity core can run without `tmux`. Missing `tmux` reports degraded launch readiness and prevents tmux-backed remote launch, but it does not prevent local broker registration or pairing/connectivity control paths.
 
@@ -348,6 +348,8 @@ The Compose file hardcodes the non-secret runtime defaults for production operat
 
 - Relay listens in-container on `0.0.0.0:8586`
 - Docker publishes Relay to the host on `127.0.0.1:8586`
+- Relay listens for Binding-only STUN on UDP `0.0.0.0:3478` unless `RELAY_STUN_LISTEN_ADDR=off`
+- Docker publishes the STUN listener to the host on UDP `3478`
 - PostgreSQL uses database `agent_tunnel`
 - PostgreSQL uses role `relay_user`
 - PostgreSQL stores data in Docker volume `relay-postgres-data`

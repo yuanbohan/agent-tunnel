@@ -56,13 +56,13 @@ func TestConnectivityTransportSendsSessionIndexAndPreviewSnapshots(t *testing.T)
 	if hello.ActorType != sessionproto.ActorDaemon || hello.DeviceFingerprint != "daemon-fp" || hello.PathKind != sessionproto.PathRelay {
 		t.Fatalf("hello = %#v, want daemon relay hello", hello)
 	}
-	pathState := readTestJSONFrame[sessionproto.PathState](t, control, frame.TypePathState)
-	if pathState.PathKind != sessionproto.PathRelay || pathState.AttemptID != "attempt-test" || pathState.FallbackReason != "direct_timeout" || pathState.DirectSetupLatencyMS != 3000 || pathState.RelaySetupLatencyMS != 120 {
-		t.Fatalf("pathState = %#v, want relay attempt diagnostics", pathState)
-	}
 	index := readTestJSONFrame[sessionproto.SessionIndex](t, control, frame.TypeSessionIndex)
 	if len(index.Sessions) != 1 || index.Sessions[0].SessionID != "sess-1" || index.Sessions[0].CommandPreview != "codex" {
 		t.Fatalf("session index = %#v, want sess-1 metadata", index)
+	}
+	pathState := readTestJSONFrame[sessionproto.PathState](t, control, frame.TypePathState)
+	if pathState.PathKind != sessionproto.PathRelay || pathState.AttemptID != "attempt-test" || pathState.FallbackReason != "direct_timeout" || pathState.DirectSetupLatencyMS != 3000 || pathState.RelaySetupLatencyMS != 120 {
+		t.Fatalf("pathState = %#v, want relay attempt diagnostics", pathState)
 	}
 
 	if err := writeTestJSONFrame(control, frame.TypePreviewSubscribe, sessionproto.PreviewSubscribe{SessionID: "sess-1"}); err != nil {
@@ -202,8 +202,8 @@ func TestConnectivityFallbackSimulatorRoutesInputAndReconnectsFreshState(t *test
 		t.Fatalf("write first hello returned error: %v", err)
 	}
 	_ = readTestJSONFrame[sessionproto.Hello](t, firstControl, frame.TypeHello)
-	_ = readTestJSONFrame[sessionproto.PathState](t, firstControl, frame.TypePathState)
 	_ = readTestJSONFrame[sessionproto.SessionIndex](t, firstControl, frame.TypeSessionIndex)
+	_ = readTestJSONFrame[sessionproto.PathState](t, firstControl, frame.TypePathState)
 	if err := writeTestJSONFrame(firstControl, frame.TypeInteractiveRequest, sessionproto.InteractiveRequest{
 		SessionID: "sess-1",
 		Cols:      100,
@@ -265,11 +265,11 @@ func TestConnectivityFallbackSimulatorRoutesInputAndReconnectsFreshState(t *test
 		t.Fatalf("write second hello returned error: %v", err)
 	}
 	_ = readTestJSONFrame[sessionproto.Hello](t, secondControl, frame.TypeHello)
-	_ = readTestJSONFrame[sessionproto.PathState](t, secondControl, frame.TypePathState)
 	index := readTestJSONFrame[sessionproto.SessionIndex](t, secondControl, frame.TypeSessionIndex)
 	if len(index.Sessions) != 1 || index.Sessions[0].SessionID != "sess-1" {
 		t.Fatalf("reconnect index = %#v, want fresh sess-1 state", index)
 	}
+	_ = readTestJSONFrame[sessionproto.PathState](t, secondControl, frame.TypePathState)
 	if err := writeTestJSONFrame(secondControl, frame.TypePreviewSubscribe, sessionproto.PreviewSubscribe{SessionID: "sess-1"}); err != nil {
 		t.Fatalf("write reconnect preview_subscribe returned error: %v", err)
 	}

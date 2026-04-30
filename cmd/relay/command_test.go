@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -269,5 +270,31 @@ func TestRunWithHandlersDispatchesUserTierSubcommand(t *testing.T) {
 	}
 	if !tierCalled {
 		t.Fatal("user tier handler not called")
+	}
+}
+
+func TestRunWithHandlersUserTierJSONWrapsErrors(t *testing.T) {
+	var stdout bytes.Buffer
+	env := runtimeEnv{
+		stdout: &stdout,
+		getenv: testEnv(map[string]string{
+			"RELAY_OPERATOR_TOKEN": "operator-secret",
+		}),
+	}
+
+	err := runWithHandlers([]string{"user", "tier", "Alice", "pro", "--json"}, env, commandHandlers{
+		userTier: func(context.Context, userTierConfig) error {
+			return operatorAPIError{StatusCode: 403, Code: 1007, Message: "forbidden"}
+		},
+	})
+	if err == nil {
+		t.Fatal("user tier --json error = nil, want operator error")
+	}
+	var envelope operatorCommandErrorEnvelope
+	if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
+		t.Fatalf("JSON unmarshal returned error: %v\n%s", err, stdout.String())
+	}
+	if envelope.Error.Code != "operator_api_error" || envelope.Error.StatusCode != 403 || envelope.Error.Reason != "1007" {
+		t.Fatalf("envelope = %#v, want operator API error details", envelope)
 	}
 }

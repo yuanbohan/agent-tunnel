@@ -87,6 +87,34 @@ func TestSTUNClientTimesOutAfterRetryBudget(t *testing.T) {
 	}
 }
 
+func TestSTUNClientHonorsContextCancellationBeforeReadTimeout(t *testing.T) {
+	socket, err := ListenUDPSocket(&net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatalf("ListenUDPSocket returned error: %v", err)
+	}
+	defer socket.Close()
+	serverConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatalf("ListenUDP server returned error: %v", err)
+	}
+	defer serverConn.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(30*time.Millisecond, cancel)
+	start := time.Now()
+	_, err = (STUNClient{
+		ServerAddr: serverConn.LocalAddr().(*net.UDPAddr),
+		Retries:    1,
+		Timeout:    time.Second,
+	}).Discover(ctx, socket)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Discover err = %v, want context.Canceled", err)
+	}
+	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
+		t.Fatalf("Discover took %s after canceled context, want prompt return", elapsed)
+	}
+}
+
 func TestSTUNClientIgnoresMalformedWrongTransactionAndUnexpectedServer(t *testing.T) {
 	socket, err := ListenUDPSocket(&net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	if err != nil {

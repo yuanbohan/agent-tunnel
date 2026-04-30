@@ -1,6 +1,7 @@
 package connectivity
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"time"
@@ -18,6 +19,8 @@ import (
 )
 
 var upgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+
+const connectivityAuthRevalidationTimeout = 5 * time.Second
 
 func App(registry *relayconnectivity.Registry, appAuth *relayauth.AppAuthService) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -100,12 +103,12 @@ func App(registry *relayconnectivity.Registry, appAuth *relayauth.AppAuthService
 				if !appAuthStillValid(c, appAuth, app) {
 					return
 				}
-				ready, err := registry.RequestRelayTunnelFromApp(relayconnectivity.AppOwner{
+				ready, err := registry.RequestRelayTunnelFromAppWithDiagnostics(relayconnectivity.AppOwner{
 					UserID:            app.User.ID,
 					AppSessionID:      app.Session.ID,
 					DeviceFingerprint: app.Session.DeviceFingerprint,
 					SessionCreatedAt:  app.Session.CreatedAt,
-				}, peer, frame.DaemonID, frame.AttemptID, frame.RequestID, 30*time.Second)
+				}, peer, frame.DaemonID, frame.AttemptID, frame.RequestID, frame.FallbackReason, frame.DirectSetupLatencyMS, frame.RelaySetupLatencyMS, 30*time.Second)
 				if err != nil {
 					if err == relayconnectivity.ErrRelayTunnelRateLimited {
 						_ = peer.SendJSON(protocol.ConnectivityErrorFrameWithRetryAfter(frame.RequestID, "relay_rate_limited", int(relayconnectivity.RelayTunnelRequestWindow.Seconds())))
@@ -158,7 +161,9 @@ func appAuthStillValid(c *gin.Context, appAuth *relayauth.AppAuthService, authen
 	if !ok {
 		return false
 	}
-	current, err := appAuth.AuthenticateAccessToken(c.Request.Context(), token)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), connectivityAuthRevalidationTimeout)
+	defer cancel()
+	current, err := appAuth.AuthenticateAccessToken(ctx, token)
 	if err != nil {
 		return false
 	}

@@ -52,6 +52,22 @@ type runtimeState struct {
 	broker              *Broker
 	connectivityEvents  chan protocol.ConnectivityFrame
 	connectivityReplies map[string]chan protocol.ConnectivityFrame
+	activeDirect        map[int64]activeDirectTransport
+	pendingDirect       map[int64]pendingDirectAttempt
+	nextDirectID        int64
+	rootCtx             context.Context
+}
+
+type activeDirectTransport struct {
+	attemptID          string
+	androidFingerprint string
+	cancel             context.CancelFunc
+}
+
+type pendingDirectAttempt struct {
+	attemptID          string
+	androidFingerprint string
+	cancel             context.CancelFunc
 }
 
 func StartBackground(ctx context.Context, options StartOptions) (StartResult, error) {
@@ -218,6 +234,7 @@ func Run(ctx context.Context, options RuntimeOptions, readyWriter io.Writer) err
 		broker:              NewBroker(),
 		connectivityEvents:  make(chan protocol.ConnectivityFrame, 16),
 		connectivityReplies: make(map[string]chan protocol.ConnectivityFrame),
+		rootCtx:             ctx,
 	}
 	if err := state.persist(); err != nil {
 		return err
@@ -291,6 +308,8 @@ func Run(ctx context.Context, options RuntimeOptions, readyWriter io.Writer) err
 			if err != nil {
 				return Response{Error: err.Error()}
 			}
+			state.cancelPendingDirectAttempts("", revoked.Fingerprint)
+			state.cancelActiveDirectTransports("", revoked.Fingerprint)
 			if !state.sendConnectivityEventBlocking(requestCtx, protocol.ConnectivityFrame{
 				Type:               "paired_device_revoked",
 				AndroidFingerprint: revoked.Fingerprint,
@@ -423,6 +442,130 @@ func (s *runtimeState) setConnectivityPath(pathKind, failure string) {
 	s.status.LastConnectivityFailure = strings.TrimSpace(failure)
 	s.mu.Unlock()
 	_ = s.persist()
+}
+
+func (s *runtimeState) rootContext(fallback context.Context) context.Context {
+	if s != nil && s.rootCtx != nil {
+		return s.rootCtx
+	}
+	if fallback != nil {
+		return fallback
+	}
+	return context.Background()
+}
+
+func (s *runtimeState) registerPendingDirectAttempt(attemptID, androidFingerprint string, cancel context.CancelFunc) func() {
+	if s == nil || cancel == nil {
+		return func() {}
+	}
+	attemptID = strings.TrimSpace(attemptID)
+	androidFingerprint = strings.ToLower(strings.TrimSpace(androidFingerprint))
+	if attemptID == "" || androidFingerprint == "" {
+		return func() {}
+	}
+	s.mu.Lock()
+	if s.pendingDirect == nil {
+		s.pendingDirect = make(map[int64]pendingDirectAttempt)
+	}
+	s.nextDirectID++
+	id := s.nextDirectID
+	s.pendingDirect[id] = pendingDirectAttempt{attemptID: attemptID, androidFingerprint: androidFingerprint, cancel: cancel}
+	s.mu.Unlock()
+	return func() {
+		s.mu.Lock()
+		delete(s.pendingDirect, id)
+		s.mu.Unlock()
+	}
+}
+
+func (s *runtimeState) cancelPendingDirectAttempts(attemptID, androidFingerprint string) {
+	if s == nil {
+		return
+	}
+	attemptID = strings.TrimSpace(attemptID)
+	androidFingerprint = strings.ToLower(strings.TrimSpace(androidFingerprint))
+	if androidFingerprint == "" {
+		return
+	}
+	var cancels []context.CancelFunc
+	s.mu.Lock()
+	for id, attempt := range s.pendingDirect {
+		if attempt.androidFingerprint == androidFingerprint && (attemptID == "" || attempt.attemptID == attemptID) {
+			cancels = append(cancels, attempt.cancel)
+			delete(s.pendingDirect, id)
+		}
+	}
+	s.mu.Unlock()
+	for _, cancel := range cancels {
+		if cancel != nil {
+			cancel()
+		}
+	}
+}
+
+func (s *runtimeState) registerActiveDirectTransport(attemptID, androidFingerprint string, cancel context.CancelFunc) func() {
+	if s == nil || cancel == nil {
+		return func() {}
+	}
+	attemptID = strings.TrimSpace(attemptID)
+	androidFingerprint = strings.ToLower(strings.TrimSpace(androidFingerprint))
+	if attemptID == "" || androidFingerprint == "" {
+		return func() {}
+	}
+	s.mu.Lock()
+	if s.activeDirect == nil {
+		s.activeDirect = make(map[int64]activeDirectTransport)
+	}
+	s.nextDirectID++
+	id := s.nextDirectID
+	s.activeDirect[id] = activeDirectTransport{attemptID: attemptID, androidFingerprint: androidFingerprint, cancel: cancel}
+	s.mu.Unlock()
+	return func() {
+		s.mu.Lock()
+		delete(s.activeDirect, id)
+		s.mu.Unlock()
+	}
+}
+
+func (s *runtimeState) cancelActiveDirectTransports(attemptID, androidFingerprint string) {
+	if s == nil {
+		return
+	}
+	attemptID = strings.TrimSpace(attemptID)
+	androidFingerprint = strings.ToLower(strings.TrimSpace(androidFingerprint))
+	if androidFingerprint == "" {
+		return
+	}
+	var cancels []context.CancelFunc
+	s.mu.Lock()
+	for id, transport := range s.activeDirect {
+		if transport.androidFingerprint == androidFingerprint && (attemptID == "" || transport.attemptID == attemptID) {
+			cancels = append(cancels, transport.cancel)
+			delete(s.activeDirect, id)
+		}
+	}
+	s.mu.Unlock()
+	for _, cancel := range cancels {
+		if cancel != nil {
+			cancel()
+		}
+	}
+}
+
+func (s *runtimeState) activeDirectSessions() []protocol.ConnectivityDirectSession {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	sessions := make([]protocol.ConnectivityDirectSession, 0, len(s.activeDirect))
+	for _, transport := range s.activeDirect {
+		sessions = append(sessions, protocol.ConnectivityDirectSession{
+			AttemptID:          transport.attemptID,
+			AndroidFingerprint: transport.androidFingerprint,
+		})
+	}
+	return sessions
 }
 
 func (s *runtimeState) sendConnectivityEvent(frame protocol.ConnectivityFrame) bool {
