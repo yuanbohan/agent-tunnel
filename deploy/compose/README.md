@@ -16,6 +16,8 @@ The Compose file fixes these non-secret runtime defaults:
 
 - Relay listens in-container on `0.0.0.0:8586`
 - Docker publishes Relay to the host as `127.0.0.1:8586`
+- Relay listens for Binding-only STUN on UDP `0.0.0.0:3478`
+- Docker publishes STUN to the host as UDP `3478`
 - PostgreSQL uses database `agent_tunnel`
 - PostgreSQL uses role `relay_user`
 - PostgreSQL stores data in Docker volume `relay-postgres-data`
@@ -30,6 +32,8 @@ curl -fsS http://127.0.0.1:8586/healthz
 ```
 
 PostgreSQL stores data in the fixed `relay-postgres-data` named volume. Relay structured logs are written to `../logs/relay/relay.log` on the host. `../postgres/latest.sql` is mounted into the official PostgreSQL init directory and runs only when that volume is empty.
+
+Expose UDP `3478` through the host firewall and point the STUN hostname, for example `stun.<relay-domain>`, at the same edge host. This STUN service is Binding-only; it does not provide TURN relay or media forwarding.
 
 ## Update
 

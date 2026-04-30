@@ -1,6 +1,7 @@
 package connectivity
 
 import (
+	"context"
 	"strconv"
 	"strings"
 	"time"
@@ -47,7 +48,7 @@ func Daemon(registry *relayconnectivity.Registry, agentTokens *relayauth.AgentTo
 			UserID:       authenticated.User.ID,
 			AgentTokenID: authenticated.Token.ID,
 		}
-		if _, ok := registry.RegisterDaemonIfValid(owner, *register.Daemon, register.TrustedDevices, peer, func() bool {
+		if _, ok := registry.RegisterDaemonIfValidWithDirectSessions(owner, *register.Daemon, register.TrustedDevices, register.DirectSessions, peer, func() bool {
 			return agentAuthStillValid(c, agentTokens, authenticated)
 		}); !ok {
 			return
@@ -60,6 +61,9 @@ func Daemon(registry *relayconnectivity.Registry, agentTokens *relayauth.AgentTo
 		for {
 			var frame protocol.ConnectivityFrame
 			if _, err := handlerws.ReadJSON(conn, &frame); err != nil {
+				return
+			}
+			if !agentAuthStillValid(c, agentTokens, authenticated) {
 				return
 			}
 			switch frame.Type {
@@ -87,6 +91,22 @@ func Daemon(registry *relayconnectivity.Registry, agentTokens *relayauth.AgentTo
 					continue
 				}
 				_ = peer.SendJSON(protocol.ConnectivityPairInvitationReservedFrame(frame.RequestID, strconv.FormatInt(authenticated.User.ID, 10)))
+			case "rendezvous_hint":
+				if err := registry.ForwardRendezvousHintFromDaemon(owner, register.Daemon.DeviceID, peer, frame.AttemptID, frame.RequestID, frame.AndroidFingerprint, frame.PublicUDPAddr, frame.PrivateUDPAddrs); err != nil {
+					_ = peer.SendJSON(protocol.ConnectivityErrorFrame(frame.RequestID, "rendezvous_unavailable"))
+				}
+			case "rendezvous_close":
+				if !registry.CloseRendezvousFromDaemon(owner, register.Daemon.DeviceID, peer, frame.AttemptID, frame.AndroidFingerprint) {
+					_ = peer.SendJSON(protocol.ConnectivityErrorFrame(frame.RequestID, "rendezvous_unavailable"))
+				}
+			case "direct_session_open":
+				if !registry.OpenDirectSessionFromDaemon(owner, register.Daemon.DeviceID, peer, frame.AttemptID, frame.RequestID, frame.AndroidFingerprint) {
+					_ = peer.SendJSON(protocol.ConnectivityDirectSessionCloseFrame(frame.RequestID, frame.AttemptID, register.Daemon.DeviceID, frame.AndroidFingerprint))
+				}
+			case "direct_session_close":
+				if !registry.CloseDirectSessionFromDaemon(owner, register.Daemon.DeviceID, peer, frame.AttemptID, frame.AndroidFingerprint) {
+					_ = peer.SendJSON(protocol.ConnectivityErrorFrame(frame.RequestID, "direct_session_unavailable"))
+				}
 			default:
 				_ = peer.SendJSON(protocol.ConnectivityErrorFrame(frame.RequestID, "unsupported_event"))
 			}
@@ -102,7 +122,9 @@ func agentAuthStillValid(c *gin.Context, agentTokens *relayauth.AgentTokenServic
 	if !ok {
 		return false
 	}
-	current, err := agentTokens.Authenticate(c.Request.Context(), token)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), connectivityAuthRevalidationTimeout)
+	defer cancel()
+	current, err := agentTokens.Authenticate(ctx, token)
 	if err != nil {
 		return false
 	}

@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -19,13 +21,14 @@ import (
 )
 
 type runtimeEnv struct {
-	getenv     func(string) string
-	stdout     io.Writer
-	stderr     io.Writer
-	openDB     func(string) (*sql.DB, error)
-	httpClient *http.Client
-	listen     func(network, address string) (net.Listener, error)
-	serveHTTP  func(*http.Server, net.Listener) error
+	getenv       func(string) string
+	stdout       io.Writer
+	stderr       io.Writer
+	openDB       func(string) (*sql.DB, error)
+	httpClient   *http.Client
+	listen       func(network, address string) (net.Listener, error)
+	listenPacket func(network, address string) (net.PacketConn, error)
+	serveHTTP    func(*http.Server, net.Listener) error
 }
 
 type commandHandlers struct {
@@ -45,8 +48,9 @@ func defaultRuntimeEnv() runtimeEnv {
 		openDB: func(dsn string) (*sql.DB, error) {
 			return sql.Open("pgx", dsn)
 		},
-		httpClient: &http.Client{Timeout: 10 * time.Second},
-		listen:     net.Listen,
+		httpClient:   &http.Client{Timeout: 10 * time.Second},
+		listen:       net.Listen,
+		listenPacket: net.ListenPacket,
 		serveHTTP: func(srv *http.Server, ln net.Listener) error {
 			return srv.Serve(ln)
 		},
@@ -94,7 +98,8 @@ The public server entrypoint is "relay serve". It requires:
 The operator commands under "relay invite" and "relay user" are intentionally
 local-only. Run them on the relay host after "relay serve" is already running.
 They use RELAY_OPERATOR_TOKEN and connect to RELAY_LISTEN_ADDR (default
-127.0.0.1:8586).`,
+127.0.0.1:8586). The server also listens for Binding-only STUN on
+RELAY_STUN_LISTEN_ADDR (default 0.0.0.0:3478) unless disabled with "off".`,
 		Example: `  relay serve --listen-addr 127.0.0.1:8586
   relay invite create --count 3 --expires-in 7d
   relay invite disable --code AB2C3D
@@ -153,6 +158,7 @@ Required environment variables:
 
 Optional environment variables:
   - RELAY_LISTEN_ADDR (default 127.0.0.1:8586)
+  - RELAY_STUN_LISTEN_ADDR (default 0.0.0.0:3478, set to "off" to disable)
   - RELAY_LOG_FILE`,
 		Example: `  relay serve
   relay serve --listen-addr 127.0.0.1:8586
@@ -328,6 +334,7 @@ Uses RELAY_LISTEN_ADDR when set, otherwise defaults to 127.0.0.1:8586.`,
 }
 
 func newUserTierCmd(env runtimeEnv, handlers commandHandlers) *cobra.Command {
+	var jsonOutput bool
 	cmd := &cobra.Command{
 		Use:   "tier <username> <free|pro>",
 		Short: "Set a user's subscription tier",
@@ -339,20 +346,70 @@ Requires:
   - tier, either free or pro
 
 Uses RELAY_LISTEN_ADDR when set, otherwise defaults to 127.0.0.1:8586.`,
-		Example:       `  relay user tier alice pro`,
+		Example: `  relay user tier alice pro
+  relay user tier alice pro --json`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.ExactArgs(2),
 		RunE: func(c *cobra.Command, args []string) error {
-			cfg, err := finalizeUserTierConfig(args[0], args[1], env.getenv)
-			if err != nil {
-				return err
+			run := func() error {
+				cfg, err := finalizeUserTierConfig(args[0], args[1], jsonOutput, env.getenv)
+				if err != nil {
+					return err
+				}
+				return handlers.userTier(c.Context(), cfg)
 			}
-			return handlers.userTier(c.Context(), cfg)
+			if jsonOutput {
+				stdout := env.stdout
+				if stdout == nil {
+					stdout = io.Discard
+				}
+				return runOperatorJSONCommand(stdout, run)
+			}
+			return run()
 		},
 	}
 	wrapFlagErrors(cmd)
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "print result as JSON")
 	return cmd
+}
+
+type operatorCommandErrorEnvelope struct {
+	Error operatorCommandError `json:"error"`
+}
+
+type operatorCommandError struct {
+	Code       string `json:"code"`
+	Message    string `json:"message"`
+	StatusCode int    `json:"status_code,omitempty"`
+	Reason     string `json:"reason,omitempty"`
+}
+
+func runOperatorJSONCommand(stdout io.Writer, run func() error) error {
+	err := run()
+	if err == nil {
+		return nil
+	}
+	envelope := operatorCommandErrorEnvelope{
+		Error: operatorCommandError{
+			Code:    "operator_command_failed",
+			Message: err.Error(),
+		},
+	}
+	var apiErr operatorAPIError
+	if errors.As(err, &apiErr) {
+		envelope.Error.Code = "operator_api_error"
+		envelope.Error.StatusCode = apiErr.StatusCode
+		if apiErr.Reason != "" {
+			envelope.Error.Reason = apiErr.Reason
+		} else if apiErr.Code != 0 {
+			envelope.Error.Reason = fmt.Sprintf("%d", apiErr.Code)
+		}
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	_ = encoder.Encode(envelope)
+	return err
 }
 
 func newCommandHandlers(env runtimeEnv) commandHandlers {
@@ -395,7 +452,7 @@ func newCommandHandlers(env runtimeEnv) commandHandlers {
 				return err
 			}
 
-			return startRelay(handler, env.listen, env.serveHTTP)
+			return startRelay(ctx, handler, env.listen, env.listenPacket, env.serveHTTP)
 		},
 		inviteCreate: func(ctx context.Context, cfg inviteCreateConfig) error {
 			return runInviteCreate(ctx, newHTTPOperatorClient(cfg.RelayAddr, cfg.OperatorToken, env.httpClient), cfg, env.stdout)

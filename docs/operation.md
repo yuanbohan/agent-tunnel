@@ -87,6 +87,7 @@ sudo docker compose --env-file .env exec relay relay invite list
 sudo docker compose --env-file .env exec relay relay invite disable --code AB2C3D
 sudo docker compose --env-file .env exec relay relay user delete --username alice
 sudo docker compose --env-file .env exec relay relay user tier alice pro
+sudo docker compose --env-file .env exec relay relay user tier alice pro --json
 ```
 
 The operator routes remain outside the public `/api/` namespace and should not be exposed through nginx.

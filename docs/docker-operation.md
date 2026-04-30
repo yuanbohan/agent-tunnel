@@ -350,6 +350,7 @@ sudo docker compose --env-file .env exec relay relay invite create --count 3 --e
 sudo docker compose --env-file .env exec relay relay invite list
 sudo docker compose --env-file .env exec relay relay invite disable --code AB2C3D
 sudo docker compose --env-file .env exec relay relay user delete --username alice
+sudo docker compose --env-file .env exec relay relay user tier alice pro --json
 ```
 
 The operator routes are local maintenance routes and must stay outside the public `/api/` namespace. Do not expose them through nginx.

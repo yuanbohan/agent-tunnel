@@ -94,7 +94,11 @@ type Resize struct {
 }
 
 type PathState struct {
-	PathKind string `json:"path_kind"`
+	AttemptID            string `json:"attempt_id,omitempty"`
+	PathKind             string `json:"path_kind"`
+	FallbackReason       string `json:"fallback_reason,omitempty"`
+	DirectSetupLatencyMS int    `json:"direct_setup_latency_ms,omitempty"`
+	RelaySetupLatencyMS  int    `json:"relay_setup_latency_ms,omitempty"`
 }
 
 type Error struct {

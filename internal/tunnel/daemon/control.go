@@ -25,21 +25,23 @@ const (
 var ErrNotRunning = errors.New("daemon is not running")
 
 type StatusInfo struct {
-	Running                bool   `json:"running"`
-	PID                    int    `json:"pid,omitempty"`
-	StartedAt              int64  `json:"started_at,omitempty"`
-	BaseURL                string `json:"base_url,omitempty"`
-	AuthContextFingerprint string `json:"auth_context_fingerprint,omitempty"`
-	DeviceID               string `json:"device_id,omitempty"`
-	DaemonFingerprint      string `json:"daemon_fingerprint,omitempty"`
-	DisplayName            string `json:"display_name,omitempty"`
-	Hostname               string `json:"hostname,omitempty"`
-	PlatformFamily         string `json:"platform_family,omitempty"`
-	PlatformID             string `json:"platform_id,omitempty"`
-	RelayConnected         bool   `json:"relay_connected"`
-	LaunchHealth           string `json:"launch_health,omitempty"`
-	WorkspaceBackend       string `json:"workspace_backend,omitempty"`
-	LastFailure            string `json:"last_failure,omitempty"`
+	Running                 bool   `json:"running"`
+	PID                     int    `json:"pid,omitempty"`
+	StartedAt               int64  `json:"started_at,omitempty"`
+	BaseURL                 string `json:"base_url,omitempty"`
+	AuthContextFingerprint  string `json:"auth_context_fingerprint,omitempty"`
+	DeviceID                string `json:"device_id,omitempty"`
+	DaemonFingerprint       string `json:"daemon_fingerprint,omitempty"`
+	DisplayName             string `json:"display_name,omitempty"`
+	Hostname                string `json:"hostname,omitempty"`
+	PlatformFamily          string `json:"platform_family,omitempty"`
+	PlatformID              string `json:"platform_id,omitempty"`
+	RelayConnected          bool   `json:"relay_connected"`
+	LaunchHealth            string `json:"launch_health,omitempty"`
+	WorkspaceBackend        string `json:"workspace_backend,omitempty"`
+	LastFailure             string `json:"last_failure,omitempty"`
+	LastConnectivityPath    string `json:"last_connectivity_path,omitempty"`
+	LastConnectivityFailure string `json:"last_connectivity_failure,omitempty"`
 }
 
 type Request struct {

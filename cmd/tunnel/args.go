@@ -235,10 +235,10 @@ Examples:
   tunnel daemon close
   tunnel daemon sessions
   tunnel daemon pair
-  tunnel daemon pair pending
-  tunnel daemon pair confirm <invitation-id> <sas>
-  tunnel daemon devices
-  tunnel daemon revoke <fingerprint>
+  tunnel daemon pair pending [--json]
+  tunnel daemon pair confirm <invitation-id> <sas> [--json]
+  tunnel daemon devices [--json]
+  tunnel daemon revoke <fingerprint> [--json]
 `
 }
 

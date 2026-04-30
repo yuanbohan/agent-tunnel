@@ -10,9 +10,11 @@ import (
 	"io"
 	"net"
 	"reflect"
+	"time"
 
 	"github.com/quic-go/quic-go"
 
+	"yuanbohan/tunnel/internal/connectivity/direct"
 	"yuanbohan/tunnel/internal/connectivity/frame"
 	"yuanbohan/tunnel/internal/connectivity/sessionproto"
 	"yuanbohan/tunnel/internal/connectivity/transport"
@@ -49,12 +51,23 @@ type ProbeScript struct {
 	MobileHello        Hello
 	DaemonHello        Hello
 	SessionIndex       SessionIndex
+	PathState          sessionproto.PathState
 	InteractiveRequest InteractiveRequest
 	InteractiveGranted InteractiveGranted
 	SnapshotBegin      SnapshotBegin
 	SnapshotChunk      []byte
 	SnapshotEnd        SnapshotEnd
 	LiveBytes          []byte
+}
+
+type DirectFirstDial struct {
+	DirectPacketConn   net.PacketConn
+	DirectAddr         net.Addr
+	FallbackPacketConn net.PacketConn
+	FallbackAddr       net.Addr
+	DirectScript       ProbeScript
+	FallbackScript     ProbeScript
+	Deadline           time.Duration
 }
 
 func (c MobileClient) DialAddr(ctx context.Context, addr string, script ProbeScript) error {
@@ -85,6 +98,20 @@ func (c MobileClient) DialPacketConn(ctx context.Context, packetConn net.PacketC
 	return c.Run(ctx, conn, script)
 }
 
+func (c MobileClient) DialDirectFirst(ctx context.Context, opts DirectFirstDial) (direct.AttemptResult, error) {
+	return direct.RunDirectFirst(ctx, func(ctx context.Context) error {
+		if opts.DirectPacketConn == nil || opts.DirectAddr == nil {
+			return direct.ErrSTUNUnexpectedResponse
+		}
+		return c.DialPacketConn(ctx, opts.DirectPacketConn, opts.DirectAddr, opts.DirectScript)
+	}, func(ctx context.Context, _ string) error {
+		if opts.FallbackPacketConn == nil || opts.FallbackAddr == nil {
+			return direct.ErrSTUNUnexpectedResponse
+		}
+		return c.DialPacketConn(ctx, opts.FallbackPacketConn, opts.FallbackAddr, opts.FallbackScript)
+	}, opts.Deadline)
+}
+
 func (c MobileClient) Run(ctx context.Context, conn *quic.Conn, script ProbeScript) error {
 	if err := transport.ValidateConnectionState(conn.ConnectionState()); err != nil {
 		return err
@@ -106,7 +133,7 @@ func (c MobileClient) Run(ctx context.Context, conn *quic.Conn, script ProbeScri
 		return fmt.Errorf("%w: daemon hello=%#v", ErrUnexpectedFrame, daemonHello)
 	}
 
-	sessionIndex, err := readJSONFrame[SessionIndex](control, frame.TypeSessionIndex, c.maxPayload())
+	sessionIndex, err := c.readSessionIndexAfterOptionalPathState(control, script)
 	if err != nil {
 		return err
 	}
@@ -166,6 +193,57 @@ func (c MobileClient) Run(ctx context.Context, conn *quic.Conn, script ProbeScri
 	}
 	if !bytes.Equal(live, script.LiveBytes) {
 		return fmt.Errorf("%w: live bytes len=%d", ErrUnexpectedFrame, len(live))
+	}
+	return nil
+}
+
+func (c MobileClient) readSessionIndexAfterOptionalPathState(control io.Reader, script ProbeScript) (SessionIndex, error) {
+	var sessionIndex SessionIndex
+	got, err := frame.Read(control, c.maxPayload())
+	if err != nil {
+		return sessionIndex, err
+	}
+	if got.Type == frame.TypePathState {
+		if err := c.validatePathState(got.Payload, script); err != nil {
+			return sessionIndex, err
+		}
+		got, err = frame.Read(control, c.maxPayload())
+		if err != nil {
+			return sessionIndex, err
+		}
+	}
+	if got.Type != frame.TypeSessionIndex {
+		return sessionIndex, fmt.Errorf("%w: type=0x%02x want=0x%02x payload_len=%d", ErrUnexpectedFrame, got.Type, frame.TypeSessionIndex, len(got.Payload))
+	}
+	if err := json.Unmarshal(got.Payload, &sessionIndex); err != nil {
+		return sessionIndex, err
+	}
+	if script.PathState.PathKind != "" {
+		got, err = frame.Read(control, c.maxPayload())
+		if err != nil {
+			return sessionIndex, err
+		}
+		if got.Type != frame.TypePathState {
+			return sessionIndex, fmt.Errorf("%w: type=0x%02x want=0x%02x payload_len=%d", ErrUnexpectedFrame, got.Type, frame.TypePathState, len(got.Payload))
+		}
+		if err := c.validatePathState(got.Payload, script); err != nil {
+			return sessionIndex, err
+		}
+	}
+	return sessionIndex, nil
+}
+
+func (c MobileClient) validatePathState(payload []byte, script ProbeScript) error {
+	var pathState sessionproto.PathState
+	if err := json.Unmarshal(payload, &pathState); err != nil {
+		return err
+	}
+	expected := script.PathState
+	if expected.PathKind == "" {
+		expected.PathKind = script.DaemonHello.PathKind
+	}
+	if expected.PathKind != "" && pathState.PathKind != expected.PathKind {
+		return fmt.Errorf("%w: path state=%#v", ErrUnexpectedFrame, pathState)
 	}
 	return nil
 }

@@ -1519,11 +1519,83 @@ func TestRunDaemonPairPendingPrintsPendingResponses(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	if err := runDaemonPairPending(context.Background(), &stdout, io.Discard); err != nil {
+	if err := runDaemonPairPending(context.Background(), &stdout, io.Discard, false); err != nil {
 		t.Fatalf("runDaemonPairPending returned error: %v", err)
 	}
 	if !strings.Contains(stdout.String(), "pair_123") || !strings.Contains(stdout.String(), "123456") {
 		t.Fatalf("stdout = %q, want pending pairing row", stdout.String())
+	}
+	stdout.Reset()
+	if err := runDaemonPairPending(context.Background(), &stdout, io.Discard, true); err != nil {
+		t.Fatalf("runDaemonPairPending JSON returned error: %v", err)
+	}
+	var pending []daemon.PendingPairingResponse
+	if err := json.Unmarshal(stdout.Bytes(), &pending); err != nil {
+		t.Fatalf("pending JSON unmarshal returned error: %v\n%s", err, stdout.String())
+	}
+	if len(pending) != 1 || pending[0].InvitationID != "pair_123" {
+		t.Fatalf("pending = %#v, want pair_123 JSON", pending)
+	}
+}
+
+func TestRunWithArgsDaemonJSONCommandPrintsErrorEnvelope(t *testing.T) {
+	setTestEnv(t)
+
+	oldResolvePaths := resolveDaemonPaths
+	oldPending := daemonPendingPairing
+	t.Cleanup(func() {
+		resolveDaemonPaths = oldResolvePaths
+		daemonPendingPairing = oldPending
+	})
+	resolveDaemonPaths = func() (daemon.Paths, error) { return daemon.Paths{}, nil }
+	daemonPendingPairing = func(context.Context, daemon.Paths) ([]daemon.PendingPairingResponse, error) {
+		return nil, daemon.ErrNotRunning
+	}
+
+	var stdout bytes.Buffer
+	err := runWithArgs([]string{"tunnel", "daemon", "pair", "pending", "--json"}, &stdout, io.Discard)
+	if !errors.Is(err, daemon.ErrNotRunning) {
+		t.Fatalf("runWithArgs error = %v, want ErrNotRunning", err)
+	}
+	var envelope daemonCommandErrorEnvelope
+	if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
+		t.Fatalf("error JSON unmarshal returned error: %v\n%s", err, stdout.String())
+	}
+	if envelope.Error.Code != "daemon_not_running" || envelope.Error.Message == "" {
+		t.Fatalf("error envelope = %#v, want daemon_not_running with message", envelope)
+	}
+}
+
+func TestRunWithArgsDaemonJSONCommandsWrapSetupErrors(t *testing.T) {
+	setTestEnv(t)
+
+	oldResolvePaths := resolveDaemonPaths
+	t.Cleanup(func() {
+		resolveDaemonPaths = oldResolvePaths
+	})
+	setupErr := errors.New("paths exploded")
+	resolveDaemonPaths = func() (daemon.Paths, error) { return daemon.Paths{}, setupErr }
+
+	for _, args := range [][]string{
+		{"tunnel", "daemon", "start", "--json"},
+		{"tunnel", "daemon", "status", "--json"},
+		{"tunnel", "daemon", "doctor", "--json"},
+		{"tunnel", "daemon", "pair"},
+	} {
+		t.Run(strings.Join(args[2:], "_"), func(t *testing.T) {
+			var stdout bytes.Buffer
+			err := runWithArgs(args, &stdout, io.Discard)
+			if !errors.Is(err, setupErr) {
+				t.Fatalf("runWithArgs error = %v, want setup error", err)
+			}
+			var envelope daemonCommandErrorEnvelope
+			if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
+				t.Fatalf("error JSON unmarshal returned error: %v\n%s", err, stdout.String())
+			}
+			if envelope.Error.Code != "daemon_command_failed" || envelope.Error.Message == "" {
+				t.Fatalf("error envelope = %#v, want daemon_command_failed with message", envelope)
+			}
+		})
 	}
 }
 
@@ -1546,7 +1618,7 @@ func TestRunDaemonPairConfirmPrintsPairedFingerprint(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	if err := runDaemonPairConfirm(context.Background(), "pair_123", "123456", &stdout, io.Discard); err != nil {
+	if err := runDaemonPairConfirm(context.Background(), "pair_123", "123456", &stdout, io.Discard, false); err != nil {
 		t.Fatalf("runDaemonPairConfirm returned error: %v", err)
 	}
 	if got := stdout.String(); got != "paired "+fingerprint+"\n" {
@@ -1573,11 +1645,22 @@ func TestRunDaemonDevicesPrintsTrustedDevices(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	if err := runDaemonDevices(context.Background(), &stdout, io.Discard); err != nil {
+	if err := runDaemonDevices(context.Background(), &stdout, io.Discard, false); err != nil {
 		t.Fatalf("runDaemonDevices returned error: %v", err)
 	}
 	if !strings.Contains(stdout.String(), "Pixel") || !strings.Contains(stdout.String(), strings.Repeat("a", 64)) {
 		t.Fatalf("stdout = %q, want trusted device row", stdout.String())
+	}
+	stdout.Reset()
+	if err := runDaemonDevices(context.Background(), &stdout, io.Discard, true); err != nil {
+		t.Fatalf("runDaemonDevices JSON returned error: %v", err)
+	}
+	var devices []daemon.TrustedAndroidDevice
+	if err := json.Unmarshal(stdout.Bytes(), &devices); err != nil {
+		t.Fatalf("devices JSON unmarshal returned error: %v\n%s", err, stdout.String())
+	}
+	if len(devices) != 1 || devices[0].DisplayName != "Pixel" {
+		t.Fatalf("devices = %#v, want Pixel JSON", devices)
 	}
 }
 
@@ -1635,7 +1718,7 @@ func TestRunDaemonRevokePrintsRevokedFingerprint(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	if err := runDaemonRevoke(context.Background(), fingerprint, &stdout, io.Discard); err != nil {
+	if err := runDaemonRevoke(context.Background(), fingerprint, &stdout, io.Discard, false); err != nil {
 		t.Fatalf("runDaemonRevoke returned error: %v", err)
 	}
 	if got := stdout.String(); got != "revoked "+fingerprint+"\n" {

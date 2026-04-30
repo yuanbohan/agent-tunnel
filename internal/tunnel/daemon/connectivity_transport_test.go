@@ -60,6 +60,10 @@ func TestConnectivityTransportSendsSessionIndexAndPreviewSnapshots(t *testing.T)
 	if len(index.Sessions) != 1 || index.Sessions[0].SessionID != "sess-1" || index.Sessions[0].CommandPreview != "codex" {
 		t.Fatalf("session index = %#v, want sess-1 metadata", index)
 	}
+	pathState := readTestJSONFrame[sessionproto.PathState](t, control, frame.TypePathState)
+	if pathState.PathKind != sessionproto.PathRelay || pathState.AttemptID != "attempt-test" || pathState.FallbackReason != "direct_timeout" || pathState.DirectSetupLatencyMS != 3000 || pathState.RelaySetupLatencyMS != 120 {
+		t.Fatalf("pathState = %#v, want relay attempt diagnostics", pathState)
+	}
 
 	if err := writeTestJSONFrame(control, frame.TypePreviewSubscribe, sessionproto.PreviewSubscribe{SessionID: "sess-1"}); err != nil {
 		t.Fatalf("write preview_subscribe returned error: %v", err)
@@ -199,6 +203,7 @@ func TestConnectivityFallbackSimulatorRoutesInputAndReconnectsFreshState(t *test
 	}
 	_ = readTestJSONFrame[sessionproto.Hello](t, firstControl, frame.TypeHello)
 	_ = readTestJSONFrame[sessionproto.SessionIndex](t, firstControl, frame.TypeSessionIndex)
+	_ = readTestJSONFrame[sessionproto.PathState](t, firstControl, frame.TypePathState)
 	if err := writeTestJSONFrame(firstControl, frame.TypeInteractiveRequest, sessionproto.InteractiveRequest{
 		SessionID: "sess-1",
 		Cols:      100,
@@ -264,6 +269,7 @@ func TestConnectivityFallbackSimulatorRoutesInputAndReconnectsFreshState(t *test
 	if len(index.Sessions) != 1 || index.Sessions[0].SessionID != "sess-1" {
 		t.Fatalf("reconnect index = %#v, want fresh sess-1 state", index)
 	}
+	_ = readTestJSONFrame[sessionproto.PathState](t, secondControl, frame.TypePathState)
 	if err := writeTestJSONFrame(secondControl, frame.TypePreviewSubscribe, sessionproto.PreviewSubscribe{SessionID: "sess-1"}); err != nil {
 		t.Fatalf("write reconnect preview_subscribe returned error: %v", err)
 	}
@@ -304,6 +310,10 @@ func startConnectivityTransportForTest(t *testing.T, ctx context.Context, broker
 			DaemonFingerprint:  "daemon-fp",
 			AndroidFingerprint: androidFingerprint,
 			PathKind:           sessionproto.PathRelay,
+			AttemptID:          "attempt-test",
+			FallbackReason:     "direct_timeout",
+			DirectSetupLatency: 3 * time.Second,
+			RelaySetupLatency:  120 * time.Millisecond,
 		}).Serve(ctx, conn)
 	}()
 	clientConn, err := quic.Dial(ctx, clientPacketConn, serverPacketConn.LocalAddr(), clientTLS, conntransport.QUICConfig())

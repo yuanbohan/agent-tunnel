@@ -26,6 +26,9 @@ func TestLoadServeConfigDefaultsAndRequirements(t *testing.T) {
 	if cfg.ListenAddr != defaultRelayListenAddr {
 		t.Fatalf("ListenAddr = %q, want %q", cfg.ListenAddr, defaultRelayListenAddr)
 	}
+	if cfg.STUNListenAddr != defaultRelaySTUNListenAddr {
+		t.Fatalf("STUNListenAddr = %q, want %q", cfg.STUNListenAddr, defaultRelaySTUNListenAddr)
+	}
 }
 
 func TestLoadServeConfigAllowsListenAddrFlag(t *testing.T) {
@@ -39,6 +42,33 @@ func TestLoadServeConfigAllowsListenAddrFlag(t *testing.T) {
 	}
 	if cfg.ListenAddr != "127.0.0.1:9999" {
 		t.Fatalf("ListenAddr = %q, want 127.0.0.1:9999", cfg.ListenAddr)
+	}
+}
+
+func TestLoadServeConfigAllowsSTUNListenAddrConfiguration(t *testing.T) {
+	cfg, err := loadServeConfig(testEnv(map[string]string{
+		"RELAY_DATABASE_URL":     "postgres://relay",
+		"RELAY_APP_SECRET":       "secret",
+		"RELAY_OPERATOR_TOKEN":   "operator-secret",
+		"RELAY_STUN_LISTEN_ADDR": "127.0.0.1:3479",
+	}), nil)
+	if err != nil {
+		t.Fatalf("loadServeConfig returned error: %v", err)
+	}
+	if cfg.STUNListenAddr != "127.0.0.1:3479" {
+		t.Fatalf("STUNListenAddr = %q, want 127.0.0.1:3479", cfg.STUNListenAddr)
+	}
+
+	cfg, err = loadServeConfig(testEnv(map[string]string{
+		"RELAY_DATABASE_URL":   "postgres://relay",
+		"RELAY_APP_SECRET":     "secret",
+		"RELAY_OPERATOR_TOKEN": "operator-secret",
+	}), []string{"--stun-listen-addr", "off"})
+	if err != nil {
+		t.Fatalf("loadServeConfig returned error: %v", err)
+	}
+	if cfg.STUNListenAddr != "" {
+		t.Fatalf("STUNListenAddr = %q, want disabled empty value", cfg.STUNListenAddr)
 	}
 }
 

@@ -333,6 +333,11 @@ func newDaemonCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if startJSON {
+				return runDaemonJSONCommand(cmd.OutOrStdout(), func() error {
+					return runDaemonStartWithOptions(cmd.Context(), baseURL, cmd.OutOrStdout(), cmd.ErrOrStderr(), daemonStartOptions{JSON: true})
+				})
+			}
 			return runDaemonStartWithOptions(cmd.Context(), baseURL, cmd.OutOrStdout(), cmd.ErrOrStderr(), daemonStartOptions{JSON: startJSON})
 		},
 	}
@@ -352,6 +357,11 @@ func newDaemonCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if statusJSON {
+				return runDaemonJSONCommand(cmd.OutOrStdout(), func() error {
+					return runDaemonStatusWithOptions(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), true)
+				})
+			}
 			return runDaemonStatusWithOptions(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), statusJSON)
 		},
 	}
@@ -375,6 +385,11 @@ func newDaemonCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if doctorJSON {
+				return runDaemonJSONCommand(cmd.OutOrStdout(), func() error {
+					return runDaemonDoctorWithOptions(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), true)
+				})
+			}
 			return runDaemonDoctorWithOptions(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), doctorJSON)
 		},
 	}
@@ -417,45 +432,66 @@ func newDaemonCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runDaemonPair(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+			return runDaemonJSONCommand(cmd.OutOrStdout(), func() error {
+				return runDaemonPair(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+			})
 		},
 	}
-	pairCmd.AddCommand(&cobra.Command{
+	var pairPendingJSON bool
+	pairPendingCmd := &cobra.Command{
 		Use:           "pending",
 		Short:         "List pending pairing responses",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runDaemonPairPending(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr())
-		},
-	})
-	pairCmd.AddCommand(&cobra.Command{
-		Use:   "confirm <invitation-id> <sas>",
-		Short: "Confirm a pending pairing response",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) != 2 {
-				return usageWithHelp(daemonHelpText(), "expected invitation id and SAS")
+			if pairPendingJSON {
+				return runDaemonJSONCommand(cmd.OutOrStdout(), func() error {
+					return runDaemonPairPending(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), true)
+				})
 			}
-			return nil
+			return runDaemonPairPending(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), pairPendingJSON)
 		},
+	}
+	pairPendingCmd.Flags().BoolVar(&pairPendingJSON, "json", false, "print pending pairing responses as JSON")
+	pairCmd.AddCommand(pairPendingCmd)
+	var pairConfirmJSON bool
+	pairConfirmCmd := &cobra.Command{
+		Use:           "confirm <invitation-id> <sas>",
+		Short:         "Confirm a pending pairing response",
+		Args:          cobra.ExactArgs(2),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDaemonPairConfirm(cmd.Context(), args[0], args[1], cmd.OutOrStdout(), cmd.ErrOrStderr())
+			if pairConfirmJSON {
+				return runDaemonJSONCommand(cmd.OutOrStdout(), func() error {
+					return runDaemonPairConfirm(cmd.Context(), args[0], args[1], cmd.OutOrStdout(), cmd.ErrOrStderr(), true)
+				})
+			}
+			return runDaemonPairConfirm(cmd.Context(), args[0], args[1], cmd.OutOrStdout(), cmd.ErrOrStderr(), pairConfirmJSON)
 		},
-	})
+	}
+	pairConfirmCmd.Flags().BoolVar(&pairConfirmJSON, "json", false, "print pairing completion as JSON")
+	pairCmd.AddCommand(pairConfirmCmd)
 	cmd.AddCommand(pairCmd)
-	cmd.AddCommand(&cobra.Command{
+	var devicesJSON bool
+	devicesCmd := &cobra.Command{
 		Use:           "devices",
 		Short:         "List paired Android devices",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runDaemonDevices(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+			if devicesJSON {
+				return runDaemonJSONCommand(cmd.OutOrStdout(), func() error {
+					return runDaemonDevices(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), true)
+				})
+			}
+			return runDaemonDevices(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), devicesJSON)
 		},
-	})
+	}
+	devicesCmd.Flags().BoolVar(&devicesJSON, "json", false, "print paired Android devices as JSON")
+	cmd.AddCommand(devicesCmd)
 	brokerCmd := &cobra.Command{
 		Use:           "broker",
 		Short:         "Inspect daemon local broker state",
@@ -474,27 +510,35 @@ func newDaemonCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if brokerSessionsJSON {
+				return runDaemonJSONCommand(cmd.OutOrStdout(), func() error {
+					return runDaemonBrokerSessions(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), true)
+				})
+			}
 			return runDaemonBrokerSessions(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), brokerSessionsJSON)
 		},
 	}
 	brokerSessionsCmd.Flags().BoolVar(&brokerSessionsJSON, "json", false, "print broker sessions as JSON")
 	brokerCmd.AddCommand(brokerSessionsCmd)
 	cmd.AddCommand(brokerCmd)
-	cmd.AddCommand(&cobra.Command{
-		Use:   "revoke <fingerprint>",
-		Short: "Revoke a paired Android device",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) != 1 {
-				return usageWithHelp(daemonHelpText(), "expected exactly one device fingerprint")
-			}
-			return nil
-		},
+	var revokeJSON bool
+	revokeCmd := &cobra.Command{
+		Use:           "revoke <fingerprint>",
+		Short:         "Revoke a paired Android device",
+		Args:          cobra.ExactArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDaemonRevoke(cmd.Context(), args[0], cmd.OutOrStdout(), cmd.ErrOrStderr())
+			if revokeJSON {
+				return runDaemonJSONCommand(cmd.OutOrStdout(), func() error {
+					return runDaemonRevoke(cmd.Context(), args[0], cmd.OutOrStdout(), cmd.ErrOrStderr(), true)
+				})
+			}
+			return runDaemonRevoke(cmd.Context(), args[0], cmd.OutOrStdout(), cmd.ErrOrStderr(), revokeJSON)
 		},
-	})
+	}
+	revokeCmd.Flags().BoolVar(&revokeJSON, "json", false, "print revoked device as JSON")
+	cmd.AddCommand(revokeCmd)
 	internalCmd := &cobra.Command{
 		Use:           "internal-run",
 		Hidden:        true,

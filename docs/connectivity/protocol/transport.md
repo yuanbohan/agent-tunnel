@@ -149,6 +149,16 @@ STUN Binding Requests are unreliable UDP datagrams. Implementations should retry
 
 If STUN cannot return a public address within that budget, the connection manager should skip direct UDP and move to relay fallback.
 
+The Go Step 5 direct helper performs STUN discovery on the same UDP socket that
+will later back the direct QUIC attempt. This avoids learning a NAT mapping for
+one local port and then dialing QUIC from a different port. Candidate hints are
+bounded before they enter Relay realtime messages:
+
+- `public_udp_addr` is the STUN-observed address for the direct socket.
+- `private_udp_addrs` includes only private, link-local IPv6, and explicitly
+  test-allowed loopback/documentation addresses.
+- duplicate private candidates are normalized, sorted, and capped.
+
 ### NAT Traversal Limitations
 
 The minimal STUN-based scheme works for cone NATs.
@@ -242,10 +252,11 @@ JSON was chosen over CBOR / protobuf for phase 1 to keep tcpdump output and cust
 The control stream MUST follow this fixed ordering after the QUIC connection becomes ready:
 
 1. `hello` is the first frame on the control stream from each side
-2. the daemon sends `session_index` immediately after exchanging `hello`
-3. only after `session_index` may the daemon emit `session_upsert`, `session_gone`, `preview_snapshot`, `interactive_granted`, `interactive_denied`, or `path_state`
+2. the daemon sends `session_index` immediately after its `hello`
+3. the daemon may send advisory `path_state` immediately after `session_index`
+4. only after `session_index` may the daemon emit `session_upsert`, `session_gone`, `preview_snapshot`, `interactive_granted`, or `interactive_denied`
 
-Android MUST NOT process daemon session or preview frames until `session_index` has been received and applied.
+Android MUST NOT process daemon session or preview frames until `session_index` has been received and applied. `path_state` is advisory and must not be inserted before `session_index` in protocol version 1.
 
 Phase-1 frame families:
 
@@ -425,6 +436,14 @@ Optional daemon-to-app advisory frame used to confirm the current path:
 
 - `direct`
 - `relay`
+
+Current fields:
+
+- `attempt_id`
+- `path_kind`
+- `fallback_reason`
+- `direct_setup_latency_ms`
+- `relay_setup_latency_ms`
 
 The authoritative source of the path badge is the Android connection manager.
 

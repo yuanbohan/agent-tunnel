@@ -593,6 +593,57 @@ func writeIndentedJSON(stdout io.Writer, value any) error {
 	return encoder.Encode(value)
 }
 
+type daemonCommandErrorEnvelope struct {
+	Error daemonCommandError `json:"error"`
+}
+
+type daemonCommandError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+func runDaemonJSONCommand(stdout io.Writer, run func() error) error {
+	err := run()
+	if err == nil {
+		return nil
+	}
+	var exit exitError
+	if errors.As(err, &exit) {
+		return err
+	}
+	_ = writeIndentedJSON(stdout, daemonCommandErrorEnvelope{
+		Error: daemonCommandError{
+			Code:    daemonCommandErrorCode(err),
+			Message: err.Error(),
+		},
+	})
+	return err
+}
+
+func daemonCommandErrorCode(err error) string {
+	message := strings.TrimSpace(err.Error())
+	switch {
+	case errors.Is(err, daemon.ErrNotRunning) || strings.Contains(message, daemon.ErrNotRunning.Error()):
+		return "daemon_not_running"
+	case errors.Is(err, daemon.ErrPairingInvitationNotFound) || message == daemon.ErrPairingInvitationNotFound.Error():
+		return "pairing_invitation_not_found"
+	case errors.Is(err, daemon.ErrPairingInvitationExpired) || message == daemon.ErrPairingInvitationExpired.Error():
+		return "pairing_invitation_expired"
+	case errors.Is(err, daemon.ErrPairingInvitationConsumed) || message == daemon.ErrPairingInvitationConsumed.Error():
+		return "pairing_invitation_consumed"
+	case errors.Is(err, daemon.ErrPairingSASMismatch) || message == daemon.ErrPairingSASMismatch.Error():
+		return "pairing_sas_mismatch"
+	case errors.Is(err, daemon.ErrTrustedDeviceNotFound) || message == daemon.ErrTrustedDeviceNotFound.Error():
+		return "trusted_device_not_found"
+	case errors.Is(err, daemon.ErrInvalidAndroidFingerprint) || message == daemon.ErrInvalidAndroidFingerprint.Error():
+		return "invalid_android_fingerprint"
+	case message == "relay connectivity event queue unavailable":
+		return "connectivity_event_queue_unavailable"
+	default:
+		return "daemon_command_failed"
+	}
+}
+
 func renderDaemonStatus(stdout io.Writer, status daemon.StatusInfo) {
 	color := doctorColorEnabled(stdout)
 
@@ -608,6 +659,8 @@ func renderDaemonStatus(stdout io.Writer, status daemon.StatusInfo) {
 	_, _ = fmt.Fprintf(stdout, "%s Relay URL: %s\n", doctorStyled("🔗", "36", color), daemonRelayURLSummary(status))
 	_, _ = fmt.Fprintf(stdout, "%s Workspace: %s\n", doctorStyled("🧰", "36", color), daemonWorkspaceSummary(status))
 	_, _ = fmt.Fprintf(stdout, "%s Last Launch Failure: %s\n", doctorStyled("📝", "36", color), daemonLastFailureSummary(status))
+	_, _ = fmt.Fprintf(stdout, "%s Connectivity Path: %s\n", doctorStyled("📡", "36", color), daemonConnectivityPathSummary(status))
+	_, _ = fmt.Fprintf(stdout, "%s Last Connectivity Failure: %s\n", doctorStyled("🧭", "36", color), daemonConnectivityFailureSummary(status))
 }
 
 func daemonStatusHeadline(label, summary string, state string, color bool) string {
@@ -719,6 +772,20 @@ func daemonLastFailureSummary(status daemon.StatusInfo) string {
 		return "none"
 	}
 	return status.LastFailure
+}
+
+func daemonConnectivityPathSummary(status daemon.StatusInfo) string {
+	if strings.TrimSpace(status.LastConnectivityPath) == "" {
+		return "unknown"
+	}
+	return status.LastConnectivityPath
+}
+
+func daemonConnectivityFailureSummary(status daemon.StatusInfo) string {
+	if strings.TrimSpace(status.LastConnectivityFailure) == "" {
+		return "none"
+	}
+	return status.LastConnectivityFailure
 }
 
 func daemonDisplayValue(value, fallback string) string {
@@ -838,7 +905,7 @@ func runDaemonPair(ctx context.Context, stdout, stderr io.Writer) error {
 	return nil
 }
 
-func runDaemonPairPending(ctx context.Context, stdout, stderr io.Writer) error {
+func runDaemonPairPending(ctx context.Context, stdout, stderr io.Writer, jsonOutput bool) error {
 	if err := ensureDaemonPlatformSupported(); err != nil {
 		return err
 	}
@@ -849,6 +916,9 @@ func runDaemonPairPending(ctx context.Context, stdout, stderr io.Writer) error {
 	pending, err := daemonPendingPairing(ctx, paths)
 	if err != nil {
 		return err
+	}
+	if jsonOutput {
+		return writeIndentedJSON(stdout, pending)
 	}
 	if len(pending) == 0 {
 		_, _ = io.WriteString(stdout, "no pending pairing responses\n")
@@ -869,7 +939,7 @@ func runDaemonPairPending(ctx context.Context, stdout, stderr io.Writer) error {
 	return w.Flush()
 }
 
-func runDaemonPairConfirm(ctx context.Context, invitationID, sas string, stdout, stderr io.Writer) error {
+func runDaemonPairConfirm(ctx context.Context, invitationID, sas string, stdout, stderr io.Writer, jsonOutput bool) error {
 	if err := ensureDaemonPlatformSupported(); err != nil {
 		return err
 	}
@@ -881,11 +951,14 @@ func runDaemonPairConfirm(ctx context.Context, invitationID, sas string, stdout,
 	if err != nil {
 		return err
 	}
+	if jsonOutput {
+		return writeIndentedJSON(stdout, completion)
+	}
 	_, _ = fmt.Fprintf(stdout, "paired %s\n", completion.Device.Fingerprint)
 	return nil
 }
 
-func runDaemonDevices(ctx context.Context, stdout, stderr io.Writer) error {
+func runDaemonDevices(ctx context.Context, stdout, stderr io.Writer, jsonOutput bool) error {
 	if err := ensureDaemonPlatformSupported(); err != nil {
 		return err
 	}
@@ -896,6 +969,9 @@ func runDaemonDevices(ctx context.Context, stdout, stderr io.Writer) error {
 	devices, err := daemonTrustedDevices(ctx, paths)
 	if err != nil {
 		return err
+	}
+	if jsonOutput {
+		return writeIndentedJSON(stdout, devices)
 	}
 	if len(devices) == 0 {
 		_, _ = io.WriteString(stdout, "no paired devices\n")
@@ -945,7 +1021,7 @@ func runDaemonBrokerSessions(ctx context.Context, stdout, stderr io.Writer, json
 	return w.Flush()
 }
 
-func runDaemonRevoke(ctx context.Context, fingerprint string, stdout, stderr io.Writer) error {
+func runDaemonRevoke(ctx context.Context, fingerprint string, stdout, stderr io.Writer, jsonOutput bool) error {
 	if err := ensureDaemonPlatformSupported(); err != nil {
 		return err
 	}
@@ -956,6 +1032,9 @@ func runDaemonRevoke(ctx context.Context, fingerprint string, stdout, stderr io.
 	device, err := daemonRevokeTrustedDevice(ctx, paths, fingerprint)
 	if err != nil {
 		return err
+	}
+	if jsonOutput {
+		return writeIndentedJSON(stdout, device)
 	}
 	_, _ = fmt.Fprintf(stdout, "revoked %s\n", device.Fingerprint)
 	return nil
