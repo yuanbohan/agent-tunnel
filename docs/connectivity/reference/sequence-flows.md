@@ -115,15 +115,16 @@ sequenceDiagram
     participant DaemonBroker as Daemon Broker
 
     AndroidUI->>AndroidConn: app foreground / user logged in
-    AndroidConn->>RelayRT: fetch subscription tier
-    RelayRT-->>AndroidConn: {tier}
+    AndroidConn->>RelayRT: fetch account policy
+    RelayRT-->>AndroidConn: {account_id, tier}
+    AndroidConn->>AndroidConn: resolve trusted-computer policy
     AndroidConn->>RelayRT: open app realtime websocket
     AndroidConn->>RelayRT: app_register(app_version, protocol_version)
     RelayRT-->>AndroidConn: daemon_snapshot
     AndroidConn-->>AndroidUI: render visible daemon cards
 
-    AndroidUI->>AndroidConn: user opens one daemon card
-    AndroidConn->>AndroidConn: open transport for that daemon card
+    AndroidUI->>AndroidConn: user opens an active trusted computer
+    AndroidConn->>AndroidConn: open transport for that computer
     AndroidConn->>STUN: Binding Request
     STUN-->>AndroidConn: Binding Response\n(public A_ip:A_port)
 
@@ -150,18 +151,19 @@ sequenceDiagram
     DaemonBroker->>DaemonConn: current session roster
     DaemonConn->>AndroidConn: session_index
     DaemonConn->>AndroidConn: path_state(path=direct, attempt_id)
-    AndroidConn->>AndroidConn: apply local free/pro rule
+    AndroidConn->>AndroidConn: render full active-computer session roster
     AndroidConn-->>AndroidUI: render daemon card + session metadata\nbadge = Direct
 ```
 
 ### What This Flow Shows
 
 - Relay tells Android which daemons are visible and which account tier applies.
+- Android uses tier with local trusted-computer state before opening daemon transport.
 - STUN is only used to learn public UDP mappings.
 - Relay carries rendezvous hints but never terminal data.
-- daemon transport starts when the user opens a daemon card, not eagerly for every visible daemon
+- daemon transport starts only for tier-allowed trusted computers
 - Direct success means the daemon becomes the source of session list and preview / interactive routing.
-- The free-tier unlocked row is chosen locally by the app within that daemon card after the initial `session_index`.
+- Free and Pro session rows behave identically once the computer is active.
 
 ## Flow 3: Direct Attempt Fails And Falls Back To Relay
 
@@ -214,7 +216,7 @@ sequenceDiagram
     DaemonBroker->>DaemonConn: current session roster
     DaemonConn->>AndroidConn: session_index
     DaemonConn->>AndroidConn: path_state(path=relay, fallback_reason)
-    AndroidConn->>AndroidConn: apply local free/pro rule
+    AndroidConn->>AndroidConn: render full active-computer session roster
     AndroidConn-->>AndroidUI: render session metadata\nbadge = Relay
 ```
 
@@ -225,7 +227,7 @@ sequenceDiagram
 - Relay Tunnel forwards encrypted QUIC packets only.
 - After fallback succeeds, daemon resends session list over the new connection.
 
-## Flow 4: Preview And Interactive For The Usable Session
+## Flow 4: Preview And Interactive For Any Session In An Active Computer
 
 ```mermaid
 sequenceDiagram
@@ -237,7 +239,7 @@ sequenceDiagram
     participant TunnelRun as tunnel run
 
     AndroidUI->>AndroidConn: open session S1 detail view
-    AndroidConn->>AndroidConn: verify S1 is currently usable\nunder local free/pro rule
+    AndroidConn->>AndroidConn: verify computer is active\nunder local tier policy
     AndroidConn->>DaemonConn: preview_subscribe(session_id=S1)\non control stream
     DaemonBroker->>DaemonConn: latest cached preview for S1
     DaemonConn->>AndroidConn: preview_snapshot(S1)\non control stream
@@ -267,68 +269,98 @@ sequenceDiagram
 
 - `tunnel run` remains the PTY owner.
 - The daemon is a gateway and local broker, not the terminal owner.
-- The official app asks for preview / interactive only for sessions it treats as usable.
+- The official app asks for preview / interactive only after the computer is active.
 - No Relay-issued per-session access token is involved in phase 1.
 
-## Flow 4B: Pro Preview Bootstrap
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant AndroidConn as Android ConnMgr
-    participant DaemonConn as Daemon ConnMgr
-    participant DaemonBroker as Daemon Broker
-
-    Note over AndroidConn: account tier = pro
-
-    DaemonConn->>AndroidConn: session_index
-    AndroidConn->>AndroidConn: mark all rows usable
-
-    loop for each live session in roster
-        AndroidConn->>DaemonConn: preview_subscribe(session_id)
-        DaemonBroker->>DaemonConn: latest cached preview for session_id
-        DaemonConn->>AndroidConn: preview_snapshot(session_id)
-    end
-```
-
-### What This Flow Shows
-
-- pro does not wait for row-by-row user entry before showing live preview within a connected daemon card
-- pro still needs the user to open that daemon card first in phase 1
-- daemon can answer immediately because the latest preview is already cached from local `tunnel run` push
-
-## Flow 5: Free-Tier Sticky First-Attach
+## Flow 5: Free Replace Computer
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant AndroidUI as Android UI
     participant AndroidConn as Android ConnMgr
+    participant RelayRT as Relay RT
     participant DaemonConn as Daemon ConnMgr
-    participant DaemonBroker as Daemon Broker
-    participant TunnelRun as tunnel run
+    participant NewDaemon as New Daemon ConnMgr
 
-    Note over AndroidConn: Within one daemon card,\nfree tier starts with no unlocked session
+    Note over AndroidConn: tier = free,\nold computer remains active
 
-    AndroidUI->>AndroidConn: tap session row S2
-    AndroidConn-->>AndroidUI: show first-use explanation\n("Tap again to start using S2 on free tier")
-    AndroidUI->>AndroidConn: confirm open S2
-    AndroidConn->>AndroidConn: set unlocked_session_id = S2
-    AndroidConn-->>AndroidUI: lock state updates\nS2 unlocked, other rows locked
+    AndroidUI->>AndroidConn: start Replace Computer
+    AndroidConn->>RelayRT: submit new pairing response
+    RelayRT->>NewDaemon: pair_response_forward
+    NewDaemon-->>RelayRT: SAS ready
+    RelayRT-->>AndroidConn: paired response forwarded
 
-    TunnelRun->>DaemonBroker: session S2 exits
-    DaemonBroker->>DaemonConn: session_gone(S2)
-    DaemonConn->>AndroidConn: session_gone(S2)
-    AndroidConn->>AndroidConn: clear unlocked_session_id
-    AndroidConn-->>AndroidUI: all rows locked again\nuntil the next user attach
+    NewDaemon-->>AndroidUI: show SAS on daemon screen
+    AndroidConn-->>AndroidUI: show SAS in app
+    AndroidUI->>AndroidConn: user confirms matching SAS
+
+    AndroidConn->>AndroidConn: persist new trust as active
+    AndroidConn->>AndroidConn: delete old trust locally
+    AndroidConn->>DaemonConn: close old daemon transport if open
+    AndroidConn->>NewDaemon: open daemon transport for new computer
 ```
 
 ### What This Flow Shows
 
-- the first user attach picks the sticky unlocked session for that daemon card
-- locked rows stay visible
-- when the sticky unlocked session disappears, the card returns to "no unlocked session yet"
-- different devices may pick different sticky sessions; phase 1 does not synchronize that choice through Relay
+- Free replacement is transactional.
+- The old computer remains active until new pairing SAS succeeds.
+- If pairing fails, is canceled, or SAS mismatches, Android keeps the old trust active and does not switch computers.
+- Phase 1 deletes old trust locally on Android only.
+- TODO: add daemon-side old-trust revoke later.
+
+## Flow 5B: Pro Multi-Computer Auto-Connect
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant AndroidConn as Android ConnMgr
+    participant RelayRT as Relay RT
+    participant DaemonConn as Daemon ConnMgr
+
+    AndroidConn->>RelayRT: fetch account policy
+    RelayRT-->>AndroidConn: {tier: pro}
+    AndroidConn->>AndroidConn: load trusted computers\n(count <= 10)
+    AndroidConn->>RelayRT: open app realtime websocket
+    RelayRT-->>AndroidConn: daemon_snapshot
+
+    loop for each online trusted computer
+        AndroidConn->>DaemonConn: open daemon transport
+        DaemonConn->>AndroidConn: session_index
+        AndroidConn->>AndroidConn: render full session roster
+    end
+```
+
+### What This Flow Shows
+
+- Pro scales the number of trusted computers, not per-session capability.
+- Inside each connected computer, session rows behave the same as Free.
+- If the user has ten trusted computers, new pairing is blocked until one is removed.
+
+## Flow 5C: Pro Downgrade To Free Resolution
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant AndroidUI as Android UI
+    participant AndroidConn as Android ConnMgr
+    participant RelayRT as Relay RT
+
+    AndroidConn->>RelayRT: fetch account policy
+    RelayRT-->>AndroidConn: {tier: free}
+    AndroidConn->>AndroidConn: load trusted computers\n(count > 1)
+    AndroidConn->>AndroidConn: enter downgrade resolution
+    AndroidConn-->>AndroidUI: show trusted computer chooser
+    AndroidUI->>AndroidConn: choose one computer to keep active
+    AndroidConn->>AndroidConn: mark chosen computer active\nremove/deactivate others locally
+    AndroidConn->>AndroidConn: open transport only for chosen computer
+```
+
+### What This Flow Shows
+
+- Free never auto-connects multiple trusted computers.
+- Downgrade resolution is required before multi-computer users continue on Free.
+- The rule is computer-scoped; session rows behave identically after one computer is active.
 
 ## Flow 6: Reconnect And Fresh Recovery
 
@@ -357,13 +389,13 @@ sequenceDiagram
     DaemonConn->>AndroidConn: hello(path=direct or relay)
     DaemonBroker->>DaemonConn: current session roster
     DaemonConn->>AndroidConn: session_index
-    AndroidConn->>AndroidConn: recompute usable vs locked rows
+    AndroidConn->>AndroidConn: render full session roster\nfor active computer
 
     loop for each session Android still wants live preview for
         AndroidConn->>DaemonConn: preview_subscribe(session_id)
     end
 
-    loop for each still-usable session Android still wants interactive
+    loop for each session Android still wants interactive
         AndroidConn->>DaemonConn: interactive_request(session_id)
         DaemonConn->>DaemonBroker: ask local tunnel run
         TunnelRun-->>DaemonBroker: granted
@@ -379,6 +411,7 @@ sequenceDiagram
 - reconnect is path-agnostic
 - recovery is based on fresh daemon state, not missed-byte replay
 - preview and interactive are re-established from current app state after reconnect
+- tier policy is applied before reconnecting computers, not while rebuilding individual session rows
 
 ## State Ownership Summary
 
@@ -387,7 +420,7 @@ sequenceDiagram
 - app policy fetch
 - app realtime websocket lifecycle
 - per-daemon transport lifecycle
-- local free/pro rule evaluation
+- local trusted-computer policy evaluation
 - preview / interactive subscriptions the official app chooses to request
 
 ### Daemon ConnMgr Owns
@@ -416,7 +449,7 @@ sequenceDiagram
 
 ### Relay Owns
 
-- subscription tier exposure to the official app
+- account tier exposure to the official app
 - daemon presence
 - pairing transport
 - rendezvous hint exchange

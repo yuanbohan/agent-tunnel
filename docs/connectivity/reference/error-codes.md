@@ -67,8 +67,9 @@ These are not daemon or Relay protocol errors. They are local product-rule reaso
 
 | Code | Emitted By | Trigger | Recommended User-Facing String |
 |---|---|---|---|
-| `policy_locked_session` | official app | free-tier user tapped a visible but locked session row | "Free can only run 1 session per computer at a time." |
-| `policy_determining_available_session` | official app | free-tier roster not complete enough yet to compute the unlocked row | "Determining available session…" |
+| `policy_computer_limit_reached` | official app | Pro user already has 10 trusted computers and attempts to pair another | "Remove a computer before pairing a new one." |
+| `policy_replace_computer_failed` | official app | Free Replace Computer pairing failed, was canceled, or SAS mismatched | "Computer replacement was canceled. Your previous computer is still active." |
+| `policy_downgrade_resolution_required` | official app | account tier is Free while local state has multiple trusted computers | "Choose one computer to keep using on Free." |
 
 ## QUIC / TLS Layer
 

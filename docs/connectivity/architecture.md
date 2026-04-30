@@ -29,7 +29,7 @@ flowchart TB
         ACM[Android ConnMgr]
     end
     subgraph Edge["Operator-hosted edge"]
-        RRT["Relay Realtime / App APIs<br/>(presence, pairing,<br/>rendezvous, subscription tier)"]
+        RRT["Relay Realtime / App APIs<br/>(presence, pairing,<br/>rendezvous, account tier)"]
         RTUN["Relay Tunnel WS<br/>(opaque QUIC bytes)"]
         STUN["STUN<br/>UDP/3478"]
     end
@@ -59,7 +59,7 @@ flowchart TB
 
 The diagram shows the three deployment edges (Android, operator-hosted edge, user computer) and the four communication carriers between them: Relay control plane, STUN, direct QUIC over UDP, and Relay Tunnel fallback carrying opaque QUIC packets.
 
-State machines for transport lifecycle, per-session UI lifecycle, and free-tier app policy evaluation live in `reference/state-machines.md`.
+State machines for transport lifecycle, per-session UI lifecycle, and trusted-computer policy evaluation live in `reference/state-machines.md`.
 
 ## Goals
 
@@ -67,7 +67,7 @@ State machines for transport lifecycle, per-session UI lifecycle, and free-tier 
 - Keep terminal payload end-to-end encrypted on both direct and fallback paths.
 - Reduce Relay to account, presence, pairing transport, policy exposure, rendezvous, and fallback packet relay.
 - Keep `tunnel run` as the real PTY owner and session owner.
-- Keep the phase-1 free/pro product rule simple enough that implementation planning stays low-risk.
+- Keep the phase-1 Free / Pro product rule limited to trusted-computer count.
 
 ## Non-Goals
 
@@ -75,25 +75,25 @@ State machines for transport lifecycle, per-session UI lifecycle, and free-tier 
 - No Relay-resident session index in the target design.
 - No plaintext preview or terminal content in Relay.
 - No dependency on WebRTC, coturn, or SDP/ICE negotiation.
-- No daemon-side subscription branching in phase 1.
-- No phase-1 attempt to make free-tier session limits tamper-proof against modified clients.
+- No daemon-side tier branching in phase 1.
+- No session-level Free / Pro gates in phase 1.
 
 ## System Shape
 
 The system is split into five concerns:
 
-1. Account and subscription policy
+1. Account tier and trusted-computer policy
 2. Device trust and pairing
 3. Relay rendezvous and fallback
 4. Local session ownership and daemon brokering
 5. End-to-end session transport
 
-### 1. Account And Subscription Policy
+### 1. Account Tier And Trusted-Computer Policy
 
 The account system remains because it solves:
 
 - app login
-- subscription tier lookup
+- account tier lookup
 - multiple phones and multiple computers under one identity
 - Relay authorization for daemon presence, pairing transport, and fallback usage
 
@@ -104,7 +104,7 @@ In phase 1:
 - Relay does not issue per-session access tokens
 - Relay does not fan out per-session authorization to daemons
 
-The phase-1 free/pro difference is therefore an official-app product rule, not a daemon-enforced capability system.
+The phase-1 Free / Pro difference is therefore an official-app product rule, not a daemon-enforced capability system.
 
 ### 2. Device Trust And Pairing
 
@@ -130,7 +130,7 @@ Relay remains in the system, but its role is narrower.
 Relay is responsible for:
 
 - account authentication
-- subscription tier exposure to the official app
+- account tier exposure to the official app
 - daemon presence
 - pairing request and response transport
 - rendezvous hint exchange for direct connection attempts
@@ -143,7 +143,7 @@ Relay is not responsible for:
 - interactive grant / deny decisions
 - terminal byte routing semantics
 - payload decryption
-- per-session free/pro enforcement in phase 1
+- per-session tier enforcement in phase 1
 
 ### 4. Local Session Ownership And Daemon Brokering
 
@@ -186,31 +186,33 @@ Transport rules:
 
 The transport contract is specified in `protocol/transport.md`.
 
-## Subscription Product Rule
+## Tier Product Rule
 
 Phase 1 chooses the simplest viable product rule (`contract.md` D3, full detail in `ux/subscription.md`):
 
-- `free` may actively use only one session per connected daemon card at a time, chosen by **sticky first-attach**
-- `pro` is not app-limited by that rule
+- `free` may keep at most one active trusted computer
+- `pro` may keep up to ten trusted computers
+- within one active trusted computer, Free and Pro session behavior is identical
 
-For each connected daemon card, the official app maintains one optional `unlocked_session_id`. It is set on the user's first explicit `interactive_request` for that card. While the unlocked session is alive, it does not change. When it ends, the app waits for the user's next attach to pick a new one — there is no auto-rollover.
+Android owns local trusted-computer state and decides which daemon transports to open. Relay exposes only `tier`; daemon and Relay do not store active computer selection or selected session rows.
 
 Implications:
 
-- all session rows in a daemon card remain visible
-- only one row per connected daemon card is unlocked in the official app on free tier
-- no manual switching, no automatic rollover
-- pro auto-subscribes to preview for every live session in an opened daemon card after roster bootstrap
+- Free auto-connects the one active online trusted computer
+- Free changes computers through transactional Replace Computer
+- Pro auto-connects all online trusted computers up to ten
+- Pro downgrade to Free requires the user to choose one active computer before multi-computer auto-connect resumes
+- all session rows inside an active computer remain visible, previewable, and attachable
 
 This is a deliberate simplicity tradeoff:
 
 - the official app enforces the product rule
 - daemon does not enforce it
-- modified clients could ignore it
+- modified clients with daemon trust could ignore the computer-count rule
 
 That tradeoff is accepted in phase 1 because the product is still pre-launch and the simpler design materially lowers implementation risk.
 
-To keep phase-1 client behavior simple, the official app opens daemon transport only when the user opens a daemon card. Phase 1 does not need viewport-based lazy churn, background eager fan-out, or per-card idle eviction policies.
+To keep phase-1 client behavior simple, tier decides computer connections, not per-session UI. Phase 1 does not need per-session entitlement tokens or preview gates.
 
 ## Security Model
 
@@ -317,10 +319,10 @@ The user-visible session experience is intentionally split:
 
 In the official app:
 
-- free users may still see all session rows
-- free users may actively use only the sticky first-attached session for that daemon card
-- locked rows show metadata but not real preview
-- pro users are not app-limited by that rule in phase 1
+- Free and Pro users see the same row behavior inside an active trusted computer
+- preview appears for rows the app subscribes to
+- interactive appears after app request and daemon grant
+- tier affects which trusted computers may be connected, not which session rows are usable
 
 This keeps the product understandable without reintroducing Relay-owned per-session authorization.
 

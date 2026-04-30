@@ -2,32 +2,31 @@
 
 ## Status
 
-Phase-1 Android client behavior for the QUIC session-connectivity architecture. This is the consolidated reference for Android implementers — what the app must do, what it must not do, and how to use the daemon transport safely.
+Phase-1 Android client behavior for the QUIC session-connectivity architecture. This reference defines what the app owns, what Relay owns, and what the daemon transport exposes.
 
 When this doc and `../contract.md` disagree, `../contract.md` wins.
 
 ## Core Rules
 
-- login is required before any connectivity feature is available
-- Relay provides daemon presence and subscription tier — never sessions
-- the daemon transport provides sessions, previews, and interactive traffic
-- no preview cache in phase 1
-- daemon cards are the primary information architecture
-- daemon is subscription-unaware
-- free / pro differences are enforced only by the official app
+- Login is required before any connectivity feature is available.
+- Relay provides account tier, daemon presence, pairing transport, rendezvous, and fallback tunnel setup.
+- Daemon transport provides sessions, previews, interactive traffic, input, resize, and path diagnostics.
+- Free and Pro differ only by trusted-computer count.
+- Inside one active trusted computer, Free and Pro session behavior is identical.
+- Do not implement tier-based session row states, preview restrictions, or Free-only session UI.
 
-## Two Communication Planes
-
-Android talks to two planes only.
+## Communication Planes
 
 ### 1. Relay Control Plane
 
 - account-authenticated startup
-- subscription tier fetch
+- `GET /api/account/policy`
 - daemon presence
-- pairing transport
+- pairing response forwarding
 - rendezvous hint exchange
 - fallback relay tunnel setup
+
+Relay never sends session lists or per-session policy.
 
 ### 2. Daemon Transport Plane
 
@@ -49,106 +48,128 @@ Do not reintroduce session discovery or interactive control on the Relay plane.
 Recommended device identity model:
 
 - generated once on first authenticated setup
-- stored in Android Keystore where available (hardware-backed where possible)
-- the public-key fingerprint (`device_fingerprint = sha256(public_key_raw)`) is the long-lived device identity reported to Relay
+- stored in Android Keystore where available
+- `device_fingerprint = sha256(public_key_raw)` is the long-lived device identity reported to Relay
 - reinstalling the app deletes the device key; the user must re-pair every daemon
 
 ## Login And App Session
 
 Per `../contract.md` D4:
 
-1. login request body includes `device_fingerprint` alongside credentials
-2. Relay returns opaque app access and refresh tokens
-3. the server-side app session stores `account_id`, session id, expiry, and `device_fingerprint`
-4. token refresh must include the same `device_fingerprint`; Relay rejects mismatch
+1. Login request body includes `device_fingerprint` alongside credentials.
+2. Relay returns opaque app access and refresh tokens.
+3. The server-side app session stores `account_id`, session id, expiry, and `device_fingerprint`.
+4. Token refresh must include the same `device_fingerprint`; Relay rejects mismatch.
 
 Phase 1 does not require an additional per-WebSocket device-key proof. Daemon-side security relies on pairing-pinned device keys, not the app-session token format.
 
+## Tier And Computer Policy
+
+The app fetches `GET /api/account/policy` after restoring or creating an app session.
+
+Policy rules:
+
+- `free`: keep at most one active trusted computer.
+- `pro`: keep up to ten trusted computers.
+
+Android owns the local trusted-computer inventory and the active-computer decision. Relay stores neither. Daemons are tier-unaware.
+
+### Free
+
+- If exactly one active trusted computer is online, auto-connect it.
+- If no active trusted computer exists, show pairing.
+- To change computers, run Replace Computer. Keep the old trust active until the new pairing SAS succeeds.
+- If multiple active trusted computers are present due to stale state, require user resolution before connecting.
+
+TODO: Replace Computer currently deletes old trust only from Android local state after successful SAS. Add old-daemon trust revocation later.
+
+### Pro
+
+- Auto-connect all online trusted computers, up to ten.
+- If the user reaches ten trusted computers, block new pairing and ask them to remove one first.
+- Session behavior inside each connected computer is the same as Free.
+
+### Pro Downgrade To Free
+
+If tier changes to `free` while multiple trusted computers exist:
+
+1. Close or avoid opening extra daemon transports.
+2. Show downgrade resolution.
+3. Require the user to choose one computer to keep active.
+4. After selection, only connect that computer.
+
+Do not auto-connect multiple computers before resolution.
+
 ## Daemon Lifecycle Expectation
 
-`tunnel run` on the user's computer auto-starts the daemon if it is not already running (`../contract.md` D2). From the Android side, this means:
+`tunnel run` on the user's computer auto-starts the daemon if it is not already running (`../contract.md` D2). From Android:
 
 - a computer that has run `tunnel run` at least once should have a daemon listening
-- daemon presence in `daemon_snapshot` is the source of truth for connectability
-- Android does not need any "start daemon on the computer" UI in phase 1
+- daemon presence in `daemon_snapshot` is the source of truth for online status
+- Android does not need "start daemon on the computer" UI in phase 1
 
 ## Pairing Flow
 
-1. user is logged in on Android
-2. user runs `tunnel daemon pair` on the computer; daemon mints a signed JSON invitation
-3. user imports the invitation with the Android app (QR rendering is deferred)
-4. app validates the daemon-signed invitation locally
-5. app signs the invitation challenge with its persistent device key, including the Relay-authenticated `account_id`
-6. app sends the pairing response through Relay
-7. app displays the SAS
-8. user confirms matching SAS with the daemon screen (active confirmation, ≥ 1s delay, no auto-prefocus)
-9. app persists daemon trust only after explicit user confirmation
+1. User is logged in on Android.
+2. User runs `tunnel daemon pair` on the computer; daemon mints a signed JSON invitation.
+3. User imports the invitation with the Android app.
+4. App validates the daemon-signed invitation locally.
+5. App signs the invitation challenge with its persistent device key, including the Relay-authenticated `account_id`.
+6. App sends the pairing response through Relay.
+7. App displays the SAS.
+8. User confirms matching SAS with the daemon screen.
+9. App persists daemon trust only after explicit user confirmation and after tier/computer-count rules allow it.
 
 The app must not auto-trust other daemons under the same account.
 
 Wire details: `../protocol/pairing.md`.
 
-## Realtime WebSocket Usage
-
-Treat the realtime WebSocket as daemon presence and rendezvous only.
-
-### App-Side Startup
-
-1. app sends `app_register(app_version, protocol_version, ...)`
-2. Relay sends `daemon_snapshot`
-
-The app learns its subscription tier through authenticated Relay app APIs, not through realtime per-session policy events. Relay derives `account_id` and `device_fingerprint` from the authenticated server-side app session.
-
-### App Sends
-
-- pairing response submission
-- rendezvous open / hint / close
-
-### App Receives
-
-- daemon presence updates
-- pairing visibility updates
-- rendezvous hints
-- relay tunnel readiness
-
-Do not design the app around session snapshots coming from Relay.
-
 ## Android State Model
 
-The app should explicitly separate three kinds of state.
+The app should separate four kinds of state.
 
 ### 1. Relay-Control State
 
 - account session
-- subscription tier
+- account tier
 - visible daemon list
 - pairing visibility
 - rendezvous attempt bookkeeping
 
-Logout or account switch clears official-app account state and closes Relay / daemon transports. It does not revoke pairing trust by itself; pairing trust remains daemon-local until the daemon explicitly revokes that device.
+Logout or account switch clears official-app account state and closes Relay / daemon transports. It does not revoke daemon-local trust by itself.
 
-### 2. Per-Daemon Transport State
+### 2. Trusted-Computer Policy State
 
-For each daemon:
+- trusted computers known locally
+- active computer for Free
+- trusted-computer count for Pro
+- Replace Computer transaction state
+- downgrade-resolution state
+
+This state decides which daemon transports the app may open. It must not decide which sessions are usable inside an already active daemon transport.
+
+### 3. Per-Daemon Transport State
+
+For each connected daemon:
 
 - current path kind: `direct` or `relay`
-- transport lifecycle: `offline`, `connecting_direct`, `connecting_relay`, `connected_direct`, `connected_relay`, `reconnecting`
+- lifecycle: `offline`, `connecting_direct`, `connecting_relay`, `connected_direct`, `connected_relay`, `reconnecting`
 - one control stream handle
 - zero or more interactive stream handles
 
 Path is a daemon-connection property, not a per-session property.
 
-### 3. Per-Session UI State
+### 4. Per-Session UI State
 
-For each session under a daemon:
+For each session under a connected daemon:
 
 - current metadata
 - current preview, if subscribed
 - whether interactive is requested
 - whether interactive is granted
-- which terminal emulator instance owns that session, if displayed
-- whether the session is currently locked by the app's free/pro rule
-- per-daemon `unlocked_session_id` (free tier; see `subscription.md`)
+- terminal emulator instance, if displayed
+
+There is no tier-derived per-session availability state.
 
 Canonical state machines: `../reference/state-machines.md`.
 
@@ -157,94 +178,54 @@ Canonical state machines: `../reference/state-machines.md`.
 Recommended:
 
 1. restore account session
-2. fetch subscription tier from Relay app APIs
-3. open Relay realtime WebSocket
-4. send `app_register`
-5. receive `daemon_snapshot`
-6. render daemon list
-7. wait for the user to open one daemon card
-8. open daemon transport for that daemon card
-9. once a daemon transport is ready, accept session metadata and apply the local free/pro rule for that daemon card
+2. fetch account policy from Relay
+3. load local trusted-computer state
+4. resolve Free downgrade or stale multi-active state before opening daemon transports
+5. open Relay realtime WebSocket
+6. send `app_register`
+7. receive `daemon_snapshot`
+8. open daemon transports allowed by the current tier:
+   - Free: the one active online trusted computer
+   - Pro: all online trusted computers, up to ten
+9. once each daemon transport is ready, accept session metadata and render its full session list
 
-The app must not pretend session data exists before the daemon transport is up.
+The app must not pretend session data exists before daemon transport is up.
 
 ## Daemon Transport Usage
 
-Phase-1 connection strategy:
+Connection strategy:
 
-- maintain one connection manager per daemon card the user has opened
 - attempt direct QUIC using rendezvous hints
 - fall back quickly to relay packet tunnel
 - expose the current path badge
 - open one long-lived control stream
 - open one short-lived interactive stream per attached session as needed
 
-### Lazy Connect
-
-The app opens daemon transport only when the user opens a daemon card. Phase 1 does not require viewport-based lazy connect/disconnect, eager background fan-out, or per-card idle tear-down. Free-tier policy never depends on a cross-daemon global roster.
+The app may keep transports open for all tier-allowed online computers. It may also apply ordinary resource management, but that management is not a subscription rule.
 
 ## Session Bootstrap
 
-After the daemon transport is ready:
+After daemon transport is ready:
 
 1. exchange `hello`
 2. accept `session_index`
-3. sort and render session rows within that daemon card by `started_at ASC`, then `session_id ASC` as a stable tie-breaker
-4. apply the free / pro policy locally for that daemon card
-5. subscribe to preview only for the rows the app actually wants live preview for
+3. sort and render session rows within that computer by `started_at ASC`, then `session_id ASC`
+4. subscribe to preview for rows the app wants live preview for
 
-Be prepared for a short gap where the daemon is visible but sessions have not arrived. Show a lightweight `Loading sessions…` state on the card.
-
-## Free / Pro Rendering
-
-Phase-1 subscription is an official-app product rule, not a daemon-side hard authorization (`../contract.md` D3, `subscription.md`).
-
-### Free
-
-- all session rows remain visible
-- the app maintains one `(daemon_id → unlocked_session_id?)` per daemon card
-- `unlocked_session_id` is set on **first explicit `interactive_request`** the user issues for that card and never changes while that session is alive
-- when the unlocked session ends, `unlocked_session_id` clears and the next user-attach picks the new one — there is no auto-rollover
-- only that unlocked session may receive preview or interactive in the official app for that daemon card
-- all other rows render with a lock icon and light grey styling
-
-### Pro
-
-- the app does not apply the free-tier rule
-- after roster bootstrap, the app automatically subscribes to preview for every live session in the opened daemon card
-
-## Locked Session UI
-
-When the user taps a locked session on free tier:
-
-- explain "Free can only run 1 session per computer at a time. Wait for `<unlocked label>` to finish, or upgrade Pro."
-- name the currently unlocked session when known
-- do not silently switch
-- do not offer override or manual switching in phase 1
-
-Locked rows should:
-
-- show a lock icon
-- use light grey styling
-- keep metadata readable
-- not show real preview text
-
-If the payment flow is still deferred, the upgrade affordance is informational only (no clickable upgrade link).
+All rows are usable for both Free and Pro when the computer is active. Be prepared for a short gap where the computer is visible but sessions have not arrived. Show a lightweight `Loading sessions...` state.
 
 ## Path Badge
 
-Per daemon card, expose:
+Per computer, expose:
 
 - `Direct`: "Connected directly to your computer."
 - `Relay`: "Connected through your account's relay. Encryption is the same as direct mode."
 
-The badge is informational and primarily indicates expected latency. Both paths share identical end-to-end encryption and pinned-identity authentication; Relay never sees terminal plaintext on either path. UI copy MUST NOT imply the relay path is less secure.
-
-Suggested treatment: the badge is tap-to-explain rather than a permanent text label, to avoid "why is it on Relay" anxiety.
+The badge is informational and primarily indicates expected latency. Both paths share identical end-to-end encryption and pinned-identity authentication; Relay never sees terminal plaintext on either path.
 
 ## Interactive Detail Views
 
-When the user opens a session detail view for an unlocked session:
+When the user opens a session detail view:
 
 1. if needed, app sends `preview_subscribe`
 2. app sends `interactive_request`
@@ -257,23 +238,21 @@ When the user leaves:
 
 1. app sends `interactive_release`
 2. app tears down the detail terminal view
-3. app may keep or drop the preview subscription per its list-UI policy
+3. app may keep or drop preview subscription per its list-UI policy
 
-Multi-Interactive UI Focus:
+Multi-interactive UI focus:
 
 - exactly one terminal view holds keyboard focus at any given time
 - the focused terminal must be visually obvious
 - background terminals must not receive input
 
-Do not rely on the daemon's drop-input-for-non-granted-session safeguard as a primary defense — local focus discipline is the first line.
-
 ## Reconnect Behavior
 
 On daemon transport reconnect:
 
-1. perform transport handshake again (direct first, fallback on deadline)
+1. perform transport handshake again
 2. accept a fresh `session_index`
-3. recompute lock state per daemon card (the sticky `unlocked_session_id` carries through if its session still exists)
+3. render the full session list for that active computer
 4. re-send `preview_subscribe` for any sessions the app still wants live preview for
 5. for each session the app still wants interactive, re-send `interactive_request`
 6. rebuild each affected terminal view from a fresh snapshot
@@ -282,20 +261,19 @@ The app must not expect missed-byte replay.
 
 ## Cache Rules
 
-Phase 1 keeps caching simple:
-
 - account / session auth cache: allowed
+- local trusted-computer cache: required for phase-1 policy
 - daemon presence cache: allowed as a UI convenience
 - preview cache: not used
 - interactive terminal cache: not used
 
-Logout or account switch clears any local daemon visibility derived from the prior account session, but does not revoke pairing trust.
+Logout or account switch clears account-derived visibility and open transports. It does not revoke daemon-local pairing trust.
 
 ## Path Selection Rules
 
 - direct-first
-- fast fallback (sequential, not happy-eyeballs; default 3s direct deadline per `../protocol/transport.md`)
-- reconnect by opening a fresh QUIC connection — no in-place transport migration
+- fast fallback (default 3s direct deadline per `../protocol/transport.md`)
+- reconnect by opening a fresh QUIC connection; no in-place transport migration
 
 Do not maintain complex direct-vs-relay transition state beyond the current badge and connection lifecycle.
 

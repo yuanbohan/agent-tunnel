@@ -36,6 +36,16 @@ func TestConnectivityTransportSendsSessionIndexAndPreviewSnapshots(t *testing.T)
 		UpdatedAt:      101,
 	}, owner)
 	broker.updatePreview("sess-1", "cached preview", 102, owner)
+	broker.register(BrokerSession{
+		SessionID:      "sess-2",
+		Label:          "Release notes",
+		CommandPreview: "vim",
+		CWD:            "/repo/docs",
+		GitBranch:      "docs/connectivity",
+		StartedAt:      110,
+		UpdatedAt:      111,
+	}, owner)
+	broker.updatePreview("sess-2", "second cached preview", 112, owner)
 
 	clientConn, serverErr := startConnectivityTransportForTest(t, ctx, broker, "android-fp")
 	defer clientConn.CloseWithError(0, "done")
@@ -57,8 +67,12 @@ func TestConnectivityTransportSendsSessionIndexAndPreviewSnapshots(t *testing.T)
 		t.Fatalf("hello = %#v, want daemon relay hello", hello)
 	}
 	index := readTestJSONFrame[sessionproto.SessionIndex](t, control, frame.TypeSessionIndex)
-	if len(index.Sessions) != 1 || index.Sessions[0].SessionID != "sess-1" || index.Sessions[0].CommandPreview != "codex" {
-		t.Fatalf("session index = %#v, want sess-1 metadata", index)
+	sessionsByID := make(map[string]sessionproto.SessionMetadata, len(index.Sessions))
+	for _, session := range index.Sessions {
+		sessionsByID[session.SessionID] = session
+	}
+	if len(sessionsByID) != 2 || sessionsByID["sess-1"].CommandPreview != "codex" || sessionsByID["sess-2"].CommandPreview != "vim" {
+		t.Fatalf("session index = %#v, want sess-1 and sess-2 metadata", index)
 	}
 	pathState := readTestJSONFrame[sessionproto.PathState](t, control, frame.TypePathState)
 	if pathState.PathKind != sessionproto.PathRelay || pathState.AttemptID != "attempt-test" || pathState.FallbackReason != "direct_timeout" || pathState.DirectSetupLatencyMS != 3000 || pathState.RelaySetupLatencyMS != 120 {
@@ -71,6 +85,13 @@ func TestConnectivityTransportSendsSessionIndexAndPreviewSnapshots(t *testing.T)
 	preview := readTestJSONFrame[sessionproto.PreviewSnapshot](t, control, frame.TypePreviewSnapshot)
 	if preview.SessionID != "sess-1" || preview.Preview != "cached preview" || preview.UpdatedAt != 102 {
 		t.Fatalf("preview = %#v, want cached preview", preview)
+	}
+	if err := writeTestJSONFrame(control, frame.TypePreviewSubscribe, sessionproto.PreviewSubscribe{SessionID: "sess-2"}); err != nil {
+		t.Fatalf("write second preview_subscribe returned error: %v", err)
+	}
+	preview = readTestJSONFrame[sessionproto.PreviewSnapshot](t, control, frame.TypePreviewSnapshot)
+	if preview.SessionID != "sess-2" || preview.Preview != "second cached preview" || preview.UpdatedAt != 112 {
+		t.Fatalf("second preview = %#v, want second cached preview", preview)
 	}
 
 	broker.updatePreview("sess-1", "new preview", 103, owner)

@@ -674,7 +674,7 @@ Error responses:
 
 ### `GET /api/account/policy`
 
-Return the authenticated account's temporary policy tier.
+Return the authenticated account's policy tier.
 
 Auth: app access token
 
@@ -691,7 +691,14 @@ Success:
 }
 ```
 
-`tier` is currently `free` or `pro`. It is operator-managed placeholder state; there is no payment provider or daemon-side subscription enforcement in this revision.
+`tier` is currently `free` or `pro`.
+
+Official app clients use this tier only for trusted-computer limits:
+
+- `free`: at most 1 active trusted computer.
+- `pro`: at most 10 trusted computers.
+
+The response intentionally does not include active computer selection, selected session rows, preview permission, or per-session entitlement state. Relay does not store those values, and daemon/session transport remains tier-unaware in this revision. The tier is still operator-managed placeholder state; there is no payment provider in this revision.
 
 Error responses:
 
@@ -828,7 +835,8 @@ App-side reasons are `invalid_register`, `invalid_pairing_response`,
 `relay_tunnel_unavailable`,
 `relay_rate_limited`, and `unsupported_event`. Daemon-side reasons are
 `invalid_register`, `invalid_device_fingerprint`,
-`invalid_pairing_correlation`, `rendezvous_unavailable`, and
+`invalid_pairing_correlation`, `rendezvous_unavailable`,
+`direct_session_unavailable`, and
 `unsupported_event`.
 
 ### `GET /connectivity/daemon/ws`
@@ -850,14 +858,14 @@ Daemon first sends:
     "daemon_fingerprint": "<hex-sha256-public-key>",
     "tunnel_version": "v0.1.0"
   },
-	  "trusted_devices": [
-	    {
-	      "fingerprint": "<android-device-fingerprint>",
-	      "display_name": "Pixel"
-	    }
-	  ]
-	}
-	```
+  "trusted_devices": [
+    {
+      "fingerprint": "<android-device-fingerprint>",
+      "display_name": "Pixel"
+    }
+  ]
+}
+```
 
 Relay derives app-visible daemon presence from this live trusted roster and the authenticated app session fingerprint. Relay does not persist the roster durably; daemon reconnect rebuilds visibility.
 

@@ -41,7 +41,7 @@ adding NAT/direct UDP complexity.
 - Direct UDP
 - STUN
 - UDP relay
-- Payment enforcement beyond app-visible tier state
+- Payment enforcement beyond the Relay-exposed tier and official-app-local trusted-computer count rule
 
 ## Acceptance Checklist
 

@@ -30,7 +30,7 @@ All protocol timestamps are Unix timestamps represented as JSON integers in seco
 | `GET /healthz` | Health probe | None | HTTP | Health check for relay reachability through direct access or the public nginx front door |
 | `GET /api/devices` | Client | Bearer | HTTP | Current live device snapshot for the authenticated user |
 | `POST /api/devices/:deviceID/launch` | Client | Bearer | HTTP | Ask one currently online device daemon to launch `tunnel run <command>` and wait for the resulting session to become `session_ready` |
-| `GET /api/account/policy` | Client | Bearer | HTTP | Current account policy tier used by official app clients |
+| `GET /api/account/policy` | Client | Bearer | HTTP | Current account tier used by official app clients for trusted-computer limits |
 | `GET /api/connectivity/app/ws` | Client | Bearer | WebSocket | Fingerprint-bound app connectivity control plane for daemon visibility, pairing response forwarding, and fallback tunnel setup |
 | `GET /api/sessions` | Client | Bearer | HTTP | Current live session snapshot for the authenticated user |
 | `POST /api/sessions/:id/stop` | Client | Bearer | HTTP | Ask the owning online agent to stop one live session |

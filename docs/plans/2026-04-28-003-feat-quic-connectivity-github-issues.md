@@ -22,11 +22,11 @@ Umbrella issue:
 Child issues:
 
 1. [#85](https://github.com/yuanbohan/agent-tunnel/issues/85): `feat(connectivity): prove QUIC/TLS interop and primitives`
-2. [#86](https://github.com/yuanbohan/agent-tunnel/issues/86): `feat(connectivity): add app identity, subscription tier, pairing, and visibility`
+2. [#86](https://github.com/yuanbohan/agent-tunnel/issues/86): `feat(connectivity): add app identity, account tier, pairing, and visibility`
 3. [#87](https://github.com/yuanbohan/agent-tunnel/issues/87): `feat(connectivity): add daemon local broker and tunnel run registration`
 4. [#88](https://github.com/yuanbohan/agent-tunnel/issues/88): `feat(connectivity): add fallback-only QUIC session transport`
 5. [#89](https://github.com/yuanbohan/agent-tunnel/issues/89): `feat(connectivity): add direct UDP, self-hosted STUN, and fallback degradation`
-6. [#90](https://github.com/yuanbohan/agent-tunnel/issues/90): `feat(connectivity): integrate Android companion UX and subscription behavior`
+6. [#90](https://github.com/yuanbohan/agent-tunnel/issues/90): `feat(connectivity): integrate Android companion UX and trusted-computer tier behavior`
 7. [#91](https://github.com/yuanbohan/agent-tunnel/issues/91): `feat(connectivity): harden operations and update shipped docs`
 
 ## PR Rule
@@ -64,17 +64,17 @@ available, and `tunnel run` remaining the PTY/session source of truth.
 ## Child Issues
 
 - [ ] #85 Step 1: prove QUIC/TLS interop and primitives
-- [ ] #86 Step 2: add app identity, subscription tier, pairing, and visibility
+- [ ] #86 Step 2: add app identity, account tier, pairing, and visibility
 - [ ] #87 Step 3: add daemon local broker and `tunnel run` registration
 - [ ] #88 Step 4: add fallback-only QUIC session transport
 - [ ] #89 Step 5: add direct UDP, self-hosted STUN, and fallback degradation
-- [ ] #90 Step 6: integrate Android companion UX and subscription behavior
+- [ ] #90 Step 6: integrate Android companion UX and trusted-computer tier behavior
 - [ ] #91 Step 7: harden operations and update shipped docs
 
 ## Scope Notes
 
 - Do not use legacy Relay attach compatibility or retirement as a planning dimension for this program.
-- Subscription is temporarily operator-managed through Relay; real payment integration is future work.
+- Account tier is temporarily operator-managed through Relay; real payment integration is future work.
 - Do not start Go implementation work from this umbrella issue. Work should happen through child issues.
 ```
 
@@ -155,7 +155,7 @@ traffic.
 ## Major Modules
 
 - App session device fingerprint binding
-- Temporary operator-managed subscription tier surface
+- Temporary operator-managed account tier surface
 - Daemon long-term identity
 - Pairing invitations and SAS confirmation
 - Trusted Android device roster
@@ -185,7 +185,7 @@ traffic.
 - [ ] Revoking a device removes visibility and active trust state.
 - [ ] Relay restart/daemon reconnect rebuilds live visibility from daemon-local trust.
 - [ ] Android can fetch `free` or `pro` policy state.
-- [ ] Operator can upgrade or downgrade a user's temporary subscription tier without a payment system.
+- [ ] Operator can upgrade or downgrade a user's temporary account tier without a payment system.
 
 ## Handoff
 
@@ -285,7 +285,7 @@ adding NAT/direct UDP complexity.
 - Direct UDP
 - STUN
 - UDP relay
-- Payment enforcement beyond app-visible tier state
+- Payment enforcement beyond the Relay-exposed tier and official-app-local trusted-computer count rule
 
 ## Acceptance Checklist
 
@@ -371,9 +371,10 @@ Implement production Android behavior against the proven protocol.
 - Android login-bound device identity
 - Pairing UI and SAS confirmation
 - Daemon card list
-- Lazy daemon-card connection
-- Free-tier sticky first-attach behavior
-- Pro-tier preview subscriptions
+- Free active trusted computer state
+- Free transactional Replace Computer
+- Pro trusted-computer limit
+- Pro downgrade-to-Free resolution
 - Terminal view and input focus discipline
 - Reconnect state rebuild
 - Account switch cleanup
@@ -382,22 +383,25 @@ Implement production Android behavior against the proven protocol.
 ## In Scope
 
 - Production Android app behavior matches the documented UX/state machines.
-- Free/pro behavior is enforced in the app.
+- Free / Pro trusted-computer behavior is enforced in the app.
 - Reconnect rebuilds state from daemon snapshots and subscriptions.
 
 ## Out Of Scope
 
-- Daemon-side subscription enforcement
+- Daemon-side tier enforcement
 - Billing purchase flow
 - New transport semantics
 - Go repo implementation details
 
 ## Acceptance Checklist
 
-- [ ] Free user can unlock only one session per opened daemon card.
-- [ ] Pro user can see previews for all live sessions in the opened card.
+- [ ] Free auto-connects only the one active trusted computer.
+- [ ] Free Replace Computer keeps old trust active until new pairing SAS succeeds.
+- [ ] Pro auto-connects online trusted computers up to ten and blocks pairing the eleventh.
+- [ ] Pro downgrade to Free requires choosing one active computer.
+- [ ] Free and Pro session rows, preview, detail attach, reconnect, and path badge behavior are identical inside one active computer.
 - [ ] Only the focused terminal receives input.
-- [ ] Account switch closes transports and clears local unlocked state.
+- [ ] Account switch closes transports and clears account-derived local policy state.
 - [ ] Direct/relay badge copy does not imply different encryption.
 
 ## Handoff
