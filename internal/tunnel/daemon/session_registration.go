@@ -20,6 +20,7 @@ const defaultBrokerSubmitEnterGap = 120 * time.Millisecond
 var brokerWriteTimeout = 2 * time.Second
 
 const defaultPendingBrokerCommandLimit = 128
+const defaultPendingBrokerWriteLimit = 256
 
 type SessionRegistrationClient struct {
 	paths   Paths
@@ -41,8 +42,10 @@ type SessionRegistrationClient struct {
 
 	mu              sync.Mutex
 	lastSentPreview string
+	pendingSnapshot bool
 	conn            net.Conn
 	encoder         *json.Encoder
+	brokerWrites    chan BrokerFrame
 
 	hubMu           sync.Mutex
 	hub             *tunnelsession.Hub
@@ -123,7 +126,16 @@ func (c *SessionRegistrationClient) WriteOutput(data []byte) error {
 		return nil
 	default:
 	}
-	c.mirror.WriteOutput(data)
+	dataCopy := append([]byte(nil), data...)
+	c.mirror.WriteOutput(dataCopy)
+	c.mu.Lock()
+	c.pendingSnapshot = true
+	c.mu.Unlock()
+	c.enqueueBrokerWrite(BrokerFrame{
+		Type:      brokerFrameOutputBytes,
+		SessionID: c.session.SessionID,
+		Output:    dataCopy,
+	})
 	select {
 	case c.notify <- struct{}{}:
 	default:
@@ -135,6 +147,12 @@ func (c *SessionRegistrationClient) BindHub(hub *tunnelsession.Hub) {
 	if c == nil || hub == nil {
 		return
 	}
+	if cols, rows := hub.CurrentSize(); cols > 0 && rows > 0 {
+		c.applyResize(cols, rows, false)
+	}
+	hub.AddResizeListener("session_registration", func(cols, rows int) {
+		c.applyResize(cols, rows, true)
+	})
 	c.hubMu.Lock()
 	c.hub = hub
 	pending := append([]BrokerFrame(nil), c.pendingCommands...)
@@ -210,13 +228,16 @@ func (c *SessionRegistrationClient) runOnce(ctx context.Context) error {
 	c.mu.Lock()
 	c.conn = conn
 	c.encoder = json.NewEncoder(conn)
+	c.brokerWrites = make(chan BrokerFrame, defaultPendingBrokerWriteLimit)
 	c.lastSentPreview = ""
+	brokerWrites := c.brokerWrites
 	c.mu.Unlock()
 	defer func() {
 		c.mu.Lock()
 		if c.conn == conn {
 			c.conn = nil
 			c.encoder = nil
+			c.brokerWrites = nil
 		}
 		c.mu.Unlock()
 	}()
@@ -224,6 +245,9 @@ func (c *SessionRegistrationClient) runOnce(ctx context.Context) error {
 	session := c.session
 	session.UpdatedAt = protocol.UnixTimestamp(c.now().UTC())
 	if err := c.writeFrame(BrokerFrame{Type: brokerFrameRegisterSession, Session: &session}); err != nil {
+		return err
+	}
+	if err := c.writeFrame(c.snapshotFrame()); err != nil {
 		return err
 	}
 
@@ -243,29 +267,37 @@ func (c *SessionRegistrationClient) runOnce(ctx context.Context) error {
 	var timer *time.Timer
 	var timerC <-chan time.Time
 	var pending string
+	var pendingSnapshot bool
 	var lastSentAt time.Time
-	sendNow := func(preview string) (bool, error) {
+	sendNow := func(preview string, snapshot bool) (bool, error) {
+		changed := false
 		c.mu.Lock()
-		if preview == c.lastSentPreview {
-			c.mu.Unlock()
-			return false, nil
+		if preview != c.lastSentPreview {
+			c.lastSentPreview = preview
+			changed = true
 		}
-		c.lastSentPreview = preview
 		c.mu.Unlock()
 		now := c.now().UTC()
-		if err := c.writeFrame(BrokerFrame{
-			Type:      brokerFramePreviewUpdate,
-			SessionID: c.session.SessionID,
-			Preview:   preview,
-			UpdatedAt: protocol.UnixTimestamp(now),
-		}); err != nil {
-			return false, err
+		if changed {
+			if err := c.writeFrame(BrokerFrame{
+				Type:      brokerFramePreviewUpdate,
+				SessionID: c.session.SessionID,
+				Preview:   preview,
+				UpdatedAt: protocol.UnixTimestamp(now),
+				}); err != nil {
+				return false, err
+			}
+		}
+		if snapshot {
+			if err := c.writeFrame(c.snapshotFrame()); err != nil {
+				return false, err
+			}
 		}
 		lastSentAt = now
-		return true, nil
+		return changed, nil
 	}
 	if preview := c.previewSnapshot(); preview != "" {
-		if _, err := sendNow(preview); err != nil {
+		if _, err := sendNow(preview, false); err != nil {
 			return err
 		}
 	}
@@ -284,7 +316,7 @@ func (c *SessionRegistrationClient) runOnce(ctx context.Context) error {
 		timerC = timer.C
 	}
 	schedulePending := func(now time.Time) {
-		if pending == "" || timerC != nil {
+		if timerC != nil {
 			return
 		}
 		if lastSentAt.IsZero() {
@@ -319,10 +351,20 @@ func (c *SessionRegistrationClient) runOnce(ctx context.Context) error {
 			return nil
 		case err := <-readErr:
 			return err
+		case frame := <-brokerWrites:
+			if err := c.writeFrame(frame); err != nil {
+				return err
+			}
 		case <-c.notify:
 			preview := c.previewSnapshot()
+			c.mu.Lock()
+			snapshot := c.pendingSnapshot
+			if snapshot {
+				c.pendingSnapshot = false
+			}
+			c.mu.Unlock()
 			if c.throttle <= 0 {
-				if _, err := sendNow(preview); err != nil {
+				if _, err := sendNow(preview, snapshot); err != nil {
 					return err
 				}
 				continue
@@ -331,19 +373,22 @@ func (c *SessionRegistrationClient) runOnce(ctx context.Context) error {
 			if lastSentAt.IsZero() || now.Sub(lastSentAt) >= c.throttle {
 				stopTimer()
 				pending = ""
-				if _, err := sendNow(preview); err != nil {
+				pendingSnapshot = false
+				if _, err := sendNow(preview, snapshot); err != nil {
 					return err
 				}
 				continue
 			}
 			pending = preview
+				pendingSnapshot = pendingSnapshot || snapshot
 			schedulePending(now)
 		case <-timerC:
 			timerC = nil
-			if _, err := sendNow(pending); err != nil {
+			if _, err := sendNow(pending, pendingSnapshot); err != nil {
 				return err
 			}
 			pending = ""
+			pendingSnapshot = false
 		}
 	}
 }
@@ -422,6 +467,50 @@ func (c *SessionRegistrationClient) verifyDaemonContext(ctx context.Context) err
 
 func (c *SessionRegistrationClient) previewSnapshot() string {
 	return c.mirror.PreviewText(tunnelsession.DefaultPreviewMaxChars)
+}
+
+func (c *SessionRegistrationClient) snapshotFrame() BrokerFrame {
+	snapshot, cols, rows := c.mirror.Snapshot()
+	return BrokerFrame{
+		Type:         brokerFrameSnapshotUpdate,
+		SessionID:    c.session.SessionID,
+		Snapshot:     snapshot,
+		SnapshotCols: cols,
+		SnapshotRows: rows,
+	}
+}
+
+func (c *SessionRegistrationClient) applyResize(cols, rows int, publish bool) {
+	if c == nil || cols <= 0 || rows <= 0 {
+		return
+	}
+	c.mirror.Resize(cols, rows)
+	if publish {
+		c.mu.Lock()
+		c.pendingSnapshot = true
+		c.mu.Unlock()
+		select {
+		case c.notify <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func (c *SessionRegistrationClient) enqueueBrokerWrite(frame BrokerFrame) {
+	c.mu.Lock()
+	ch := c.brokerWrites
+	conn := c.conn
+	c.mu.Unlock()
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- frame:
+	default:
+		if conn != nil {
+			_ = conn.Close()
+		}
+	}
 }
 
 func (c *SessionRegistrationClient) writeFrame(frame BrokerFrame) error {

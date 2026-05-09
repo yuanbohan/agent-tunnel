@@ -13,7 +13,7 @@ func TestPayloadsRoundTripAndIgnoreFutureFields(t *testing.T) {
 		payload any
 		want    any
 	}{
-		{name: "hello", payload: Hello{ProtocolVersion: ProtocolVersion, ActorType: ActorMobile, DeviceFingerprint: "abc123", PathKind: PathRelay}, want: Hello{ProtocolVersion: ProtocolVersion, ActorType: ActorMobile, DeviceFingerprint: "abc123", PathKind: PathRelay}},
+		{name: "hello", payload: Hello{ProtocolVersion: ProtocolVersion, ActorType: ActorMobile, ClientFingerprint: "abc123", PathKind: PathRelay}, want: Hello{ProtocolVersion: ProtocolVersion, ActorType: ActorMobile, ClientFingerprint: "abc123", PathKind: PathRelay}},
 		{name: "session_index", payload: SessionIndex{Sessions: []SessionMetadata{sessionMetadata()}}, want: SessionIndex{Sessions: []SessionMetadata{sessionMetadata()}}},
 		{name: "session_upsert", payload: SessionUpsert{Session: sessionMetadata()}, want: SessionUpsert{Session: sessionMetadata()}},
 		{name: "session_gone", payload: SessionGone{SessionID: "session-1"}, want: SessionGone{SessionID: "session-1"}},
@@ -98,7 +98,7 @@ func TestSessionProtocolPayloadsDoNotCarryTierPolicyFields(t *testing.T) {
 		name    string
 		payload any
 	}{
-		{name: "hello", payload: Hello{ProtocolVersion: ProtocolVersion, ActorType: ActorMobile, DeviceFingerprint: "abc123", PathKind: PathRelay}},
+		{name: "hello", payload: Hello{ProtocolVersion: ProtocolVersion, ActorType: ActorMobile, ClientFingerprint: "abc123", PathKind: PathRelay}},
 		{name: "session_index", payload: SessionIndex{Sessions: []SessionMetadata{sessionMetadata()}}},
 		{name: "session_upsert", payload: SessionUpsert{Session: sessionMetadata()}},
 		{name: "preview_snapshot", payload: PreviewSnapshot{SessionID: "session-1", Preview: "latest", UpdatedAt: 11}},

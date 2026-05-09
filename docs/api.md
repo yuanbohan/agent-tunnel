@@ -30,9 +30,9 @@ The relay currently uses three token classes:
 
 | Token | Used By | Where It Goes |
 |-------|---------|---------------|
-| App access token | mobile/web/native app clients | `Authorization: Bearer <access-token>` on app-facing `/api/...` routes, `GET /api/sessions/:sessionID/attach/ws`, and `GET /api/connectivity/app/ws` |
+| App access token | mobile/web/native app clients | `Authorization: Bearer <access-token>` on app-facing `/api/...` routes, `GET /api/sessions/:sessionID/attach/ws`, and `GET /api/connectivity/ws` |
 | App refresh token | app clients | JSON body for `POST /api/auth/refresh` |
-| Agent token | created by app clients, used later by `tunnel` | returned by `POST /api/agent-tokens`; used by `/agent/ws`, `/device/ws`, `/connectivity/daemon/ws`, `GET /api/sessions`, and `POST /api/sessions/:sessionID/stop` |
+| Agent token | created by app clients, used later by `tunnel` | returned by `POST /api/agent-tokens`; used by `/agent/ws`, `/device/ws`, `/connectivity/computer/ws`, `GET /api/sessions`, and `DELETE /api/sessions/:sessionID` |
 | Fallback tunnel token | app and daemon connectivity peers | one-time `token` query parameter on `GET /connectivity/tunnel/ws`; issued through `relay_tunnel_ready` and bound to one actor and attempt |
 
 ### JSON Request Rules
@@ -92,7 +92,7 @@ Code map (excerpt):
 | `1017` | `The request is forbidden.` |
 | `1018` | `The requested endpoint was not found.` |
 | `1019` | `The HTTP method is not allowed for this endpoint.` |
-| `1020` | `The device fingerprint is invalid.` |
+| `1020` | `The client fingerprint is invalid.` |
 | `2001` | `The service is temporarily unavailable.` |
 | `2002` | `An unexpected internal error occurred.` |
 
@@ -111,14 +111,14 @@ Code map (excerpt):
 - `computer_name` is already normalized by the agent before registration: prefer local display name when available, otherwise fall back to hostname
 - `platform_id` is a raw best-effort identifier intended for client-side icon mapping; clients should keep their own whitelist and fall back gracefully for unknown values
 
-### Device Model
+### Computer Model
 
-- `GET /api/devices` returns only currently connected devices whose owning device daemon socket is online now
-- device discovery is user-scoped, just like session discovery
-- device identity is stable through `device_id`; display metadata such as `display_name`, `platform_family`, and `platform_id` are refreshed when the daemon re-registers
-- device presence is live-only; there is no offline or historical device list in this API revision
-- `POST /api/devices/:deviceID/launch` reports `session_ready` or a structured launch failure and does not auto-attach to the later session
-- `POST /api/sessions/:sessionID/stop` can stop any live session owned by the authenticated user
+- `GET /api/computers` returns only currently connected computers whose owning daemon socket is online now
+- computer discovery is user-scoped, just like session discovery
+- computer identity is stable through `computer_id`; display metadata such as `display_name`, `platform_family`, and `platform_id` are refreshed when the daemon re-registers
+- computer presence is live-only; there is no offline or historical computer list in this API revision
+- `POST /api/computers/:computerID/sessions` reports `session_ready` or a structured launch failure and does not auto-attach to the later session
+- `DELETE /api/sessions/:sessionID` can stop any live session owned by the authenticated user
 
 ## Public HTTP API
 
@@ -145,11 +145,13 @@ Example:
 }
 ```
 
-### `GET /api/devices`
+### `GET /api/computers`
 
-List currently online devices for the authenticated user.
+List currently online computers for the authenticated user.
 
 Auth: app bearer token
+
+Compatibility note: `GET /api/devices` remains available as a legacy alias in this revision and returns the same live computers using the legacy `device_id` response key.
 
 Success:
 
@@ -163,7 +165,7 @@ Response:
   "message": "success",
   "body": [
     {
-      "device_id": "dev_abcd1234",
+      "computer_id": "dev_abcd1234",
       "display_name": "Yuanbo's MacBook Pro",
       "platform_family": "macos",
       "platform_id": "macos",
@@ -175,17 +177,19 @@ Response:
 
 Notes:
 
-- `device_id` is the stable daemon identity; sessions that report the same value in `GET /api/sessions` are associated with that daemon identity
+- `computer_id` is the stable daemon identity; sessions whose `device_id` reports the same value in `GET /api/sessions` are associated with that computer
 - `platform_family` is the stable UI fallback field for device-class icons, currently `macos` or `linux`
 - `platform_id` is the best-effort specific platform identifier for more exact icon selection, for example `macos`, `ubuntu`, `arch`, `debian`, `fedora`, or `unknown`
 - `launch_health` is the daemon-reported live readiness for remote launch, currently `healthy` or `degraded`
-- the relay returns only devices whose `/device/ws` connection is online right now
+- the relay returns only computers whose `/device/ws` connection is online right now
 
-### `POST /api/devices/:deviceID/launch`
+### `POST /api/computers/:computerID/sessions`
 
 Ask one currently online device to create a new session inside its daemon-managed tmux workspace and run `tunnel run <command>`.
 
 Auth: app bearer token
+
+Compatibility note: `POST /api/devices/:deviceID/launch` remains available as a legacy alias in this revision.
 
 Request:
 
@@ -334,11 +338,11 @@ Request:
 {
   "username": "alice",
   "password": "password123",
-  "device_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  "client_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 }
 ```
 
-`device_fingerprint` is optional for legacy clients. Connectivity-capable app clients send a lower- or upper-case 64 character hex SHA-256 fingerprint of their Android public key. Fingerprint-bound sessions must refresh with the same fingerprint.
+`client_fingerprint` is optional for legacy clients. Connectivity-capable app clients send a lower- or upper-case 64 character hex SHA-256 fingerprint of their client public key. The legacy `device_fingerprint` request key is still accepted as an alias in this revision. Fingerprint-bound sessions must refresh with the same fingerprint.
 
 Success:
 
@@ -372,7 +376,7 @@ Error responses:
 | Status | Body | Meaning |
 |--------|------|---------|
 | `400` | `{"code":1001,"message":"The request is invalid.","body":null}` | malformed JSON or request shape |
-| `400` | `{"code":1020,"message":"The device fingerprint is invalid.","body":null}` | `device_fingerprint` is present but not 64 hex characters |
+| `400` | `{"code":1020,"message":"The client fingerprint is invalid.","body":null}` | `client_fingerprint` or legacy `device_fingerprint` is present but not 64 hex characters |
 | `401` | `{"code":1011,"message":"The username or password is invalid.","body":null}` | username or password is wrong |
 | `500` | `{"code":2002,"message":"An unexpected internal error occurred.","body":null}` | unexpected server failure |
 | `503` | `{"code":2001,"message":"The service is temporarily unavailable.","body":null}` | auth service unavailable |
@@ -388,11 +392,11 @@ Request:
 ```json
 {
   "refresh_token": "<refresh-token>",
-  "device_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  "client_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 }
 ```
 
-`device_fingerprint` is required when the original login bound the app session to a fingerprint. Refresh with a different fingerprint is rejected as an invalid session.
+`client_fingerprint` is required when the original login bound the app session to a fingerprint. The legacy `device_fingerprint` request key is still accepted as an alias in this revision. Refresh with a different fingerprint is rejected as an invalid session.
 
 Success:
 
@@ -427,7 +431,7 @@ Error responses:
 | Status | Body | Meaning |
 |--------|------|---------|
 | `400` | `{"code":1001,"message":"The request is invalid.","body":null}` | malformed JSON or request shape |
-| `400` | `{"code":1020,"message":"The device fingerprint is invalid.","body":null}` | `device_fingerprint` is present but not 64 hex characters |
+| `400` | `{"code":1020,"message":"The client fingerprint is invalid.","body":null}` | `client_fingerprint` or legacy `device_fingerprint` is present but not 64 hex characters |
 | `401` | `{"code":1012,"message":"The session is invalid.","body":null}` | refresh token is unknown, expired, revoked, fingerprint-mismatched, or the session has reached its 90-day absolute lifetime |
 | `500` | `{"code":2002,"message":"An unexpected internal error occurred.","body":null}` | unexpected server failure |
 | `503` | `{"code":2001,"message":"The service is temporarily unavailable.","body":null}` | auth service unavailable |
@@ -711,16 +715,56 @@ Error responses:
 
 These routes carry connectivity control-plane state. They do not carry terminal snapshots, live terminal bytes, structured input, fallback QUIC packets, session previews, or direct UDP packet data. Rendezvous frames may carry UDP candidate addresses only.
 
-### `GET /api/connectivity/app/ws`
+### `POST /api/pairing/responses`
 
-Auth: fingerprint-bound app access token. Legacy app sessions without `device_fingerprint` are rejected with `403`.
+Submit one signed pairing response over HTTP.
+
+Auth: fingerprint-bound app access token.
+
+Request body shape matches connectivity pairing payload fields:
+
+```json
+{
+  "account_id": "123",
+  "invitation_id": "pair_abcd1234",
+  "correlation_id": "corr_abcd1234",
+  "client_public_key": "<hex-ed25519-public-key>",
+  "client_fingerprint": "<hex-sha256-public-key>",
+  "client_display_name": "Pixel",
+  "signature": "<hex-ed25519-signature>"
+}
+```
+
+`signature` is required by the computer-side verifier. Relay does not verify it;
+Relay only checks the authenticated account and client fingerprint before
+forwarding the response to the reserved computer correlation.
+
+Success:
+
+- `200 OK`
+- standard success envelope with `{"status":"forwarded"}` in `body`
+
+Error responses:
+
+| Status | Body | Meaning |
+|--------|------|---------|
+| `400` | `{"code":1001,"message":"The request is invalid.","body":null}` | malformed JSON or request shape |
+| `401` | `{"code":1016,"message":"The request is unauthorized.","body":null}` | missing or invalid app bearer token |
+| `403` | `{"code":1017,"message":"The request is forbidden.","body":null}` | `client_fingerprint` or `account_id` does not match authenticated app session |
+| `404` | `{"code":1018,"message":"The requested resource was not found.","body":null}` | correlation is unknown, expired, or unavailable |
+
+### `GET /api/connectivity/ws`
+
+Auth: fingerprint-bound app access token. Legacy app sessions without a stored client fingerprint are rejected with `403`.
+
+Compatibility note: `GET /api/connectivity/app/ws` remains available as a legacy alias in this revision.
 
 Client first sends:
 
 ```json
 {
   "type": "app_register",
-  "protocol_version": 1
+  "protocol_version": 2
 }
 ```
 
@@ -728,12 +772,12 @@ Relay replies with:
 
 ```json
 {
-  "type": "daemon_snapshot",
-  "daemons": []
+  "type": "computer_snapshot",
+  "computers": []
 }
 ```
 
-Relay may later send `paired_device_visible`, `paired_device_revoked`, or `paired_device_removed`. App peers may submit `pair_response_submit` frames with a signed Android pairing response. The response must include the authenticated app account id and the app session's `device_fingerprint`; Relay forwards only through a live daemon-owned reserved correlation.
+Relay may later send `computer_visible`, `client_revoked`, or `computer_removed`. The primary realtime socket does not accept one-shot pairing response submissions; clients submit signed pairing responses through `POST /api/pairing/responses`. The legacy `/api/connectivity/app/ws` alias still accepts `pair_response_submit` during this compatibility revision. The response must include the authenticated app account id and the app session's client fingerprint; Relay forwards only through a live computer-owned reserved correlation.
 
 After a paired daemon is visible, app peers may open a direct-attempt rendezvous:
 
@@ -742,20 +786,20 @@ After a paired daemon is visible, app peers may open a direct-attempt rendezvous
   "type": "rendezvous_open",
   "request_id": "req-1",
   "attempt_id": "attempt-uuid",
-  "daemon_id": "dev_abcd1234",
+  "computer_id": "dev_abcd1234",
   "public_udp_addr": "203.0.113.10:50000",
   "private_udp_addrs": ["10.0.0.5:50000"]
 }
 ```
 
-Relay forwards this to the daemon as `rendezvous_hint` with `actor: "android"`,
-`android_fingerprint`, and `expires_at`. The daemon sends its own
-`rendezvous_hint` with the same `attempt_id` and `android_fingerprint`; Relay
+Relay forwards this to the daemon as `rendezvous_hint` with `actor: "client"` (wire literal for client-side actor),
+`client_fingerprint`, and `expires_at`. The daemon sends its own
+`rendezvous_hint` with the same `attempt_id` and `client_fingerprint`; Relay
 forwards it to that app with `actor: "daemon"`. Either side may send
 `rendezvous_close` with `attempt_id` to remove live attempt state; daemon-origin
-closes also include `android_fingerprint` for disambiguation. After the daemon
+closes also include `client_fingerprint` for disambiguation. After the daemon
 accepts a direct QUIC/TLS connection, it reports `direct_session_open` with
-`attempt_id`, `daemon_id`, and `android_fingerprint`. Relay then treats direct
+`attempt_id`, `computer_id`, and `client_fingerprint`. Relay then treats direct
 as the winning path for that attempt and can later send `direct_session_close`
 to cancel the accepted daemon-local direct transport after logout, token
 revocation, trusted-device revocation, or account deletion. Relay stores
@@ -769,7 +813,7 @@ After a paired daemon is visible, app peers may request fallback tunnel setup:
   "type": "relay_tunnel_request",
   "request_id": "req-1",
   "attempt_id": "attempt-uuid",
-  "daemon_id": "dev_abcd1234",
+  "computer_id": "dev_abcd1234",
   "fallback_reason": "direct_timeout",
   "direct_setup_latency_ms": 3000,
   "relay_setup_latency_ms": 120
@@ -783,9 +827,9 @@ Relay replies to the app and sends a matching frame to the daemon:
   "type": "relay_tunnel_ready",
   "request_id": "req-1",
   "attempt_id": "attempt-uuid",
-  "daemon_id": "dev_abcd1234",
-  "android_fingerprint": "<android-device-fingerprint>",
-  "actor": "android",
+  "computer_id": "dev_abcd1234",
+  "client_fingerprint": "<client-device-fingerprint>",
+  "actor": "client",
   "tunnel_token": "<single-use-token>",
   "fallback_reason": "direct_timeout",
   "direct_setup_latency_ms": 3000,
@@ -794,8 +838,8 @@ Relay replies to the app and sends a matching frame to the daemon:
 ```
 
 The daemon-side frame has `actor: "daemon"` and a different single-use token.
-Both frames include `android_fingerprint` so the daemon can select the trusted
-Android public key needed to pin the inner QUIC/TLS handshake. Diagnostic
+Both frames include `client_fingerprint` so the daemon can select the trusted
+trusted client public key needed to pin the inner QUIC/TLS handshake. Diagnostic
 fields are optional, app-supplied values that let the daemon annotate the
 subsequent `path_state`; Relay forwards them without interpreting terminal or
 transport semantics.
@@ -830,50 +874,52 @@ Rate-limited fallback requests include a retry hint:
 ```
 
 App-side reasons are `invalid_register`, `invalid_pairing_response`,
-`device_fingerprint_mismatch`, `pairing_account_mismatch`,
+`client_fingerprint_mismatch`, `pairing_account_mismatch`,
 `pairing_correlation_not_found`, `rendezvous_unavailable`,
 `relay_tunnel_unavailable`,
 `relay_rate_limited`, and `unsupported_event`. Daemon-side reasons are
-`invalid_register`, `invalid_device_fingerprint`,
+`invalid_register`, `invalid_client_fingerprint`,
 `invalid_pairing_correlation`, `rendezvous_unavailable`,
 `direct_session_unavailable`, and
 `unsupported_event`.
 
-### `GET /connectivity/daemon/ws`
+### `GET /connectivity/computer/ws`
 
 Auth: agent bearer token.
+
+Compatibility note: `GET /connectivity/daemon/ws` remains available as a legacy alias in this revision.
 
 Daemon first sends:
 
 ```json
 {
-  "type": "daemon_register",
-  "protocol_version": 1,
-  "daemon": {
-    "device_id": "dev_abcd1234",
+  "type": "computer_register",
+  "protocol_version": 2,
+  "computer": {
+    "computer_id": "dev_abcd1234",
     "display_name": "Yuanbo's MacBook Pro",
     "platform_family": "macos",
     "platform_id": "macos",
-    "daemon_public_key": "<hex-ed25519-public-key>",
-    "daemon_fingerprint": "<hex-sha256-public-key>",
+    "computer_public_key": "<hex-ed25519-public-key>",
+    "computer_fingerprint": "<hex-sha256-public-key>",
     "tunnel_version": "v0.1.0"
   },
-  "trusted_devices": [
+  "trusted_clients": [
     {
-      "fingerprint": "<android-device-fingerprint>",
+      "fingerprint": "<client-device-fingerprint>",
       "display_name": "Pixel"
     }
   ]
 }
 ```
 
-Relay derives app-visible daemon presence from this live trusted roster and the authenticated app session fingerprint. Relay does not persist the roster durably; daemon reconnect rebuilds visibility.
+Relay derives app-visible computer presence from this live trusted roster and the authenticated app session fingerprint. Relay does not persist the roster durably; computer reconnect rebuilds visibility. The legacy `/connectivity/daemon/ws` alias may still send `daemon_register` with `daemon` during this compatibility revision.
 
-Daemon peers reserve pairing invitations with `pair_invitation_reserve` using the desired `correlation_id` as `request_id`. Relay replies with `pair_invitation_reserved` and an `account_id`; the daemon signs that account id into the invitation before returning it locally. Relay forwards app `pair_response_submit` messages as `pair_response_forward`. After local SAS confirmation stores Android trust, the daemon sends `pair_completed` with `android_fingerprint`, and Relay emits `paired_device_visible` to any matching online app peer.
+Computer peers reserve pairing invitations with `pair_invitation_reserve` using the desired `correlation_id` as `request_id`. Relay replies with `pair_invitation_reserved` and an `account_id`; the computer signs that account id into the invitation before returning it locally. Clients submit signed responses through `POST /api/pairing/responses`; Relay forwards accepted REST submissions as `pair_response_forward`. After local SAS confirmation stores client trust, the computer sends `pair_completed` with `client_fingerprint`, and Relay emits `computer_visible` to any matching online app peer. The legacy app websocket alias may still accept `pair_response_submit` during this compatibility revision.
 
 Daemon peers receive `rendezvous_hint` when a paired app opens a direct attempt.
 Daemon peers may respond with their own `rendezvous_hint` containing
-`attempt_id`, `android_fingerprint`, `public_udp_addr`, and optional
+`attempt_id`, `client_fingerprint`, `public_udp_addr`, and optional
 `private_udp_addrs`; Relay forwards only when the attempt is live and still
 belongs to that app/daemon pair.
 
@@ -888,16 +934,17 @@ endpoint below and then runs QUIC/TLS over the resulting packet tunnel.
 
 ### `GET /connectivity/tunnel/ws`
 
-Auth: one-time fallback tunnel token in the `token` query parameter.
+Auth: one-time fallback tunnel token in `Authorization: Bearer <single-use-token>`. The old `token` query parameter is accepted only as a compatibility alias and must not be used by new clients.
 
 Example:
 
 ```text
-GET /connectivity/tunnel/ws?token=<single-use-token>
+GET /connectivity/tunnel/ws
+Authorization: Bearer <single-use-token>
 ```
 
 This endpoint upgrades to WebSocket and accepts binary WebSocket messages only.
-Each binary message is one opaque encrypted QUIC packet. Relay pairs the Android
+Each binary message is one opaque encrypted QUIC packet. Relay pairs the app
 and daemon endpoints by `attempt_id`, forwards binary packets unchanged, and
 does not parse QUIC, connectivity frames, terminal bytes, input, resize, preview
 text, or session metadata. Tokens expire quickly, may be redeemed once, and are
@@ -956,7 +1003,7 @@ Notes:
 - the list is live-only, not history
 - `git_branch` is the best-effort Git branch for `cwd`; when the startup directory is not on a symbolic branch it is returned as an empty string
 - `device_id` is copied from the registering session when the local `tunnel run` can read an existing daemon identity; otherwise it is an empty string
-- when `device_id` is non-empty and the daemon is currently online, clients can use it to correlate with `GET /api/devices[].device_id`; the relay does not validate that relationship during session registration
+- when `device_id` is non-empty and the daemon is currently online, clients can use it to correlate with `GET /api/computers[].computer_id`; the relay does not validate that relationship during session registration
 - `launch_source` is controlled by relay launch correlation; clients should not infer mobile launch from `device_id` alone
 - missing, empty, or unknown `launch_source` values should be treated as `local` for display
 - `platform_family`, `platform_id`, and `computer_name` are stable keys in the session payload; when metadata is unavailable they are returned as empty strings rather than omitted
@@ -971,11 +1018,13 @@ Error responses:
 | `401` | `{"code":1016,"message":"The request is unauthorized.","body":null}` | missing or invalid app or agent bearer token |
 | `500` | `{"code":2002,"message":"An unexpected internal error occurred.","body":null}` | unexpected server failure |
 
-### `POST /api/sessions/:sessionID/stop`
+### `DELETE /api/sessions/:sessionID`
 
 Ask the owning online `tunnel run` process to stop one live session.
 
 Auth: app access token or agent token
+
+Compatibility note: `POST /api/sessions/:sessionID/stop` remains available as a legacy alias in this revision.
 
 Headers:
 

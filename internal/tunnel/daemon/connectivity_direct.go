@@ -19,7 +19,7 @@ const connectivityDirectAcceptTimeout = direct.DefaultAttemptDeadline
 type connectivityFrameWriter func(any) error
 
 func (c *connectivityConnector) handleRendezvousHint(ctx context.Context, hint protocol.ConnectivityFrame, write connectivityFrameWriter) error {
-	if hint.Actor != "android" || strings.TrimSpace(hint.AttemptID) == "" {
+	if hint.Actor != "client" || strings.TrimSpace(hint.AttemptID) == "" {
 		return nil
 	}
 	android, err := c.trustedAndroidDevice(hint.AndroidFingerprint)

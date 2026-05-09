@@ -9,10 +9,10 @@ import (
 type Invitation struct {
 	Version           int    `json:"version"`
 	AccountID         string `json:"account_id,omitempty"`
-	DaemonID          string `json:"daemon_id"`
-	DaemonDisplayName string `json:"daemon_display_name,omitempty"`
-	DaemonPublicKey   string `json:"daemon_pubkey"`
-	DaemonFingerprint string `json:"daemon_fingerprint"`
+	DaemonID          string `json:"computer_id"`
+	DaemonDisplayName string `json:"computer_display_name,omitempty"`
+	DaemonPublicKey   string `json:"computer_public_key"`
+	DaemonFingerprint string `json:"computer_fingerprint"`
 	InvitationID      string `json:"invitation_id"`
 	CorrelationID     string `json:"correlation_id"`
 	Nonce             string `json:"nonce"`
@@ -26,9 +26,9 @@ type AndroidResponse struct {
 	AccountID          string `json:"account_id"`
 	InvitationID       string `json:"invitation_id"`
 	CorrelationID      string `json:"correlation_id"`
-	AndroidPublicKey   string `json:"android_pubkey"`
-	AndroidFingerprint string `json:"android_fingerprint"`
-	AndroidDisplayName string `json:"android_display_name,omitempty"`
+	AndroidPublicKey   string `json:"client_public_key"`
+	AndroidFingerprint string `json:"client_fingerprint"`
+	AndroidDisplayName string `json:"client_display_name,omitempty"`
 	Signature          string `json:"signature,omitempty"`
 }
 

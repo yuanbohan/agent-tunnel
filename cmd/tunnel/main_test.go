@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"image"
+	"image/color"
 	"io"
 	"os"
 	"strings"
@@ -12,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/makiuchi-d/gozxing"
+	gozxingqrcode "github.com/makiuchi-d/gozxing/qrcode"
 	"yuanbohan/tunnel/internal/protocol"
 	"yuanbohan/tunnel/internal/tunnel/connector"
 	"yuanbohan/tunnel/internal/tunnel/daemon"
@@ -1469,7 +1473,7 @@ func TestRunWithArgsPrintsDaemonStartHelp(t *testing.T) {
 	}
 }
 
-func TestRunDaemonPairPrintsInvitationJSON(t *testing.T) {
+func TestRunDaemonPairPrintsQRCodeAndSummary(t *testing.T) {
 	setTestEnv(t)
 
 	oldResolvePaths := resolveDaemonPaths
@@ -1489,12 +1493,100 @@ func TestRunDaemonPairPrintsInvitationJSON(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	if err := runDaemonPair(context.Background(), &stdout, io.Discard); err != nil {
+	if err := runDaemonPair(context.Background(), &stdout, io.Discard, false); err != nil {
+		t.Fatalf("runDaemonPair returned error: %v", err)
+	}
+	got := stdout.String()
+	if !strings.Contains(got, "scan this QR in the mobile app to pair") {
+		t.Fatalf("stdout = %q, want QR scan guidance", got)
+	}
+	if !strings.Contains(got, "invitation_id: pair_123") {
+		t.Fatalf("stdout = %q, want invitation id summary", got)
+	}
+	if !strings.Contains(got, "██") {
+		t.Fatalf("stdout = %q, want rendered QR blocks", got)
+	}
+}
+
+func TestRenderQRCodeDecodesOriginalPayload(t *testing.T) {
+	payload := `{"version":1,"invitation_id":"pair_123","correlation_id":"corr_123","client_fingerprint":"` + strings.Repeat("a", 64) + `"}`
+	rendered, err := renderQRCode(payload)
+	if err != nil {
+		t.Fatalf("renderQRCode returned error: %v", err)
+	}
+	image := terminalQRCodeImage(t, rendered, 8)
+	bitmap, err := gozxing.NewBinaryBitmapFromImage(image)
+	if err != nil {
+		t.Fatalf("NewBinaryBitmapFromImage returned error: %v", err)
+	}
+	result, err := gozxingqrcode.NewQRCodeReader().Decode(bitmap, nil)
+	if err != nil {
+		t.Fatalf("Decode returned error: %v", err)
+	}
+	if result.GetText() != payload {
+		t.Fatalf("decoded payload = %q, want original payload", result.GetText())
+	}
+}
+
+func TestRunDaemonPairPrintsInvitationJSONWithFlag(t *testing.T) {
+	setTestEnv(t)
+
+	oldResolvePaths := resolveDaemonPaths
+	oldPair := daemonPair
+	t.Cleanup(func() {
+		resolveDaemonPaths = oldResolvePaths
+		daemonPair = oldPair
+	})
+	resolveDaemonPaths = func() (daemon.Paths, error) { return daemon.Paths{}, nil }
+	daemonPair = func(context.Context, daemon.Paths) (daemon.PairInvitation, error) {
+		return daemon.PairInvitation{
+			Version:           1,
+			InvitationID:      "pair_123",
+			CorrelationID:     "corr_123",
+			DaemonFingerprint: strings.Repeat("a", 64),
+		}, nil
+	}
+
+	var stdout bytes.Buffer
+	if err := runDaemonPair(context.Background(), &stdout, io.Discard, true); err != nil {
 		t.Fatalf("runDaemonPair returned error: %v", err)
 	}
 	if !strings.Contains(stdout.String(), `"invitation_id": "pair_123"`) {
 		t.Fatalf("stdout = %q, want invitation JSON", stdout.String())
 	}
+}
+
+func terminalQRCodeImage(t *testing.T, rendered string, scale int) image.Image {
+	t.Helper()
+	lines := strings.Split(strings.TrimRight(rendered, "\n"), "\n")
+	if len(lines) == 0 {
+		t.Fatal("rendered QR has no rows")
+	}
+	modules := len([]rune(lines[0])) / 2
+	img := image.NewGray(image.Rect(0, 0, modules*scale, len(lines)*scale))
+	for y := 0; y < img.Rect.Dy(); y++ {
+		for x := 0; x < img.Rect.Dx(); x++ {
+			img.SetGray(x, y, color.Gray{Y: 0xff})
+		}
+	}
+	for row, line := range lines {
+		runes := []rune(line)
+		if len(runes) != modules*2 {
+			t.Fatalf("line %d width = %d, want %d", row, len(runes), modules*2)
+		}
+		for col := 0; col < modules; col++ {
+			dark := runes[col*2] == '█' && runes[col*2+1] == '█'
+			if !dark {
+				continue
+			}
+			for dy := 0; dy < scale; dy++ {
+				for dx := 0; dx < scale; dx++ {
+					img.SetGray(col*scale+dx, row*scale+dy, color.Gray{Y: 0x00})
+				}
+			}
+		}
+	}
+	return img
 }
 
 func TestRunDaemonPairPendingPrintsPendingResponses(t *testing.T) {
@@ -1580,7 +1672,7 @@ func TestRunWithArgsDaemonJSONCommandsWrapSetupErrors(t *testing.T) {
 		{"tunnel", "daemon", "start", "--json"},
 		{"tunnel", "daemon", "status", "--json"},
 		{"tunnel", "daemon", "doctor", "--json"},
-		{"tunnel", "daemon", "pair"},
+		{"tunnel", "daemon", "pair", "--json"},
 	} {
 		t.Run(strings.Join(args[2:], "_"), func(t *testing.T) {
 			var stdout bytes.Buffer

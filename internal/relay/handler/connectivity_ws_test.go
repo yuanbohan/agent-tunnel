@@ -16,6 +16,7 @@ import (
 	connectivitypairing "yuanbohan/tunnel/internal/connectivity/pairing"
 	"yuanbohan/tunnel/internal/connectivity/pairtest"
 	"yuanbohan/tunnel/internal/protocol"
+	relayauth "yuanbohan/tunnel/internal/relay/auth"
 	"yuanbohan/tunnel/internal/tunnel/daemon"
 )
 
@@ -34,7 +35,7 @@ func TestConnectivityWebSocketsExposeTrustedDaemonSnapshot(t *testing.T) {
 	defer server.Close()
 	wsBase := "ws" + strings.TrimPrefix(server.URL, "http")
 
-	daemonConn := dialConnectivityWS(t, wsBase+"/connectivity/daemon/ws", agentToken.Plaintext)
+	daemonConn := dialConnectivityWS(t, wsBase+"/connectivity/computer/ws", agentToken.Plaintext)
 	defer daemonConn.Close()
 	if err := daemonConn.WriteJSON(protocol.ConnectivityDaemonRegisterFrame(protocol.ConnectivityDaemonInfo{
 		DeviceID:          "dev-1",
@@ -45,7 +46,7 @@ func TestConnectivityWebSocketsExposeTrustedDaemonSnapshot(t *testing.T) {
 		t.Fatalf("daemon WriteJSON returned error: %v", err)
 	}
 
-	appConn := dialConnectivityWS(t, wsBase+"/api/connectivity/app/ws", appSession.AccessToken)
+	appConn := dialConnectivityWS(t, wsBase+"/api/connectivity/ws", appSession.AccessToken)
 	defer appConn.Close()
 	if err := appConn.WriteJSON(protocol.ConnectivityAppRegisterFrame()); err != nil {
 		t.Fatalf("app WriteJSON returned error: %v", err)
@@ -54,12 +55,12 @@ func TestConnectivityWebSocketsExposeTrustedDaemonSnapshot(t *testing.T) {
 	if err := appConn.ReadJSON(&snapshot); err != nil {
 		t.Fatalf("app ReadJSON returned error: %v", err)
 	}
-	if snapshot.Type != "daemon_snapshot" || len(snapshot.Daemons) != 1 || snapshot.Daemons[0].DeviceID != "dev-1" {
+	if snapshot.Type != "computer_snapshot" || len(snapshot.Daemons) != 1 || snapshot.Daemons[0].DeviceID != "dev-1" {
 		t.Fatalf("snapshot = %#v, want dev-1", snapshot)
 	}
 
 	if err := daemonConn.WriteJSON(protocol.ConnectivityFrame{
-		Type:               "paired_device_revoked",
+		Type:               "client_revoked",
 		AndroidFingerprint: appFingerprint,
 	}); err != nil {
 		t.Fatalf("daemon revoke WriteJSON returned error: %v", err)
@@ -68,8 +69,48 @@ func TestConnectivityWebSocketsExposeTrustedDaemonSnapshot(t *testing.T) {
 	if err := appConn.ReadJSON(&revoked); err != nil {
 		t.Fatalf("app revoke ReadJSON returned error: %v", err)
 	}
-	if revoked.Type != "paired_device_revoked" || revoked.Daemon.DeviceID != "dev-1" {
-		t.Fatalf("revoked = %#v, want paired_device_revoked dev-1", revoked)
+	if revoked.Type != "client_revoked" || revoked.Daemon.DeviceID != "dev-1" {
+		t.Fatalf("revoked = %#v, want client_revoked dev-1", revoked)
+	}
+}
+
+func TestConnectivityWebSocketAliasesExposeTrustedComputerSnapshot(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	appFingerprint := strings.Repeat("a", 64)
+	appSession, err := env.appAuth.LoginWithDeviceFingerprint(context.Background(), "alice", "password123", appFingerprint)
+	if err != nil {
+		t.Fatalf("Login returned error: %v", err)
+	}
+	agentToken := env.createAgentToken(t, user.ID, "Laptop")
+	handler := env.handler(nil)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	wsBase := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	daemonConn := dialConnectivityWS(t, wsBase+"/connectivity/computer/ws", agentToken.Plaintext)
+	defer daemonConn.Close()
+	if err := daemonConn.WriteJSON(protocol.ConnectivityDaemonRegisterFrame(protocol.ConnectivityDaemonInfo{
+		DeviceID:          "dev-1",
+		DisplayName:       "Laptop",
+		DaemonPublicKey:   strings.Repeat("b", 64),
+		DaemonFingerprint: strings.Repeat("c", 64),
+	}, []protocol.ConnectivityTrustedAndroid{{Fingerprint: appFingerprint, DisplayName: "Pixel"}})); err != nil {
+		t.Fatalf("daemon WriteJSON returned error: %v", err)
+	}
+
+	appConn := dialConnectivityWS(t, wsBase+"/api/connectivity/ws", appSession.AccessToken)
+	defer appConn.Close()
+	if err := appConn.WriteJSON(protocol.ConnectivityAppRegisterFrame()); err != nil {
+		t.Fatalf("app WriteJSON returned error: %v", err)
+	}
+	var snapshot protocol.ConnectivityFrame
+	if err := appConn.ReadJSON(&snapshot); err != nil {
+		t.Fatalf("app ReadJSON returned error: %v", err)
+	}
+	if snapshot.Type != "computer_snapshot" || len(snapshot.Daemons) != 1 || snapshot.Daemons[0].DeviceID != "dev-1" {
+		t.Fatalf("snapshot = %#v, want dev-1", snapshot)
 	}
 }
 
@@ -99,7 +140,7 @@ func TestConnectivityDaemonWebSocketRevalidatesAgentTokenPerFrame(t *testing.T) 
 	}
 
 	if err := daemonConn.WriteJSON(protocol.ConnectivityFrame{
-		Type:               "paired_device_revoked",
+		Type:               "client_revoked",
 		AndroidFingerprint: appFingerprint,
 	}); err != nil {
 		t.Fatalf("daemon revoke WriteJSON returned error: %v", err)
@@ -137,14 +178,14 @@ func TestConnectivityWebSocketsExchangeRendezvousHints(t *testing.T) {
 		t.Fatalf("daemon WriteJSON returned error: %v", err)
 	}
 
-	appConn := dialConnectivityWS(t, wsBase+"/api/connectivity/app/ws", appSession.AccessToken)
+	appConn := dialConnectivityWS(t, wsBase+"/api/connectivity/ws", appSession.AccessToken)
 	defer appConn.Close()
 	if err := appConn.WriteJSON(protocol.ConnectivityAppRegisterFrame()); err != nil {
 		t.Fatalf("app register WriteJSON returned error: %v", err)
 	}
 	var snapshot protocol.ConnectivityFrame
 	readConnectivityFrame(t, appConn, &snapshot)
-	if snapshot.Type != "daemon_snapshot" || len(snapshot.Daemons) != 1 {
+	if snapshot.Type != "computer_snapshot" || len(snapshot.Daemons) != 1 {
 		t.Fatalf("snapshot = %#v, want one visible daemon", snapshot)
 	}
 
@@ -160,8 +201,8 @@ func TestConnectivityWebSocketsExchangeRendezvousHints(t *testing.T) {
 	}
 	var daemonHint protocol.ConnectivityFrame
 	readConnectivityFrame(t, daemonConn, &daemonHint)
-	if daemonHint.Type != "rendezvous_hint" || daemonHint.Actor != "android" || daemonHint.AttemptID != "attempt-1" || daemonHint.PublicUDPAddr != "203.0.113.1:5000" {
-		t.Fatalf("daemon hint = %#v, want android rendezvous_hint", daemonHint)
+	if daemonHint.Type != "rendezvous_hint" || daemonHint.Actor != "client" || daemonHint.AttemptID != "attempt-1" || daemonHint.PublicUDPAddr != "203.0.113.1:5000" {
+		t.Fatalf("daemon hint = %#v, want client rendezvous_hint", daemonHint)
 	}
 	if daemonHint.ExpiresAt == 0 {
 		t.Fatalf("daemon hint = %#v, want expires_at", daemonHint)
@@ -239,8 +280,8 @@ func TestConnectivityRendezvousRejectsUnpairedApp(t *testing.T) {
 	}
 	var snapshot protocol.ConnectivityFrame
 	readConnectivityFrame(t, appConn, &snapshot)
-	if snapshot.Type != "daemon_snapshot" || len(snapshot.Daemons) != 0 {
-		t.Fatalf("snapshot = %#v, want no visible daemons", snapshot)
+	if snapshot.Type != "computer_snapshot" || len(snapshot.Daemons) != 0 {
+		t.Fatalf("snapshot = %#v, want no visible computers", snapshot)
 	}
 
 	if err := appConn.WriteJSON(protocol.ConnectivityFrame{
@@ -310,6 +351,75 @@ func TestConnectivityAppWebSocketRequiresFingerprintBoundSession(t *testing.T) {
 	}
 }
 
+func TestConnectivityPrimaryAppWebSocketRejectsPairingSubmit(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	env.registerUser(t, "alice", "password123", "AB2C3D")
+	appSession, err := env.appAuth.LoginWithDeviceFingerprint(context.Background(), "alice", "password123", strings.Repeat("a", 64))
+	if err != nil {
+		t.Fatalf("Login returned error: %v", err)
+	}
+	handler := env.handler(nil)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	wsBase := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	appConn := dialConnectivityWS(t, wsBase+"/api/connectivity/ws", appSession.AccessToken)
+	defer appConn.Close()
+	if err := appConn.WriteJSON(protocol.ConnectivityAppRegisterFrame()); err != nil {
+		t.Fatalf("app register WriteJSON returned error: %v", err)
+	}
+	var snapshot protocol.ConnectivityFrame
+	readConnectivityFrame(t, appConn, &snapshot)
+
+	if err := appConn.WriteJSON(protocol.ConnectivityFrame{Type: "pair_response_submit", RequestID: "submit-1"}); err != nil {
+		t.Fatalf("pair_response_submit WriteJSON returned error: %v", err)
+	}
+	var appError protocol.ConnectivityFrame
+	readConnectivityFrame(t, appConn, &appError)
+	if appError.Type != "error" || appError.Reason != "unsupported_event" || appError.RequestID != "submit-1" {
+		t.Fatalf("app error = %#v, want unsupported_event for primary websocket", appError)
+	}
+}
+
+func TestConnectivityAppWebSocketRevalidatesBeforeOutboundVisibility(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	appFingerprint := strings.Repeat("a", 64)
+	appSession, err := env.appAuth.LoginWithDeviceFingerprint(context.Background(), "alice", "password123", appFingerprint)
+	if err != nil {
+		t.Fatalf("Login returned error: %v", err)
+	}
+	agentToken := env.createAgentToken(t, user.ID, "Laptop")
+	handler := env.handler(nil)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	wsBase := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	appConn := dialConnectivityWS(t, wsBase+"/api/connectivity/ws", appSession.AccessToken)
+	defer appConn.Close()
+	if err := appConn.WriteJSON(protocol.ConnectivityAppRegisterFrame()); err != nil {
+		t.Fatalf("app register WriteJSON returned error: %v", err)
+	}
+	var snapshot protocol.ConnectivityFrame
+	readConnectivityFrame(t, appConn, &snapshot)
+	env.now = env.now.Add(relayauth.DefaultAccessTokenTTL + time.Second)
+
+	daemonConn := dialConnectivityWS(t, wsBase+"/connectivity/computer/ws", agentToken.Plaintext)
+	defer daemonConn.Close()
+	if err := daemonConn.WriteJSON(protocol.ConnectivityDaemonRegisterFrame(protocol.ConnectivityDaemonInfo{
+		DeviceID:          "dev-1",
+		DisplayName:       "Laptop",
+		DaemonPublicKey:   strings.Repeat("b", 64),
+		DaemonFingerprint: strings.Repeat("c", 64),
+	}, []protocol.ConnectivityTrustedAndroid{{Fingerprint: appFingerprint, DisplayName: "Pixel"}})); err != nil {
+		t.Fatalf("daemon register WriteJSON returned error: %v", err)
+	}
+
+	assertConnectivityClosed(t, appConn)
+}
+
 func TestConnectivityAppWebSocketClosesOnLogout(t *testing.T) {
 	env := newHandlerTestEnv(t)
 	env.addInvite(t, "AB2C3D")
@@ -330,8 +440,8 @@ func TestConnectivityAppWebSocketClosesOnLogout(t *testing.T) {
 	}
 	var snapshot protocol.ConnectivityFrame
 	readConnectivityFrame(t, appConn, &snapshot)
-	if snapshot.Type != "daemon_snapshot" {
-		t.Fatalf("snapshot = %#v, want daemon_snapshot", snapshot)
+	if snapshot.Type != "computer_snapshot" {
+		t.Fatalf("snapshot = %#v, want computer_snapshot", snapshot)
 	}
 
 	rec := httptest.NewRecorder()
@@ -388,7 +498,7 @@ func TestConnectivityRelayTunnelForwardsOpaqueBinaryPackets(t *testing.T) {
 	defer server.Close()
 	wsBase := "ws" + strings.TrimPrefix(server.URL, "http")
 
-	daemonConn := dialConnectivityWS(t, wsBase+"/connectivity/daemon/ws", agentToken.Plaintext)
+	daemonConn := dialConnectivityWS(t, wsBase+"/connectivity/computer/ws", agentToken.Plaintext)
 	defer daemonConn.Close()
 	if err := daemonConn.WriteJSON(protocol.ConnectivityDaemonRegisterFrame(protocol.ConnectivityDaemonInfo{
 		DeviceID:          "dev-1",
@@ -399,14 +509,14 @@ func TestConnectivityRelayTunnelForwardsOpaqueBinaryPackets(t *testing.T) {
 		t.Fatalf("daemon WriteJSON returned error: %v", err)
 	}
 
-	appConn := dialConnectivityWS(t, wsBase+"/api/connectivity/app/ws", appSession.AccessToken)
+	appConn := dialConnectivityWS(t, wsBase+"/api/connectivity/ws", appSession.AccessToken)
 	defer appConn.Close()
 	if err := appConn.WriteJSON(protocol.ConnectivityAppRegisterFrame()); err != nil {
 		t.Fatalf("app register WriteJSON returned error: %v", err)
 	}
 	var snapshot protocol.ConnectivityFrame
 	readConnectivityFrame(t, appConn, &snapshot)
-	if snapshot.Type != "daemon_snapshot" || len(snapshot.Daemons) != 1 {
+	if snapshot.Type != "computer_snapshot" || len(snapshot.Daemons) != 1 {
 		t.Fatalf("snapshot = %#v, want one visible daemon", snapshot)
 	}
 
@@ -425,13 +535,13 @@ func TestConnectivityRelayTunnelForwardsOpaqueBinaryPackets(t *testing.T) {
 	}
 	var appReady protocol.ConnectivityFrame
 	readConnectivityFrame(t, appConn, &appReady)
-	if appReady.Type != "relay_tunnel_ready" || appReady.Actor != "android" || appReady.TunnelToken == "" {
-		t.Fatalf("app ready = %#v, want android tunnel token", appReady)
+	if appReady.Type != "relay_tunnel_ready" || appReady.Actor != "client" || appReady.TunnelToken == "" {
+		t.Fatalf("app ready = %#v, want client tunnel token", appReady)
 	}
 
-	appTunnel := dialTunnelWS(t, wsBase+"/connectivity/tunnel/ws?token="+appReady.TunnelToken)
+	appTunnel := dialTunnelWS(t, wsBase+"/connectivity/tunnel/ws", appReady.TunnelToken)
 	defer appTunnel.Close()
-	daemonTunnel := dialTunnelWS(t, wsBase+"/connectivity/tunnel/ws?token="+daemonReady.TunnelToken)
+	daemonTunnel := dialTunnelWS(t, wsBase+"/connectivity/tunnel/ws", daemonReady.TunnelToken)
 	defer daemonTunnel.Close()
 
 	appPayload := []byte("encrypted-quic-packet-from-app")
@@ -463,11 +573,12 @@ func TestConnectivityRelayTunnelRejectsReusedToken(t *testing.T) {
 		t.Fatalf("Login returned error: %v", err)
 	}
 	agentToken := env.createAgentToken(t, user.ID, "Laptop")
-	server := httptest.NewServer(env.handler(nil))
+	handler := env.handler(nil)
+	server := httptest.NewServer(handler)
 	defer server.Close()
 	wsBase := "ws" + strings.TrimPrefix(server.URL, "http")
 
-	daemonConn := dialConnectivityWS(t, wsBase+"/connectivity/daemon/ws", agentToken.Plaintext)
+	daemonConn := dialConnectivityWS(t, wsBase+"/connectivity/computer/ws", agentToken.Plaintext)
 	defer daemonConn.Close()
 	if err := daemonConn.WriteJSON(protocol.ConnectivityDaemonRegisterFrame(protocol.ConnectivityDaemonInfo{
 		DeviceID:          "dev-1",
@@ -491,10 +602,11 @@ func TestConnectivityRelayTunnelRejectsReusedToken(t *testing.T) {
 	var appReady protocol.ConnectivityFrame
 	readConnectivityFrame(t, appConn, &appReady)
 
-	first := dialTunnelWS(t, wsBase+"/connectivity/tunnel/ws?token="+appReady.TunnelToken)
+	first := dialTunnelWS(t, wsBase+"/connectivity/tunnel/ws", appReady.TunnelToken)
 	defer first.Close()
 	headers := http.Header{}
-	second, resp, err := websocket.DefaultDialer.Dial(wsBase+"/connectivity/tunnel/ws?token="+appReady.TunnelToken, headers)
+	headers.Set("Authorization", "Bearer "+appReady.TunnelToken)
+	second, resp, err := websocket.DefaultDialer.Dial(wsBase+"/connectivity/tunnel/ws", headers)
 	if second != nil {
 		_ = second.Close()
 	}
@@ -593,16 +705,17 @@ func TestConnectivityPairingCompletesThroughRelayWithGoClient(t *testing.T) {
 	env := newHandlerTestEnv(t)
 	env.addInvite(t, "AB2C3D")
 	user := env.registerUser(t, "alice", "password123", "AB2C3D")
-	android, err := pairtest.NewAndroidClient("Pixel")
+	android, err := pairtest.NewClient("Pixel")
 	if err != nil {
-		t.Fatalf("NewAndroidClient returned error: %v", err)
+		t.Fatalf("NewClient returned error: %v", err)
 	}
 	appSession, err := env.appAuth.LoginWithDeviceFingerprint(context.Background(), "alice", "password123", android.Fingerprint)
 	if err != nil {
 		t.Fatalf("Login returned error: %v", err)
 	}
 	agentToken := env.createAgentToken(t, user.ID, "Laptop")
-	server := httptest.NewServer(env.handler(nil))
+	handler := env.handler(nil)
+	server := httptest.NewServer(handler)
 	defer server.Close()
 	wsBase := "ws" + strings.TrimPrefix(server.URL, "http")
 
@@ -612,7 +725,7 @@ func TestConnectivityPairingCompletesThroughRelayWithGoClient(t *testing.T) {
 		t.Fatalf("ReadOrCreateConnectivityIdentity returned error: %v", err)
 	}
 
-	daemonConn := dialConnectivityWS(t, wsBase+"/connectivity/daemon/ws", agentToken.Plaintext)
+	daemonConn := dialConnectivityWS(t, wsBase+"/connectivity/computer/ws", agentToken.Plaintext)
 	defer daemonConn.Close()
 	if err := daemonConn.WriteJSON(protocol.ConnectivityDaemonRegisterFrame(protocol.ConnectivityDaemonInfo{
 		DeviceID:          "dev-1",
@@ -645,35 +758,36 @@ func TestConnectivityPairingCompletesThroughRelayWithGoClient(t *testing.T) {
 		t.Fatalf("CreatePairInvitation returned error: %v", err)
 	}
 
-	appConn := dialConnectivityWS(t, wsBase+"/api/connectivity/app/ws", appSession.AccessToken)
+	appConn := dialConnectivityWS(t, wsBase+"/api/connectivity/ws", appSession.AccessToken)
 	defer appConn.Close()
 	if err := appConn.WriteJSON(protocol.ConnectivityAppRegisterFrame()); err != nil {
 		t.Fatalf("app register WriteJSON returned error: %v", err)
 	}
 	var snapshot protocol.ConnectivityFrame
 	readConnectivityFrame(t, appConn, &snapshot)
-	if snapshot.Type != "daemon_snapshot" || len(snapshot.Daemons) != 0 {
-		t.Fatalf("snapshot = %#v, want no visible daemons before pairing completion", snapshot)
+	if snapshot.Type != "computer_snapshot" || len(snapshot.Daemons) != 0 {
+		t.Fatalf("snapshot = %#v, want no visible computers before pairing completion", snapshot)
 	}
 
 	response, sas, err := android.PairingResponse(connectivityPairingInvitation(invitation), reserved.AccountID)
 	if err != nil {
 		t.Fatalf("PairingResponse returned error: %v", err)
 	}
-	if err := appConn.WriteJSON(protocol.ConnectivityFrame{
-		Type:      "pair_response_submit",
-		RequestID: "submit-1",
-		PairingResponse: &protocol.ConnectivityPairingResponse{
-			AccountID:          response.AccountID,
-			InvitationID:       response.InvitationID,
-			CorrelationID:      response.CorrelationID,
-			AndroidPublicKey:   response.AndroidPublicKey,
-			AndroidFingerprint: strings.ToUpper(response.AndroidFingerprint),
-			AndroidDisplayName: response.AndroidDisplayName,
-			Signature:          response.Signature,
-		},
-	}); err != nil {
-		t.Fatalf("pair_response_submit WriteJSON returned error: %v", err)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/pairing/responses", strings.NewReader(`{
+		"account_id":"`+response.AccountID+`",
+		"invitation_id":"`+response.InvitationID+`",
+		"correlation_id":"`+response.CorrelationID+`",
+		"client_public_key":"`+response.AndroidPublicKey+`",
+		"client_fingerprint":"`+strings.ToUpper(response.AndroidFingerprint)+`",
+		"client_display_name":"`+response.AndroidDisplayName+`",
+		"signature":"`+response.Signature+`"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", bearerAuth(appSession.AccessToken))
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/pairing/responses status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
 
 	var forwarded protocol.ConnectivityFrame
@@ -707,7 +821,7 @@ func TestConnectivityPairingCompletesThroughRelayWithGoClient(t *testing.T) {
 
 	var visible protocol.ConnectivityFrame
 	readConnectivityFrame(t, appConn, &visible)
-	if visible.Type != "paired_device_visible" || visible.Daemon == nil || visible.Daemon.DeviceID != "dev-1" {
+	if visible.Type != "computer_visible" || visible.Daemon == nil || visible.Daemon.DeviceID != "dev-1" {
 		t.Fatalf("visible = %#v, want dev-1 visible after pairing completion", visible)
 	}
 }
@@ -726,9 +840,11 @@ func dialConnectivityWS(t *testing.T, url, token string) *websocket.Conn {
 	return conn
 }
 
-func dialTunnelWS(t *testing.T, url string) *websocket.Conn {
+func dialTunnelWS(t *testing.T, url, token string) *websocket.Conn {
 	t.Helper()
-	conn, resp, err := websocket.DefaultDialer.Dial(url, nil)
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer "+token)
+	conn, resp, err := websocket.DefaultDialer.Dial(url, headers)
 	if err != nil {
 		status := 0
 		if resp != nil {

@@ -11,18 +11,18 @@ This document is the implementation contract for `tunnel daemon`. It exists to k
 
 `tunnel daemon` is the authenticated machine-local background runtime for remote launch, connectivity pairing, direct/relay session connectivity, and the local session broker. It keeps long-lived device/connectivity connections to the relay, receives launch requests for that machine, creates new `tunnel run <command>` sessions inside a dedicated local tmux workspace when tmux is available, and reports immediate launch validation results back to the relay.
 
-The daemon does not replace `tunnel run`. Direct local sessions still start through `tunnel run <command>`, own their PTY locally, register with `/agent/ws`, and remain the authority for terminal state. During startup, `tunnel run` also best-effort ensures the daemon is running and registers metadata plus latest preview over the daemon-local broker socket.
+The daemon does not replace `tunnel run`. Direct local sessions still start through `tunnel run <command>`, own their PTY locally, register with `/agent/ws`, and remain the authority for terminal state. During startup, `tunnel run` also best-effort ensures the daemon is running and registers metadata, latest preview, coalesced terminal snapshots, and live output bytes over the daemon-local broker socket.
 
 ## Non-Negotiable Boundaries
 
-- Remote launch is device-scoped. Clients discover online devices with `GET /api/devices` and launch through `POST /api/devices/:deviceID/launch`.
+- Remote launch is computer-scoped. Clients discover online computers with `GET /api/computers` and launch through `POST /api/computers/:computerID/sessions`.
 - Launch success means `session_ready`, not daemon acceptance. The relay completes the client request only after the launched `tunnel run` registers with a matching launch correlation and concrete `session_id`.
 - The daemon must use a dedicated local tmux workspace for remotely launched sessions.
 - The daemon must not require or automate GUI terminal applications.
 - The daemon must not manage long-lived PTYs directly for remote launch. Tmux owns local session survival across daemon stop, crash, and restart.
 - The relay must stay live-only for devices. It stores currently connected device metadata and in-flight launch correlation only.
 - The relay must not own tmux state, terminal state, transcript history, launch history, last failures, stop history, or offline device inventory.
-- The local broker is daemon-local and live-only. It may cache latest preview text in memory, but Relay must not receive that preview through the broker path.
+- The local broker is daemon-local and live-only. It may cache latest preview text and the latest coalesced terminal snapshot in memory, and it may fan out live output bytes to trusted connectivity transports, but Relay must not retain or inspect that terminal state through the broker path.
 - Direct connectivity attempts use Relay rendezvous hints and daemon-local UDP sockets, then serve the same pinned QUIC/TLS session protocol as Relay fallback.
 - Daemon status and doctor may report last connectivity path and failure reason, but must not report preview text, snapshots, live bytes, or input text.
 - `tunnel daemon open` and `tunnel daemon sessions` must target the tmux workspace directly and must not require the daemon control socket to be online.
@@ -38,13 +38,13 @@ The daemon surface lives under `tunnel daemon ...`; `tunnel run` may also auto-s
 - `status`: read daemon status without active probing.
 - `stop`: stop the daemon process and remove the device from online relay discovery, without killing tmux sessions.
 - `doctor`: actively inspect daemon readiness, auth availability, relay reachability, tmux availability, workspace reachability, config readability, and recent launch failure state.
-- `broker sessions`: list daemon-local broker registrations and latest preview cache for diagnostics. This is local-only and does not expose a mobile session index.
+- `broker sessions`: list daemon-local broker registrations and latest preview cache for diagnostics. This is local-only and does not expose terminal snapshots, live bytes, or a mobile session index.
 - `open`: attach to an existing daemon-managed tmux session from the current terminal. If no daemon-managed sessions exist, do not open tmux; tell the user there are no sessions to open.
 - `close`: detach one currently open client from the daemon tmux workspace. If no workspace view is open, report that there is no open workspace to close and exit successfully.
 - `sessions`: list sessions in the dedicated tmux workspace without adding custom session management.
 - `pair`: ask the running daemon to create a signed short-lived pairing invitation.
-- `devices`: list daemon-local trusted Android devices.
-- `revoke <fingerprint>`: mark one daemon-local trusted Android device revoked and best-effort notify Relay live visibility.
+- `devices`: list daemon-local trusted client devices.
+- `revoke <fingerprint>`: mark one daemon-local trusted client device revoked and best-effort notify Relay live visibility.
 
 Do not add daemon commands that create a custom tmux dashboard, picker, alias system, per-session close/open workflow, or terminal-recipe workflow unless the product scope is explicitly changed first. Use account-level session stop for destructive session shutdown; keep `close` reserved for the local workspace view lifecycle.
 
@@ -59,27 +59,27 @@ Do not add daemon commands that create a custom tmux dashboard, picker, alias sy
 }
 ```
 
-Stable daemon command error codes are `daemon_not_running`, `pairing_invitation_not_found`, `pairing_invitation_expired`, `pairing_invitation_consumed`, `pairing_sas_mismatch`, `trusted_device_not_found`, `invalid_android_fingerprint`, `connectivity_event_queue_unavailable`, and `daemon_command_failed`. `doctor --json` still returns its diagnostic report when checks complete; a non-zero diagnostic exit code is not replaced with an error envelope. Human `start` output may include warnings such as degraded launch readiness.
+Stable daemon command error codes are `daemon_not_running`, `pairing_invitation_not_found`, `pairing_invitation_expired`, `pairing_invitation_consumed`, `pairing_sas_mismatch`, `trusted_device_not_found`, `invalid_android_fingerprint` (legacy code name), `connectivity_event_queue_unavailable`, and `daemon_command_failed`. `doctor --json` still returns its diagnostic report when checks complete; a non-zero diagnostic exit code is not replaced with an error envelope. Human `start` output may include warnings such as degraded launch readiness.
 
 ## Local State
 
 Daemon-owned local state is split by purpose:
 
 - Config: user-editable daemon config, including the first-token command allowlist.
-- State: persisted device identity, connectivity identity, pairing invitations, trusted Android roster, and last daemon status.
+- State: persisted device identity, connectivity identity, pairing invitations, trusted client roster, and last daemon status.
 - Runtime: local control socket, local broker socket, PID file, and dedicated tmux socket path.
 
 The stable `device_id` belongs to machine-local daemon state. It should survive daemon restarts and be reused when the same machine daemon reconnects.
 
-The connectivity identity is a separate long-lived Ed25519 identity stored in `connectivity_identity.json` with file mode `0600`. Its SHA-256 public-key fingerprint is exposed as `daemon_fingerprint` in daemon status and connectivity registration. It is the pairing trust root and future QUIC pinning identity; it is distinct from the legacy `device_id` routing/display identifier.
+The connectivity identity is a separate long-lived Ed25519 identity stored in `connectivity_identity.json` with file mode `0600`. Its SHA-256 public-key fingerprint is exposed as `daemon_fingerprint` in daemon status and as `computer_fingerprint` in connectivity registration payloads. It is the pairing trust root and future QUIC pinning identity; it is distinct from the legacy `device_id` routing/display identifier.
 
-Pairing state is stored in `pairing_state.json` with file mode `0600`. It contains short-lived invitation records, consumed invitation markers retained until expiry, pending Android responses awaiting SAS confirmation, and the trusted Android roster. Relay does not own this durable trust state.
+Pairing state is stored in `pairing_state.json` with file mode `0600`. It contains short-lived invitation records, consumed invitation markers retained until expiry, pending client responses awaiting SAS confirmation, and the trusted client roster. Relay does not own this durable trust state.
 
-`tunnel daemon pair` requires the local daemon control socket and a live connectivity Relay reservation. The daemon receives the Relay-authenticated account id for the reservation, signs the invitation transcript with its connectivity identity, persists invitation state, and returns the JSON invitation payload to the CLI. QR rendering is not implemented in this revision.
+`tunnel daemon pair` requires the local daemon control socket and a live connectivity Relay reservation. The daemon receives the Relay-authenticated account id for the reservation, signs the invitation transcript with its connectivity identity, persists invitation state, and renders a terminal QR by default for scanning. `tunnel daemon pair --json` returns the machine-readable invitation payload for automation.
 
-When Relay forwards a signed Android pairing response, the daemon verifies it and stores it as a pending response. `tunnel daemon pair pending` lists pending responses and their derived SAS values; `tunnel daemon pair confirm <invitation-id> <sas>` consumes the invitation, stores Android trust, and sends `pair_completed` to Relay when the connectivity socket is online. A mismatched SAS consumes the invitation without storing trust.
+When Relay forwards a signed client pairing response, the daemon verifies it and stores it as a pending response. `tunnel daemon pair pending` lists pending responses and their derived SAS values; `tunnel daemon pair confirm <invitation-id> <sas>` consumes the invitation, stores client trust, and sends `pair_completed` to Relay when the connectivity socket is online. A mismatched SAS consumes the invitation without storing trust.
 
-`tunnel daemon revoke <fingerprint>` updates daemon-local trust first. If the connectivity Relay socket is online, the daemon sends `paired_device_revoked`; if Relay is offline, the next daemon connectivity registration omits the revoked fingerprint, so Relay cannot rebuild visibility for that Android device.
+`tunnel daemon revoke <fingerprint>` updates daemon-local trust first. If the connectivity Relay socket is online, the daemon sends `client_revoked`; if Relay is offline, the next daemon connectivity registration omits the revoked fingerprint, so Relay cannot rebuild visibility for that client device.
 
 After Relay forwards an app `rendezvous_hint`, the daemon validates local trust,
 opens a direct UDP socket, emits daemon candidates with the same `attempt_id`,
@@ -98,9 +98,9 @@ The broker socket path is part of daemon runtime state. It is separate from the 
 
 ## Local Broker Contract
 
-Each running `tunnel run` process owns its PTY and terminal mirror, then registers the live session with the daemon broker over a long-lived local socket. Registration includes the session id, command preview, label, cwd, git branch, start timestamp, platform metadata, and launch source. The daemon treats connection liveness as session liveness.
+Each running `tunnel run` process owns its PTY and terminal mirror, then registers the live session with the daemon broker over a long-lived local socket. Registration includes the session id, command preview, label, cwd, git branch, start timestamp, platform metadata, and launch source. The same socket carries live output bytes and coalesced latest terminal snapshots for trusted connectivity transports. The daemon treats connection liveness as session liveness.
 
-`tunnel run` derives a bounded plain-text preview from its own terminal mirror and pushes full throttled latest-preview replacements to the daemon. The daemon caches only the latest preview per session in memory and reapplies the preview size/normalization limit before caching. It does not derive preview from terminal bytes, persist preview history, print preview through status/doctor, or send preview to Relay.
+`tunnel run` derives a bounded plain-text preview and terminal snapshots from its own terminal mirror and pushes throttled latest-preview plus coalesced latest-snapshot replacements to the daemon. The daemon caches only the latest preview and latest snapshot per session in memory and reapplies the preview size/normalization limit before caching preview text. It does not derive preview from terminal bytes, persist preview or snapshot history, print preview/snapshot content through status/doctor, or send preview/snapshot content to Relay.
 
 If the daemon restarts, still-running `tunnel run` clients retry with backoff and send a fresh registration after reconnect. If a broker socket is missing, unsafe, owned by a different local user, or belongs to a daemon running against a different Relay base URL or auth-context fingerprint, `tunnel run` skips broker registration without weakening the existing Relay startup gate or local terminal behavior.
 
@@ -147,7 +147,7 @@ Mobile and CLI session stop is a separate destructive operation from local works
 1. The launched `tunnel run` process registers on `/agent/ws` with the launch correlation.
 2. The relay marks the registered session with `launch_source: "mobile"` when the launch correlation matches.
 3. `GET /api/sessions` exposes mobile launch source separately from local launch source.
-4. `POST /api/sessions/:sessionID/stop` routes one `stop_session` control frame to the owning `/agent/ws` connection.
+4. `DELETE /api/sessions/:sessionID` routes one `stop_session` control frame to the owning `/agent/ws` connection.
 5. The owning `tunnel run` process stops itself. For daemon-launched sessions, this stops the process inside the tmux workspace session.
 6. The relay removes the live session from discovery immediately after accepting stop and closes active attaches with `session_stopped`.
 
@@ -190,7 +190,7 @@ The relay only reflects the latest live device metadata. It must clear device pr
 
 Daemon start uses the same runtime auth precedence as `tunnel run`: `TUNNEL_AUTH_TOKEN` first, then saved local auth in `~/.tunnel/auth.json`.
 
-The daemon authenticates to `/device/ws` and `/connectivity/daemon/ws` with a user-owned agent token. If that token is revoked, the relay must close matching device sockets and remove those devices from discovery.
+The daemon authenticates to `/device/ws` and `/connectivity/computer/ws` with a user-owned agent token. The legacy alias `/connectivity/daemon/ws` remains accepted in this revision. If that token is revoked, the relay must close matching device sockets and remove those devices from discovery.
 
 Launch command authorization is intentionally narrow: only the first parsed command token is checked against the daemon allowlist. The rest of the command string is passed as launcher arguments after shell parsing. Any future expansion to command profiles, placeholders, per-command schemas, or interactive confirmation is outside this contract until separately specified.
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -113,6 +114,84 @@ func TestHandlerLaunchDeviceWaitsForSessionReady(t *testing.T) {
 	<-done
 }
 
+func TestHandlerListsComputersAliasForAuthenticatedUser(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	issued := env.login(t, "alice", "password123")
+
+	env.deviceRegistry.RegisterOwned(protocol.DeviceInfo{
+		DeviceID:       "dev-1",
+		DisplayName:    "Yuanbo's MacBook Pro",
+		PlatformFamily: "macos",
+		PlatformID:     "macos",
+	}, relaydevice.DeviceOwner{UserID: user.ID}, &fakeDevicePeerForHandler{})
+	env.deviceRegistry.RegisterOwned(protocol.DeviceInfo{
+		DeviceID:       "dev-2",
+		DisplayName:    "Ubuntu Box",
+		PlatformFamily: "linux",
+		PlatformID:     "ubuntu",
+	}, relaydevice.DeviceOwner{UserID: user.ID + 1}, &fakeDevicePeerForHandler{})
+
+	handler := env.handler(nil)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/computers", nil)
+	req.Header.Set("Authorization", bearerAuth(issued.AccessToken))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var computers []handlertypes.ComputerInfo
+	decodeAPIEnvelopeFromRecorder(t, rec, http.StatusOK, &computers)
+	if len(computers) != 1 || computers[0].ComputerID != "dev-1" {
+		t.Fatalf("computers = %#v, want only dev-1", computers)
+	}
+	assertNoBodyField(t, rec, "device_id")
+}
+
+func TestHandlerLaunchComputerAliasWaitsForSessionReady(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	issued := env.login(t, "alice", "password123")
+	peer := &blockingDevicePeer{sent: make(chan protocol.DeviceFrame, 1)}
+	env.deviceRegistry.RegisterOwned(protocol.DeviceInfo{
+		DeviceID:       "dev-1",
+		DisplayName:    "Test Mac",
+		PlatformFamily: "macos",
+		PlatformID:     "macos",
+	}, relaydevice.DeviceOwner{UserID: user.ID}, peer)
+
+	handler := env.handler(nil)
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	requestIDCh := make(chan string, 1)
+	go func() {
+		frame := <-peer.sent
+		requestIDCh <- frame.RequestID
+		env.deviceRegistry.ResolveLaunchIfOwner("dev-1", peer, frame.RequestID, relaydevice.LaunchStatusAccepted, "", "launch_fixed")
+		env.deviceRegistry.CompleteLaunchIfOwner(frame.RequestID, relaydevice.DeviceOwner{UserID: user.ID}, "sess-1")
+		close(done)
+	}()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/computers/dev-1/sessions", strings.NewReader(`{"command":"claude","cwd":"/repo","label":"api-fix"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", bearerAuth(issued.AccessToken))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var response handlertypes.DeviceLaunchResponse
+	decodeAPIEnvelopeFromRecorder(t, rec, http.StatusOK, &response)
+	requestID := <-requestIDCh
+	if response.Status != relaydevice.LaunchStatusSessionReady || response.SessionID != "sess-1" || response.RequestID != requestID || response.Reason != "" {
+		t.Fatalf("response = %#v, want session_ready sess-1", response)
+	}
+	<-done
+}
+
 func TestHandlerStopsSessionWithAppToken(t *testing.T) {
 	env := newHandlerTestEnv(t)
 	env.addInvite(t, "AB2C3D")
@@ -178,6 +257,280 @@ func TestHandlerStopsSessionWithAgentToken(t *testing.T) {
 	if _, ok := env.registry.SessionForUser("sess-1", user.ID); ok {
 		t.Fatal("session still exists after stop")
 	}
+}
+
+func TestHandlerStopsSessionWithDeleteAlias(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	issued := env.login(t, "alice", "password123")
+	peer := &recordingAgentPeer{}
+	env.registry.RegisterOwned(protocol.SessionInfo{
+		SessionID: "sess-1",
+		Launcher:  "codex",
+	}, relaysession.SessionOwner{UserID: user.ID}, peer)
+
+	handler := env.handler(nil)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/sess-1", nil)
+	req.Header.Set("Authorization", bearerAuth(issued.AccessToken))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if _, ok := env.registry.SessionForUser("sess-1", user.ID); ok {
+		t.Fatal("session still exists after stop")
+	}
+}
+
+func TestHandlerSubmitPairingResponseRouteReturnsCorrelationNotFound(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	fingerprint := strings.Repeat("a", relayauth.DeviceFingerprintHexLength)
+	issued, err := env.appAuth.LoginWithDeviceFingerprint(context.Background(), "alice", "password123", fingerprint)
+	if err != nil {
+		t.Fatalf("LoginWithDeviceFingerprint returned error: %v", err)
+	}
+
+	handler := env.handler(nil)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/pairing/responses", strings.NewReader(`{
+		"account_id":"`+strconv.FormatInt(user.ID, 10)+`",
+		"invitation_id":"pair-1",
+		"correlation_id":"corr-1",
+		"client_public_key":"`+strings.Repeat("d", 64)+`",
+		"client_fingerprint":"`+fingerprint+`",
+		"client_display_name":"Pixel",
+		"signature":"`+strings.Repeat("f", 128)+`"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", bearerAuth(issued.AccessToken))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+	decodeAPIErrorEnvelopeFromRecorder(t, rec, http.StatusNotFound, handlerresponse.CodeNotFound, "The requested resource was not found.")
+}
+
+func TestHandlerSubmitPairingResponseRouteRateLimitsPerIP(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	fingerprint := strings.Repeat("a", relayauth.DeviceFingerprintHexLength)
+	issued, err := env.appAuth.LoginWithDeviceFingerprint(context.Background(), "alice", "password123", fingerprint)
+	if err != nil {
+		t.Fatalf("LoginWithDeviceFingerprint returned error: %v", err)
+	}
+	handler := env.handler(nil)
+
+	reqBody := `{
+		"account_id":"` + strconv.FormatInt(user.ID, 10) + `",
+		"invitation_id":"pair-1",
+		"correlation_id":"corr-1",
+		"client_public_key":"` + strings.Repeat("d", 64) + `",
+		"client_fingerprint":"` + fingerprint + `",
+		"client_display_name":"Pixel",
+		"signature":"` + strings.Repeat("f", 128) + `"
+	}`
+
+	for attempt := 0; attempt < 10; attempt++ {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/pairing/responses", strings.NewReader(reqBody))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", bearerAuth(issued.AccessToken))
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("attempt=%d status=%d want 404", attempt+1, rec.Code)
+		}
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/pairing/responses", strings.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", bearerAuth(issued.AccessToken))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status=%d want 429", rec.Code)
+	}
+	if got := rec.Header().Get("Retry-After"); got == "" {
+		t.Fatalf("Retry-After header missing")
+	}
+}
+
+func TestHandlerSubmitPairingResponseRouteForwardsToReservedComputer(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	fingerprint := strings.Repeat("a", relayauth.DeviceFingerprintHexLength)
+	appSession, err := env.appAuth.LoginWithDeviceFingerprint(context.Background(), "alice", "password123", fingerprint)
+	if err != nil {
+		t.Fatalf("LoginWithDeviceFingerprint returned error: %v", err)
+	}
+	agentToken := env.createAgentToken(t, user.ID, "Laptop")
+	handler := env.handler(nil)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	wsBase := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	daemonConn := dialConnectivityWS(t, wsBase+"/connectivity/computer/ws", agentToken.Plaintext)
+	defer daemonConn.Close()
+	if err := daemonConn.WriteJSON(protocol.ConnectivityDaemonRegisterFrame(protocol.ConnectivityDaemonInfo{
+		DeviceID:          "dev-1",
+		DisplayName:       "Laptop",
+		DaemonPublicKey:   strings.Repeat("b", 64),
+		DaemonFingerprint: strings.Repeat("c", 64),
+	}, nil)); err != nil {
+		t.Fatalf("daemon register WriteJSON returned error: %v", err)
+	}
+	if err := daemonConn.WriteJSON(protocol.ConnectivityFrame{
+		Type:      "pair_invitation_reserve",
+		RequestID: "corr-1",
+	}); err != nil {
+		t.Fatalf("pair reserve WriteJSON returned error: %v", err)
+	}
+	var reserved protocol.ConnectivityFrame
+	readConnectivityFrame(t, daemonConn, &reserved)
+	if reserved.Type != "pair_invitation_reserved" || reserved.RequestID != "corr-1" || reserved.AccountID != strconv.FormatInt(user.ID, 10) {
+		t.Fatalf("reserved = %#v, want pair_invitation_reserved corr-1", reserved)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/pairing/responses", strings.NewReader(`{
+		"account_id":"`+strconv.FormatInt(user.ID, 10)+`",
+		"invitation_id":"pair-1",
+		"correlation_id":"corr-1",
+		"client_public_key":"`+strings.Repeat("d", 64)+`",
+		"client_fingerprint":"`+fingerprint+`",
+		"client_display_name":"Pixel",
+		"signature":"`+strings.Repeat("f", 128)+`"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", bearerAuth(appSession.AccessToken))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var response map[string]string
+	decodeAPIEnvelopeFromRecorder(t, rec, http.StatusOK, &response)
+	if response["status"] != "forwarded" {
+		t.Fatalf("response = %#v, want forwarded", response)
+	}
+	var forwarded protocol.ConnectivityFrame
+	readConnectivityFrame(t, daemonConn, &forwarded)
+	if forwarded.Type != "pair_response_forward" || forwarded.PairingResponse == nil || forwarded.PairingResponse.CorrelationID != "corr-1" {
+		t.Fatalf("forwarded = %#v, want pair_response_forward corr-1", forwarded)
+	}
+	if forwarded.PairingResponse.AccountID != strconv.FormatInt(user.ID, 10) ||
+		forwarded.PairingResponse.InvitationID != "pair-1" ||
+		forwarded.PairingResponse.AndroidPublicKey != strings.Repeat("d", 64) ||
+		forwarded.PairingResponse.AndroidFingerprint != fingerprint ||
+		forwarded.PairingResponse.AndroidDisplayName != "Pixel" ||
+		forwarded.PairingResponse.Signature != strings.Repeat("f", 128) {
+		t.Fatalf("pairing response = %#v, want full HTTP payload forwarded", forwarded.PairingResponse)
+	}
+}
+
+func TestHandlerSubmitPairingResponseRouteRejectsUnboundAppSession(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	issued := env.login(t, "alice", "password123")
+
+	handler := env.handler(nil)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/pairing/responses", strings.NewReader(`{
+		"account_id":"`+strconv.FormatInt(user.ID, 10)+`",
+		"invitation_id":"pair-1",
+		"correlation_id":"corr-1",
+		"client_public_key":"`+strings.Repeat("d", 64)+`",
+		"client_fingerprint":"",
+		"client_display_name":"Pixel"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", bearerAuth(issued.AccessToken))
+	handler.ServeHTTP(rec, req)
+
+	decodeAPIErrorEnvelopeFromRecorder(t, rec, http.StatusForbidden, handlerresponse.CodeForbidden, "The request is forbidden.")
+}
+
+func TestHandlerSubmitPairingResponseRouteRejectsFingerprintMismatch(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	fingerprint := strings.Repeat("a", relayauth.DeviceFingerprintHexLength)
+	issued, err := env.appAuth.LoginWithDeviceFingerprint(context.Background(), "alice", "password123", fingerprint)
+	if err != nil {
+		t.Fatalf("LoginWithDeviceFingerprint returned error: %v", err)
+	}
+
+	handler := env.handler(nil)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/pairing/responses", strings.NewReader(`{
+		"account_id":"`+strconv.FormatInt(user.ID, 10)+`",
+		"invitation_id":"pair-1",
+		"correlation_id":"corr-1",
+		"client_public_key":"`+strings.Repeat("d", 64)+`",
+		"client_fingerprint":"`+strings.Repeat("e", relayauth.DeviceFingerprintHexLength)+`",
+		"client_display_name":"Pixel"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", bearerAuth(issued.AccessToken))
+	handler.ServeHTTP(rec, req)
+
+	decodeAPIErrorEnvelopeFromRecorder(t, rec, http.StatusForbidden, handlerresponse.CodeForbidden, "The request is forbidden.")
+}
+
+func TestHandlerSubmitPairingResponseRouteRejectsAccountMismatch(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	env.registerUser(t, "alice", "password123", "AB2C3D")
+	fingerprint := strings.Repeat("a", relayauth.DeviceFingerprintHexLength)
+	issued, err := env.appAuth.LoginWithDeviceFingerprint(context.Background(), "alice", "password123", fingerprint)
+	if err != nil {
+		t.Fatalf("LoginWithDeviceFingerprint returned error: %v", err)
+	}
+
+	handler := env.handler(nil)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/pairing/responses", strings.NewReader(`{
+		"account_id":"999",
+		"invitation_id":"pair-1",
+		"correlation_id":"corr-1",
+		"client_public_key":"`+strings.Repeat("d", 64)+`",
+		"client_fingerprint":"`+fingerprint+`",
+		"client_display_name":"Pixel"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", bearerAuth(issued.AccessToken))
+	handler.ServeHTTP(rec, req)
+
+	decodeAPIErrorEnvelopeFromRecorder(t, rec, http.StatusForbidden, handlerresponse.CodeForbidden, "The request is forbidden.")
+}
+
+func TestHandlerSubmitPairingResponseRouteRejectsInvalidJSON(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	env.registerUser(t, "alice", "password123", "AB2C3D")
+	fingerprint := strings.Repeat("a", relayauth.DeviceFingerprintHexLength)
+	issued, err := env.appAuth.LoginWithDeviceFingerprint(context.Background(), "alice", "password123", fingerprint)
+	if err != nil {
+		t.Fatalf("LoginWithDeviceFingerprint returned error: %v", err)
+	}
+
+	handler := env.handler(nil)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/pairing/responses", strings.NewReader(`{"account_id":`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", bearerAuth(issued.AccessToken))
+	handler.ServeHTTP(rec, req)
+
+	decodeAPIErrorEnvelopeFromRecorder(t, rec, http.StatusBadRequest, handlerresponse.CodeInvalidRequest, "The request is invalid.")
 }
 
 func TestHandlerRevokingAgentTokenCompletesInFlightLaunch(t *testing.T) {
@@ -361,6 +714,30 @@ func TestHandlerBindsAppSessionRefreshToDeviceFingerprint(t *testing.T) {
 	decodeAPIErrorEnvelopeFromRecorder(t, mismatchedRec, http.StatusUnauthorized, handlerresponse.CodeInvalidSession, "The session is invalid.")
 }
 
+func TestHandlerBindsAppSessionRefreshToClientFingerprint(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	env.registerUser(t, "alice", "password123", "AB2C3D")
+	handler := env.handler(nil)
+
+	fingerprint := strings.Repeat("a", relayauth.DeviceFingerprintHexLength)
+	loginRec := httptest.NewRecorder()
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"username":"alice","password":"password123","client_fingerprint":"`+strings.ToUpper(fingerprint)+`"}`))
+	handler.ServeHTTP(loginRec, loginReq)
+	if loginRec.Code != http.StatusOK {
+		t.Fatalf("login status = %d, want 200", loginRec.Code)
+	}
+
+	var loginResp appSessionResponse
+	decodeAPIEnvelopeFromRecorder(t, loginRec, http.StatusOK, &loginResp)
+	refreshRec := httptest.NewRecorder()
+	refreshReq := httptest.NewRequest(http.MethodPost, "/api/auth/refresh", strings.NewReader(`{"refresh_token":"`+loginResp.RefreshToken+`","client_fingerprint":"`+fingerprint+`"}`))
+	handler.ServeHTTP(refreshRec, refreshReq)
+	if refreshRec.Code != http.StatusOK {
+		t.Fatalf("refresh status = %d, want 200", refreshRec.Code)
+	}
+}
+
 func TestHandlerRejectsInvalidDeviceFingerprint(t *testing.T) {
 	env := newHandlerTestEnv(t)
 	env.addInvite(t, "AB2C3D")
@@ -370,7 +747,7 @@ func TestHandlerRejectsInvalidDeviceFingerprint(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"username":"alice","password":"password123","device_fingerprint":"not-hex"}`))
 	handler.ServeHTTP(rec, req)
-	decodeAPIErrorEnvelopeFromRecorder(t, rec, http.StatusBadRequest, handlerresponse.CodeInvalidDeviceFingerprint, "The device fingerprint is invalid.")
+	decodeAPIErrorEnvelopeFromRecorder(t, rec, http.StatusBadRequest, handlerresponse.CodeInvalidDeviceFingerprint, "The client fingerprint is invalid.")
 }
 
 func TestHandlerAccountPolicyReflectsOperatorTier(t *testing.T) {
@@ -440,6 +817,13 @@ func assertAccountPolicyResponseShape(t *testing.T, recorder *httptest.ResponseR
 	}
 	if _, ok := fields["tier"]; !ok {
 		t.Fatalf("account policy fields = %#v, missing tier", fields)
+	}
+}
+
+func assertNoBodyField(t *testing.T, recorder *httptest.ResponseRecorder, field string) {
+	t.Helper()
+	if strings.Contains(string(recorder.Body.Bytes()), `"`+field+`"`) {
+		t.Fatalf("response body contains %q: %s", field, recorder.Body.String())
 	}
 }
 

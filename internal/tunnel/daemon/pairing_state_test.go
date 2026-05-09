@@ -112,6 +112,88 @@ func TestPairingStatePersistsTrustedRosterAndRevocation(t *testing.T) {
 	}
 }
 
+func TestLoadPairingStateMigratesLegacyClientKeys(t *testing.T) {
+	paths := testPaths(t)
+	if err := EnsureRuntimeDirs(paths); err != nil {
+		t.Fatalf("EnsureRuntimeDirs returned error: %v", err)
+	}
+	legacyFingerprint := strings.Repeat("a", 64)
+	legacyPayload := `{
+  "version": 1,
+  "invitations": [
+    {
+      "invitation_id": "pair-1",
+      "correlation_id": "corr-1",
+      "nonce": "abcd",
+      "account_id": "123",
+      "relay_base_url": "https://relay.example.com",
+      "device_id": "dev-1",
+      "daemon_fingerprint": "` + strings.Repeat("b", 64) + `",
+      "expires_at": 1775376000,
+      "created_at": 1775375700
+    }
+  ],
+  "pending_responses": [
+    {
+      "invitation_id": "pair-1",
+      "correlation_id": "corr-1",
+      "account_id": "123",
+      "android_pubkey": "` + strings.Repeat("c", 64) + `",
+      "android_fingerprint": "` + legacyFingerprint + `",
+      "android_display_name": "Pixel",
+      "signature": "` + strings.Repeat("d", 128) + `",
+      "sas": "123456",
+      "received_at": 1775375710,
+      "expires_at": 1775376000
+    }
+  ],
+  "trusted_devices": [
+    {
+      "fingerprint": "` + legacyFingerprint + `",
+      "public_key": "` + strings.Repeat("e", 64) + `",
+      "display_name": "Pixel",
+      "account_id": "123",
+      "status": "trusted",
+      "paired_at": 1775375720
+    }
+  ]
+}`
+	if err := os.WriteFile(paths.PairingStateFile, []byte(legacyPayload), 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	state, err := LoadPairingState(paths)
+	if err != nil {
+		t.Fatalf("LoadPairingState returned error: %v", err)
+	}
+	if state.Version != PairingStateVersion {
+		t.Fatalf("Version = %d, want %d", state.Version, PairingStateVersion)
+	}
+	if len(state.TrustedDevices) != 1 || state.TrustedDevices[0].Fingerprint != legacyFingerprint {
+		t.Fatalf("TrustedDevices = %#v, want migrated trusted client", state.TrustedDevices)
+	}
+	if len(state.Invitations) != 1 || state.Invitations[0].DaemonFingerprint != strings.Repeat("b", 64) {
+		t.Fatalf("Invitations = %#v, want migrated daemon fingerprint", state.Invitations)
+	}
+	if len(state.PendingResponses) != 1 ||
+		state.PendingResponses[0].AndroidPublicKey != strings.Repeat("c", 64) ||
+		state.PendingResponses[0].AndroidFingerprint != legacyFingerprint ||
+		state.PendingResponses[0].AndroidDisplayName != "Pixel" {
+		t.Fatalf("PendingResponses = %#v, want migrated pending response", state.PendingResponses)
+	}
+
+	if err := SavePairingState(paths, state); err != nil {
+		t.Fatalf("SavePairingState returned error: %v", err)
+	}
+	payload, err := os.ReadFile(paths.PairingStateFile)
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+	if !strings.Contains(string(payload), `"trusted_clients"`) || strings.Contains(string(payload), `"trusted_devices"`) {
+		t.Fatalf("saved payload = %s, want rewritten client-neutral keys", string(payload))
+	}
+}
+
 func TestRevokeTrustedAndroidDeviceRejectsUnknownFingerprint(t *testing.T) {
 	paths := testPaths(t)
 
@@ -251,9 +333,9 @@ func TestPendingPairingResponseRequiresSASConfirmation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreatePairInvitation returned error: %v", err)
 	}
-	android, err := pairtest.NewAndroidClient("Pixel")
+	android, err := pairtest.NewClient("Pixel")
 	if err != nil {
-		t.Fatalf("NewAndroidClient returned error: %v", err)
+		t.Fatalf("NewClient returned error: %v", err)
 	}
 	response, sas, err := android.PairingResponse(connectivitypairing.Invitation{
 		Version:           connectivitypairing.Version,

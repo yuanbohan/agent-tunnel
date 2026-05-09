@@ -442,11 +442,20 @@ cd /opt/agentunnel/compose
 sudo docker compose --env-file .env exec postgres sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 ```
 
+For multi-statement schema changes, run `psql` with `ON_ERROR_STOP=1` and wrap the statements in one transaction so partial changes do not remain after an error:
+
+```bash
+cd /opt/agentunnel/compose
+sudo docker compose --env-file .env exec postgres sh -lc 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+```
+
 The legacy `relay-migrate` binary and numbered SQL migration files may still exist for local compatibility work, but they are not part of the Docker Compose production deployment path.
 
 Step 2 connectivity auth/pairing requires this manual SQL on existing Docker Compose databases before deploying the matching Relay image:
 
 ```sql
+begin;
+
 alter table users
   add column if not exists subscription_tier text not null default 'free';
 
@@ -467,6 +476,8 @@ alter table app_sessions
 create index if not exists app_sessions_user_device_fingerprint_idx
   on app_sessions (user_id, device_fingerprint)
   where device_fingerprint <> '';
+
+commit;
 ```
 
 ## Release Update Checklist

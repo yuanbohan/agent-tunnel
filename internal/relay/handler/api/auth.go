@@ -67,14 +67,14 @@ func Login(appAuth *auth.AppAuthService) gin.HandlerFunc {
 			return
 		}
 
-		issued, err := appAuth.LoginWithDeviceFingerprint(c.Request.Context(), req.Username, req.Password, req.DeviceFingerprint)
+		issued, err := appAuth.LoginWithDeviceFingerprint(c.Request.Context(), req.Username, req.Password, authRequestFingerprint(req.ClientFingerprint, req.DeviceFingerprint))
 		if err != nil {
 			switch {
 			case errors.Is(err, auth.ErrInvalidCredentials):
 				WriteJSONError(c.Writer, http.StatusUnauthorized, "invalid_credentials")
 				return
 			case errors.Is(err, auth.ErrInvalidDeviceFingerprint):
-				WriteJSONError(c.Writer, http.StatusBadRequest, "invalid_device_fingerprint")
+				WriteJSONError(c.Writer, http.StatusBadRequest, "invalid_client_fingerprint")
 				return
 			}
 			WriteJSONError(c.Writer, http.StatusInternalServerError, "internal_error")
@@ -98,10 +98,10 @@ func Refresh(appAuth *auth.AppAuthService) gin.HandlerFunc {
 			return
 		}
 
-		issued, err := appAuth.RefreshWithDeviceFingerprint(c.Request.Context(), req.RefreshToken, req.DeviceFingerprint)
+		issued, err := appAuth.RefreshWithDeviceFingerprint(c.Request.Context(), req.RefreshToken, authRequestFingerprint(req.ClientFingerprint, req.DeviceFingerprint))
 		if err != nil {
 			if errors.Is(err, auth.ErrInvalidDeviceFingerprint) {
-				WriteJSONError(c.Writer, http.StatusBadRequest, "invalid_device_fingerprint")
+				WriteJSONError(c.Writer, http.StatusBadRequest, "invalid_client_fingerprint")
 				return
 			}
 			if isRefreshFailure(err) {
@@ -129,6 +129,13 @@ func AccountPolicy() gin.HandlerFunc {
 			Tier:      tier,
 		})
 	}
+}
+
+func authRequestFingerprint(clientFingerprint, legacyDeviceFingerprint string) string {
+	if clientFingerprint != "" {
+		return clientFingerprint
+	}
+	return legacyDeviceFingerprint
 }
 
 func Logout(appAuth *auth.AppAuthService, registry *session.Registry, attachSessions *session.AttachSessionIndex, connectivityRegistry *relayconnectivity.Registry) gin.HandlerFunc {

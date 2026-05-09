@@ -69,13 +69,13 @@ Detail: `ux/subscription.md`.
 
 ---
 
-### D4 — App Identity: Opaque App Session With Client-Supplied `device_fingerprint`
+### D4 — App Identity: Opaque App Session With Client-Supplied `client_fingerprint`
 
-- Android first-install generates a long-lived device key in Android Keystore. `device_fingerprint = sha256(public_key_raw)` is cached locally.
-- Login request body: `{ username, password, device_fingerprint }`.
+- Android first-install generates a long-lived device key in Android Keystore. `client_fingerprint = sha256(public_key_raw)` is cached locally.
+- Login request body: `{ username, password, client_fingerprint }`.
 - Relay validates credentials and returns the existing opaque app access/refresh tokens.
-- Relay persists `(account_id, app_session_id, device_fingerprint)` server-side.
-- Token refresh requires the same `device_fingerprint`; mismatch is rejected.
+- Relay persists `(account_id, app_session_id, client_fingerprint)` server-side.
+- Token refresh requires the same `client_fingerprint`; mismatch is rejected.
 - Phase 1 does **not** require a cryptographic proof that the app-session holder owns the device private key. Daemon-side security relies on pairing-pinned device keys, not app-session token format.
 
 **Phase-2 TODO**
@@ -147,7 +147,7 @@ device. If `quiche` packaging blocks, fall back to `kwik` per
 - daemon identity persistence (`connectivity_identity.json` in the daemon state directory, mode 0600).
 - invitation persistence (`~/.tunnel/invitations.json`).
 - SAS computation with golden vectors checked in (≥ 3 cases) before any pairing UI is built.
-- `tunnel daemon pair` reserves Relay correlation and prints a signed JSON invitation; QR rendering is deferred.
+- `tunnel daemon pair` reserves Relay correlation and prints a terminal QR code; `--json` prints the signed invitation payload.
 - Test client (Go-only, no Android required) completes a full pair end-to-end through Relay.
 - `tunnel run` daemon auto-start path works from cold.
 - Local broker socket: `tunnel run` registers, pushes preview, daemon caches latest preview.
@@ -156,11 +156,11 @@ device. If `quiche` packaging blocks, fall back to `kwik` per
 
 ### 1.2 — Relay Control Plane + Fallback Transport
 
-- Relay WSS for app + daemon, app-session auth with `device_fingerprint`.
-- `daemon_register`, `app_register`, `daemon_snapshot`, presence churn.
-- `pair_response_submit` / `pair_response_forward`.
+- Relay WSS for app + daemon, app-session auth with `client_fingerprint`.
+- `computer_register`, `app_register`, `computer_snapshot`, presence churn.
+- REST `POST /api/pairing/responses` / daemon `pair_response_forward`.
 - Fallback WSS-QUIC tunnel (no direct path yet).
-- Go mobile-simulator client connects via fallback only, runs the Android-facing
+- Go mobile-simulator client connects via fallback only, runs the client-facing
   session list, preview, interactive request, input, and reconnect flow.
 - Android companion implementation validates the same contract in Step 6 once
   the production Android repository is in scope.

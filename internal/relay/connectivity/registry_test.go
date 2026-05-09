@@ -67,8 +67,8 @@ func TestRegistryBuildsVisibilityFromDaemonTrustedRoster(t *testing.T) {
 		t.Fatalf("frames = %#v, want daemon upsert", appPeer.frames)
 	}
 	frame, ok := appPeer.frames[0].(protocol.ConnectivityFrame)
-	if !ok || frame.Type != "paired_device_visible" || frame.Daemon.DeviceID != "dev-1" {
-		t.Fatalf("frame = %#v, want paired_device_visible dev-1", appPeer.frames[0])
+	if !ok || frame.Type != "computer_visible" || frame.Daemon.DeviceID != "dev-1" {
+		t.Fatalf("frame = %#v, want computer_visible dev-1", appPeer.frames[0])
 	}
 }
 
@@ -166,8 +166,8 @@ func TestRegistryDisconnectAndRevokeNotifyMatchingApps(t *testing.T) {
 		t.Fatalf("frames after revoke = %#v, want revoke frame", appPeer.frames)
 	}
 	revoke := appPeer.frames[0].(protocol.ConnectivityFrame)
-	if revoke.Type != "paired_device_revoked" {
-		t.Fatalf("revoke frame type = %q, want paired_device_revoked", revoke.Type)
+	if revoke.Type != "client_revoked" {
+		t.Fatalf("revoke frame type = %q, want client_revoked", revoke.Type)
 	}
 	appPeer.frames = nil
 
@@ -258,6 +258,31 @@ func TestRegistryRejectsPairingResponseFromDisconnectedAppPeer(t *testing.T) {
 	}
 }
 
+func TestRegistryRejectsRESTPairingResponseFromRevokedAppOwner(t *testing.T) {
+	registry := NewRegistry()
+	daemonPeer := &recordingPeer{}
+	appOwner := AppOwner{UserID: 1, AppSessionID: "appsess-1", DeviceFingerprint: "android-a", SessionCreatedAt: time.Unix(10, 0)}
+	daemonOwner := DaemonOwner{UserID: 1, AgentTokenID: "agt-1"}
+	registry.RegisterDaemon(daemonOwner, protocol.ConnectivityDaemonInfo{
+		DeviceID:          "dev-1",
+		DaemonFingerprint: "daemon-a",
+	}, nil, daemonPeer)
+	if !registry.ReservePairing("dev-1", daemonOwner, daemonPeer, "corr-1", time.Minute) {
+		t.Fatal("ReservePairing returned false")
+	}
+	registry.DisconnectAppSession("appsess-1")
+
+	err := registry.ForwardPairingResponseFromApp(appOwner, nil, "corr-1", protocol.ConnectivityPairingResponse{
+		CorrelationID: "corr-1",
+	})
+	if !errors.Is(err, ErrPairingCorrelationNotFound) {
+		t.Fatalf("ForwardPairingResponseFromApp err = %v, want ErrPairingCorrelationNotFound", err)
+	}
+	if len(daemonPeer.frames) != 0 {
+		t.Fatalf("daemon frames = %#v, want no forwarding after REST owner revocation", daemonPeer.frames)
+	}
+}
+
 func TestRegistryKeepsPairingCorrelationsIsolatedByUser(t *testing.T) {
 	registry := NewRegistry()
 	daemonPeer := &recordingPeer{}
@@ -311,8 +336,8 @@ func TestRegistryCompletePairingMakesDaemonVisibleToApp(t *testing.T) {
 		t.Fatalf("frames = %#v, want visibility update", appPeer.frames)
 	}
 	frame := appPeer.frames[0].(protocol.ConnectivityFrame)
-	if frame.Type != "paired_device_visible" || frame.Daemon.DeviceID != "dev-1" {
-		t.Fatalf("frame = %#v, want paired_device_visible dev-1", frame)
+	if frame.Type != "computer_visible" || frame.Daemon.DeviceID != "dev-1" {
+		t.Fatalf("frame = %#v, want computer_visible dev-1", frame)
 	}
 }
 
@@ -339,7 +364,7 @@ func TestRegistryForwardsRendezvousHintsForVisibleDaemon(t *testing.T) {
 		t.Fatalf("daemon frames = %#v, want rendezvous hint", daemonPeer.frames)
 	}
 	daemonFrame := daemonPeer.frames[0].(protocol.ConnectivityFrame)
-	if daemonFrame.Type != "rendezvous_hint" || daemonFrame.Actor != TunnelActorAndroid || daemonFrame.AttemptID != "attempt-1" || daemonFrame.PublicUDPAddr != "203.0.113.1:5000" {
+	if daemonFrame.Type != "rendezvous_hint" || daemonFrame.Actor != TunnelActorClient || daemonFrame.AttemptID != "attempt-1" || daemonFrame.PublicUDPAddr != "203.0.113.1:5000" {
 		t.Fatalf("daemon frame = %#v, want app rendezvous_hint", daemonFrame)
 	}
 	if daemonFrame.ExpiresAt != now.Add(time.Minute).Unix() {
@@ -745,7 +770,7 @@ func TestRegistryIssuesAndRedeemsRelayTunnelTokensForVisibleDaemon(t *testing.T)
 	if err != nil {
 		t.Fatalf("RequestRelayTunnel returned error: %v", err)
 	}
-	if appFrame.Type != "relay_tunnel_ready" || appFrame.Actor != TunnelActorAndroid || appFrame.AttemptID != "attempt-1" || appFrame.TunnelToken == "" || appFrame.FallbackReason != "direct_timeout" || appFrame.DirectSetupLatencyMS != 3000 || appFrame.RelaySetupLatencyMS != 120 {
+	if appFrame.Type != "relay_tunnel_ready" || appFrame.Actor != TunnelActorClient || appFrame.AttemptID != "attempt-1" || appFrame.TunnelToken == "" || appFrame.FallbackReason != "direct_timeout" || appFrame.DirectSetupLatencyMS != 3000 || appFrame.RelaySetupLatencyMS != 120 {
 		t.Fatalf("app frame = %#v, want android relay_tunnel_ready", appFrame)
 	}
 	if len(daemonPeer.frames) != 1 {
@@ -763,7 +788,7 @@ func TestRegistryIssuesAndRedeemsRelayTunnelTokensForVisibleDaemon(t *testing.T)
 	if err != nil {
 		t.Fatalf("RedeemRelayTunnelToken app returned error: %v", err)
 	}
-	if appRedemption.Actor != TunnelActorAndroid || appRedemption.AttemptID != "attempt-1" || appRedemption.TunnelKey == "" || appRedemption.DeviceFingerprint != "android-a" {
+	if appRedemption.Actor != TunnelActorClient || appRedemption.AttemptID != "attempt-1" || appRedemption.TunnelKey == "" || appRedemption.DeviceFingerprint != "android-a" {
 		t.Fatalf("app redemption = %#v, want android attempt redemption", appRedemption)
 	}
 	daemonRedemption, err := registry.RedeemRelayTunnelToken(daemonFrame.TunnelToken)

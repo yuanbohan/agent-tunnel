@@ -256,7 +256,7 @@ The control stream MUST follow this fixed ordering after the QUIC connection bec
 3. the daemon may send advisory `path_state` immediately after `session_index`
 4. only after `session_index` may the daemon emit `session_upsert`, `session_gone`, `preview_snapshot`, `interactive_granted`, or `interactive_denied`
 
-Android MUST NOT process daemon session or preview frames until `session_index` has been received and applied. `path_state` is advisory and must not be inserted before `session_index` in protocol version 1.
+Clients MUST NOT process computer session or preview frames until `session_index` has been received and applied. `path_state` is advisory and must not be inserted before `session_index` in protocol version 2.
 
 Phase-1 frame families:
 
@@ -285,7 +285,7 @@ Recommended fields:
 
 - `protocol_version`
 - `actor_type`
-- `device_fingerprint`
+- `client_fingerprint`
 - `path_kind`
 
 ### `session_index`
@@ -411,11 +411,11 @@ Recommended `reason` enum values:
 - `daemon_busy`
 - `unknown`
 
-Android MUST be tolerant of unknown `reason` values.
+Clients MUST be tolerant of unknown `reason` values.
 
 ### `interactive_release`
 
-Sent by Android when leaving the interactive view or when the app intentionally releases ownership.
+Sent by the client when leaving the interactive view or when the app intentionally releases ownership.
 
 ### `input_text`, `input_key`, `resize`
 
@@ -460,13 +460,13 @@ Receivers MUST be tolerant of unknown `code` values.
 
 ## Protocol Versioning
 
-`hello` carries `protocol_version` as a single integer. Phase 1 is `protocol_version = 1`.
+`hello` carries `protocol_version` as a single integer. The current session transport is `protocol_version = 2`.
 
 Negotiation rules:
 
 - if the peer's `protocol_version` is the same, proceed normally
 - if it differs, the connection is closed with `protocol_version_mismatch`
-- there is no in-band negotiation or downgrade in phase 1
+- there is no in-band negotiation or downgrade in this revision
 
 ## Transport State
 

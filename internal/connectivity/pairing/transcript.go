@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const Version = 1
+const Version = 2
 
 var (
 	ErrInvalidVersion      = errors.New("invalid pairing version")

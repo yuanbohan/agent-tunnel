@@ -28,17 +28,17 @@ func TestConnectivityDaemonWebSocketURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connectivityDaemonWebSocketURL returned error: %v", err)
 	}
-	if got != "wss://relay.example.com/base/connectivity/daemon/ws" {
-		t.Fatalf("url = %q, want connectivity daemon websocket URL", got)
+	if got != "wss://relay.example.com/base/connectivity/computer/ws" {
+		t.Fatalf("url = %q, want connectivity computer websocket URL", got)
 	}
 }
 
 func TestConnectivityTunnelWebSocketURL(t *testing.T) {
-	got, err := connectivityTunnelWebSocketURL("https://relay.example.com/base/", "tok+123")
+	got, err := connectivityTunnelWebSocketURL("https://relay.example.com/base/?token=old")
 	if err != nil {
 		t.Fatalf("connectivityTunnelWebSocketURL returned error: %v", err)
 	}
-	if got != "wss://relay.example.com/base/connectivity/tunnel/ws?token=tok%2B123" {
+	if got != "wss://relay.example.com/base/connectivity/tunnel/ws" {
 		t.Fatalf("url = %q, want connectivity tunnel websocket URL", got)
 	}
 }
@@ -70,7 +70,7 @@ func TestConnectivityConnectorRegisterFrameIncludesTrustedRoster(t *testing.T) {
 	if err != nil {
 		t.Fatalf("registerFrame returned error: %v", err)
 	}
-	if frame.Type != "daemon_register" || frame.Daemon.DeviceID != "dev-1" {
+	if frame.Type != "computer_register" || frame.Daemon.DeviceID != "dev-1" {
 		t.Fatalf("frame = %#v, want daemon register dev-1", frame)
 	}
 	if frame.Daemon.DaemonFingerprint != identity.Fingerprint {
@@ -142,9 +142,9 @@ func TestConnectivityConnectorStoresForwardedPairingResponsePendingConfirmation(
 	if err != nil {
 		t.Fatalf("CreatePairInvitation returned error: %v", err)
 	}
-	android, err := pairtest.NewAndroidClient("Pixel")
+	android, err := pairtest.NewClient("Pixel")
 	if err != nil {
-		t.Fatalf("NewAndroidClient returned error: %v", err)
+		t.Fatalf("NewClient returned error: %v", err)
 	}
 	response, sas, err := android.PairingResponse(connectivityTestInvitation(invitation), "1")
 	if err != nil {
@@ -265,9 +265,9 @@ func TestConnectivityConnectorHandlesRendezvousHintWithDirectCandidate(t *testin
 	if err != nil {
 		t.Fatalf("ReadOrCreateConnectivityIdentity returned error: %v", err)
 	}
-	android, err := pairtest.NewAndroidClient("Pixel")
+	android, err := pairtest.NewClient("Pixel")
 	if err != nil {
-		t.Fatalf("NewAndroidClient returned error: %v", err)
+		t.Fatalf("NewClient returned error: %v", err)
 	}
 	if err := UpsertTrustedAndroidDevice(paths, TrustedAndroidDevice{
 		Fingerprint: android.Fingerprint,
@@ -288,7 +288,7 @@ func TestConnectivityConnectorHandlesRendezvousHintWithDirectCandidate(t *testin
 	var outbound protocol.ConnectivityFrame
 	err = connector.handleRendezvousHint(ctx, protocol.ConnectivityFrame{
 		Type:               "rendezvous_hint",
-		Actor:              "android",
+		Actor:              "client",
 		RequestID:          "request-1",
 		AttemptID:          "attempt-1",
 		DaemonID:           "dev-1",
@@ -321,9 +321,9 @@ func TestConnectivityConnectorUnregistersFailedDirectAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadOrCreateConnectivityIdentity returned error: %v", err)
 	}
-	android, err := pairtest.NewAndroidClient("Pixel")
+	android, err := pairtest.NewClient("Pixel")
 	if err != nil {
-		t.Fatalf("NewAndroidClient returned error: %v", err)
+		t.Fatalf("NewClient returned error: %v", err)
 	}
 	if err := UpsertTrustedAndroidDevice(paths, TrustedAndroidDevice{
 		Fingerprint: android.Fingerprint,
@@ -341,7 +341,7 @@ func TestConnectivityConnectorUnregistersFailedDirectAttempt(t *testing.T) {
 
 	err = connector.handleRendezvousHint(context.Background(), protocol.ConnectivityFrame{
 		Type:               "rendezvous_hint",
-		Actor:              "android",
+		Actor:              "client",
 		RequestID:          "request-1",
 		AttemptID:          "attempt-1",
 		DaemonID:           "dev-1",
@@ -364,9 +364,9 @@ func TestConnectivityConnectorHandlesRendezvousHintDirectSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadOrCreateConnectivityIdentity returned error: %v", err)
 	}
-	android, err := pairtest.NewAndroidClient("Pixel")
+	android, err := pairtest.NewClient("Pixel")
 	if err != nil {
-		t.Fatalf("NewAndroidClient returned error: %v", err)
+		t.Fatalf("NewClient returned error: %v", err)
 	}
 	if err := UpsertTrustedAndroidDevice(paths, TrustedAndroidDevice{
 		Fingerprint: android.Fingerprint,
@@ -390,7 +390,7 @@ func TestConnectivityConnectorHandlesRendezvousHintDirectSuccess(t *testing.T) {
 	go func() {
 		errCh <- connector.handleRendezvousHint(ctx, protocol.ConnectivityFrame{
 			Type:               "rendezvous_hint",
-			Actor:              "android",
+			Actor:              "client",
 			RequestID:          "request-1",
 			AttemptID:          "attempt-1",
 			DaemonID:           "dev-1",
@@ -441,7 +441,7 @@ func TestConnectivityConnectorHandlesRendezvousHintDirectSuccess(t *testing.T) {
 	if err := writeTestJSONFrame(control, frame.TypeHello, sessionproto.Hello{
 		ProtocolVersion:   sessionproto.ProtocolVersion,
 		ActorType:         sessionproto.ActorMobile,
-		DeviceFingerprint: android.Fingerprint,
+		ClientFingerprint: android.Fingerprint,
 		PathKind:          sessionproto.PathDirect,
 	}); err != nil {
 		t.Fatalf("write hello returned error: %v", err)

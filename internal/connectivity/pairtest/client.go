@@ -8,23 +8,23 @@ import (
 	"yuanbohan/tunnel/internal/connectivity/pairing"
 )
 
-type AndroidClient struct {
+type Client struct {
 	PrivateKey  ed25519.PrivateKey
 	PublicKey   ed25519.PublicKey
 	Fingerprint string
 	DisplayName string
 }
 
-func NewAndroidClient(displayName string) (AndroidClient, error) {
+func NewClient(displayName string) (Client, error) {
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		return AndroidClient{}, err
+		return Client{}, err
 	}
 	fingerprint, err := pairing.PublicKeyFingerprintHex(publicKey)
 	if err != nil {
-		return AndroidClient{}, err
+		return Client{}, err
 	}
-	return AndroidClient{
+	return Client{
 		PrivateKey:  privateKey,
 		PublicKey:   publicKey,
 		Fingerprint: fingerprint,
@@ -32,7 +32,7 @@ func NewAndroidClient(displayName string) (AndroidClient, error) {
 	}, nil
 }
 
-func (c AndroidClient) PairingResponse(invitation pairing.Invitation, accountID string) (pairing.AndroidResponse, string, error) {
+func (c Client) PairingResponse(invitation pairing.Invitation, accountID string) (pairing.AndroidResponse, string, error) {
 	response, err := pairing.SignAndroidResponse(pairing.AndroidResponse{
 		Version:            pairing.Version,
 		AccountID:          accountID,

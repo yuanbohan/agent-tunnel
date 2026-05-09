@@ -26,8 +26,8 @@ var (
 )
 
 const (
-	TunnelActorAndroid = "android"
-	TunnelActorDaemon  = "daemon"
+	TunnelActorClient = "client"
+	TunnelActorDaemon = "daemon"
 
 	RelayTunnelRequestLimit               = 10
 	RelayTunnelRequestWindow              = time.Minute
@@ -410,6 +410,10 @@ func (r *Registry) ForwardPairingResponseFromApp(owner AppOwner, peer AppPeer, c
 func (r *Registry) forwardPairingResponse(userID int64, appPeer AppPeer, owner AppOwner, correlationID string, response protocol.ConnectivityPairingResponse) error {
 	correlationID = strings.TrimSpace(correlationID)
 	r.mu.Lock()
+	if owner.AppSessionID != "" && r.appOwnerRevokedLocked(owner) {
+		r.mu.Unlock()
+		return ErrPairingCorrelationNotFound
+	}
 	if appPeer != nil && !r.appPeerActiveLocked(owner, appPeer) {
 		r.mu.Unlock()
 		return ErrPairingCorrelationNotFound
@@ -600,7 +604,7 @@ func (r *Registry) OpenRendezvousFromApp(owner AppOwner, peer AppPeer, daemonID,
 	}
 	r.rendezvous[attemptKey] = attempt
 	daemonPeer := live.peer
-	daemonFrame := protocol.ConnectivityRendezvousHintFrame(requestID, attemptID, TunnelActorAndroid, live.info.DeviceID, owner.DeviceFingerprint, publicUDPAddr, privateUDPAddrs, expiresAt.Unix())
+	daemonFrame := protocol.ConnectivityRendezvousHintFrame(requestID, attemptID, TunnelActorClient, live.info.DeviceID, owner.DeviceFingerprint, publicUDPAddr, privateUDPAddrs, expiresAt.Unix())
 	r.mu.Unlock()
 
 	sendRendezvousCloseNotifications(notifications)
@@ -882,11 +886,11 @@ func (r *Registry) requestRelayTunnel(owner AppOwner, appPeer AppPeer, daemonID,
 		closers:           make(map[int64]func()),
 	}
 	r.attempts[tunnelKey] = attempt
-	r.tokens[appToken] = tunnelToken{attemptID: tunnelKey, actor: TunnelActorAndroid}
+	r.tokens[appToken] = tunnelToken{attemptID: tunnelKey, actor: TunnelActorClient}
 	r.tokens[daemonToken] = tunnelToken{attemptID: tunnelKey, actor: TunnelActorDaemon}
 	daemonPeer := live.peer
 	daemonFrame := protocol.ConnectivityRelayTunnelReadyFrameWithDiagnostics(requestID, attemptID, TunnelActorDaemon, live.info.DeviceID, owner.DeviceFingerprint, daemonToken, attempt.fallbackReason, attempt.directLatencyMS, attempt.relayLatencyMS)
-	appFrame := protocol.ConnectivityRelayTunnelReadyFrameWithDiagnostics(requestID, attemptID, TunnelActorAndroid, live.info.DeviceID, owner.DeviceFingerprint, appToken, attempt.fallbackReason, attempt.directLatencyMS, attempt.relayLatencyMS)
+	appFrame := protocol.ConnectivityRelayTunnelReadyFrameWithDiagnostics(requestID, attemptID, TunnelActorClient, live.info.DeviceID, owner.DeviceFingerprint, appToken, attempt.fallbackReason, attempt.directLatencyMS, attempt.relayLatencyMS)
 	r.mu.Unlock()
 
 	sendRendezvousCloseNotifications(rendezvousNotifications)
@@ -933,7 +937,7 @@ func (r *Registry) RedeemRelayTunnelToken(token string) (TunnelRedemption, error
 		return TunnelRedemption{}, ErrRelayTunnelTokenInvalid
 	}
 	switch stored.actor {
-	case TunnelActorAndroid:
+	case TunnelActorClient:
 		if attempt.appRedeemed {
 			r.mu.Unlock()
 			closeTunnelClosers(sweepClosers)
@@ -1122,7 +1126,7 @@ func (r *Registry) removeRendezvousLocked(match func(*rendezvousAttempt) bool) [
 					frame: protocol.ConnectivityRendezvousCloseFrame(
 						"",
 						attempt.id,
-						TunnelActorAndroid,
+						TunnelActorClient,
 						attempt.daemonDeviceID,
 						attempt.appOwner.DeviceFingerprint,
 					),

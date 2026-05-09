@@ -17,6 +17,8 @@ const (
 	brokerFrameRegisterSession = "register_session"
 	brokerFrameSessionUpdate   = "session_update"
 	brokerFramePreviewUpdate   = "preview_update"
+	brokerFrameSnapshotUpdate  = "snapshot_update"
+	brokerFrameOutputBytes     = "output_bytes"
 	brokerFrameSessionGone     = "session_gone"
 	brokerFrameInputText       = "input_text"
 	brokerFrameInputKey        = "input_key"
@@ -26,9 +28,11 @@ const (
 type BrokerEventType string
 
 const (
-	BrokerEventSessionUpsert BrokerEventType = "session_upsert"
-	BrokerEventSessionGone   BrokerEventType = "session_gone"
-	BrokerEventPreview       BrokerEventType = "preview"
+	BrokerEventSessionUpsert  BrokerEventType = "session_upsert"
+	BrokerEventSessionGone    BrokerEventType = "session_gone"
+	BrokerEventPreview        BrokerEventType = "preview"
+	BrokerEventOutput         BrokerEventType = "output"
+	BrokerEventOutputOverflow BrokerEventType = "output_overflow"
 )
 
 var brokerRegistrationTimeout = 5 * time.Second
@@ -57,39 +61,70 @@ type BrokerSession struct {
 
 type BrokerSessionSnapshot struct {
 	BrokerSession
-	LatestPreview string `json:"latest_preview"`
+	LatestPreview  string `json:"latest_preview"`
+	LatestSnapshot []byte `json:"latest_snapshot,omitempty"`
+	SnapshotCols   int    `json:"snapshot_cols,omitempty"`
+	SnapshotRows   int    `json:"snapshot_rows,omitempty"`
 }
 
 type BrokerEvent struct {
 	Type      BrokerEventType
 	Session   BrokerSessionSnapshot
 	SessionID string
+	Output    []byte
 }
 
 type BrokerFrame struct {
-	Type      string         `json:"type"`
-	SessionID string         `json:"session_id,omitempty"`
-	Session   *BrokerSession `json:"session,omitempty"`
-	Preview   string         `json:"preview,omitempty"`
-	UpdatedAt int            `json:"updated_at,omitempty"`
-	Text      string         `json:"text,omitempty"`
-	Submit    bool           `json:"submit,omitempty"`
-	Key       string         `json:"key,omitempty"`
-	Cols      int            `json:"cols,omitempty"`
-	Rows      int            `json:"rows,omitempty"`
+	Type         string         `json:"type"`
+	SessionID    string         `json:"session_id,omitempty"`
+	Session      *BrokerSession `json:"session,omitempty"`
+	Preview      string         `json:"preview,omitempty"`
+	Output       []byte         `json:"output,omitempty"`
+	Snapshot     []byte         `json:"snapshot,omitempty"`
+	SnapshotCols int            `json:"snapshot_cols,omitempty"`
+	SnapshotRows int            `json:"snapshot_rows,omitempty"`
+	UpdatedAt    int            `json:"updated_at,omitempty"`
+	Text         string         `json:"text,omitempty"`
+	Submit       bool           `json:"submit,omitempty"`
+	Key          string         `json:"key,omitempty"`
+	Cols         int            `json:"cols,omitempty"`
+	Rows         int            `json:"rows,omitempty"`
+}
+
+func (b *Broker) output(sessionID string, output []byte, owner *brokerConnection) {
+	if b == nil || owner == nil || len(output) == 0 {
+		return
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+	b.mu.RLock()
+	state, ok := b.sessions[sessionID]
+	if !ok || state.owner != owner {
+		b.mu.RUnlock()
+		return
+	}
+	b.mu.RUnlock()
+	payload := make([]byte, len(output))
+	copy(payload, output)
+	b.emit(BrokerEvent{Type: BrokerEventOutput, SessionID: sessionID, Output: payload})
 }
 
 type Broker struct {
 	mu                sync.RWMutex
 	sessions          map[string]brokerSessionState
 	interactiveOwners map[string]any
-	subscribers       map[chan BrokerEvent]struct{}
+	subscribers       map[*brokerSubscriber]struct{}
 }
 
 type brokerSessionState struct {
-	session       BrokerSession
-	latestPreview string
-	owner         *brokerConnection
+	session        BrokerSession
+	latestPreview  string
+	latestSnapshot []byte
+	snapshotCols   int
+	snapshotRows   int
+	owner          *brokerConnection
 }
 
 type brokerConnection struct {
@@ -97,11 +132,17 @@ type brokerConnection struct {
 	writeMu sync.Mutex
 }
 
+type brokerSubscriber struct {
+	ch   chan BrokerEvent
+	done chan struct{}
+	once sync.Once
+}
+
 func NewBroker() *Broker {
 	return &Broker{
 		sessions:          make(map[string]brokerSessionState),
 		interactiveOwners: make(map[string]any),
-		subscribers:       make(map[chan BrokerEvent]struct{}),
+		subscribers:       make(map[*brokerSubscriber]struct{}),
 	}
 }
 
@@ -113,9 +154,23 @@ func (b *Broker) Snapshot() []BrokerSessionSnapshot {
 	defer b.mu.RUnlock()
 	out := make([]BrokerSessionSnapshot, 0, len(b.sessions))
 	for _, state := range b.sessions {
-		out = append(out, brokerSessionSnapshot(state))
+		out = append(out, brokerSessionMetadataSnapshot(state))
 	}
 	return out
+}
+
+func (b *Broker) SnapshotBySession(sessionID string) (BrokerSessionSnapshot, bool) {
+	sessionID = strings.TrimSpace(sessionID)
+	if b == nil || sessionID == "" {
+		return BrokerSessionSnapshot{}, false
+	}
+	b.mu.RLock()
+	state, ok := b.sessions[sessionID]
+	b.mu.RUnlock()
+	if !ok {
+		return BrokerSessionSnapshot{}, false
+	}
+	return brokerSessionSnapshot(state), true
 }
 
 func (b *Broker) HasSession(sessionID string) bool {
@@ -130,41 +185,71 @@ func (b *Broker) HasSession(sessionID string) bool {
 }
 
 func (b *Broker) Subscribe() (<-chan BrokerEvent, func()) {
-	ch := make(chan BrokerEvent, 32)
+	sub := &brokerSubscriber{ch: make(chan BrokerEvent, 32), done: make(chan struct{})}
 	if b == nil {
-		close(ch)
-		return ch, func() {}
+		close(sub.ch)
+		return sub.ch, func() {}
 	}
 	b.mu.Lock()
-	b.subscribers[ch] = struct{}{}
+	b.subscribers[sub] = struct{}{}
 	b.mu.Unlock()
 	cancel := func() {
+		sub.once.Do(func() {
+			close(sub.done)
+		})
 		b.mu.Lock()
-		delete(b.subscribers, ch)
+		delete(b.subscribers, sub)
 		b.mu.Unlock()
 	}
-	return ch, cancel
+	return sub.ch, cancel
 }
 
 func (b *Broker) SnapshotAndSubscribe() ([]BrokerSessionSnapshot, <-chan BrokerEvent, func()) {
-	ch := make(chan BrokerEvent, 32)
+	sub := &brokerSubscriber{ch: make(chan BrokerEvent, 32), done: make(chan struct{})}
 	if b == nil {
-		close(ch)
-		return nil, ch, func() {}
+		close(sub.ch)
+		return nil, sub.ch, func() {}
 	}
 	b.mu.Lock()
 	out := make([]BrokerSessionSnapshot, 0, len(b.sessions))
 	for _, state := range b.sessions {
 		out = append(out, brokerSessionSnapshot(state))
 	}
-	b.subscribers[ch] = struct{}{}
+	b.subscribers[sub] = struct{}{}
 	b.mu.Unlock()
 	cancel := func() {
+		sub.once.Do(func() {
+			close(sub.done)
+		})
 		b.mu.Lock()
-		delete(b.subscribers, ch)
+		delete(b.subscribers, sub)
 		b.mu.Unlock()
 	}
-	return out, ch, cancel
+	return out, sub.ch, cancel
+}
+
+func (b *Broker) SnapshotMetadataAndSubscribe() ([]BrokerSessionSnapshot, <-chan BrokerEvent, func()) {
+	sub := &brokerSubscriber{ch: make(chan BrokerEvent, 32), done: make(chan struct{})}
+	if b == nil {
+		close(sub.ch)
+		return nil, sub.ch, func() {}
+	}
+	b.mu.Lock()
+	out := make([]BrokerSessionSnapshot, 0, len(b.sessions))
+	for _, state := range b.sessions {
+		out = append(out, brokerSessionMetadataSnapshot(state))
+	}
+	b.subscribers[sub] = struct{}{}
+	b.mu.Unlock()
+	cancel := func() {
+		sub.once.Do(func() {
+			close(sub.done)
+		})
+		b.mu.Lock()
+		delete(b.subscribers, sub)
+		b.mu.Unlock()
+	}
+	return out, sub.ch, cancel
 }
 
 func (b *Broker) register(session BrokerSession, owner *brokerConnection) {
@@ -185,7 +270,7 @@ func (b *Broker) register(session BrokerSession, owner *brokerConnection) {
 	state.session = session
 	state.owner = owner
 	b.sessions[session.SessionID] = state
-	snapshot := brokerSessionSnapshot(state)
+	snapshot := brokerSessionMetadataSnapshot(state)
 	b.mu.Unlock()
 	b.emit(BrokerEvent{Type: BrokerEventSessionUpsert, Session: snapshot, SessionID: session.SessionID})
 
@@ -210,7 +295,7 @@ func (b *Broker) updateSession(session BrokerSession, owner *brokerConnection) {
 	}
 	state.session = session
 	b.sessions[session.SessionID] = state
-	snapshot := brokerSessionSnapshot(state)
+	snapshot := brokerSessionMetadataSnapshot(state)
 	b.mu.Unlock()
 	b.emit(BrokerEvent{Type: BrokerEventSessionUpsert, Session: snapshot, SessionID: session.SessionID})
 }
@@ -234,9 +319,40 @@ func (b *Broker) updatePreview(sessionID, preview string, updatedAt int, owner *
 	}
 	state.latestPreview = tunnelsession.NormalizePreviewText(preview, tunnelsession.DefaultPreviewMaxChars)
 	b.sessions[sessionID] = state
-	snapshot := brokerSessionSnapshot(state)
+	snapshot := brokerSessionMetadataSnapshot(state)
 	b.mu.Unlock()
 	b.emit(BrokerEvent{Type: BrokerEventPreview, Session: snapshot, SessionID: sessionID})
+}
+
+func (b *Broker) updateSnapshot(sessionID string, snapshot []byte, cols, rows int, owner *brokerConnection) {
+	if b == nil || owner == nil {
+		return
+	}
+	if cols <= 0 || rows <= 0 {
+		return
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+	b.mu.Lock()
+	state, ok := b.sessions[sessionID]
+	if !ok || state.owner != owner {
+		b.mu.Unlock()
+		return
+	}
+	state.latestSnapshot = append([]byte(nil), snapshot...)
+	state.snapshotCols = cols
+	state.snapshotRows = rows
+	b.sessions[sessionID] = state
+	b.mu.Unlock()
+}
+
+func (b *Broker) updateSnapshotIfPresent(sessionID string, snapshot []byte, cols, rows int, owner *brokerConnection) {
+	if len(snapshot) == 0 || cols <= 0 || rows <= 0 {
+		return
+	}
+	b.updateSnapshot(sessionID, snapshot, cols, rows, owner)
 }
 
 func (b *Broker) remove(sessionID string, owner *brokerConnection) {
@@ -365,19 +481,64 @@ func (b *Broker) emit(event BrokerEvent) {
 		return
 	}
 	b.mu.RLock()
-	defer b.mu.RUnlock()
-	for ch := range b.subscribers {
-		select {
-		case ch <- event:
-		default:
-		}
+	subscribers := make([]*brokerSubscriber, 0, len(b.subscribers))
+	for sub := range b.subscribers {
+		subscribers = append(subscribers, sub)
+	}
+	b.mu.RUnlock()
+	for _, sub := range subscribers {
+		sub.enqueue(event)
+	}
+}
+
+func (sub *brokerSubscriber) enqueue(event BrokerEvent) {
+	if sub == nil {
+		return
+	}
+	select {
+	case <-sub.done:
+		return
+	case sub.ch <- event:
+		return
+	default:
+	}
+
+	if event.Type == BrokerEventPreview {
+		return
+	}
+	if event.Type == BrokerEventOutput {
+		event = BrokerEvent{Type: BrokerEventOutputOverflow, SessionID: event.SessionID}
+	}
+
+	select {
+	case <-sub.done:
+		return
+	case <-sub.ch:
+	default:
+	}
+	select {
+	case <-sub.done:
+	case sub.ch <- event:
+	default:
 	}
 }
 
 func brokerSessionSnapshot(state brokerSessionState) BrokerSessionSnapshot {
 	return BrokerSessionSnapshot{
+		BrokerSession:  state.session,
+		LatestPreview:  state.latestPreview,
+		LatestSnapshot: append([]byte(nil), state.latestSnapshot...),
+		SnapshotCols:   state.snapshotCols,
+		SnapshotRows:   state.snapshotRows,
+	}
+}
+
+func brokerSessionMetadataSnapshot(state brokerSessionState) BrokerSessionSnapshot {
+	return BrokerSessionSnapshot{
 		BrokerSession: state.session,
 		LatestPreview: state.latestPreview,
+		SnapshotCols:  state.snapshotCols,
+		SnapshotRows:  state.snapshotRows,
 	}
 }
 
@@ -521,6 +682,10 @@ func (s *BrokerServer) serveConn(conn net.Conn) {
 			s.broker.updateSession(*frame.Session, owner)
 		case brokerFramePreviewUpdate:
 			s.broker.updatePreview(frame.SessionID, frame.Preview, frame.UpdatedAt, owner)
+		case brokerFrameSnapshotUpdate:
+			s.broker.updateSnapshot(frame.SessionID, frame.Snapshot, frame.SnapshotCols, frame.SnapshotRows, owner)
+		case brokerFrameOutputBytes:
+			s.broker.output(frame.SessionID, frame.Output, owner)
 		case brokerFrameSessionGone:
 			sessionID := strings.TrimSpace(frame.SessionID)
 			if sessionID == "" {

@@ -18,6 +18,7 @@ import (
 	"yuanbohan/tunnel/internal/connectivity/frame"
 	"yuanbohan/tunnel/internal/connectivity/identity"
 	"yuanbohan/tunnel/internal/connectivity/interop"
+	"yuanbohan/tunnel/internal/connectivity/sessionproto"
 	"yuanbohan/tunnel/internal/connectivity/transport"
 )
 
@@ -315,15 +316,15 @@ func writeJSONFrameWithUnknown(w io.Writer, typ byte, payload any) error {
 func probeScript(pathKind string) interop.ProbeScript {
 	return interop.ProbeScript{
 		MobileHello: interop.Hello{
-			ProtocolVersion:   1,
+			ProtocolVersion:   sessionproto.ProtocolVersion,
 			ActorType:         interop.ActorMobile,
-			DeviceFingerprint: "android-fingerprint-go-simulator",
+			ClientFingerprint: "android-fingerprint-go-simulator",
 			PathKind:          pathKind,
 		},
 		DaemonHello: interop.Hello{
-			ProtocolVersion:   1,
+			ProtocolVersion:   sessionproto.ProtocolVersion,
 			ActorType:         interop.ActorDaemon,
-			DeviceFingerprint: "daemon-fingerprint-go-simulator",
+			ClientFingerprint: "daemon-fingerprint-go-simulator",
 			PathKind:          pathKind,
 		},
 		SessionIndex: interop.SessionIndex{Sessions: []interop.SessionMetadata{

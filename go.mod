@@ -9,7 +9,9 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/jackc/pgx/v5 v5.9.1
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51
+	github.com/makiuchi-d/gozxing v0.1.1
 	github.com/quic-go/quic-go v0.59.0
+	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.9
 	golang.org/x/crypto v0.50.0
@@ -46,5 +48,6 @@ require (
 	golang.org/x/net v0.52.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
+	golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1 // indirect
 	google.golang.org/protobuf v1.36.9 // indirect
 )

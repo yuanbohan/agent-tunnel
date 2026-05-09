@@ -9,11 +9,13 @@ type RegisterRequest struct {
 type LoginRequest struct {
 	Username          string `json:"username"`
 	Password          string `json:"password"`
+	ClientFingerprint string `json:"client_fingerprint,omitempty"`
 	DeviceFingerprint string `json:"device_fingerprint,omitempty"`
 }
 
 type RefreshRequest struct {
 	RefreshToken      string `json:"refresh_token"`
+	ClientFingerprint string `json:"client_fingerprint,omitempty"`
 	DeviceFingerprint string `json:"device_fingerprint,omitempty"`
 }
 

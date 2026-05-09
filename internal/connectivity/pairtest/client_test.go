@@ -9,7 +9,7 @@ import (
 	"yuanbohan/tunnel/internal/connectivity/pairing"
 )
 
-func TestAndroidClientSignsPairingResponse(t *testing.T) {
+func TestClientSignsPairingResponse(t *testing.T) {
 	daemonPub, daemonPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("GenerateKey returned error: %v", err)
@@ -33,9 +33,9 @@ func TestAndroidClientSignsPairingResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SignInvitation returned error: %v", err)
 	}
-	client, err := NewAndroidClient("Pixel")
+	client, err := NewClient("Pixel")
 	if err != nil {
-		t.Fatalf("NewAndroidClient returned error: %v", err)
+		t.Fatalf("NewClient returned error: %v", err)
 	}
 
 	response, sas, err := client.PairingResponse(invitation, "acct-1")

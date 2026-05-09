@@ -7,13 +7,13 @@ const (
 	PathDirect = "direct"
 	PathRelay  = "relay"
 
-	ProtocolVersion = 1
+	ProtocolVersion = 2
 )
 
 type Hello struct {
 	ProtocolVersion   int    `json:"protocol_version"`
 	ActorType         string `json:"actor_type"`
-	DeviceFingerprint string `json:"device_fingerprint"`
+	ClientFingerprint string `json:"client_fingerprint"`
 	PathKind          string `json:"path_kind"`
 }
 

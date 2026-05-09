@@ -35,13 +35,13 @@ func TestConnectivityPairingCoreFlow(t *testing.T) {
 		t.Fatalf("register returned error: %v", err)
 	}
 
-	android, err := pairtest.NewAndroidClient("Pixel E2E")
+	android, err := pairtest.NewClient("Pixel E2E")
 	if err != nil {
-		t.Fatalf("NewAndroidClient returned error: %v", err)
+		t.Fatalf("NewClient returned error: %v", err)
 	}
-	issued, err := client.LoginWithDeviceFingerprint(username, password, android.Fingerprint)
+	issued, err := client.LoginWithClientFingerprint(username, password, android.Fingerprint)
 	if err != nil {
-		t.Fatalf("LoginWithDeviceFingerprint returned error: %v", err)
+		t.Fatalf("LoginWithClientFingerprint returned error: %v", err)
 	}
 
 	policy, err := client.AccountPolicy(issued.AccessToken)
@@ -71,7 +71,7 @@ func TestConnectivityPairingCoreFlow(t *testing.T) {
 		t.Fatalf("ReadOrCreateConnectivityIdentity returned error: %v", err)
 	}
 
-	daemonConn := dialE2EConnectivityWS(t, h.baseURL, "/connectivity/daemon/ws", createdToken.Token)
+	daemonConn := dialE2EConnectivityWS(t, h.baseURL, "/connectivity/computer/ws", createdToken.Token)
 	defer daemonConn.Close()
 	if err := daemonConn.WriteJSON(protocol.ConnectivityDaemonRegisterFrame(protocol.ConnectivityDaemonInfo{
 		DeviceID:          "dev-connectivity-e2e",
@@ -106,35 +106,31 @@ func TestConnectivityPairingCoreFlow(t *testing.T) {
 		t.Fatalf("CreatePairInvitation returned error: %v", err)
 	}
 
-	appConn := dialE2EConnectivityWS(t, h.baseURL, "/api/connectivity/app/ws", issued.AccessToken)
+	appConn := dialE2EConnectivityWS(t, h.baseURL, "/api/connectivity/ws", issued.AccessToken)
 	defer appConn.Close()
 	if err := appConn.WriteJSON(protocol.ConnectivityAppRegisterFrame()); err != nil {
 		t.Fatalf("app register WriteJSON returned error: %v", err)
 	}
 	snapshot := readE2EConnectivityFrame(t, appConn)
-	assertConnectivityFrameType(t, snapshot, "daemon_snapshot")
+	assertConnectivityFrameType(t, snapshot, "computer_snapshot")
 	if len(snapshot.Daemons) != 0 {
-		t.Fatalf("snapshot = %#v, want no visible daemons before pairing", snapshot)
+		t.Fatalf("snapshot = %#v, want no visible computers before pairing", snapshot)
 	}
 
 	response, sas, err := android.PairingResponse(connectivityE2EInvitation(invitation), reserved.AccountID)
 	if err != nil {
 		t.Fatalf("PairingResponse returned error: %v", err)
 	}
-	if err := appConn.WriteJSON(protocol.ConnectivityFrame{
-		Type:      "pair_response_submit",
-		RequestID: "submit-connectivity-e2e",
-		PairingResponse: &protocol.ConnectivityPairingResponse{
-			AccountID:          response.AccountID,
-			InvitationID:       response.InvitationID,
-			CorrelationID:      response.CorrelationID,
-			AndroidPublicKey:   response.AndroidPublicKey,
-			AndroidFingerprint: strings.ToUpper(response.AndroidFingerprint),
-			AndroidDisplayName: response.AndroidDisplayName,
-			Signature:          response.Signature,
-		},
+	if err := client.SubmitPairingResponse(issued.AccessToken, protocol.ConnectivityPairingResponse{
+		AccountID:          response.AccountID,
+		InvitationID:       response.InvitationID,
+		CorrelationID:      response.CorrelationID,
+		AndroidPublicKey:   response.AndroidPublicKey,
+		AndroidFingerprint: strings.ToUpper(response.AndroidFingerprint),
+		AndroidDisplayName: response.AndroidDisplayName,
+		Signature:          response.Signature,
 	}); err != nil {
-		t.Fatalf("pair_response_submit WriteJSON returned error: %v", err)
+		t.Fatalf("SubmitPairingResponse returned error: %v", err)
 	}
 
 	forwarded := readE2EConnectivityFrame(t, daemonConn)
@@ -167,7 +163,7 @@ func TestConnectivityPairingCoreFlow(t *testing.T) {
 	}
 
 	visible := readE2EConnectivityFrame(t, appConn)
-	assertConnectivityFrameType(t, visible, "paired_device_visible")
+	assertConnectivityFrameType(t, visible, "computer_visible")
 	if visible.Daemon == nil || visible.Daemon.DeviceID != "dev-connectivity-e2e" {
 		t.Fatalf("visible = %#v, want paired daemon", visible)
 	}
@@ -177,13 +173,13 @@ func TestConnectivityPairingCoreFlow(t *testing.T) {
 		t.Fatalf("RevokeTrustedAndroidDevice returned error: %v", err)
 	}
 	if err := daemonConn.WriteJSON(protocol.ConnectivityFrame{
-		Type:               "paired_device_revoked",
+		Type:               "client_revoked",
 		AndroidFingerprint: revoked.Fingerprint,
 	}); err != nil {
-		t.Fatalf("paired_device_revoked WriteJSON returned error: %v", err)
+		t.Fatalf("client_revoked WriteJSON returned error: %v", err)
 	}
 	revokedFrame := readE2EConnectivityFrame(t, appConn)
-	assertConnectivityFrameType(t, revokedFrame, "paired_device_revoked")
+	assertConnectivityFrameType(t, revokedFrame, "client_revoked")
 	if revokedFrame.Daemon == nil || revokedFrame.Daemon.DeviceID != "dev-connectivity-e2e" {
 		t.Fatalf("revoked frame = %#v, want paired daemon revoke", revokedFrame)
 	}
@@ -235,7 +231,7 @@ func assertConnectivityFrameType(t *testing.T, frame protocol.ConnectivityFrame,
 		t.Fatalf("frame type = %q frame=%#v, want %q", frame.Type, frame, want)
 	}
 	switch frame.Type {
-	case "daemon_snapshot", "pair_invitation_reserved", "pair_response_forward", "paired_device_visible", "paired_device_revoked":
+	case "computer_snapshot", "pair_invitation_reserved", "pair_response_forward", "computer_visible", "client_revoked":
 	default:
 		t.Fatalf("unexpected Step 2 connectivity frame type %q", frame.Type)
 	}

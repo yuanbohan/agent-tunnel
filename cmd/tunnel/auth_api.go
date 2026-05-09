@@ -66,7 +66,7 @@ func (api *relayAuthAPI) listSessions(ctx context.Context, token string) ([]prot
 
 func (api *relayAuthAPI) stopSession(ctx context.Context, token, sessionID string) (handlertypes.StopSessionResponse, error) {
 	var out handlertypes.StopSessionResponse
-	err := api.doJSON(ctx, http.MethodPost, "/api/sessions/"+urlPathEscape(sessionID)+"/stop", token, nil, http.StatusOK, &out)
+	err := api.doJSON(ctx, http.MethodDelete, "/api/sessions/"+urlPathEscape(sessionID), token, nil, http.StatusOK, &out)
 	return out, err
 }
 

@@ -25,6 +25,28 @@ func ListDevices(registry *device.Registry) gin.HandlerFunc {
 	}
 }
 
+func ListComputers(registry *device.Registry) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if registry == nil {
+			WriteJSONError(c.Writer, http.StatusServiceUnavailable, "service_unavailable")
+			return
+		}
+		app := middleware.AuthenticatedApp(c)
+		devices := registry.ListForUser(app.User.ID)
+		computers := make([]types.ComputerInfo, 0, len(devices))
+		for _, device := range devices {
+			computers = append(computers, types.ComputerInfo{
+				ComputerID:     device.DeviceID,
+				DisplayName:    device.DisplayName,
+				PlatformFamily: device.PlatformFamily,
+				PlatformID:     device.PlatformID,
+				LaunchHealth:   device.LaunchHealth,
+			})
+		}
+		WriteJSON(c.Writer, http.StatusOK, computers)
+	}
+}
+
 func LaunchDevice(registry *device.Registry) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if registry == nil {
@@ -47,7 +69,7 @@ func LaunchDevice(registry *device.Registry) gin.HandlerFunc {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), deviceLaunchTimeout)
 		defer cancel()
 
-		result := registry.Launch(ctx, c.Param("deviceID"), app.User.ID, command, cwd, strings.TrimSpace(request.Label))
+		result := registry.Launch(ctx, pathParam(c, "deviceID", "computerID"), app.User.ID, command, cwd, strings.TrimSpace(request.Label))
 		WriteJSON(c.Writer, http.StatusOK, types.DeviceLaunchResponse{
 			RequestID: result.RequestID,
 			Status:    result.Status,
@@ -55,4 +77,14 @@ func LaunchDevice(registry *device.Registry) gin.HandlerFunc {
 			Reason:    result.Reason,
 		})
 	}
+}
+
+func pathParam(c *gin.Context, keys ...string) string {
+	for _, key := range keys {
+		value := strings.TrimSpace(c.Param(key))
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }

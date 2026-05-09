@@ -53,17 +53,25 @@ func (c *AppClient) Register(inviteCode, username, password string) (RegisterRes
 }
 
 func (c *AppClient) Login(username, password string) (handlertypes.AppSessionResponse, error) {
-	return c.LoginWithDeviceFingerprint(username, password, "")
+	return c.LoginWithClientFingerprint(username, password, "")
 }
 
 func (c *AppClient) LoginWithDeviceFingerprint(username, password, deviceFingerprint string) (handlertypes.AppSessionResponse, error) {
+	return c.loginWithFingerprint(username, password, "device_fingerprint", deviceFingerprint)
+}
+
+func (c *AppClient) LoginWithClientFingerprint(username, password, clientFingerprint string) (handlertypes.AppSessionResponse, error) {
+	return c.loginWithFingerprint(username, password, "client_fingerprint", clientFingerprint)
+}
+
+func (c *AppClient) loginWithFingerprint(username, password, key, fingerprint string) (handlertypes.AppSessionResponse, error) {
 	var out handlertypes.AppSessionResponse
 	req := map[string]string{
 		"username": username,
 		"password": password,
 	}
-	if strings.TrimSpace(deviceFingerprint) != "" {
-		req["device_fingerprint"] = deviceFingerprint
+	if strings.TrimSpace(fingerprint) != "" {
+		req[key] = fingerprint
 	}
 	err := c.doJSON(http.MethodPost, "/api/auth/login", "", req, http.StatusOK, &out)
 	return out, err
@@ -93,6 +101,17 @@ func (c *AppClient) CreateAgentToken(accessToken, name string) (handlertypes.Cre
 		"name": name,
 	}, http.StatusCreated, &out)
 	return out, err
+}
+
+func (c *AppClient) SubmitPairingResponse(accessToken string, response protocol.ConnectivityPairingResponse) error {
+	var out map[string]string
+	if err := c.doJSON(http.MethodPost, "/api/pairing/responses", accessToken, response, http.StatusOK, &out); err != nil {
+		return err
+	}
+	if out["status"] != "forwarded" {
+		return fmt.Errorf("POST /api/pairing/responses returned status %q, want forwarded", out["status"])
+	}
+	return nil
 }
 
 func (c *AppClient) ListSessions(accessToken string) ([]protocol.SessionInfo, error) {

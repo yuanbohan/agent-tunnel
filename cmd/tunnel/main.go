@@ -20,6 +20,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	qrcode "github.com/skip2/go-qrcode"
 	"golang.org/x/term"
 
 	"yuanbohan/tunnel/internal/protocol"
@@ -884,7 +885,7 @@ func runDaemonSessions(ctx context.Context, stdout, stderr io.Writer) error {
 	return w.Flush()
 }
 
-func runDaemonPair(ctx context.Context, stdout, stderr io.Writer) error {
+func runDaemonPair(ctx context.Context, stdout, stderr io.Writer, jsonOutput bool) error {
 	if err := ensureDaemonPlatformSupported(); err != nil {
 		return err
 	}
@@ -896,13 +897,46 @@ func runDaemonPair(ctx context.Context, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	payload, err := json.MarshalIndent(invitation, "", "  ")
+	if jsonOutput {
+		return writeIndentedJSON(stdout, invitation)
+	}
+	payload, err := json.Marshal(invitation)
 	if err != nil {
 		return err
 	}
-	_, _ = io.WriteString(stdout, string(payload))
-	_, _ = io.WriteString(stdout, "\n")
+	qr, err := renderQRCode(string(payload))
+	if err != nil {
+		return err
+	}
+	_, _ = io.WriteString(stdout, "scan this QR in the mobile app to pair\n")
+	_, _ = io.WriteString(stdout, qr)
+	_, _ = fmt.Fprintf(stdout, "invitation_id: %s\n", invitation.InvitationID)
+	_, _ = fmt.Fprintf(stdout, "expires_at: %d\n", invitation.ExpiresAt)
+	_, _ = io.WriteString(stdout, "use `tunnel daemon pair --json` for machine-readable output\n")
 	return nil
+}
+
+func renderQRCode(payload string) (string, error) {
+	code, err := qrcode.New(payload, qrcode.Medium)
+	if err != nil {
+		return "", err
+	}
+	bitmap := code.Bitmap()
+	if len(bitmap) == 0 {
+		return "", errors.New("qr bitmap is empty")
+	}
+	var out strings.Builder
+	for _, row := range bitmap {
+		for _, dark := range row {
+			if dark {
+				out.WriteString("██")
+				continue
+			}
+			out.WriteString("  ")
+		}
+		out.WriteByte('\n')
+	}
+	return out.String(), nil
 }
 
 func runDaemonPairPending(ctx context.Context, stdout, stderr io.Writer, jsonOutput bool) error {

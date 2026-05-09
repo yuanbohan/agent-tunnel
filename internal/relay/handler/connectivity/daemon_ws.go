@@ -25,6 +25,7 @@ func Daemon(registry *relayconnectivity.Registry, agentTokens *relayauth.AgentTo
 			return
 		}
 		defer conn.Close()
+		peer := newWSPeer(conn)
 		conn.SetReadLimit(1 << 20)
 		_ = conn.SetReadDeadline(time.Now().Add(config.RelayAgentReadTimeout()))
 		conn.SetPongHandler(func(string) error {
@@ -35,15 +36,14 @@ func Daemon(registry *relayconnectivity.Registry, agentTokens *relayauth.AgentTo
 		if _, err := handlerws.ReadJSON(conn, &register); err != nil {
 			return
 		}
-		if register.Type != "daemon_register" || register.ProtocolVersion != protocol.ConnectivityProtocolVersion || register.Daemon == nil {
-			_ = conn.WriteJSON(protocol.ConnectivityErrorFrame(register.RequestID, "invalid_register"))
+		if !isComputerRegisterFrame(register.Type) || register.ProtocolVersion != protocol.ConnectivityProtocolVersion || register.Daemon == nil {
+			_ = peer.SendJSON(protocol.ConnectivityErrorFrame(register.RequestID, "invalid_register"))
 			return
 		}
 		if strings.TrimSpace(register.Daemon.DeviceID) == "" || strings.TrimSpace(register.Daemon.DaemonFingerprint) == "" {
-			_ = conn.WriteJSON(protocol.ConnectivityErrorFrame(register.RequestID, "invalid_register"))
+			_ = peer.SendJSON(protocol.ConnectivityErrorFrame(register.RequestID, "invalid_register"))
 			return
 		}
-		peer := newWSPeer(conn)
 		owner := relayconnectivity.DaemonOwner{
 			UserID:       authenticated.User.ID,
 			AgentTokenID: authenticated.Token.ID,
@@ -67,15 +67,15 @@ func Daemon(registry *relayconnectivity.Registry, agentTokens *relayauth.AgentTo
 				return
 			}
 			switch frame.Type {
-			case "paired_device_revoked":
+			case "client_revoked":
 				if frame.AndroidFingerprint == "" {
-					_ = peer.SendJSON(protocol.ConnectivityErrorFrame(frame.RequestID, "invalid_device_fingerprint"))
+					_ = peer.SendJSON(protocol.ConnectivityErrorFrame(frame.RequestID, "invalid_client_fingerprint"))
 					continue
 				}
 				registry.RevokeTrustedAndroid(register.Daemon.DeviceID, peer, frame.AndroidFingerprint)
 			case "pair_completed":
 				if frame.AndroidFingerprint == "" {
-					_ = peer.SendJSON(protocol.ConnectivityErrorFrame(frame.RequestID, "invalid_device_fingerprint"))
+					_ = peer.SendJSON(protocol.ConnectivityErrorFrame(frame.RequestID, "invalid_client_fingerprint"))
 					continue
 				}
 				registry.CompletePairing(register.Daemon.DeviceID, peer, protocol.ConnectivityTrustedAndroid{
@@ -112,6 +112,10 @@ func Daemon(registry *relayconnectivity.Registry, agentTokens *relayauth.AgentTo
 			}
 		}
 	}
+}
+
+func isComputerRegisterFrame(frameType string) bool {
+	return frameType == "computer_register" || frameType == "daemon_register"
 }
 
 func agentAuthStillValid(c *gin.Context, agentTokens *relayauth.AgentTokenService, authenticated relayauth.AuthenticatedAgentToken) bool {

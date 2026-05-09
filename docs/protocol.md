@@ -28,17 +28,18 @@ All protocol timestamps are Unix timestamps represented as JSON integers in seco
 | Endpoint | Role | Auth | Kind | Purpose |
 |----------|------|------|------|---------|
 | `GET /healthz` | Health probe | None | HTTP | Health check for relay reachability through direct access or the public nginx front door |
-| `GET /api/devices` | Client | Bearer | HTTP | Current live device snapshot for the authenticated user |
-| `POST /api/devices/:deviceID/launch` | Client | Bearer | HTTP | Ask one currently online device daemon to launch `tunnel run <command>` and wait for the resulting session to become `session_ready` |
+| `GET /api/computers` | Client | Bearer | HTTP | Current live computer snapshot for the authenticated user |
+| `POST /api/computers/:computerID/sessions` | Client | Bearer | HTTP | Ask one currently online device daemon to launch `tunnel run <command>` and wait for the resulting session to become `session_ready` |
 | `GET /api/account/policy` | Client | Bearer | HTTP | Current account tier used by official app clients for trusted-computer limits |
-| `GET /api/connectivity/app/ws` | Client | Bearer | WebSocket | Fingerprint-bound app connectivity control plane for daemon visibility, pairing response forwarding, and fallback tunnel setup |
+| `GET /api/connectivity/ws` | Client | Bearer | WebSocket | Fingerprint-bound app connectivity control plane for daemon visibility, direct rendezvous, and fallback tunnel setup |
 | `GET /api/sessions` | Client | Bearer | HTTP | Current live session snapshot for the authenticated user |
-| `POST /api/sessions/:id/stop` | Client | Bearer | HTTP | Ask the owning online agent to stop one live session |
+| `DELETE /api/sessions/:id` | Client | Bearer | HTTP | Ask the owning online agent to stop one live session |
+| `POST /api/pairing/responses` | Client | Bearer | HTTP | Submit one signed pairing response correlated to a reserved pairing invitation |
 | `GET /api/sessions/:id/attach/ws` | Client | Bearer | WebSocket | Attach to one live session owned by the authenticated user for snapshot, live bytes, resize events, and session-scoped structured input |
 | `GET /agent/ws` | Agent | Bearer | WebSocket | Agent registration, attach control, resize metadata, structured input forwarding, and client-routed terminal byte delivery |
 | `GET /device/ws` | Device daemon | Bearer | WebSocket | Device registration plus launch request/result routing for one online machine |
-| `GET /connectivity/daemon/ws` | Device daemon | Bearer | WebSocket | Daemon connectivity control plane for trusted roster registration, pairing invitation correlation, revocation, and fallback tunnel readiness |
-| `GET /connectivity/tunnel/ws?token=...` | App and device daemon | Tunnel token | WebSocket | Opaque binary packet tunnel used by Relay fallback QUIC transport |
+| `GET /connectivity/computer/ws` | Device daemon | Bearer | WebSocket | Daemon connectivity control plane for trusted roster registration, pairing invitation correlation, revocation, and fallback tunnel readiness |
+| `GET /connectivity/tunnel/ws` | App and device daemon | Bearer tunnel token | WebSocket | Opaque binary packet tunnel used by Relay fallback QUIC transport |
 
 Removed from the product contract:
 
@@ -101,7 +102,7 @@ Notes:
 - clients should treat missing, empty, or unknown `launch_source` values as `local`
 - every returned session currently has an owning agent websocket and is attachable
 
-`GET /api/devices` returns the standard API envelope whose `body` is an array of `DeviceInfo` objects:
+`GET /api/computers` returns the standard API envelope whose `body` is an array of `ComputerInfo` objects:
 
 ```json
 {
@@ -109,7 +110,7 @@ Notes:
   "message": "success",
   "body": [
     {
-      "device_id": "dev_abcd1234",
+      "computer_id": "dev_abcd1234",
       "display_name": "Yuanbo's MacBook Pro",
       "platform_family": "macos",
       "platform_id": "macos",
@@ -470,7 +471,7 @@ Notes:
 
 - `register` must be the first agent control frame on the websocket
 - the relay treats that websocket as the owner of the live session
-- `launch_context` is optional; it is present only when this session was created from `POST /api/devices/:deviceID/launch`
+- `launch_context` is optional; it is present only when this session was created from `POST /api/computers/:computerID/sessions`
 - `launch_context.source` describes the launch source claimed by the registering `tunnel run`; currently the only non-local value is `mobile`
 - `launch_context.request_id` is the relay-issued launch correlation id, not user-visible source metadata
 - the relay stores `session.device_id` from the registration payload without launch-request validation; agents send an empty string when local daemon identity is unavailable
@@ -609,7 +610,7 @@ Notes:
 
 Notes:
 
-- the relay sends this to the owning `/agent/ws` connection after `POST /api/sessions/:id/stop` is accepted
+- the relay sends this to the owning `/agent/ws` connection after `DELETE /api/sessions/:id` is accepted
 - the agent should stop the local `tunnel run` session and exit
 - the relay removes the session from discovery and closes active attaches with `session_stopped`
 
@@ -689,13 +690,14 @@ This keeps terminal behavior close to the PTY owner and avoids embedding termina
 ## Client Notes
 
 - clients should use `GET /api/sessions` to discover currently online sessions
-- clients should use `GET /api/sessions/:id/attach/ws` as the foreground receive and input channel for one session
+- legacy attach clients should use `GET /api/sessions/:id/attach/ws` as the foreground receive and input channel for one session
+- mobile connectivity clients should use the connectivity session transport after direct or fallback tunnel setup, with pairing responses submitted through `POST /api/pairing/responses`
 - clients should create a fresh terminal emulator state when opening a fresh attach
 - clients should size the terminal emulator on `attached` before feeding binary bytes
 - clients should treat `snapshot_done` as the boundary after which binary bytes are live PTY output
 - clients should interpret any `snapshot_done.submit_anchors[].line` only after applying the preceding snapshot bytes
 - clients should interpret any live `submit_anchor.line` against the terminal buffer state current when that control is received, then reconcile from the next fresh snapshot after reconnect
-- the Android client expects a `baseUrl` with an explicit scheme such as `http://...`
+- app clients expect a `baseUrl` with an explicit scheme such as `http://...`
 - clients may validate relay availability with `GET /api/sessions` or fallback `GET /healthz`
 
 ## Invariants

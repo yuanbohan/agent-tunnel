@@ -216,8 +216,8 @@ Commands:
   close       Close one open daemon tmux workspace view
   sessions    List daemon tmux sessions
   pair        Create or confirm pairing invitations
-  devices     List paired Android devices
-  revoke      Revoke a paired Android device
+  devices     List paired client devices
+  revoke      Revoke a paired client device
 
 Flags:
   -h, --help       Show this help message and exit
@@ -234,7 +234,7 @@ Examples:
   tunnel daemon open
   tunnel daemon close
   tunnel daemon sessions
-  tunnel daemon pair
+  tunnel daemon pair [--json]
   tunnel daemon pair pending [--json]
   tunnel daemon pair confirm <invitation-id> <sas> [--json]
   tunnel daemon devices [--json]
