@@ -1503,8 +1503,8 @@ func TestRunDaemonPairPrintsQRCodeAndSummary(t *testing.T) {
 	if !strings.Contains(got, "invitation_id: pair_123") {
 		t.Fatalf("stdout = %q, want invitation id summary", got)
 	}
-	if !strings.Contains(got, "██") {
-		t.Fatalf("stdout = %q, want rendered QR blocks", got)
+	if !strings.Contains(got, qrDarkBackground) || !strings.Contains(got, qrLightBackground) {
+		t.Fatalf("stdout = %q, want rendered QR background colors", got)
 	}
 }
 
@@ -1562,7 +1562,8 @@ func terminalQRCodeImage(t *testing.T, rendered string, scale int) image.Image {
 	if len(lines) == 0 {
 		t.Fatal("rendered QR has no rows")
 	}
-	modules := len([]rune(lines[0])) / 2
+	firstRow := terminalQRCodeModules(t, lines[0], 0)
+	modules := len(firstRow)
 	img := image.NewGray(image.Rect(0, 0, modules*scale, len(lines)*scale))
 	for y := 0; y < img.Rect.Dy(); y++ {
 		for x := 0; x < img.Rect.Dx(); x++ {
@@ -1570,12 +1571,14 @@ func terminalQRCodeImage(t *testing.T, rendered string, scale int) image.Image {
 		}
 	}
 	for row, line := range lines {
-		runes := []rune(line)
-		if len(runes) != modules*2 {
-			t.Fatalf("line %d width = %d, want %d", row, len(runes), modules*2)
+		rowModules := firstRow
+		if row != 0 {
+			rowModules = terminalQRCodeModules(t, line, row)
 		}
-		for col := 0; col < modules; col++ {
-			dark := runes[col*2] == '█' && runes[col*2+1] == '█'
+		if len(rowModules) != modules {
+			t.Fatalf("line %d width = %d, want %d", row, len(rowModules), modules)
+		}
+		for col, dark := range rowModules {
 			if !dark {
 				continue
 			}
@@ -1587,6 +1590,31 @@ func terminalQRCodeImage(t *testing.T, rendered string, scale int) image.Image {
 		}
 	}
 	return img
+}
+
+func terminalQRCodeModules(t *testing.T, line string, row int) []bool {
+	t.Helper()
+	var modules []bool
+	dark := false
+	for i := 0; i < len(line); {
+		switch {
+		case strings.HasPrefix(line[i:], qrDarkBackground):
+			dark = true
+			i += len(qrDarkBackground)
+		case strings.HasPrefix(line[i:], qrLightBackground):
+			dark = false
+			i += len(qrLightBackground)
+		case strings.HasPrefix(line[i:], qrBackgroundReset):
+			dark = false
+			i += len(qrBackgroundReset)
+		case strings.HasPrefix(line[i:], "  "):
+			modules = append(modules, dark)
+			i += 2
+		default:
+			t.Fatalf("line %d has unexpected QR token at byte %d: %q", row, i, line[i:])
+		}
+	}
+	return modules
 }
 
 func TestRunDaemonPairPendingPrintsPendingResponses(t *testing.T) {

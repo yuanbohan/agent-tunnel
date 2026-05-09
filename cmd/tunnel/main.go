@@ -39,6 +39,12 @@ const (
 	startupBannerReset = "\x1b[0m"
 )
 
+const (
+	qrDarkBackground  = "\x1b[40m"
+	qrLightBackground = "\x1b[47m"
+	qrBackgroundReset = "\x1b[0m"
+)
+
 const startupBannerClear = "\r\x1b[2K"
 
 type relayConnector interface {
@@ -927,12 +933,20 @@ func renderQRCode(payload string) (string, error) {
 	}
 	var out strings.Builder
 	for _, row := range bitmap {
+		currentBackground := ""
 		for _, dark := range row {
+			background := qrLightBackground
 			if dark {
-				out.WriteString("██")
-				continue
+				background = qrDarkBackground
+			}
+			if background != currentBackground {
+				out.WriteString(background)
+				currentBackground = background
 			}
 			out.WriteString("  ")
+		}
+		if currentBackground != "" {
+			out.WriteString(qrBackgroundReset)
 		}
 		out.WriteByte('\n')
 	}
