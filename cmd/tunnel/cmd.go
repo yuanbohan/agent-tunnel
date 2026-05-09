@@ -425,6 +425,7 @@ func newDaemonCmd() *cobra.Command {
 			return runDaemonSessions(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	})
+	var pairJSON bool
 	pairCmd := &cobra.Command{
 		Use:           "pair",
 		Short:         "Create a pairing invitation",
@@ -432,11 +433,15 @@ func newDaemonCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runDaemonJSONCommand(cmd.OutOrStdout(), func() error {
-				return runDaemonPair(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr())
-			})
+			if pairJSON {
+				return runDaemonJSONCommand(cmd.OutOrStdout(), func() error {
+					return runDaemonPair(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), true)
+				})
+			}
+			return runDaemonPair(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), false)
 		},
 	}
+	pairCmd.Flags().BoolVar(&pairJSON, "json", false, "print pairing invitation as JSON")
 	var pairPendingJSON bool
 	pairPendingCmd := &cobra.Command{
 		Use:           "pending",
@@ -477,7 +482,7 @@ func newDaemonCmd() *cobra.Command {
 	var devicesJSON bool
 	devicesCmd := &cobra.Command{
 		Use:           "devices",
-		Short:         "List paired Android devices",
+		Short:         "List trusted client devices",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -490,7 +495,7 @@ func newDaemonCmd() *cobra.Command {
 			return runDaemonDevices(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), devicesJSON)
 		},
 	}
-	devicesCmd.Flags().BoolVar(&devicesJSON, "json", false, "print paired Android devices as JSON")
+	devicesCmd.Flags().BoolVar(&devicesJSON, "json", false, "print trusted client devices as JSON")
 	cmd.AddCommand(devicesCmd)
 	brokerCmd := &cobra.Command{
 		Use:           "broker",
@@ -524,7 +529,7 @@ func newDaemonCmd() *cobra.Command {
 	var revokeJSON bool
 	revokeCmd := &cobra.Command{
 		Use:           "revoke <fingerprint>",
-		Short:         "Revoke a paired Android device",
+		Short:         "Revoke a trusted client device",
 		Args:          cobra.ExactArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,

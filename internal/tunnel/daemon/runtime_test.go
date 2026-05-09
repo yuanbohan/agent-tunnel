@@ -196,7 +196,7 @@ func TestSendConnectivityEventBlockingWaitsForConsumer(t *testing.T) {
 	}()
 
 	frame := protocol.ConnectivityFrame{
-		Type:               "paired_device_revoked",
+		Type:               "client_revoked",
 		AndroidFingerprint: "android-a",
 	}
 	if !state.sendConnectivityEventBlocking(context.Background(), frame) {

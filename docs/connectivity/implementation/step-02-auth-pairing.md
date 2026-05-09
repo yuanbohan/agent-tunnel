@@ -53,7 +53,7 @@ traffic.
 
 ## Implementation Summary
 
-- App auth remains opaque bearer-token based. `POST /api/auth/login` and `POST /api/auth/refresh` now accept optional `device_fingerprint`; refresh rejects mismatches for fingerprint-bound sessions.
+- App auth remains opaque bearer-token based. `POST /api/auth/login` and `POST /api/auth/refresh` now accept optional `client_fingerprint`; refresh rejects mismatches for fingerprint-bound sessions.
 - Users now have `subscription_tier` (`free`/`pro`) with `GET /api/account/policy`, local-only `POST /operator/users/tier`, and `relay user tier <username> <free|pro>`.
 - Daemon state now includes a separate Ed25519 connectivity identity, signed pairing invitations, persisted invitation state, pending pairing responses, trusted Android roster, `tunnel daemon pair`, `tunnel daemon pair pending`, `tunnel daemon pair confirm <invitation-id> <sas>`, `tunnel daemon devices`, and `tunnel daemon revoke <fingerprint>`.
 - Pairing transcript helpers sign and verify daemon invitations and Android responses and compute the documented SAS.

@@ -114,6 +114,58 @@ func TestBrokerCancelSubscribeDoesNotRaceEmitWithClosedChannel(t *testing.T) {
 	}
 }
 
+func TestBrokerSlowSubscriberDoesNotBlockFanout(t *testing.T) {
+	broker := NewBroker()
+	owner := &brokerConnection{}
+	broker.register(BrokerSession{SessionID: "sess-1", CWD: "/repo", CommandPreview: "codex", StartedAt: 10}, owner)
+	events, cancel := broker.Subscribe()
+	defer cancel()
+
+	for i := 0; i < cap(events); i++ {
+		broker.output("sess-1", []byte("x"), owner)
+	}
+
+	done := make(chan struct{}, 1)
+	go func() {
+		broker.remove("sess-1", owner)
+		done <- struct{}{}
+	}()
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("broker.remove blocked behind a full subscriber channel")
+	}
+
+	for i := 0; i < cap(events); i++ {
+		event := readBrokerEvent(t, events)
+		if event.Type == BrokerEventSessionGone && event.SessionID == "sess-1" {
+			return
+		}
+	}
+	t.Fatal("full subscriber channel did not receive session_gone after dropping an older event")
+}
+
+func TestBrokerOutputOverflowSignalsInteractiveStreamLoss(t *testing.T) {
+	broker := NewBroker()
+	owner := &brokerConnection{}
+	broker.register(BrokerSession{SessionID: "sess-1", CWD: "/repo", CommandPreview: "codex", StartedAt: 10}, owner)
+	events, cancel := broker.Subscribe()
+	defer cancel()
+
+	for i := 0; i < cap(events); i++ {
+		broker.updatePreview("sess-1", "preview", 11, owner)
+	}
+	broker.output("sess-1", []byte("live bytes"), owner)
+
+	for i := 0; i < cap(events); i++ {
+		event := readBrokerEvent(t, events)
+		if event.Type == BrokerEventOutputOverflow && event.SessionID == "sess-1" {
+			return
+		}
+	}
+	t.Fatal("full subscriber channel did not receive output_overflow after dropping an older event")
+}
+
 func TestBrokerRoutesRemoteCommandsToSessionOwner(t *testing.T) {
 	broker := NewBroker()
 	clientConn, serverConn := net.Pipe()

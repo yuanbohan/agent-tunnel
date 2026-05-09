@@ -25,17 +25,20 @@ The connectivity edge also needs a STUN service, but STUN itself is infrastructu
 
 ## Endpoint Shape
 
-The target architecture keeps two authenticated realtime WebSockets:
+The target architecture keeps two primary authenticated realtime WebSockets:
 
-- app-side realtime WebSocket: `GET /api/connectivity/app/ws`
-- daemon-side realtime WebSocket: `GET /connectivity/daemon/ws`
+- app-side realtime WebSocket: `GET /api/connectivity/ws`
+- computer-side realtime WebSocket: `GET /connectivity/computer/ws`
 
 They share one envelope style but do not necessarily receive the same startup snapshots.
 
 Separately, Relay exposes:
 
-- fallback relay endpoint: `GET /connectivity/tunnel/ws?token=<single-use-token>`
+- app-side pairing response submission: `POST /api/pairing/responses`
+- fallback relay endpoint: `GET /connectivity/tunnel/ws` with `Authorization: Bearer <single-use-token>`
 - authenticated app APIs that expose the current account tier
+
+Compatibility aliases remain available in this revision: `GET /api/connectivity/app/ws` for app realtime and `GET /connectivity/daemon/ws` for computer realtime.
 
 ## App Authentication Model
 
@@ -43,21 +46,21 @@ Phase 1 uses the existing Relay-issued opaque app access token for app APIs and 
 
 ### Device Fingerprint Binding
 
-The Android app generates a long-lived device key on first authenticated setup (in Android Keystore where available). The fingerprint is:
+The client app generates a long-lived device key on first authenticated setup, using platform secure storage such as Android Keystore or iOS Keychain/Secure Enclave where available. The fingerprint is:
 
 ```
-device_fingerprint = sha256(public_key_raw_bytes)   // 32 bytes, hex-encoded for transport
+client_fingerprint = sha256(public_key_raw_bytes)   // 32 bytes, hex-encoded for transport
 ```
 
 Login flow:
 
-1. Android sends `POST /api/auth/login` with body `{ username, password, device_fingerprint }`.
-2. Relay validates credentials and persists `(account_id, app_session_id, device_fingerprint)` server-side.
+1. The client sends `POST /api/auth/login` with body `{ username, password, client_fingerprint }`.
+2. Relay validates credentials and persists `(account_id, app_session_id, client_fingerprint)` server-side.
 3. Relay returns opaque access and refresh tokens.
 
-Token refresh requires the same `device_fingerprint`; mismatch is rejected as an invalid app session.
+Token refresh requires the same `client_fingerprint`; mismatch is rejected as an invalid app session.
 
-Relay uses the authenticated account plus the server-side app-session `device_fingerprint` as the app-side identity for:
+Relay uses the authenticated account plus the server-side app-session `client_fingerprint` as the app-side identity for:
 
 - pairing-derived daemon visibility
 - pairing response routing
@@ -80,26 +83,26 @@ Implemented Step 2 realtime messages use a compact JSON envelope with `type`, op
 After authentication succeeds:
 
 1. app sends `app_register`
-2. Relay sends `daemon_snapshot`
+2. Relay sends `computer_snapshot`
 3. Relay sends later visibility updates as live daemon state changes
 
 #### `app_register`
 
-Sent by Android as the first frame after app-session authentication, before `daemon_snapshot`.
+Sent by the app client as the first frame after app-session authentication, before `computer_snapshot`.
 
 Recommended fields:
 
 - `app_version`
 - `protocol_version`
 
-`daemon_snapshot` contains the full daemon roster visible to this Android device:
+`computer_snapshot` contains the full computer roster visible to this client device:
 
 - pairing-derived visibility
 - daemon presence and daemon display metadata
 
 It does not contain sessions.
 
-Relay determines the Android device identity from the authenticated server-side app session, then uses that `device_fingerprint` plus the authenticated account session to compute pairing-derived visibility.
+Relay determines the client client identity from the authenticated server-side app session, then uses that `client_fingerprint` plus the authenticated account session to compute pairing-derived visibility.
 
 The app learns its current account tier through authenticated Relay app APIs, not through realtime per-session policy snapshots.
 
@@ -107,57 +110,56 @@ The app learns its current account tier through authenticated Relay app APIs, no
 
 After daemon authentication succeeds:
 
-1. daemon sends `daemon_register`
+1. daemon sends `computer_register`
 2. Relay accepts the registration and starts routing later control-plane frames
 
 The daemon-side socket does not need startup session or tier state.
 
-#### `daemon_register`
+#### `computer_register`
 
 Sent by the daemon as the first frame after authentication.
 
 Implemented fields:
 
-- `device_id`
+- `computer_id`
 - `display_name`
-- `daemon_public_key`
-- `daemon_fingerprint`
+- `computer_public_key`
+- `computer_fingerprint`
 - `platform_family`
 - `platform_id`
 - `tunnel_version`
 - `protocol_version`
-- `trusted_devices`
+- `trusted_clients`
 
-Relay uses these fields to populate `daemon_snapshot` for app-side consumers and to detect compatibility mismatches before the daemon is announced as visible.
+Relay uses these fields to populate `computer_snapshot` for app-side consumers and to detect compatibility mismatches before the computer is announced as visible. The legacy `/connectivity/daemon/ws` alias may still accept `daemon_register` during this compatibility revision.
 
 ## Event Families
 
 ### Presence
 
-- `daemon_snapshot`
-- `paired_device_visible`
-- `paired_device_removed`
-- `paired_device_revoked`
+- `computer_snapshot`
+- `computer_visible`
+- `computer_removed`
+- `client_revoked`
 
 Implemented daemon fields:
 
-- `device_id`
+- `computer_id`
 - `display_name`
 - `platform_family`
 - `platform_id`
-- `daemon_public_key`
-- `daemon_fingerprint`
+- `computer_public_key`
+- `computer_fingerprint`
 - `tunnel_version`
 
 ### Pairing
 
 - `pair_invitation_reserve`
 - `pair_invitation_reserved`
-- `pair_response_submit`
 - `pair_response_forward`
 - `pair_completed`
-- `paired_device_visible`
-- `paired_device_revoked`
+- `computer_visible`
+- `client_revoked`
 
 Relay carries pairing transport, but the daemon remains the trust root.
 
@@ -165,14 +167,14 @@ Event responsibilities:
 
 - `pair_invitation_reserve` is sent from daemon to Relay to reserve a short-lived `correlation_id`
 - `pair_invitation_reserved` is sent from Relay to daemon carrying the reserved `correlation_id` request id and Relay-authenticated `account_id`
-- `pair_response_submit` is sent from Android to Relay carrying the signed pairing response
+- signed pairing responses are submitted from the app client to Relay through `POST /api/pairing/responses`
 - `pair_response_forward` is sent from Relay to the addressed daemon
 - `pair_completed` is sent from daemon to Relay after both sides have stored trust locally and the SAS has been confirmed
-- `paired_device_visible` is sent from Relay to Android after `pair_completed`
-- `paired_device_removed` is sent from Relay to Android when a still-trusted daemon connection disappears or is replaced
-- `paired_device_revoked` is sent from Relay to Android when the daemon revokes a previously paired device
+- `computer_visible` is sent from Relay to the app client after `pair_completed`
+- `computer_removed` is sent from Relay to the app client when a still-trusted daemon connection disappears or is replaced
+- `client_revoked` is sent from Relay to the app client when the daemon revokes a previously paired client device
 
-Implemented Step 5 supports app registration, daemon trusted-roster registration, app-side daemon snapshots, account-bound pairing invitation reservation, `pair_response_submit` / `pair_response_forward` routing for account-scoped reserved live correlations, `pair_completed` visibility grants, revocation/removal events, live rendezvous hint exchange, and fallback relay tunnel setup. Session index, preview, terminal bytes, input, and resize events remain inside the end-to-end connectivity transport rather than Relay realtime.
+Implemented Step 5 supports app registration, daemon trusted-roster registration, app-side daemon snapshots, account-bound pairing invitation reservation, REST-submitted `pair_response_forward` routing for account-scoped reserved live correlations, `pair_completed` visibility grants, revocation/removal events, live rendezvous hint exchange, and fallback relay tunnel setup. Session index, preview, terminal bytes, input, and resize events remain inside the end-to-end connectivity transport rather than Relay realtime.
 
 Relay's pairing state is a derived live authorization copy. It MUST be invalidated when the daemon revokes trust, and Relay MUST NOT grant new presence visibility, signaling routing, or fallback tunnel issuance to a revoked device.
 
@@ -186,7 +188,7 @@ These events let the app and daemon exchange the minimum hint set needed for dir
 
 Recommended hint payload:
 
-- `daemon_id`
+- `computer_id`
 - `attempt_id`
 - `public_udp_addr`
 - `private_udp_addrs`
@@ -201,7 +203,7 @@ Implemented app-to-Relay open frame:
   "type": "rendezvous_open",
   "request_id": "req-1",
   "attempt_id": "attempt-uuid",
-  "daemon_id": "dev_abcd1234",
+  "computer_id": "dev_abcd1234",
   "public_udp_addr": "203.0.113.10:50000",
   "private_udp_addrs": ["10.0.0.5:50000"]
 }
@@ -214,9 +216,9 @@ Relay forwards the app hint to the paired online daemon as:
   "type": "rendezvous_hint",
   "request_id": "req-1",
   "attempt_id": "attempt-uuid",
-  "daemon_id": "dev_abcd1234",
-  "android_fingerprint": "<android-device-fingerprint>",
-  "actor": "android",
+  "computer_id": "dev_abcd1234",
+  "client_fingerprint": "<client-device-fingerprint>",
+  "actor": "client",
   "public_udp_addr": "203.0.113.10:50000",
   "private_udp_addrs": ["10.0.0.5:50000"],
   "expires_at": 1777478400
@@ -226,27 +228,27 @@ Relay forwards the app hint to the paired online daemon as:
 The daemon answers with `rendezvous_hint` containing its candidate addresses.
 Relay forwards that hint to the app with `actor: "daemon"` and the same
 `attempt_id`. Daemon-origin `rendezvous_hint` and `rendezvous_close` frames
-MUST include `android_fingerprint` so Relay can disambiguate app-minted
-`attempt_id` values across paired Android devices. Either side may send
+MUST include `client_fingerprint` so Relay can disambiguate app-minted
+`attempt_id` values across paired client devices. Either side may send
 `rendezvous_close` with `attempt_id` to remove live attempt state. After direct
 QUIC/TLS accept succeeds, the daemon sends `direct_session_open` with
-`attempt_id`, `daemon_id`, and `android_fingerprint`; Relay records that direct
+`attempt_id`, `computer_id`, and `client_fingerprint`; Relay records that direct
 won the attempt. Relay sends `direct_session_close` to the daemon when that
 accepted direct path must be canceled because the app session, agent token,
-trusted Android device, or account is no longer authorized. Relay rejects
+trusted client device, or account is no longer authorized. Relay rejects
 unavailable, expired, unpaired, wrong-account, malformed, or superseded attempts
 with `reason: "rendezvous_unavailable"`.
 
 #### attempt_id Rules
 
-`attempt_id` is minted by Android per direct/fallback attempt.
+`attempt_id` is minted by the app client per direct/fallback attempt.
 
-- If Android opens a new `rendezvous_open` for the same app session and `daemon_id` while a previous attempt is still in flight, Relay treats the older `attempt_id` as superseded and discards it immediately.
+- If the app opens a new `rendezvous_open` for the same app session and `computer_id` while a previous attempt is still in flight, Relay treats the older `attempt_id` as superseded and discards it immediately.
 - All rendezvous hints expire after a short phase-1 lifetime. The current Relay default is 30 seconds.
 
 #### private_udp_addrs Hygiene
 
-Android and daemon SHOULD include private addresses in `private_udp_addrs` only if they are RFC1918, RFC4193, or link-local ranges. Implementations SHOULD cap the list to bound information disclosure.
+App clients and daemons SHOULD include private addresses in `private_udp_addrs` only if they are RFC1918, RFC4193, or link-local ranges. Implementations SHOULD cap the list to bound information disclosure.
 
 ### Fallback Relay Setup
 
@@ -266,10 +268,10 @@ Phase-1 tunnel-token rules:
 - each token is bound to:
   - `attempt_id`
   - requesting account and app session
-  - app `device_fingerprint`
-  - target `daemon_id`
+  - app `client_fingerprint`
+  - target `computer_id`
   - authenticated actor identity
-  - actor type (`android` or `daemon`)
+  - actor type (`client` or `daemon`)
 - a token may be redeemed exactly once at the fallback tunnel endpoint
 
 Current Step 4 event payloads:
@@ -278,7 +280,7 @@ Current Step 4 event payloads:
 
 - `request_id`
 - `attempt_id`
-- `daemon_id`
+- `computer_id`
 - `fallback_reason` (optional)
 - `direct_setup_latency_ms` (optional)
 - `relay_setup_latency_ms` (optional)
@@ -287,20 +289,20 @@ Current Step 4 event payloads:
 
 - `request_id`
 - `attempt_id`
-- `daemon_id`
-- `android_fingerprint`
-- `actor` (`android` or `daemon`)
+- `computer_id`
+- `client_fingerprint`
+- `actor` (`client` or `daemon`)
 - `tunnel_token`
 - `fallback_reason` (optional)
 - `direct_setup_latency_ms` (optional)
 - `relay_setup_latency_ms` (optional)
 
 Relay authorizes the request only when the app's authenticated account and
-server-side `device_fingerprint` currently have pairing-derived visibility to
+server-side `client_fingerprint` currently have pairing-derived visibility to
 the requested online daemon.
 
-`android_fingerprint` is included in both side-specific ready frames. The daemon
-uses it to look up the locally trusted Android public key before starting the
+`client_fingerprint` is included in both side-specific ready frames. The daemon
+uses it to look up the locally trusted client public key before starting the
 inner pinned QUIC/TLS listener over the fallback packet tunnel.
 
 Fallback diagnostic fields are app-supplied metadata. Relay forwards them to
@@ -328,7 +330,7 @@ Phase-1 rules:
 - Relay does not fan out tier or session-policy decisions to daemons
 - daemon sockets do not receive tier-policy updates
 
-The official app uses `tier` together with Android-local trusted-computer state to decide which daemon transports it may open. Once a daemon transport is open, all sessions inside that computer are tier-neutral.
+The official app uses `tier` together with client-local trusted-computer state to decide which daemon transports it may open. Once a daemon transport is open, all sessions inside that computer are tier-neutral.
 
 ## Relay Tunnel Endpoint
 
@@ -339,13 +341,13 @@ Properties:
 - runs over WebSocket-over-HTTPS
 - scoped to one authenticated peer-to-peer attempt
 - keyed by Relay-issued short-lived tunnel tokens
-- the current path is `GET /connectivity/tunnel/ws?token=<single-use-token>`
+- the current path is `GET /connectivity/tunnel/ws` with `Authorization: Bearer <single-use-token>`
 - accepts binary WebSocket messages for QUIC packets
 - forwards opaque encrypted packets only
 - does not parse session frames
 - closes active tunnel endpoints when the app session logs out, password change
   disconnects the app, the daemon disconnects, the agent token is revoked, the
-  user is deleted, or daemon-local trust for the Android fingerprint is revoked
+  user is deleted, or daemon-local trust for the client fingerprint is revoked
 
 ## What Relay Does Not Carry
 
@@ -376,16 +378,16 @@ The target Relay protocol deliberately removes:
 
 Relay carries rendezvous hints and authorizes fallback tunnels. A misbehaving Relay can therefore manipulate or withhold rendezvous hints to prevent direct connections from succeeding, forcing the connection onto the fallback tunnel.
 
-Relay cannot decrypt either path because both terminate inside the daemon and Android with pinned device identities.
+Relay cannot decrypt either path because both terminate inside the daemon and client app with pinned device identities.
 
 ## Daemon-Side Event Catalog
 
 ### Daemon Sends
 
 - `pair_invitation_reserve`
-- `daemon_register`
+- `computer_register`
 - `pair_completed`
-- `paired_device_revoked`
+- `client_revoked`
 - `rendezvous_hint`
 - `rendezvous_close`
 

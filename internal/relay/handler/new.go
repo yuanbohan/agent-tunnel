@@ -49,6 +49,7 @@ func newRouter(
 	if throttle == nil {
 		throttle = api.NewRegisterThrottle(5, 10*time.Minute)
 	}
+	pairingThrottle := api.NewRegisterThrottle(10, time.Minute)
 
 	attachSessions := session.NewAttachSessionIndex()
 	connectivityRegistry := relayconnectivity.NewRegistry()
@@ -86,22 +87,28 @@ func newRouter(
 	appRoutes.POST("/api/auth/logout", api.Logout(appAuth, registry, attachSessions, connectivityRegistry))
 	appRoutes.POST("/api/auth/password/change", api.ChangePassword(appAuth, registry, attachSessions, connectivityRegistry))
 	appRoutes.GET("/api/account/policy", api.AccountPolicy())
-	appRoutes.GET("/api/connectivity/app/ws", connectivityhandler.App(connectivityRegistry, appAuth))
+	appRoutes.GET("/api/connectivity/app/ws", connectivityhandler.AppLegacy(connectivityRegistry, appAuth))
+	appRoutes.GET("/api/connectivity/ws", connectivityhandler.App(connectivityRegistry, appAuth))
 	appRoutes.GET("/api/agent-tokens", api.ListAgentTokens(agentTokens))
 	appRoutes.POST("/api/agent-tokens", api.CreateAgentToken(agentTokens))
 	appRoutes.DELETE("/api/agent-tokens/:tokenID", api.RevokeAgentToken(agentTokens, registry, deviceRegistry, connectivityRegistry))
 	appRoutes.GET("/api/devices", api.ListDevices(deviceRegistry))
+	appRoutes.GET("/api/computers", api.ListComputers(deviceRegistry))
 	appRoutes.POST("/api/devices/:deviceID/launch", api.LaunchDevice(deviceRegistry))
+	appRoutes.POST("/api/computers/:computerID/sessions", api.LaunchDevice(deviceRegistry))
+	appRoutes.POST("/api/pairing/responses", api.SubmitPairingResponse(connectivityRegistry, pairingThrottle))
 	appRoutes.GET("/api/sessions/:sessionID/attach/ws", attach.Handle(registry, attachSessions))
 
 	sessionRoutes := router.Group("/")
 	sessionRoutes.Use(middleware.SessionAuth(appAuth, agentTokens))
 	sessionRoutes.GET("/api/sessions", api.ListSessions(registry))
 	sessionRoutes.POST("/api/sessions/:sessionID/stop", api.StopSession(registry))
+	sessionRoutes.DELETE("/api/sessions/:sessionID", api.StopSession(registry))
 
 	router.GET("/agent/ws", middleware.AgentAuth(agentTokens), agent.Handle(registry, deviceRegistry))
 	router.GET("/device/ws", middleware.AgentAuth(agentTokens), devicehandler.Handle(deviceRegistry, registry, agentTokens))
 	router.GET("/connectivity/daemon/ws", middleware.AgentAuth(agentTokens), connectivityhandler.Daemon(connectivityRegistry, agentTokens))
+	router.GET("/connectivity/computer/ws", middleware.AgentAuth(agentTokens), connectivityhandler.Daemon(connectivityRegistry, agentTokens))
 	router.GET("/connectivity/tunnel/ws", connectivityhandler.Tunnel(connectivityRegistry, connectivityTunnelHub))
 
 	return router

@@ -51,6 +51,10 @@ func TestSessionRegistrationClientRegistersAndPushesPreview(t *testing.T) {
 	if got.SessionID != "sess-1" || got.DeviceID != "dev-1" || got.Label != "api-fix" || got.CommandPreview != "codex --profile prod" || got.LatestPreview != "hello from terminal" {
 		t.Fatalf("snapshot = %#v, want registered session with preview", got)
 	}
+	full, ok := broker.SnapshotBySession("sess-1")
+	if !ok || len(full.LatestSnapshot) == 0 || full.SnapshotCols == 0 || full.SnapshotRows == 0 {
+		t.Fatalf("snapshot = %#v, want terminal snapshot bytes and dimensions", full)
+	}
 }
 
 func TestSessionRegistrationClientRoutesBrokerCommandsToHub(t *testing.T) {
@@ -82,6 +86,11 @@ func TestSessionRegistrationClientRoutesBrokerCommandsToHub(t *testing.T) {
 	client.handleBrokerFrame(BrokerFrame{Type: brokerFrameResize, SessionID: "sess-1", Cols: 120, Rows: 40})
 	if resize != [2]int{120, 40} {
 		t.Fatalf("resize = %v, want 120x40", resize)
+	}
+
+	snapshot, cols, rows := client.mirror.Snapshot()
+	if cols != 120 || rows != 40 {
+		t.Fatalf("mirror snapshot len=%d size=%dx%d, want resized 120x40 snapshot", len(snapshot), cols, rows)
 	}
 }
 
@@ -142,6 +151,169 @@ func TestSessionRegistrationClientCloseUsesWriteDeadline(t *testing.T) {
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("Close timed out, want broker write deadline to unblock shutdown")
 	}
+}
+
+func TestSessionRegistrationClientWriteOutputDoesNotBlockOnBrokerBackpressure(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+
+	client := NewSessionRegistrationClient(testPaths(t), protocol.SessionInfo{SessionID: "sess-1"})
+	client.mu.Lock()
+	client.conn = clientConn
+	client.encoder = json.NewEncoder(clientConn)
+	client.brokerWrites = make(chan BrokerFrame)
+	client.mu.Unlock()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- client.WriteOutput([]byte("live output"))
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("WriteOutput returned error: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("WriteOutput blocked on broker backpressure")
+	}
+
+	_ = serverConn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	var buf [1]byte
+	if _, err := serverConn.Read(buf[:]); err == nil {
+		t.Fatal("server side stayed open after broker write overflow")
+	}
+}
+
+func TestSessionRegistrationClientPublishesOutputBytesBrokerEvent(t *testing.T) {
+	paths := testPaths(t)
+	broker, server, cancel := startBrokerForTest(t, paths)
+	defer cancel()
+	defer server.Close()
+
+	client := NewSessionRegistrationClient(paths, protocol.SessionInfo{
+		SessionID:      "sess-1",
+		CWD:            "/repo",
+		CommandPreview: "codex",
+		StartedAt:      1,
+	})
+	client.throttle = 0
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	go client.Run(ctx)
+	defer client.Close()
+	waitForBrokerSnapshot(t, broker, 1)
+
+	events, cancelEvents := broker.Subscribe()
+	defer cancelEvents()
+	if err := client.WriteOutput([]byte("live output")); err != nil {
+		t.Fatalf("WriteOutput returned error: %v", err)
+	}
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case event := <-events:
+			if event.Type == BrokerEventOutput {
+				if event.SessionID != "sess-1" || string(event.Output) != "live output" {
+					t.Fatalf("output event = %#v, want sess-1 live output", event)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for BrokerEventOutput from session registration client")
+		}
+	}
+}
+
+func TestSessionRegistrationClientDoesNotAttachSnapshotToEachOutputEvent(t *testing.T) {
+	paths := testPaths(t)
+	broker, server, cancel := startBrokerForTest(t, paths)
+	defer cancel()
+	defer server.Close()
+
+	client := NewSessionRegistrationClient(paths, protocol.SessionInfo{
+		SessionID:      "sess-1",
+		CWD:            "/repo",
+		CommandPreview: "codex",
+		StartedAt:      1,
+	})
+	client.throttle = time.Hour
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	go client.Run(ctx)
+	defer client.Close()
+	waitForBrokerSnapshot(t, broker, 1)
+
+	events, cancelEvents := broker.Subscribe()
+	defer cancelEvents()
+	before, ok := broker.SnapshotBySession("sess-1")
+	if !ok {
+		t.Fatal("broker snapshot missing sess-1 before output")
+	}
+	if err := client.WriteOutput([]byte("fresh output")); err != nil {
+		t.Fatalf("WriteOutput returned error: %v", err)
+	}
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case event := <-events:
+			if event.Type != BrokerEventOutput {
+				continue
+			}
+			snapshot, ok := broker.SnapshotBySession("sess-1")
+			if !ok {
+				t.Fatal("broker snapshot missing sess-1")
+			}
+			if string(snapshot.LatestSnapshot) != string(before.LatestSnapshot) {
+				t.Fatalf("snapshot changed with live output event: before %q after %q", string(before.LatestSnapshot), string(snapshot.LatestSnapshot))
+			}
+			return
+		case <-deadline:
+			t.Fatal("timed out waiting for BrokerEventOutput from session registration client")
+		}
+	}
+}
+
+func TestSessionRegistrationClientResizeUpdatesBrokerSnapshotDimensions(t *testing.T) {
+	paths := testPaths(t)
+	broker, server, cancel := startBrokerForTest(t, paths)
+	defer cancel()
+	defer server.Close()
+
+	client := NewSessionRegistrationClient(paths, protocol.SessionInfo{
+		SessionID:      "sess-1",
+		CWD:            "/repo",
+		CommandPreview: "codex",
+		StartedAt:      1,
+	})
+	client.throttle = 0
+	hub := tunnelsession.NewHub(func(data []byte) error { return nil }, func(cols, rows int) error { return nil })
+	client.BindHub(hub)
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	go client.Run(ctx)
+	defer client.Close()
+	waitForBrokerSnapshot(t, broker, 1)
+
+	interactiveOwner := &struct{ id int }{id: 1}
+	if err := broker.GrantInteractive("sess-1", interactiveOwner); err != nil {
+		t.Fatalf("GrantInteractive returned error: %v", err)
+	}
+	if err := broker.RouteResize("sess-1", interactiveOwner, 132, 43); err != nil {
+		t.Fatalf("RouteResize returned error: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		snapshot := broker.Snapshot()
+		if len(snapshot) == 1 && snapshot[0].SnapshotCols == 132 && snapshot[0].SnapshotRows == 43 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("snapshot = %#v, want resized broker snapshot dimensions 132x43", broker.Snapshot())
 }
 
 func TestSessionRegistrationClientSkipsBrokerWhenDaemonBaseURLDiffers(t *testing.T) {

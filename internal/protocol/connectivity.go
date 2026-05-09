@@ -2,7 +2,7 @@ package protocol
 
 import "encoding/json"
 
-const ConnectivityProtocolVersion = 1
+const ConnectivityProtocolVersion = 2
 
 type ConnectivityFrame struct {
 	Type                 string                       `json:"type"`
@@ -13,7 +13,7 @@ type ConnectivityFrame struct {
 	AccountID            string                       `json:"account_id,omitempty"`
 	AttemptID            string                       `json:"attempt_id,omitempty"`
 	Actor                string                       `json:"actor,omitempty"`
-	DaemonID             string                       `json:"daemon_id,omitempty"`
+	DaemonID             string                       `json:"computer_id,omitempty"`
 	TunnelToken          string                       `json:"tunnel_token,omitempty"`
 	FallbackReason       string                       `json:"fallback_reason,omitempty"`
 	DirectSetupLatencyMS int                          `json:"direct_setup_latency_ms,omitempty"`
@@ -21,13 +21,19 @@ type ConnectivityFrame struct {
 	PublicUDPAddr        string                       `json:"public_udp_addr,omitempty"`
 	PrivateUDPAddrs      []string                     `json:"private_udp_addrs,omitempty"`
 	ExpiresAt            int64                        `json:"expires_at,omitempty"`
-	Daemon               *ConnectivityDaemonInfo      `json:"daemon,omitempty"`
-	Daemons              []ConnectivityDaemonInfo     `json:"daemons,omitempty"`
-	TrustedDevices       []ConnectivityTrustedAndroid `json:"trusted_devices,omitempty"`
+	Daemon               *ConnectivityDaemonInfo      `json:"computer,omitempty"`
+	Daemons              []ConnectivityDaemonInfo     `json:"computers,omitempty"`
+	TrustedDevices       []ConnectivityTrustedAndroid `json:"trusted_clients,omitempty"`
 	DirectSessions       []ConnectivityDirectSession  `json:"direct_sessions,omitempty"`
-	AndroidFingerprint   string                       `json:"android_fingerprint,omitempty"`
+	AndroidFingerprint   string                       `json:"client_fingerprint,omitempty"`
 	PairingResponse      *ConnectivityPairingResponse `json:"pairing_response,omitempty"`
 }
+
+// Deprecated aliases retained for protocol compatibility.
+type ConnectivityComputerInfo = ConnectivityDaemonInfo
+type ConnectivityClientInfo = ConnectivityTrustedAndroid
+type ConnectivityTrustedClient = ConnectivityTrustedAndroid
+type ConnectivityPairingSubmission = ConnectivityPairingResponse
 
 func ConnectivityRendezvousHintFrame(requestID, attemptID, actor, daemonID, androidFingerprint, publicUDPAddr string, privateUDPAddrs []string, expiresAt int64) ConnectivityFrame {
 	return ConnectivityFrame{
@@ -60,7 +66,7 @@ func (f ConnectivityFrame) MarshalJSON() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if f.Type != "daemon_snapshot" {
+	if f.Type != "computer_snapshot" {
 		return raw, nil
 	}
 	var fields map[string]any
@@ -71,17 +77,37 @@ func (f ConnectivityFrame) MarshalJSON() ([]byte, error) {
 	if daemons == nil {
 		daemons = []ConnectivityDaemonInfo{}
 	}
-	fields["daemons"] = daemons
+	fields["computers"] = daemons
 	return json.Marshal(fields)
 }
 
+func (f *ConnectivityFrame) UnmarshalJSON(data []byte) error {
+	type connectivityFrame ConnectivityFrame
+	var aux struct {
+		connectivityFrame
+		LegacyDaemon  *ConnectivityDaemonInfo  `json:"daemon,omitempty"`
+		LegacyDaemons []ConnectivityDaemonInfo `json:"daemons,omitempty"`
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	*f = ConnectivityFrame(aux.connectivityFrame)
+	if f.Daemon == nil {
+		f.Daemon = aux.LegacyDaemon
+	}
+	if f.Daemons == nil && aux.LegacyDaemons != nil {
+		f.Daemons = aux.LegacyDaemons
+	}
+	return nil
+}
+
 type ConnectivityDaemonInfo struct {
-	DeviceID          string `json:"device_id"`
+	DeviceID          string `json:"computer_id"`
 	DisplayName       string `json:"display_name,omitempty"`
 	PlatformFamily    string `json:"platform_family,omitempty"`
 	PlatformID        string `json:"platform_id,omitempty"`
-	DaemonPublicKey   string `json:"daemon_public_key"`
-	DaemonFingerprint string `json:"daemon_fingerprint"`
+	DaemonPublicKey   string `json:"computer_public_key"`
+	DaemonFingerprint string `json:"computer_fingerprint"`
 	TunnelVersion     string `json:"tunnel_version,omitempty"`
 }
 
@@ -92,16 +118,16 @@ type ConnectivityTrustedAndroid struct {
 
 type ConnectivityDirectSession struct {
 	AttemptID          string `json:"attempt_id"`
-	AndroidFingerprint string `json:"android_fingerprint"`
+	AndroidFingerprint string `json:"client_fingerprint"`
 }
 
 type ConnectivityPairingResponse struct {
 	AccountID          string `json:"account_id"`
 	InvitationID       string `json:"invitation_id"`
 	CorrelationID      string `json:"correlation_id"`
-	AndroidPublicKey   string `json:"android_pubkey"`
-	AndroidFingerprint string `json:"android_fingerprint"`
-	AndroidDisplayName string `json:"android_display_name,omitempty"`
+	AndroidPublicKey   string `json:"client_public_key"`
+	AndroidFingerprint string `json:"client_fingerprint"`
+	AndroidDisplayName string `json:"client_display_name,omitempty"`
 	Signature          string `json:"signature,omitempty"`
 }
 
@@ -111,7 +137,7 @@ func ConnectivityAppRegisterFrame() ConnectivityFrame {
 
 func ConnectivityDaemonRegisterFrame(info ConnectivityDaemonInfo, trusted []ConnectivityTrustedAndroid) ConnectivityFrame {
 	return ConnectivityFrame{
-		Type:            "daemon_register",
+		Type:            "computer_register",
 		ProtocolVersion: ConnectivityProtocolVersion,
 		Daemon:          &info,
 		TrustedDevices:  trusted,
@@ -119,16 +145,16 @@ func ConnectivityDaemonRegisterFrame(info ConnectivityDaemonInfo, trusted []Conn
 }
 
 func ConnectivityDaemonSnapshotFrame(daemons []ConnectivityDaemonInfo) ConnectivityFrame {
-	return ConnectivityFrame{Type: "daemon_snapshot", Daemons: daemons}
+	return ConnectivityFrame{Type: "computer_snapshot", Daemons: daemons}
 }
 
 func ConnectivityDaemonUpsertFrame(info ConnectivityDaemonInfo) ConnectivityFrame {
-	return ConnectivityFrame{Type: "paired_device_visible", Daemon: &info}
+	return ConnectivityFrame{Type: "computer_visible", Daemon: &info}
 }
 
 func ConnectivityDaemonRemovedFrame(deviceID, daemonFingerprint string) ConnectivityFrame {
 	return ConnectivityFrame{
-		Type: "paired_device_removed",
+		Type: "computer_removed",
 		Daemon: &ConnectivityDaemonInfo{
 			DeviceID:          deviceID,
 			DaemonFingerprint: daemonFingerprint,
@@ -138,7 +164,7 @@ func ConnectivityDaemonRemovedFrame(deviceID, daemonFingerprint string) Connecti
 
 func ConnectivityPairedDeviceRevokedFrame(deviceID, daemonFingerprint string) ConnectivityFrame {
 	return ConnectivityFrame{
-		Type: "paired_device_revoked",
+		Type: "client_revoked",
 		Daemon: &ConnectivityDaemonInfo{
 			DeviceID:          deviceID,
 			DaemonFingerprint: daemonFingerprint,

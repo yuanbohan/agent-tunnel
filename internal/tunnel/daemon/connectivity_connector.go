@@ -19,6 +19,7 @@ import (
 	"yuanbohan/tunnel/internal/buildinfo"
 	"yuanbohan/tunnel/internal/connectivity/carrier"
 	"yuanbohan/tunnel/internal/connectivity/direct"
+	connframe "yuanbohan/tunnel/internal/connectivity/frame"
 	connidentity "yuanbohan/tunnel/internal/connectivity/identity"
 	connectivitypairing "yuanbohan/tunnel/internal/connectivity/pairing"
 	conntransport "yuanbohan/tunnel/internal/connectivity/transport"
@@ -30,6 +31,7 @@ const (
 	connectivityConnectorPingInterval     = 10 * time.Second
 	connectivityConnectorPingWriteTimeout = 5 * time.Second
 	connectivityRelayTunnelAcceptTimeout  = 10 * time.Second
+	connectivityConnectorReconnectJitter  = 500 * time.Millisecond
 )
 
 type connectivityConnector struct {
@@ -67,7 +69,7 @@ func (c *connectivityConnector) Run(ctx context.Context) {
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(backoff):
+			case <-time.After(jitteredReconnectDelay(backoff)):
 			}
 			if backoff < 15*time.Second {
 				backoff *= 2
@@ -76,6 +78,20 @@ func (c *connectivityConnector) Run(ctx context.Context) {
 		}
 		backoff = time.Second
 	}
+}
+
+func jitteredReconnectDelay(base time.Duration) time.Duration {
+	if base <= 0 {
+		return 0
+	}
+	jitter := connectivityConnectorReconnectJitter
+	if base < jitter {
+		jitter = base
+	}
+	if jitter <= 0 {
+		return base
+	}
+	return base + time.Duration(time.Now().UnixNano()%int64(jitter))
 }
 
 func (c *connectivityConnector) serveOnce(ctx context.Context) error {
@@ -350,15 +366,17 @@ func (c *connectivityConnector) handleRelayTunnelReady(ctx context.Context, fram
 	if err != nil {
 		return err
 	}
-	tunnelURL, err := connectivityTunnelWebSocketURL(c.baseURL, frame.TunnelToken)
+	tunnelURL, err := connectivityTunnelWebSocketURL(c.baseURL)
 	if err != nil {
 		return err
 	}
-	conn, _, err := c.dialer.DialContext(ctx, tunnelURL, nil)
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer "+frame.TunnelToken)
+	conn, _, err := c.dialer.DialContext(ctx, tunnelURL, headers)
 	if err != nil {
 		return err
 	}
-	packetConn := carrier.NewWSPacketConn(conn, "daemon", "android", 0)
+	packetConn := carrier.NewWSPacketConn(conn, "daemon", "android", connframe.DefaultMaxPayload)
 	defer packetConn.Close()
 
 	listener, err := quic.Listen(packetConn, conntransport.DaemonTLSConfig(conntransport.EndpointConfig{
@@ -498,11 +516,11 @@ func connectivityDaemonWebSocketURL(baseURL string) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported base URL scheme: %s", parsed.Scheme)
 	}
-	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/connectivity/daemon/ws"
+	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/connectivity/computer/ws"
 	return parsed.String(), nil
 }
 
-func connectivityTunnelWebSocketURL(baseURL, token string) (string, error) {
+func connectivityTunnelWebSocketURL(baseURL string) (string, error) {
 	parsed, err := url.Parse(baseURL)
 	if err != nil {
 		return "", err
@@ -516,9 +534,7 @@ func connectivityTunnelWebSocketURL(baseURL, token string) (string, error) {
 		return "", fmt.Errorf("unsupported base URL scheme: %s", parsed.Scheme)
 	}
 	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/connectivity/tunnel/ws"
-	query := parsed.Query()
-	query.Set("token", token)
-	parsed.RawQuery = query.Encode()
+	parsed.RawQuery = ""
 	return parsed.String(), nil
 }
 

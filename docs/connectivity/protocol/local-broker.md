@@ -148,15 +148,17 @@ Phase 1 should prefer full replacement payloads over patch-style deltas.
 
 Carries the newest preview text for the session.
 
-Important phase-1 rule:
+Important rule:
 
 - `tunnel run` pushes preview updates to daemon proactively
 - daemon caches only the latest preview per session
 - daemon does not need a second local preview subscription state machine
 
-### `interactive_request`
+### `snapshot_update` and `output_bytes`
 
-Reserved for Step 4. Step 3 does not send daemon-to-`tunnel run` interactive frames.
+`tunnel run` also publishes coalesced latest terminal snapshots and incremental live output bytes over the same daemon-local broker socket for trusted connectivity transports. Snapshot updates are throttled with preview publishing and replace the cached latest snapshot; live output frames carry only the incremental bytes.
+
+### `interactive_request`
 
 Sent by daemon when a mobile client wants interactive access to the session.
 
@@ -175,12 +177,14 @@ Phase-1 rule:
 
 Sent by `tunnel run` after it accepts the interactive request.
 
-This means the following byte stream messages belong to that active interactive lifetime:
+This means the broker accepted the daemon as the active interactive owner for that session. The connectivity transport then writes the initial snapshot and live bytes on the per-interactive stream:
 
 - `snapshot_begin`
 - `snapshot_chunk`
 - `snapshot_end`
 - `live_bytes`
+
+The `interactive_granted` dimensions must match the following `snapshot_begin` dimensions. If the broker already has a cached terminal snapshot, those cached dimensions are authoritative; otherwise the requested dimensions are echoed.
 
 ### `interactive_denied`
 
@@ -199,7 +203,7 @@ Sent by daemon when the mobile client leaves or explicitly releases interactive.
 
 ### `input_text` / `input_key` / `resize`
 
-Sent by daemon only after interactive has been granted for that session.
+Sent by daemon only after interactive has been granted for that session. `input_text` and `input_key` are routed to the owning `tunnel run` input path; `resize` updates the PTY size and publishes a coalesced `snapshot_update`.
 
 `tunnel run` should drop these messages if no active interactive lifetime exists for that session.
 

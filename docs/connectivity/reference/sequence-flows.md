@@ -69,14 +69,14 @@ sequenceDiagram
     DaemonConn->>RelayRT: reserve short-lived correlation_id
     RelayRT-->>DaemonConn: correlation_id + account_id
     DaemonCLI->>DaemonConn: create one-time invitation
-    DaemonConn-->>DaemonCLI: invitation payload\n(account_id, daemon_id, daemon_pubkey,\ninvitation_id, nonce, expires_at,\ncorrelation_id, signature)
-    DaemonCLI-->>User: print JSON invitation payload
+    DaemonConn-->>DaemonCLI: invitation payload\n(account_id, computer_id, computer_public_key,\ninvitation_id, nonce, expires_at,\ncorrelation_id, signature)
+    DaemonCLI-->>User: print terminal QR code\n(--json prints payload)
 
     User->>AndroidUI: import invitation payload
     AndroidUI->>AndroidConn: parse invitation
     AndroidConn->>AndroidConn: verify daemon signature\nverify expiry
-    AndroidConn->>AndroidConn: sign(invitation_id || nonce || android_pubkey || relay_asserted_account_id)
-    AndroidConn->>RelayRT: pair_response_submit\n(correlation_id, android_pubkey, signature, account_id)
+    AndroidConn->>AndroidConn: sign(account_id || invitation_id || correlation_id || client_fingerprint || client_public_key || client_display_name)
+    AndroidConn->>RelayRT: POST /api/pairing/responses\n(correlation_id, client_public_key, signature, account_id)
     RelayRT->>DaemonConn: pair_response_forward\n(+ relay_asserted_account_id)
     DaemonConn->>DaemonConn: verify invitation still valid\nverify Android signature\nverify account matches invitation\nstore pending response
 
@@ -120,7 +120,7 @@ sequenceDiagram
     AndroidConn->>AndroidConn: resolve trusted-computer policy
     AndroidConn->>RelayRT: open app realtime websocket
     AndroidConn->>RelayRT: app_register(app_version, protocol_version)
-    RelayRT-->>AndroidConn: daemon_snapshot
+    RelayRT-->>AndroidConn: computer_snapshot
     AndroidConn-->>AndroidUI: render visible daemon cards
 
     AndroidUI->>AndroidConn: user opens an active trusted computer
@@ -322,7 +322,7 @@ sequenceDiagram
     RelayRT-->>AndroidConn: {tier: pro}
     AndroidConn->>AndroidConn: load trusted computers\n(count <= 10)
     AndroidConn->>RelayRT: open app realtime websocket
-    RelayRT-->>AndroidConn: daemon_snapshot
+    RelayRT-->>AndroidConn: computer_snapshot
 
     loop for each online trusted computer
         AndroidConn->>DaemonConn: open daemon transport

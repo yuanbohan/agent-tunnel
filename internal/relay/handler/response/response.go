@@ -91,9 +91,9 @@ var reasonMap = map[string]reasonInfo{
 		Code:    CodeInvalidSession,
 		Message: "The session is invalid.",
 	},
-	"invalid_device_fingerprint": {
+	"invalid_client_fingerprint": {
 		Code:    CodeInvalidDeviceFingerprint,
-		Message: "The device fingerprint is invalid.",
+		Message: "The client fingerprint is invalid.",
 	},
 	"agent_token_not_found": {
 		Code:    CodeAgentTokenNotFound,
@@ -115,9 +115,21 @@ var reasonMap = map[string]reasonInfo{
 		Code:    CodeForbidden,
 		Message: "The request is forbidden.",
 	},
+	"client_fingerprint_mismatch": {
+		Code:    CodeForbidden,
+		Message: "The request is forbidden.",
+	},
+	"pairing_account_mismatch": {
+		Code:    CodeForbidden,
+		Message: "The request is forbidden.",
+	},
 	"not_found": {
 		Code:    CodeNotFound,
 		Message: "The requested endpoint was not found.",
+	},
+	"pairing_correlation_not_found": {
+		Code:    CodeNotFound,
+		Message: "The requested resource was not found.",
 	},
 	"method_not_allowed": {
 		Code:    CodeMethodNotAllowed,

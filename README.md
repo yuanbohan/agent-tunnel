@@ -5,11 +5,11 @@ Launch a terminal agent locally and expose the running PTY through relay-backed 
 The remote contract now has two live-only surfaces:
 
 - session attach: clients discover live sessions with `GET /api/sessions`, then attach to one session with `GET /api/sessions/:id/attach/ws`
-- device launch: clients discover currently online devices with `GET /api/devices`, then ask one device daemon to launch `tunnel run <command>` with required `cwd`, optional `label`, and wait for `session_ready`; any live session can later be stopped through `POST /api/sessions/:id/stop`
+- computer launch: clients discover currently online computers with `GET /api/computers`, then ask one computer daemon to launch `tunnel run <command>` with required `cwd`, optional `label`, and wait for `session_ready`; any live session can later be stopped through `DELETE /api/sessions/:id`
 
 On attach, the owning `tunnel` process sends a fresh terminal-state snapshot, which may include up to 10,000 lines of bounded agent-local normal-buffer scrollback, and then continues streaming live PTY bytes on that same websocket. The `snapshot_done` control message may also include bounded agent-local submit anchors for jump-dot navigation, and already attached clients may receive live `submit_anchor` controls for newly recorded submit Enter events.
 
-`tunnel` starts a real CLI command such as `claude`, `codex`, `gemini`, `qwen`, or `aider`, keeps the launching terminal interactive, and registers the session with a relay server. A local `tunnel run` also best-effort ensures the background daemon and registers session metadata plus a bounded latest preview over a local-only broker socket; `tunnel run` remains the PTY and terminal-mirror owner. The relay is API-only: it authenticates app clients with user-scoped bearer tokens, can bind app sessions to Android device fingerprints, authenticates agents with user-owned long-lived agent tokens, lists live sessions, lists currently online daemons, brokers session-scoped attaches, forwards structured input, forwards session stop control, forwards device launch requests, carries connectivity pairing/visibility/rendezvous control messages, serves Binding-only STUN for direct UDP discovery, and provides an opaque WebSocket QUIC fallback tunnel. Session discovery now includes best-effort Git branch metadata for the startup directory, optional local daemon identity through `device_id`, `launch_source` (`local` or `mobile`), and best-effort machine identity metadata from the registering agent, including platform family, platform id, and normalized computer name. Operator maintenance routes stay host-local outside the public `/api/` namespace. It does not retain transcript history and it does not emulate the terminal.
+`tunnel` starts a real CLI command such as `claude`, `codex`, `gemini`, `qwen`, or `aider`, keeps the launching terminal interactive, and registers the session with a relay server. A local `tunnel run` also best-effort ensures the background daemon and registers session metadata, a bounded latest preview, coalesced terminal snapshots, and live output bytes over a local-only broker socket for trusted connectivity transports; `tunnel run` remains the PTY and terminal-mirror owner. The relay is API-only: it authenticates app clients with user-scoped bearer tokens, can bind app sessions to client device fingerprints, authenticates agents with user-owned long-lived agent tokens, lists live sessions, lists currently online computer daemons, brokers session-scoped attaches, forwards structured input, forwards session stop control, forwards computer launch requests, carries connectivity pairing/visibility/rendezvous control messages, serves Binding-only STUN for direct UDP discovery, and provides an opaque WebSocket QUIC fallback tunnel. Session discovery now includes best-effort Git branch metadata for the startup directory, optional local daemon identity through `device_id`, `launch_source` (`local` or `mobile`), and best-effort machine identity metadata from the registering agent, including platform family, platform id, and normalized computer name. Operator maintenance routes stay host-local outside the public `/api/` namespace. It does not retain transcript history and it does not emulate the terminal.
 
 On startup, `tunnel` must establish relay registration during the startup wait window. If registration does not succeed, startup exits with a relay connection error and does not launch the local terminal session.
 
@@ -187,7 +187,7 @@ tunnel rollback
 
 ### 2b. Manage the device daemon
 
-`tunnel run` best-effort starts or connects to the same-base-URL and same-auth-context daemon automatically so local sessions can register with the local broker. Broker reconnects re-check the daemon's Relay base URL and non-secret auth-context fingerprint before sending local session metadata or preview. You can still manage the daemon explicitly, and you should check its status before relying on remote launch:
+`tunnel run` best-effort starts or connects to the same-base-URL and same-auth-context daemon automatically so local sessions can register with the local broker. Broker reconnects re-check the daemon's Relay base URL and non-secret auth-context fingerprint before sending local session metadata, previews, snapshots, or live output. You can still manage the daemon explicitly, and you should check its status before relying on remote launch:
 
 ```bash
 ./bin/tunnel auth login --base-url http://127.0.0.1:8586
@@ -201,7 +201,7 @@ tunnel rollback
 
 `tunnel run --daemon auto|off|required ...` controls only the daemon-local broker registration path. `auto` is the default best-effort mode, `off` preserves pure Relay-only local session startup, and `required` fails startup if a matching daemon broker cannot be reached.
 
-`tunnel daemon start --json`, `tunnel daemon status --json`, `tunnel daemon doctor --json`, `tunnel daemon broker sessions --json`, `tunnel daemon pair`, `tunnel daemon pair pending --json`, `tunnel daemon pair confirm ... --json`, `tunnel daemon devices --json`, and `tunnel daemon revoke ... --json` expose machine-readable daemon state and pairing/trust results for automation. JSON-capable daemon commands return a single `{"error":{"code":"...","message":"..."}}` envelope on command failures while preserving a non-zero exit status. Human `daemon start` output warns when launch readiness is degraded.
+`tunnel daemon start --json`, `tunnel daemon status --json`, `tunnel daemon doctor --json`, `tunnel daemon broker sessions --json`, `tunnel daemon pair --json`, `tunnel daemon pair pending --json`, `tunnel daemon pair confirm ... --json`, `tunnel daemon devices --json`, and `tunnel daemon revoke ... --json` expose machine-readable daemon state and pairing/trust results for automation. `tunnel daemon pair` without `--json` prints a terminal QR code plus the payload for human pairing. JSON-capable daemon commands return a single `{"error":{"code":"...","message":"..."}}` envelope on command failures while preserving a non-zero exit status. Human `daemon start` output warns when launch readiness is degraded.
 
 The daemon connectivity core can run without `tmux`. Missing `tmux` reports degraded launch readiness and prevents tmux-backed remote launch, but it does not prevent local broker registration or pairing/connectivity control paths.
 
@@ -248,28 +248,28 @@ The current remote model is:
 
 Stronger delivery guarantees, transcript history, and remote-driven PTY sizing are out of scope for this protocol revision.
 
-## Device Launch Model
+## Computer Launch Model
 
-Remote launch is daemon-backed and tmux-backed:
+Remote launch is computer-daemon-backed and tmux-backed:
 
 - `tunnel run` auto-ensures a matching daemon for local broker registration by default; users can disable or require this with `--daemon`, and can also run `tunnel daemon start` explicitly
 - the daemon stays online until `tunnel daemon stop`
-- mobile clients use `GET /api/devices` to discover only currently connected devices
-- `POST /api/devices/:deviceID/launch` always returns a `request_id`; success is `status: "session_ready"` plus `session_id`, and failure is `status: "failed"` plus a structured `reason` such as `command_not_allowed`, `device_offline`, `busy`, `path_not_found`, or `launch_timeout`
+- clients use `GET /api/computers` to discover only currently connected computers
+- `POST /api/computers/:computerID/sessions` always returns a `request_id`; success is `status: "session_ready"` plus `session_id`, and failure is `status: "failed"` plus a structured `reason` such as `command_not_allowed`, `device_offline`, `busy`, `path_not_found`, or `launch_timeout`
 - a successful launch creates a new dedicated tmux session and runs `tunnel run <command>` there
 - when that launched `tunnel run <command>` exits, the tmux session stays available and returns to an interactive shell prompt
 - users can inspect or resume the local workspace from any terminal with `tunnel daemon open`, detach one open workspace view with `tunnel daemon close`, or list sessions with `tunnel daemon sessions`
 - `tunnel daemon close` is the inverse of `open`: it closes a local tmux workspace view if one is open, but it does not stop the daemon or terminate any session
-- mobile/API session shutdown uses `POST /api/sessions/:sessionID/stop`; it sends `stop_session` to the owning `tunnel run` process, so local-launched and mobile-launched sessions use the same shutdown path
+- mobile/API session shutdown uses `DELETE /api/sessions/:sessionID`; it sends `stop_session` to the owning `tunnel run` process, so local-launched and mobile-launched sessions use the same shutdown path
 - the daemon owns local launch state such as allowlist, busy/not-busy, tmux workspace health, doctor output, and last failure
-- the relay only keeps transient online routing for connected daemons; if a daemon disconnects, it disappears from `GET /api/devices` immediately
+- the relay only keeps transient online routing for connected daemons; if a daemon disconnects, it disappears from `GET /api/computers` immediately
 
 Current scope boundaries:
 
-- only macOS and Linux are supported for the daemon; local `tmux` is required for remote launch and workspace commands, not for the daemon connectivity core or local broker
+- only macOS and Linux are supported for the computer daemon; local `tmux` is required for remote launch and workspace commands, not for the daemon connectivity core or local broker
 - command authorization is a first-token allowlist read from the daemon config
 - device identity is stable per machine-local daemon state, while display metadata such as device name and platform are refreshed whenever the daemon registers with the relay
-- connectivity pairing uses a separate daemon-local Ed25519 identity, pending SAS-confirmed pairing responses, and trusted Android roster; Relay visibility is live-only, granted by `pair_completed`, and rebuilt from the daemon roster on reconnect
+- connectivity pairing uses a separate daemon-local Ed25519 identity, pending SAS-confirmed pairing responses, and trusted client roster; Relay visibility is live-only, granted by `pair_completed`, and rebuilt from the daemon roster on reconnect
 - connectivity session transport uses the same pinned QUIC/TLS protocol on direct UDP and Relay fallback paths; `hello.path_kind` and `path_state` provide advisory Direct/Relay badge data for clients
 
 See `docs/daemon.md` for the implementation contract that constrains daemon lifecycle, tmux workspace ownership, launch correlation, health reporting, and failure reasons.

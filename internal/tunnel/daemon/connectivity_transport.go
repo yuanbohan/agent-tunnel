@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"yuanbohan/tunnel/internal/connectivity/frame"
 	"yuanbohan/tunnel/internal/connectivity/sessionproto"
 	"yuanbohan/tunnel/internal/connectivity/transport"
+	relayauth "yuanbohan/tunnel/internal/relay/auth"
 )
 
 var (
@@ -24,6 +26,7 @@ var (
 const (
 	connectivityTransportReadTimeout  = 15 * time.Second
 	connectivityTransportWriteTimeout = 15 * time.Second
+	connectivityInteractiveQueueLimit = 64
 )
 
 type ConnectivityTransport struct {
@@ -36,6 +39,19 @@ type ConnectivityTransport struct {
 	DirectSetupLatency time.Duration
 	RelaySetupLatency  time.Duration
 	MaxPayload         int
+}
+
+type connectivitySendStream interface {
+	io.Writer
+	Close() error
+	SetWriteDeadline(time.Time) error
+}
+
+type interactiveStreamState struct {
+	stream connectivitySendStream
+	queue  chan []byte
+	done   chan struct{}
+	once   sync.Once
 }
 
 func (t *ConnectivityTransport) Serve(ctx context.Context, conn *quic.Conn) error {
@@ -65,9 +81,21 @@ func (t *ConnectivityTransport) Serve(ctx context.Context, conn *quic.Conn) erro
 		_ = writeConnectivityJSON(control, frame.TypeError, sessionproto.Error{Code: "protocol_version_mismatch"})
 		return ErrConnectivityProtocolVersion
 	}
-	if t.AndroidFingerprint != "" && hello.DeviceFingerprint != t.AndroidFingerprint {
-		_ = writeConnectivityJSON(control, frame.TypeError, sessionproto.Error{Code: "device_not_trusted"})
-		return ErrConnectivityDeviceUntrusted
+	configuredFingerprint := strings.TrimSpace(t.AndroidFingerprint)
+	if configuredFingerprint != "" {
+		normalized, err := relayauth.NormalizeDeviceFingerprint(configuredFingerprint)
+		if err != nil {
+			_ = writeConnectivityJSON(control, frame.TypeError, sessionproto.Error{Code: "device_not_trusted"})
+			return ErrConnectivityDeviceUntrusted
+		}
+		configuredFingerprint = normalized
+	}
+	if configuredFingerprint != "" {
+		clientFingerprint, err := relayauth.NormalizeDeviceFingerprint(strings.TrimSpace(hello.ClientFingerprint))
+		if err != nil || clientFingerprint != configuredFingerprint {
+			_ = writeConnectivityJSON(control, frame.TypeError, sessionproto.Error{Code: "device_not_trusted"})
+			return ErrConnectivityDeviceUntrusted
+		}
 	}
 
 	pathKind := t.PathKind
@@ -77,7 +105,7 @@ func (t *ConnectivityTransport) Serve(ctx context.Context, conn *quic.Conn) erro
 	if err := writeConnectivityJSON(control, frame.TypeHello, sessionproto.Hello{
 		ProtocolVersion:   sessionproto.ProtocolVersion,
 		ActorType:         sessionproto.ActorDaemon,
-		DeviceFingerprint: t.DaemonFingerprint,
+		ClientFingerprint: t.DaemonFingerprint,
 		PathKind:          pathKind,
 	}); err != nil {
 		return err
@@ -87,7 +115,7 @@ func (t *ConnectivityTransport) Serve(ctx context.Context, conn *quic.Conn) erro
 
 	serveCtx, cancelServe := context.WithCancel(ctx)
 	defer cancelServe()
-	snapshot, events, cancel := t.Broker.SnapshotAndSubscribe()
+	snapshot, events, cancel := t.Broker.SnapshotMetadataAndSubscribe()
 	defer cancel()
 	if err := writeConnectivityJSON(control, frame.TypeSessionIndex, sessionproto.SessionIndex{Sessions: brokerSessionMetadata(snapshot)}); err != nil {
 		return err
@@ -104,13 +132,15 @@ func (t *ConnectivityTransport) Serve(ctx context.Context, conn *quic.Conn) erro
 	subscribedPreviews := make(map[string]struct{})
 	subsMu := &sync.RWMutex{}
 	writeMu := &sync.Mutex{}
+	interactiveStreams := make(map[string]*interactiveStreamState)
+	interactiveStreamsMu := &sync.RWMutex{}
 	errCh := make(chan error, 2)
 
 	go func() {
-		errCh <- t.readControlLoop(serveCtx, conn, control, writeMu, subsMu, subscribedPreviews, interactiveOwner)
+		errCh <- t.readControlLoop(serveCtx, conn, control, writeMu, subsMu, subscribedPreviews, interactiveOwner, interactiveStreamsMu, interactiveStreams)
 	}()
 	go func() {
-		errCh <- t.writeBrokerEvents(serveCtx, control, writeMu, subsMu, events, subscribedPreviews)
+		errCh <- t.writeBrokerEvents(serveCtx, control, writeMu, subsMu, events, subscribedPreviews, interactiveOwner, interactiveStreamsMu, interactiveStreams)
 	}()
 
 	select {
@@ -137,7 +167,31 @@ func isConnectivityNormalClose(err error) bool {
 	return errors.As(err, &appErr) && appErr.ErrorCode == 0
 }
 
-func (t *ConnectivityTransport) readControlLoop(ctx context.Context, conn *quic.Conn, control *quic.Stream, writeMu *sync.Mutex, subsMu *sync.RWMutex, subscribedPreviews map[string]struct{}, interactiveOwner any) error {
+func (t *ConnectivityTransport) readControlLoop(
+	ctx context.Context,
+	conn *quic.Conn,
+	control *quic.Stream,
+	writeMu *sync.Mutex,
+	subsMu *sync.RWMutex,
+	subscribedPreviews map[string]struct{},
+	interactiveOwner any,
+	interactiveStreamsMu *sync.RWMutex,
+	interactiveStreams map[string]*interactiveStreamState,
+) error {
+	defer func() {
+		interactiveStreamsMu.Lock()
+		states := make([]*interactiveStreamState, 0, len(interactiveStreams))
+		for sessionID, state := range interactiveStreams {
+			if state != nil {
+				states = append(states, state)
+			}
+			delete(interactiveStreams, sessionID)
+		}
+		interactiveStreamsMu.Unlock()
+		for _, state := range states {
+			closeInteractiveStreamState(state)
+		}
+	}()
 	activeInteractive := make(map[string]struct{})
 	for {
 		got, err := frame.Read(control, t.maxPayload())
@@ -153,10 +207,19 @@ func (t *ConnectivityTransport) readControlLoop(ctx context.Context, conn *quic.
 			grantErr := t.Broker.GrantInteractive(payload.SessionID, interactiveOwner)
 			var streamID int64
 			var interactiveStream *quic.SendStream
+			var interactiveState *interactiveStreamState
+			snapshot, hasSnapshot, grantCols, grantRows := t.initialInteractiveSnapshot(payload)
 			if grantErr == nil {
 				interactiveStream, streamID, grantErr = t.openInteractiveStream(ctx, conn, payload)
 				if grantErr != nil {
 					t.Broker.ReleaseInteractive(payload.SessionID, interactiveOwner)
+				} else {
+					interactiveState = newInteractiveStreamState(interactiveStream)
+					interactiveStreamsMu.Lock()
+					old := interactiveStreams[payload.SessionID]
+					interactiveStreams[payload.SessionID] = interactiveState
+					interactiveStreamsMu.Unlock()
+					closeInteractiveStreamState(old)
 				}
 			}
 			writeMu.Lock()
@@ -165,8 +228,8 @@ func (t *ConnectivityTransport) readControlLoop(ctx context.Context, conn *quic.
 				err = writeConnectivityJSON(control, frame.TypeInteractiveGranted, sessionproto.InteractiveGranted{
 					SessionID:           payload.SessionID,
 					InteractiveStreamID: streamID,
-					Cols:                payload.Cols,
-					Rows:                payload.Rows,
+					Cols:                grantCols,
+					Rows:                grantRows,
 				})
 			} else {
 				reason := "session_unavailable"
@@ -180,15 +243,30 @@ func (t *ConnectivityTransport) readControlLoop(ctx context.Context, conn *quic.
 			}
 			writeMu.Unlock()
 			if err != nil {
-				if interactiveStream != nil {
-					_ = interactiveStream.Close()
+				if interactiveState != nil {
+					interactiveStreamsMu.Lock()
+					if interactiveStreams[payload.SessionID] == interactiveState {
+						delete(interactiveStreams, payload.SessionID)
+					}
+					interactiveStreamsMu.Unlock()
+					closeInteractiveStreamState(interactiveState)
 				}
 				return err
 			}
-			if interactiveStream != nil {
-				if err := t.writeInitialInteractiveSnapshot(interactiveStream, payload); err != nil {
+			if interactiveState != nil {
+				if err := t.writeInitialInteractiveSnapshot(interactiveStream, payload, snapshot, hasSnapshot, grantCols, grantRows); err != nil {
+					interactiveStreamsMu.Lock()
+					if interactiveStreams[payload.SessionID] == interactiveState {
+						delete(interactiveStreams, payload.SessionID)
+					}
+					interactiveStreamsMu.Unlock()
+					closeInteractiveStreamState(interactiveState)
 					return err
 				}
+				interactiveState.start(serveInteractiveStreamContext(ctx), func() {
+					t.Broker.ReleaseInteractive(payload.SessionID, interactiveOwner)
+					removeInteractiveStreamState(payload.SessionID, interactiveState, interactiveStreamsMu, interactiveStreams)
+				})
 			}
 		case frame.TypeInteractiveRelease:
 			var payload sessionproto.InteractiveRelease
@@ -197,6 +275,11 @@ func (t *ConnectivityTransport) readControlLoop(ctx context.Context, conn *quic.
 			}
 			delete(activeInteractive, payload.SessionID)
 			t.Broker.ReleaseInteractive(payload.SessionID, interactiveOwner)
+			interactiveStreamsMu.Lock()
+			state := interactiveStreams[payload.SessionID]
+			delete(interactiveStreams, payload.SessionID)
+			interactiveStreamsMu.Unlock()
+			closeInteractiveStreamState(state)
 		case frame.TypePreviewSubscribe:
 			var payload sessionproto.PreviewSubscribe
 			if err := json.Unmarshal(got.Payload, &payload); err != nil {
@@ -206,7 +289,7 @@ func (t *ConnectivityTransport) readControlLoop(ctx context.Context, conn *quic.
 				subsMu.Lock()
 				subscribedPreviews[payload.SessionID] = struct{}{}
 				subsMu.Unlock()
-				if snapshot, ok := brokerSnapshotBySession(t.Broker.Snapshot(), payload.SessionID); ok {
+				if snapshot, ok := t.Broker.SnapshotBySession(payload.SessionID); ok {
 					writeMu.Lock()
 					if err := writeConnectivityJSON(control, frame.TypePreviewSnapshot, sessionproto.PreviewSnapshot{
 						SessionID: snapshot.SessionID,
@@ -281,6 +364,90 @@ func (t *ConnectivityTransport) readControlLoop(ctx context.Context, conn *quic.
 	}
 }
 
+func closeInteractiveStreamState(state *interactiveStreamState) {
+	if state == nil {
+		return
+	}
+	state.close()
+}
+
+func removeInteractiveStreamState(sessionID string, state *interactiveStreamState, streamsMu *sync.RWMutex, streams map[string]*interactiveStreamState) {
+	streamsMu.Lock()
+	if streams[sessionID] == state {
+		delete(streams, sessionID)
+	}
+	streamsMu.Unlock()
+	closeInteractiveStreamState(state)
+}
+
+func newInteractiveStreamState(stream connectivitySendStream) *interactiveStreamState {
+	return &interactiveStreamState{
+		stream: stream,
+		queue:  make(chan []byte, connectivityInteractiveQueueLimit),
+		done:   make(chan struct{}),
+	}
+}
+
+func (s *interactiveStreamState) start(ctx context.Context, onClose func()) {
+	if s == nil {
+		return
+	}
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				s.close()
+				return
+			case <-s.done:
+				return
+			case payload := <-s.queue:
+				if err := writeConnectivityRaw(s.stream, frame.TypeLiveBytes, payload); err != nil {
+					if onClose != nil {
+						onClose()
+					} else {
+						s.close()
+					}
+					return
+				}
+			}
+		}
+	}()
+}
+
+func (s *interactiveStreamState) enqueue(payload []byte) bool {
+	if s == nil || len(payload) == 0 {
+		return true
+	}
+	copyPayload := append([]byte(nil), payload...)
+	select {
+	case <-s.done:
+		return false
+	case s.queue <- copyPayload:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *interactiveStreamState) close() {
+	if s == nil {
+		return
+	}
+	s.once.Do(func() {
+		close(s.done)
+		if s.stream != nil {
+			_ = s.stream.Close()
+		}
+	})
+}
+
+func serveInteractiveStreamContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
+}
+
 func (t *ConnectivityTransport) openInteractiveStream(ctx context.Context, conn *quic.Conn, request sessionproto.InteractiveRequest) (*quic.SendStream, int64, error) {
 	stream, err := conn.OpenUniStreamSync(ctx)
 	if err != nil {
@@ -289,17 +456,41 @@ func (t *ConnectivityTransport) openInteractiveStream(ctx context.Context, conn 
 	return stream, int64(stream.StreamID()), nil
 }
 
-func (t *ConnectivityTransport) writeInitialInteractiveSnapshot(stream *quic.SendStream, request sessionproto.InteractiveRequest) error {
-	defer stream.Close()
+func (t *ConnectivityTransport) initialInteractiveSnapshot(request sessionproto.InteractiveRequest) (BrokerSessionSnapshot, bool, int, int) {
+	snapshot, ok := t.Broker.SnapshotBySession(request.SessionID)
+	cols := request.Cols
+	rows := request.Rows
+	if ok && snapshot.SnapshotCols > 0 && snapshot.SnapshotRows > 0 {
+		cols = snapshot.SnapshotCols
+		rows = snapshot.SnapshotRows
+	}
+	return snapshot, ok, cols, rows
+}
+
+func (t *ConnectivityTransport) writeInitialInteractiveSnapshot(stream io.Writer, request sessionproto.InteractiveRequest, snapshot BrokerSessionSnapshot, ok bool, cols, rows int) error {
+	chunkCount := 0
 	if err := writeConnectivityJSON(stream, frame.TypeSnapshotBegin, sessionproto.SnapshotBegin{
 		SessionID: request.SessionID,
-		Cols:      request.Cols,
-		Rows:      request.Rows,
+		Cols:      cols,
+		Rows:      rows,
 	}); err != nil {
 		return err
 	}
+	if ok && len(snapshot.LatestSnapshot) > 0 {
+		for start := 0; start < len(snapshot.LatestSnapshot); start += t.maxPayload() {
+			end := start + t.maxPayload()
+			if end > len(snapshot.LatestSnapshot) {
+				end = len(snapshot.LatestSnapshot)
+			}
+			if err := writeConnectivityRaw(stream, frame.TypeSnapshotChunk, snapshot.LatestSnapshot[start:end]); err != nil {
+				return err
+			}
+			chunkCount++
+		}
+	}
 	return writeConnectivityJSON(stream, frame.TypeSnapshotEnd, sessionproto.SnapshotEnd{
-		SessionID: request.SessionID,
+		SessionID:  request.SessionID,
+		ChunkCount: chunkCount,
 	})
 }
 
@@ -320,7 +511,17 @@ func (t *ConnectivityTransport) writeError(control *quic.Stream, writeMu *sync.M
 	return writeConnectivityJSON(control, frame.TypeError, sessionproto.Error{Code: code})
 }
 
-func (t *ConnectivityTransport) writeBrokerEvents(ctx context.Context, control *quic.Stream, writeMu *sync.Mutex, subsMu *sync.RWMutex, events <-chan BrokerEvent, subscribedPreviews map[string]struct{}) error {
+func (t *ConnectivityTransport) writeBrokerEvents(
+	ctx context.Context,
+	control io.Writer,
+	writeMu *sync.Mutex,
+	subsMu *sync.RWMutex,
+	events <-chan BrokerEvent,
+	subscribedPreviews map[string]struct{},
+	interactiveOwner any,
+	interactiveStreamsMu *sync.RWMutex,
+	interactiveStreams map[string]*interactiveStreamState,
+) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -329,26 +530,49 @@ func (t *ConnectivityTransport) writeBrokerEvents(ctx context.Context, control *
 			if !ok {
 				return nil
 			}
-			writeMu.Lock()
 			var err error
 			switch event.Type {
 			case BrokerEventSessionUpsert:
+				writeMu.Lock()
 				err = writeConnectivityJSON(control, frame.TypeSessionUpsert, sessionproto.SessionUpsert{Session: brokerSessionMetadataOne(event.Session)})
+				writeMu.Unlock()
 			case BrokerEventSessionGone:
+				interactiveStreamsMu.Lock()
+				state := interactiveStreams[event.SessionID]
+				delete(interactiveStreams, event.SessionID)
+				interactiveStreamsMu.Unlock()
+				closeInteractiveStreamState(state)
+				writeMu.Lock()
 				err = writeConnectivityJSON(control, frame.TypeSessionGone, sessionproto.SessionGone{SessionID: event.SessionID})
+				writeMu.Unlock()
 			case BrokerEventPreview:
 				subsMu.RLock()
 				_, subscribed := subscribedPreviews[event.SessionID]
 				subsMu.RUnlock()
 				if subscribed {
+					writeMu.Lock()
 					err = writeConnectivityJSON(control, frame.TypePreviewSnapshot, sessionproto.PreviewSnapshot{
 						SessionID: event.SessionID,
 						Preview:   event.Session.LatestPreview,
 						UpdatedAt: event.Session.UpdatedAt,
 					})
+					writeMu.Unlock()
 				}
+			case BrokerEventOutput:
+				interactiveStreamsMu.RLock()
+				state := interactiveStreams[event.SessionID]
+				interactiveStreamsMu.RUnlock()
+				if state != nil && len(event.Output) > 0 && !state.enqueue(event.Output) {
+					t.Broker.ReleaseInteractive(event.SessionID, interactiveOwner)
+					removeInteractiveStreamState(event.SessionID, state, interactiveStreamsMu, interactiveStreams)
+				}
+			case BrokerEventOutputOverflow:
+				t.Broker.ReleaseInteractive(event.SessionID, interactiveOwner)
+				interactiveStreamsMu.RLock()
+				state := interactiveStreams[event.SessionID]
+				interactiveStreamsMu.RUnlock()
+				removeInteractiveStreamState(event.SessionID, state, interactiveStreamsMu, interactiveStreams)
 			}
-			writeMu.Unlock()
 			if err != nil {
 				return err
 			}
@@ -363,8 +587,17 @@ func writeConnectivityJSON(w io.Writer, typ byte, payload any) error {
 	}
 	if setter, ok := w.(interface{ SetWriteDeadline(time.Time) error }); ok {
 		_ = setter.SetWriteDeadline(time.Now().Add(connectivityTransportWriteTimeout))
+		defer setter.SetWriteDeadline(time.Time{})
 	}
 	return frame.Write(w, frame.Frame{Type: typ, Payload: raw})
+}
+
+func writeConnectivityRaw(w io.Writer, typ byte, payload []byte) error {
+	if setter, ok := w.(interface{ SetWriteDeadline(time.Time) error }); ok {
+		_ = setter.SetWriteDeadline(time.Now().Add(connectivityTransportWriteTimeout))
+		defer setter.SetWriteDeadline(time.Time{})
+	}
+	return frame.Write(w, frame.Frame{Type: typ, Payload: payload})
 }
 
 func readConnectivityJSON[T any](r io.Reader, typ byte, maxPayload int) (T, error) {

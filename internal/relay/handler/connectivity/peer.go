@@ -9,17 +9,26 @@ import (
 )
 
 type wsPeer struct {
-	conn *websocket.Conn
-	mu   sync.Mutex
+	conn       *websocket.Conn
+	mu         sync.Mutex
+	beforeSend func() bool
 }
 
 func newWSPeer(conn *websocket.Conn) *wsPeer {
 	return &wsPeer{conn: conn}
 }
 
+func newWSPeerWithValidator(conn *websocket.Conn, beforeSend func() bool) *wsPeer {
+	return &wsPeer{conn: conn, beforeSend: beforeSend}
+}
+
 func (p *wsPeer) SendJSON(value any) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.beforeSend != nil && !p.beforeSend() {
+		_ = p.conn.Close()
+		return websocket.ErrCloseSent
+	}
 	if err := p.conn.SetWriteDeadline(time.Now().Add(config.RelayClientPingWriteTimeout())); err != nil {
 		return err
 	}

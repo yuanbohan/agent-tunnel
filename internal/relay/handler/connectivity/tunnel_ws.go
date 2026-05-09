@@ -11,6 +11,7 @@ import (
 	"yuanbohan/tunnel/internal/config"
 	relayconnectivity "yuanbohan/tunnel/internal/relay/connectivity"
 	"yuanbohan/tunnel/internal/relay/handler/api"
+	"yuanbohan/tunnel/internal/relay/handler/httpx"
 	handlerws "yuanbohan/tunnel/internal/relay/handler/ws"
 )
 
@@ -34,7 +35,7 @@ func Tunnel(registry *relayconnectivity.Registry, hub *TunnelHub) gin.HandlerFun
 			api.WriteJSONError(c.Writer, http.StatusServiceUnavailable, "connectivity_unavailable")
 			return
 		}
-		token := c.Query("token")
+		token, ok := httpx.BearerTokenFromRequest(c.Request)
 		redemption, err := registry.RedeemRelayTunnelToken(token)
 		if err != nil {
 			api.WriteJSONError(c.Writer, http.StatusForbidden, "forbidden")

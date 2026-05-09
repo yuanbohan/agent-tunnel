@@ -311,7 +311,7 @@ func Run(ctx context.Context, options RuntimeOptions, readyWriter io.Writer) err
 			state.cancelPendingDirectAttempts("", revoked.Fingerprint)
 			state.cancelActiveDirectTransports("", revoked.Fingerprint)
 			if !state.sendConnectivityEventBlocking(requestCtx, protocol.ConnectivityFrame{
-				Type:               "paired_device_revoked",
+				Type:               "client_revoked",
 				AndroidFingerprint: revoked.Fingerprint,
 			}) {
 				return Response{Error: "relay connectivity event queue unavailable"}

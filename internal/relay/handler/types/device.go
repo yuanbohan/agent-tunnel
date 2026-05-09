@@ -12,3 +12,11 @@ type DeviceLaunchResponse struct {
 	SessionID string `json:"session_id,omitempty"`
 	Reason    string `json:"reason,omitempty"`
 }
+
+type ComputerInfo struct {
+	ComputerID     string `json:"computer_id"`
+	DisplayName    string `json:"display_name"`
+	PlatformFamily string `json:"platform_family"`
+	PlatformID     string `json:"platform_id"`
+	LaunchHealth   string `json:"launch_health,omitempty"`
+}

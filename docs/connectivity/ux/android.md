@@ -22,7 +22,7 @@ When this doc and `../contract.md` disagree, `../contract.md` wins.
 - account-authenticated startup
 - `GET /api/account/policy`
 - daemon presence
-- pairing response forwarding
+- REST pairing response submission
 - rendezvous hint exchange
 - fallback relay tunnel setup
 
@@ -45,21 +45,21 @@ Do not reintroduce session discovery or interactive control on the Relay plane.
 - user must be logged in
 - app must own a persistent Android device key
 
-Recommended device identity model:
+Recommended client identity model:
 
 - generated once on first authenticated setup
 - stored in Android Keystore where available
-- `device_fingerprint = sha256(public_key_raw)` is the long-lived device identity reported to Relay
+- `client_fingerprint = sha256(public_key_raw)` is the long-lived client identity reported to Relay
 - reinstalling the app deletes the device key; the user must re-pair every daemon
 
 ## Login And App Session
 
 Per `../contract.md` D4:
 
-1. Login request body includes `device_fingerprint` alongside credentials.
+1. Login request body includes `client_fingerprint` alongside credentials.
 2. Relay returns opaque app access and refresh tokens.
-3. The server-side app session stores `account_id`, session id, expiry, and `device_fingerprint`.
-4. Token refresh must include the same `device_fingerprint`; Relay rejects mismatch.
+3. The server-side app session stores `account_id`, session id, expiry, and `client_fingerprint`.
+4. Token refresh must include the same `client_fingerprint`; Relay rejects mismatch.
 
 Phase 1 does not require an additional per-WebSocket device-key proof. Daemon-side security relies on pairing-pinned device keys, not the app-session token format.
 
@@ -105,7 +105,7 @@ Do not auto-connect multiple computers before resolution.
 `tunnel run` on the user's computer auto-starts the daemon if it is not already running (`../contract.md` D2). From Android:
 
 - a computer that has run `tunnel run` at least once should have a daemon listening
-- daemon presence in `daemon_snapshot` is the source of truth for online status
+- computer presence in `computer_snapshot` is the source of truth for online status
 - Android does not need "start daemon on the computer" UI in phase 1
 
 ## Pairing Flow
@@ -183,7 +183,7 @@ Recommended:
 4. resolve Free downgrade or stale multi-active state before opening daemon transports
 5. open Relay realtime WebSocket
 6. send `app_register`
-7. receive `daemon_snapshot`
+7. receive `computer_snapshot`
 8. open daemon transports allowed by the current tier:
    - Free: the one active online trusted computer
    - Pro: all online trusted computers, up to ten

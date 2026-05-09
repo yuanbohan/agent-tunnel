@@ -23,6 +23,14 @@ var upgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return
 const connectivityAuthRevalidationTimeout = 5 * time.Second
 
 func App(registry *relayconnectivity.Registry, appAuth *relayauth.AppAuthService) gin.HandlerFunc {
+	return app(registry, appAuth, false)
+}
+
+func AppLegacy(registry *relayconnectivity.Registry, appAuth *relayauth.AppAuthService) gin.HandlerFunc {
+	return app(registry, appAuth, true)
+}
+
+func app(registry *relayconnectivity.Registry, appAuth *relayauth.AppAuthService, allowPairResponseSubmit bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		app := middleware.AuthenticatedApp(c)
 		if app.Session.DeviceFingerprint == "" {
@@ -34,6 +42,9 @@ func App(registry *relayconnectivity.Registry, appAuth *relayauth.AppAuthService
 			return
 		}
 		defer conn.Close()
+		peer := newWSPeerWithValidator(conn, func() bool {
+			return appAuthStillValid(c, appAuth, app)
+		})
 		conn.SetReadLimit(1 << 20)
 		_ = conn.SetReadDeadline(time.Now().Add(config.RelayClientReadTimeout()))
 		conn.SetPongHandler(func(string) error {
@@ -45,10 +56,9 @@ func App(registry *relayconnectivity.Registry, appAuth *relayauth.AppAuthService
 			return
 		}
 		if register.Type != "app_register" || register.ProtocolVersion != protocol.ConnectivityProtocolVersion {
-			_ = conn.WriteJSON(protocol.ConnectivityErrorFrame(register.RequestID, "invalid_register"))
+			_ = peer.SendJSON(protocol.ConnectivityErrorFrame(register.RequestID, "invalid_register"))
 			return
 		}
-		peer := newWSPeer(conn)
 		snapshot, ok := registry.RegisterAppIfValid(relayconnectivity.AppOwner{
 			UserID:            app.User.ID,
 			AppSessionID:      app.Session.ID,
@@ -75,6 +85,10 @@ func App(registry *relayconnectivity.Registry, appAuth *relayauth.AppAuthService
 			}
 			switch frame.Type {
 			case "pair_response_submit":
+				if !allowPairResponseSubmit {
+					_ = peer.SendJSON(protocol.ConnectivityErrorFrame(frame.RequestID, "unsupported_event"))
+					continue
+				}
 				if !appAuthStillValid(c, appAuth, app) {
 					return
 				}
@@ -84,7 +98,7 @@ func App(registry *relayconnectivity.Registry, appAuth *relayauth.AppAuthService
 				}
 				androidFingerprint, err := relayauth.NormalizeDeviceFingerprint(frame.PairingResponse.AndroidFingerprint)
 				if err != nil || androidFingerprint != app.Session.DeviceFingerprint {
-					_ = peer.SendJSON(protocol.ConnectivityErrorFrame(frame.RequestID, "device_fingerprint_mismatch"))
+					_ = peer.SendJSON(protocol.ConnectivityErrorFrame(frame.RequestID, "client_fingerprint_mismatch"))
 					continue
 				}
 				if frame.PairingResponse.AccountID != strconv.FormatInt(app.User.ID, 10) {

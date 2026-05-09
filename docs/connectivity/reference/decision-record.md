@@ -23,7 +23,7 @@ The project should not continue with:
 
 This choice should be read as:
 
-- pairing provides pinned long-lived device identity
+- pairing provides pinned long-lived client identity
 - direct and relay fallback both run the same QUIC/TLS transport
 - direct and relay differ only in how packets are carried
 - session discovery, preview, and interactive traffic all come from the daemon after transport is established
@@ -148,7 +148,7 @@ The server-side app session stores:
 
 - account identity
 - app-session identifier
-- Android app `device_fingerprint`
+- Client app `client_fingerprint`
 
 This replaces the earlier idea of requiring an additional per-websocket `device_proof` on `app_register`.
 
@@ -161,7 +161,7 @@ Why this simplification was chosen:
 
 Tradeoff:
 
-- Relay-side Android device identity is only as strong as the authenticated app session, not a second websocket-bound signature proof
+- Relay-side Android client identity is only as strong as the authenticated app session, not a second websocket-bound signature proof
 
 That tradeoff is accepted for phase 1.
 

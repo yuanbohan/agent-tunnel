@@ -54,8 +54,8 @@ func TestRunSessionStopCallsStopEndpoint(t *testing.T) {
 		record: storedAuth{Token: "agent-token"},
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/sessions/sess-1/stop" || r.Method != http.MethodPost {
-			t.Fatalf("request = %s %s, want POST /api/sessions/sess-1/stop", r.Method, r.URL.Path)
+		if r.URL.Path != "/api/sessions/sess-1" || r.Method != http.MethodDelete {
+			t.Fatalf("request = %s %s, want DELETE /api/sessions/sess-1", r.Method, r.URL.Path)
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer agent-token" {
 			t.Fatalf("Authorization = %q, want Bearer agent-token", got)

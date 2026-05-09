@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	defaultWSPacketQueue        = 4096
+	defaultWSPacketQueue        = 128
 	defaultWSPacketWriteTimeout = 15 * time.Second
 )
 
@@ -168,7 +168,15 @@ func (c *WSPacketConn) readLoop() {
 		case <-c.done:
 			return
 		default:
-			return
+			select {
+			case <-c.inbound:
+			default:
+			}
+			select {
+			case c.inbound <- copied:
+			case <-c.done:
+				return
+			}
 		}
 	}
 }
