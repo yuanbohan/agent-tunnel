@@ -62,10 +62,17 @@
 
 - name: Require relay Compose env file for lifecycle actions
   ansible.builtin.fail:
-    msg: "Missing {{ relay_compose_env_file }}. Create the remote .env on the host with RELAY_IMAGE_TAG, POSTGRES_PASSWORD, RELAY_APP_SECRET, and RELAY_OPERATOR_TOKEN before running relay Compose lifecycle actions."
+    msg: "Missing {{ relay_compose_env_file }}. Create the remote .env on the host with RELAY_IMAGE_TAG, STUN_IMAGE_TAG, POSTGRES_PASSWORD, RELAY_APP_SECRET, and RELAY_OPERATOR_TOKEN before running relay Compose lifecycle actions."
   when:
     - relay_compose_action | default('sync') != 'sync'
     - not relay_compose_env_stat.stat.exists
+  tags:
+    - relay-compose
+
+- name: Select relay Compose service scope
+  ansible.builtin.set_fact:
+    relay_compose_service_args: "{{ 'relay' if relay_compose_action | default('sync') in ['pull-relay', 'up-relay'] else 'stun' if relay_compose_action | default('sync') in ['pull-stun', 'up-stun'] else '' }}"
+  when: relay_compose_action | default('sync') != 'sync'
   tags:
     - relay-compose
 
@@ -76,7 +83,7 @@
   no_log: true
   changed_when: false
   when:
-    - relay_compose_action | default('sync') in ['pull', 'up']
+    - relay_compose_action | default('sync') in ['pull', 'up', 'pull-relay', 'up-relay', 'pull-stun', 'up-stun']
     - relay_ghcr_token is defined
     - relay_ghcr_token | length > 0
   tags:
@@ -84,9 +91,9 @@
 
 - name: Pull relay Compose images
   ansible.builtin.command:
-    cmd: docker compose --env-file "{{ relay_compose_env_file }}" -f "{{ relay_compose_file }}" pull
+    cmd: docker compose --env-file "{{ relay_compose_env_file }}" -f "{{ relay_compose_file }}" pull {{ relay_compose_service_args | default('') }}
     chdir: "{{ relay_compose_dir }}"
-  when: relay_compose_action | default('sync') in ['pull', 'up']
+  when: relay_compose_action | default('sync') in ['pull', 'up', 'pull-relay', 'up-relay', 'pull-stun', 'up-stun']
   tags:
     - relay-compose
 
@@ -95,6 +102,14 @@
     cmd: docker compose --env-file "{{ relay_compose_env_file }}" -f "{{ relay_compose_file }}" up -d
     chdir: "{{ relay_compose_dir }}"
   when: relay_compose_action | default('sync') == 'up'
+  tags:
+    - relay-compose
+
+- name: Start selected relay Compose service
+  ansible.builtin.command:
+    cmd: docker compose --env-file "{{ relay_compose_env_file }}" -f "{{ relay_compose_file }}" up -d {{ relay_compose_service_args }}
+    chdir: "{{ relay_compose_dir }}"
+  when: relay_compose_action | default('sync') in ['up-relay', 'up-stun']
   tags:
     - relay-compose
 
