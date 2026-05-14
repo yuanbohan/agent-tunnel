@@ -26,10 +26,21 @@ services:
       RELAY_APP_SECRET: ${RELAY_APP_SECRET:?set RELAY_APP_SECRET}
       RELAY_OPERATOR_TOKEN: ${RELAY_OPERATOR_TOKEN:?set RELAY_OPERATOR_TOKEN}
       RELAY_LISTEN_ADDR: 0.0.0.0:8586
-      RELAY_STUN_LISTEN_ADDR: 0.0.0.0:3478
+      RELAY_STUN_LISTEN_ADDR: "off"
       RELAY_LOG_FILE: /var/log/agentunnel/relay.log
     ports:
       - 127.0.0.1:8586:8586
+    volumes:
+      - ../logs/relay:/var/log/agentunnel
+
+  stun:
+    image: ghcr.io/yuanbohan/agent-tunnel-relay:${STUN_IMAGE_TAG:?set STUN_IMAGE_TAG}
+    restart: unless-stopped
+    command: ["stun", "serve"]
+    environment:
+      RELAY_STUN_LISTEN_ADDR: 0.0.0.0:3478
+      RELAY_LOG_FILE: /var/log/agentunnel/stun.log
+    ports:
       - 3478:3478/udp
     volumes:
       - ../logs/relay:/var/log/agentunnel
