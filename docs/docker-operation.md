@@ -1,6 +1,6 @@
 # Docker Operation
 
-This document is the complete Docker Compose operating guide for the Relay service. It covers the GitHub Container Registry image, remote file layout, required environment files, Ansible commands, logs, and PostgreSQL schema handling.
+This document is the complete Docker Compose operating guide for the Relay and Binding-only STUN services. It covers the GitHub Container Registry image, remote file layout, required environment files, Ansible commands, logs, direct UDP STUN exposure, and PostgreSQL schema handling.
 
 ## Image
 
@@ -12,21 +12,23 @@ The workflow is:
 .github/workflows/release.yml
 ```
 
-It builds `Dockerfile.relay`, verifies `relay version`, and pushes:
+It builds `Dockerfile.relay` once, verifies `relay version`, verifies the `relay stun serve` command path, and pushes the same build artifact under both service-specific image names:
 
 ```text
 ghcr.io/yuanbohan/agent-tunnel-relay:<version>
+ghcr.io/yuanbohan/agent-tunnel-stun:<version>
 ```
 
 For example:
 
 ```text
 ghcr.io/yuanbohan/agent-tunnel-relay:v0.1.0
+ghcr.io/yuanbohan/agent-tunnel-stun:v0.1.0
 ```
 
-The image name does not need to match the GitHub repository name. The repository can be `agent-tunnel` while the GHCR package/image is `agent-tunnel-relay`.
+The image names do not need to match the GitHub repository name. The repository can be `agent-tunnel` while the GHCR images are `agent-tunnel-relay` and `agent-tunnel-stun`.
 
-Do not deploy from `latest`. The deployed version is the exact value of `RELAY_IMAGE_TAG` in the remote Compose `.env`.
+Do not deploy from `latest`. The deployed versions are the exact values of `RELAY_IMAGE_TAG` and `STUN_IMAGE_TAG` in the remote Compose `.env`. The `relay` service pulls `ghcr.io/yuanbohan/agent-tunnel-relay:${RELAY_IMAGE_TAG}` and the `stun` service pulls `ghcr.io/yuanbohan/agent-tunnel-stun:${STUN_IMAGE_TAG}`. Separate tags let routine Relay updates avoid recreating STUN.
 
 ## GitHub Setup
 
@@ -48,9 +50,10 @@ After the first successful tag release, check:
 
 ```text
 GitHub repository or owner page -> Packages -> agent-tunnel-relay
+GitHub repository or owner page -> Packages -> agent-tunnel-stun
 ```
 
-The Relay GHCR package is private. Docker login uses the fixed GitHub username `yuanbohan`, so the only deployment secret you need is a token that can read packages. Store it only in the local Ansible secrets file, not in the repository:
+The Relay and STUN GHCR packages are private. Docker login uses the fixed GitHub username `yuanbohan`, so the only deployment secret you need is a token that can read packages. Store it only in the local Ansible secrets file, not in the repository:
 
 ```yaml
 # ansible/host_vars/relay-cn/relay-secrets.yml
@@ -122,6 +125,7 @@ Expected remote paths:
 /opt/agentunnel/compose/README.md
 /opt/agentunnel/postgres/latest.sql
 /opt/agentunnel/logs/relay/relay.log
+/opt/agentunnel/logs/relay/stun.log
 ```
 
 The real `.env` is remote-only:
@@ -171,6 +175,7 @@ The file must contain:
 
 ```env
 RELAY_IMAGE_TAG=v0.1.0
+STUN_IMAGE_TAG=v0.1.0
 
 POSTGRES_PASSWORD=REPLACE_WITH_URL_SAFE_DB_PASSWORD
 
@@ -178,17 +183,28 @@ RELAY_APP_SECRET=REPLACE_WITH_LONG_RANDOM_SECRET
 RELAY_OPERATOR_TOKEN=REPLACE_WITH_LONG_RANDOM_TOKEN
 ```
 
+Use the same tag for `RELAY_IMAGE_TAG` and `STUN_IMAGE_TAG` on the first split-service rollout. Later routine Relay releases usually change only `RELAY_IMAGE_TAG`; rare STUN updates change only `STUN_IMAGE_TAG`.
+
 `POSTGRES_PASSWORD` is interpolated into `RELAY_DATABASE_URL` by Compose. Use URL-safe characters unless you intentionally edit `compose.yaml` to use an encoded DSN.
 
 The Compose file fixes these non-secret runtime defaults:
 
 - Relay listens in-container on `0.0.0.0:8586`
 - Docker publishes Relay to the host on `127.0.0.1:8586`
+- Relay disables embedded STUN with `RELAY_STUN_LISTEN_ADDR=off`
+- STUN runs as a separate `stun` service using `relay stun serve`
+- Docker publishes STUN directly to the host on UDP `3478`; nginx does not proxy STUN
 - PostgreSQL uses database `agent_tunnel`
 - PostgreSQL uses role `relay_user`
 - PostgreSQL stores data in Docker volume `relay-postgres-data`
 
 For production operations, treat this remote `.env` as the only runtime configuration source. Do not duplicate `POSTGRES_PASSWORD`, `RELAY_APP_SECRET`, or `RELAY_OPERATOR_TOKEN` into local Ansible secret files.
+
+## DNS And Firewall
+
+For `relay-cn`, `agentunnel.cn` and `www.agentunnel.cn` point at nginx on the VPS for HTTPS and WebSocket traffic. `stun.agentunnel.cn` also points at the VPS today, but it exists as a separate name so STUN can move independently later.
+
+Allow public inbound UDP `3478` in the VPS cloud security group and any host firewall. Do not configure nginx as the STUN path; nginx remains the HTTP/WebSocket reverse proxy only.
 
 ## First Host Setup
 
@@ -243,27 +259,43 @@ It does not create or overwrite:
 /opt/agentunnel/compose/.env
 ```
 
-## Start or Update
+## Start or Update Relay
 
-Start or update relay-cn:
+Routine Relay-only update on relay-cn:
 
 ```bash
 make compose-up-relay-cn
 ```
 
-Start or update dev:
+Routine Relay-only update on dev:
 
 ```bash
 make compose-up-dev
 ```
 
-These targets pull configured images and run `docker compose up -d` on the remote host.
+These targets pull the configured Relay image and run `docker compose up -d relay` on the remote host. They do not update or recreate STUN.
+
+Rare STUN-only update:
+
+```bash
+make compose-up-stun-relay-cn
+make compose-up-stun-dev
+```
+
+First split-service rollout or intentional full-stack update:
+
+```bash
+make compose-up-stack-relay-cn
+make compose-up-stack-dev
+```
 
 To only pull images:
 
 ```bash
 make compose-pull-relay-cn
 make compose-pull-dev
+make compose-pull-stun-relay-cn
+make compose-pull-stack-relay-cn
 ```
 
 To stop services without removing containers:
@@ -296,6 +328,20 @@ cd /opt/agentunnel/compose
 sudo docker compose --env-file .env pull
 sudo docker compose --env-file .env up -d
 sudo docker compose --env-file .env ps
+```
+
+Routine Relay-only update:
+
+```bash
+sudo docker compose --env-file .env pull relay
+sudo docker compose --env-file .env up -d relay
+```
+
+Rare STUN-only update:
+
+```bash
+sudo docker compose --env-file .env pull stun
+sudo docker compose --env-file .env up -d stun
 ```
 
 Stop/start:
@@ -336,8 +382,21 @@ Check logs:
 
 ```bash
 sudo docker compose --env-file .env logs --tail 100 relay
+sudo docker compose --env-file .env logs --tail 100 stun
 sudo docker compose --env-file .env logs --tail 100 postgres
 sudo tail -f /opt/agentunnel/logs/relay/relay.log
+```
+
+Check public STUN from your checkout:
+
+```bash
+scripts/stun-check.sh stun.agentunnel.cn:3478
+```
+
+Or run the combined relay-cn status check:
+
+```bash
+make relay-cn-status
 ```
 
 ## Operator Commands
@@ -373,12 +432,19 @@ Docker logs are available through Compose:
 ```bash
 cd /opt/agentunnel/compose
 sudo docker compose --env-file .env logs --tail 100 relay
+sudo docker compose --env-file .env logs --tail 100 stun
 ```
 
 Relay structured logs are also persisted on the host:
 
 ```text
 /opt/agentunnel/logs/relay/relay.log
+```
+
+STUN structured logs are persisted on the host:
+
+```text
+/opt/agentunnel/logs/relay/stun.log
 ```
 
 Follow the persistent log:
@@ -482,12 +548,13 @@ commit;
 
 ## Release Update Checklist
 
-For a normal Relay-only update, run the private repo `Release` workflow, select `relay`, and enter `v0.1.1`. The workflow resolves source tag `relay-v0.1.1`, verifies the image, and then creates or validates that source tag before push.
+For a normal Relay-only update, run the private repo `Release` workflow, select `relay`, and enter `v0.1.1`. The workflow resolves source tag `relay-v0.1.1`, verifies the image for both Relay and STUN entrypoints, and then creates or validates that source tag before push.
 
 Wait for the GitHub Actions workflow to publish:
 
 ```text
 ghcr.io/yuanbohan/agent-tunnel-relay:v0.1.1
+ghcr.io/yuanbohan/agent-tunnel-stun:v0.1.1
 ```
 
 Then update the remote `.env`:
@@ -509,6 +576,18 @@ Apply:
 make compose-up-relay-cn
 ```
 
+For a rare STUN-only update, set `STUN_IMAGE_TAG=v0.1.1` instead and run:
+
+```bash
+make compose-up-stun-relay-cn
+```
+
+For the first split-service rollout, set both tags to the first compatible release and run:
+
+```bash
+make compose-up-stack-relay-cn
+```
+
 Verify:
 
 ```bash
@@ -519,7 +598,7 @@ sudo tail -n 100 /opt/agentunnel/logs/relay/relay.log
 
 ## Troubleshooting
 
-If image pull fails with `denied`, confirm `relay_ghcr_token` is set in the relevant Ansible secrets file and that the token has package read access for the private `agent-tunnel-relay` GHCR package.
+If image pull fails with `denied`, confirm `relay_ghcr_token` is set in the relevant Ansible secrets file and that the token has package read access for the private `agent-tunnel-relay` and `agent-tunnel-stun` GHCR packages.
 
 If Compose says a required variable is missing, edit:
 
@@ -534,5 +613,13 @@ If Relay is unhealthy:
 3. Check Relay logs.
 4. Confirm `RELAY_APP_SECRET`, `RELAY_OPERATOR_TOKEN`, and URL-safe PostgreSQL credentials are set.
 5. Confirm nginx proxies `/api/`, `/agent/ws`, `/device/ws`, and `/healthz` to `127.0.0.1:8586`.
+
+If STUN is unreachable:
+
+1. Check `sudo docker compose --env-file .env ps` lists `stun`.
+2. Confirm `stun.agentunnel.cn` resolves to the VPS.
+3. Confirm cloud and host firewalls allow inbound `3478/udp`.
+4. Run `scripts/stun-check.sh stun.agentunnel.cn:3478` from the checkout.
+5. Check `sudo docker compose --env-file .env logs --tail 100 stun`.
 
 If a fresh database did not initialize, check whether the configured Docker volume already existed. PostgreSQL only runs `/docker-entrypoint-initdb.d/` files for an empty data directory.

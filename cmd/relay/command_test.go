@@ -42,6 +42,50 @@ func TestRunWithHandlersDispatchesServeCommand(t *testing.T) {
 	}
 }
 
+func TestRunWithHandlersDispatchesSTUNServeCommand(t *testing.T) {
+	env := runtimeEnv{
+		getenv: testEnv(map[string]string{
+			"RELAY_STUN_LISTEN_ADDR": "127.0.0.1:3479",
+			"RELAY_LOG_FILE":         "/tmp/stun.log",
+		}),
+	}
+
+	called := false
+	err := runWithHandlers([]string{"stun", "serve", "--listen-addr", "127.0.0.1:3480"}, env, commandHandlers{
+		stunServe: func(_ context.Context, cfg stunServeConfig) error {
+			called = true
+			if cfg.ListenAddr != "127.0.0.1:3480" {
+				t.Fatalf("ListenAddr = %q, want 127.0.0.1:3480", cfg.ListenAddr)
+			}
+			if cfg.LogFile != "/tmp/stun.log" {
+				t.Fatalf("LogFile = %q, want /tmp/stun.log", cfg.LogFile)
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runWithHandlers returned error: %v", err)
+	}
+	if !called {
+		t.Fatal("stun serve handler was not called")
+	}
+}
+
+func TestRunWithHandlersRejectsDisabledSTUNServeListener(t *testing.T) {
+	err := runWithHandlers([]string{"stun", "serve", "--listen-addr", "off"}, runtimeEnv{}, commandHandlers{
+		stunServe: func(context.Context, stunServeConfig) error {
+			t.Fatal("stun serve handler should not be called")
+			return nil
+		},
+	})
+	if err == nil {
+		t.Fatal("expected disabled listen address to fail")
+	}
+	if !strings.Contains(err.Error(), "relay stun serve requires a UDP listener") {
+		t.Fatalf("error = %q, want disabled-listener message", err.Error())
+	}
+}
+
 func TestRunWithHandlersRejectsUnknownCommand(t *testing.T) {
 	err := runWithHandlers([]string{"wat"}, runtimeEnv{}, commandHandlers{})
 	if err == nil {
@@ -139,7 +183,8 @@ func TestRunWithHandlersHelpExplainsServerAndLocalOperatorRequirements(t *testin
 		t.Fatalf("runWithHandlers returned error: %v", err)
 	}
 	for _, fragment := range []string{
-		`Run the relay server and local-only operator commands.`,
+		`Run the relay server, Binding-only STUN service, and local-only operator commands.`,
+		`relay stun serve`,
 		`RELAY_DATABASE_URL`,
 		`RELAY_APP_SECRET`,
 		`RELAY_OPERATOR_TOKEN`,

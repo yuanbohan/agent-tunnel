@@ -20,6 +20,11 @@ type serveConfig struct {
 	LogFile        string
 }
 
+type stunServeConfig struct {
+	ListenAddr string
+	LogFile    string
+}
+
 type inviteCreateConfig struct {
 	RelayAddr     string
 	OperatorToken string
@@ -113,6 +118,39 @@ func loadServeConfig(getenv func(string) string, args []string) (serveConfig, er
 		return serveConfig{}, usagef("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
 	return finalizeServeConfig(cfg, getenv)
+}
+
+// applySTUNServeFlags registers stun-serve-subcommand flags on fs.
+func applySTUNServeFlags(fs *pflag.FlagSet, cfg *stunServeConfig) {
+	fs.StringVarP(&cfg.ListenAddr, "listen-addr", "a", "", "STUN UDP listen address (env: RELAY_STUN_LISTEN_ADDR)")
+	fs.StringVarP(&cfg.LogFile, "log-file", "L", "", "append structured logs to this file (env: RELAY_LOG_FILE, default: stderr)")
+}
+
+func finalizeSTUNServeConfig(cfg stunServeConfig, getenv func(string) string) (stunServeConfig, error) {
+	if cfg.ListenAddr == "" {
+		cfg.ListenAddr = envOrDefault(getenv, "RELAY_STUN_LISTEN_ADDR", defaultRelaySTUNListenAddr)
+	}
+	cfg.ListenAddr = relayconfig.NormalizeSTUNListenAddr(cfg.ListenAddr)
+	if cfg.ListenAddr == "" {
+		return stunServeConfig{}, usagef("missing STUN listen address; relay stun serve requires a UDP listener")
+	}
+	if cfg.LogFile == "" {
+		cfg.LogFile = envValue(getenv, "RELAY_LOG_FILE")
+	}
+	return cfg, nil
+}
+
+func loadSTUNServeConfig(getenv func(string) string, args []string) (stunServeConfig, error) {
+	var cfg stunServeConfig
+	fs := newFlagSet("stun serve")
+	applySTUNServeFlags(fs, &cfg)
+	if err := fs.Parse(args); err != nil {
+		return stunServeConfig{}, usagef("%v", err)
+	}
+	if len(fs.Args()) != 0 {
+		return stunServeConfig{}, usagef("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	return finalizeSTUNServeConfig(cfg, getenv)
 }
 
 // applyInviteCreateFlags registers invite-create flags on fs.

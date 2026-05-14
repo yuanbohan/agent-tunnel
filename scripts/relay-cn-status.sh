@@ -2,6 +2,9 @@
 set -uo pipefail
 
 domain="${RELAY_CN_DOMAIN:-agentunnel.cn}"
+stun_domain="${RELAY_CN_STUN_DOMAIN:-stun.${domain}}"
+stun_port="${RELAY_CN_STUN_PORT:-3478}"
+stun_target="${RELAY_CN_STUN_TARGET:-${stun_domain}:${stun_port}}"
 expected_host="${RELAY_CN_HOST:-8.133.195.191}"
 ssh_user="${RELAY_CN_SSH_USER:-ubuntu}"
 compose_dir="${RELAY_CN_COMPOSE_DIR:-/opt/agentunnel/compose}"
@@ -169,7 +172,8 @@ http_check_websocket_auth() {
 }
 
 printf '🚦 relay-cn status for %s\n' "$domain"
-printf '   target host: %s\n\n' "$expected_host"
+printf '   target host: %s\n' "$expected_host"
+printf '   STUN host: %s\n\n' "$stun_target"
 
 resolved_host="$(dig +short "${domain}" A | tail -n 1 || true)"
 if [ -z "$resolved_host" ]; then
@@ -178,6 +182,15 @@ elif [ "$resolved_host" != "$expected_host" ]; then
 	fail_result "dns" "resolved ${resolved_host}, expected ${expected_host}"
 else
 	pass_result "dns" "${domain} -> ${resolved_host}"
+fi
+
+resolved_stun_host="$(dig +short "${stun_domain}" A | tail -n 1 || true)"
+if [ -z "$resolved_stun_host" ]; then
+	fail_result "dns-stun" "A record for ${stun_domain} is empty"
+elif [ "$resolved_stun_host" != "$expected_host" ]; then
+	fail_result "dns-stun" "resolved ${resolved_stun_host}, expected ${expected_host}"
+else
+	pass_result "dns-stun" "${stun_domain} -> ${resolved_stun_host}"
 fi
 
 if ssh -o StrictHostKeyChecking=no "${ssh_user}@${expected_host}" \
@@ -191,10 +204,10 @@ fi
 if ssh -o StrictHostKeyChecking=no "${ssh_user}@${expected_host}" \
 	"cd '${compose_dir}' && sudo docker compose --env-file .env ps" \
 	>"$compose_ps_file" 2>"$tmpdir/compose-ps.stderr"; then
-	if grep -q "compose-relay-1" "$compose_ps_file" && grep -q "compose-postgres-1" "$compose_ps_file"; then
-		pass_result "compose" "relay and postgres containers are present"
+	if grep -q "compose-relay-1" "$compose_ps_file" && grep -q "compose-postgres-1" "$compose_ps_file" && grep -q "compose-stun-1" "$compose_ps_file"; then
+		pass_result "compose" "relay, postgres, and stun containers are present"
 	else
-		fail_result "compose" "docker compose ps did not list both relay and postgres"
+		fail_result "compose" "docker compose ps did not list relay, postgres, and stun"
 		print_diagnostics "compose ps" "$compose_ps_file"
 	fi
 else
@@ -229,6 +242,16 @@ http_check_websocket_auth "agent-ws" "401" "/agent/ws"
 http_check_websocket_auth "device-ws" "401" "/device/ws"
 http_check_websocket_auth "connectivity-daemon-ws" "401" "/connectivity/daemon/ws"
 http_check_websocket_auth "connectivity-tunnel-ws" "403" "/connectivity/tunnel/ws?token=invalid"
+
+stun_check_out="$tmpdir/stun-check.out"
+if ./scripts/stun-check.sh "$stun_target" >"$stun_check_out" 2>"$tmpdir/stun-check.stderr"; then
+	stun_details="$(tr '\n' ' ' <"$stun_check_out" | sed 's/[[:space:]]*$//')"
+	pass_result "stun-binding" "${stun_details:-valid Binding response from ${stun_target}}"
+else
+	fail_result "stun-binding" "no valid Binding response from ${stun_target}"
+	print_diagnostics "stun-binding stdout" "$stun_check_out"
+	print_diagnostics "stun-binding stderr" "$tmpdir/stun-check.stderr"
+fi
 
 printf '\n📋 Summary\n'
 print_results_table

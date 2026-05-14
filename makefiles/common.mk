@@ -51,7 +51,7 @@ ANSIBLE_DRY_RUN ?= 0
 DEPLOY_RETRY_COUNT ?= 3
 ## DEPLOY_RETRY_DELAY: Seconds to wait between retry attempts for relay binary upload targets.
 DEPLOY_RETRY_DELAY ?= 2
-## RELAY_COMPOSE_ACTION: Compose lifecycle action for compose-* deploy targets (`sync`, `pull`, `up`, `start`, `stop`, `down`).
+## RELAY_COMPOSE_ACTION: Compose lifecycle action for compose-* deploy targets (`sync`, `pull`, `pull-relay`, `pull-stun`, `up`, `up-relay`, `up-stun`, `start`, `stop`, `down`).
 RELAY_COMPOSE_ACTION ?= sync
 ## RELAY_CN_SSH_DEST: SSH destination used by relay-cn helper targets.
 RELAY_CN_SSH_DEST ?= ubuntu@8.133.195.191

@@ -34,7 +34,7 @@ Published `tunnel` binaries also embed their own release identity. Official rele
 
 The private-repo `Release` workflow is manually dispatched and requires the maintainer to choose the product being released. For Tunnel, it enforces that the requested `tunnel` release version stays within the current repo relay compatibility line. It does not publish a `relay` binary; it prevents a `tunnel` release from crossing into a new line until the repo's shared build metadata is updated first.
 
-Relay is distributed separately as a Docker image through GitHub Container Registry. The same `Release` workflow builds `cmd/relay` into `ghcr.io/yuanbohan/agent-tunnel-relay:<version>` when the maintainer selects Relay.
+Relay is distributed separately as Docker images through GitHub Container Registry. The same `Release` workflow builds `cmd/relay` once when the maintainer selects Relay, then publishes that build artifact as both `ghcr.io/yuanbohan/agent-tunnel-relay:<version>` and `ghcr.io/yuanbohan/agent-tunnel-stun:<version>`.
 
 Source tags are product-prefixed to avoid ambiguity in the private repository:
 
@@ -44,7 +44,7 @@ Source tags are product-prefixed to avoid ambiguity in the private repository:
 Published product versions remain prefix-free:
 
 - Tunnel public release, archives, installer, and `tunnel --version`: `vX.Y.Z`
-- Relay GHCR image tag, labels, `/api/version`, and `relay version`: `vX.Y.Z`
+- Relay/STUN GHCR image tags, labels, `/api/version`, and `relay version`: `vX.Y.Z`
 
 ## Token Setup
 
@@ -93,11 +93,11 @@ Those same public assets are the only source used by native `tunnel update` and 
    - `GitCommit=<sha>`
    - `GitBranch=<source tag>`
    - `BuildTime=<timestamp>`
-7. The workflow runs `relay version` inside the image and requires the first line to report the plain version and the `branch:` line to report the resolved source tag.
+7. The workflow runs `relay version` inside the Relay image and requires the first line to report the plain version and the `branch:` line to report the resolved source tag. It also verifies the STUN image tag reports the same version, exposes `relay stun serve`, keeps the Relay image default command as `relay serve`, and advertises both `8586/tcp` and `3478/udp`.
 8. After Relay-specific validation succeeds, the workflow creates or validates source tag `relay-v0.1.2`.
-9. The workflow pushes `ghcr.io/yuanbohan/agent-tunnel-relay:<plain version>`.
+9. The workflow pushes both `ghcr.io/yuanbohan/agent-tunnel-relay:<plain version>` and `ghcr.io/yuanbohan/agent-tunnel-stun:<plain version>`.
 
-Compose deployments pin `RELAY_IMAGE_TAG` to the desired semver tag. They should not track a mutable `latest` tag.
+Compose deployments pin `RELAY_IMAGE_TAG` and `STUN_IMAGE_TAG` to desired semver tags from those service-specific image names. They should not track a mutable `latest` tag.
 
 ## Commit Messages
 

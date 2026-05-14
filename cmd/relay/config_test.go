@@ -72,6 +72,47 @@ func TestLoadServeConfigAllowsSTUNListenAddrConfiguration(t *testing.T) {
 	}
 }
 
+func TestLoadSTUNServeConfigDefaultsWithoutRelaySecrets(t *testing.T) {
+	cfg, err := loadSTUNServeConfig(testEnv(nil), nil)
+	if err != nil {
+		t.Fatalf("loadSTUNServeConfig returned error: %v", err)
+	}
+	if cfg.ListenAddr != defaultRelaySTUNListenAddr {
+		t.Fatalf("ListenAddr = %q, want %q", cfg.ListenAddr, defaultRelaySTUNListenAddr)
+	}
+}
+
+func TestLoadSTUNServeConfigUsesListenAddrAndLogFile(t *testing.T) {
+	cfg, err := loadSTUNServeConfig(testEnv(map[string]string{
+		"RELAY_DATABASE_URL":     "postgres://relay",
+		"RELAY_APP_SECRET":       "secret",
+		"RELAY_OPERATOR_TOKEN":   "operator-secret",
+		"RELAY_STUN_LISTEN_ADDR": "127.0.0.1:3479",
+		"RELAY_LOG_FILE":         "/tmp/from-env.log",
+	}), []string{"--listen-addr", "127.0.0.1:3480", "--log-file", "/tmp/from-flag.log"})
+	if err != nil {
+		t.Fatalf("loadSTUNServeConfig returned error: %v", err)
+	}
+	if cfg.ListenAddr != "127.0.0.1:3480" {
+		t.Fatalf("ListenAddr = %q, want 127.0.0.1:3480", cfg.ListenAddr)
+	}
+	if cfg.LogFile != "/tmp/from-flag.log" {
+		t.Fatalf("LogFile = %q, want /tmp/from-flag.log", cfg.LogFile)
+	}
+}
+
+func TestLoadSTUNServeConfigRejectsDisabledListenAddr(t *testing.T) {
+	_, err := loadSTUNServeConfig(testEnv(map[string]string{
+		"RELAY_STUN_LISTEN_ADDR": "off",
+	}), nil)
+	if err == nil {
+		t.Fatal("expected disabled STUN listen address to fail")
+	}
+	if err.Error() != `missing STUN listen address; relay stun serve requires a UDP listener` {
+		t.Fatalf("error = %q, want disabled-listener message", err.Error())
+	}
+}
+
 func TestLoadServeConfigUsesLogFileEnv(t *testing.T) {
 	cfg, err := loadServeConfig(testEnv(map[string]string{
 		"RELAY_DATABASE_URL":   "postgres://relay",

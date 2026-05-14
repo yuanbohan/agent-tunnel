@@ -33,6 +33,7 @@ type runtimeEnv struct {
 
 type commandHandlers struct {
 	serve         func(context.Context, serveConfig) error
+	stunServe     func(context.Context, stunServeConfig) error
 	inviteCreate  func(context.Context, inviteCreateConfig) error
 	inviteDisable func(context.Context, inviteDisableConfig) error
 	inviteList    func(context.Context, inviteListConfig) error
@@ -88,12 +89,15 @@ func newRootCmd(env runtimeEnv, handlers commandHandlers) *cobra.Command {
 	root := &cobra.Command{
 		Use:   "relay",
 		Short: "Tunnel relay server and operator CLI",
-		Long: `Run the relay server and local-only operator commands.
+		Long: `Run the relay server, Binding-only STUN service, and local-only operator commands.
 
 The public server entrypoint is "relay serve". It requires:
   - RELAY_DATABASE_URL
   - RELAY_APP_SECRET
   - RELAY_OPERATOR_TOKEN
+
+The STUN-only entrypoint is "relay stun serve". It requires no Relay database
+or Relay secrets and listens on RELAY_STUN_LISTEN_ADDR (default 0.0.0.0:3478).
 
 The operator commands under "relay invite" and "relay user" are intentionally
 local-only. Run them on the relay host after "relay serve" is already running.
@@ -101,6 +105,7 @@ They use RELAY_OPERATOR_TOKEN and connect to RELAY_LISTEN_ADDR (default
 127.0.0.1:8586). The server also listens for Binding-only STUN on
 RELAY_STUN_LISTEN_ADDR (default 0.0.0.0:3478) unless disabled with "off".`,
 		Example: `  relay serve --listen-addr 127.0.0.1:8586
+  relay stun serve --listen-addr 0.0.0.0:3478
   relay invite create --count 3 --expires-in 7d
   relay invite disable --code AB2C3D
   relay user delete --username alice
@@ -114,6 +119,7 @@ RELAY_STUN_LISTEN_ADDR (default 0.0.0.0:3478) unless disabled with "off".`,
 	wrapFlagErrors(root)
 	root.AddCommand(newVersionCmd())
 	root.AddCommand(newServeCmd(env, handlers))
+	root.AddCommand(newSTUNCmd(env, handlers))
 	root.AddCommand(newInviteCmd(env, handlers))
 	root.AddCommand(newUserCmd(env, handlers))
 	return root
@@ -176,6 +182,52 @@ Optional environment variables:
 	}
 	wrapFlagErrors(cmd)
 	applyServeFlags(cmd.Flags(), &cfg)
+	return cmd
+}
+
+func newSTUNCmd(env runtimeEnv, handlers commandHandlers) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "stun",
+		Short: "Run Binding-only STUN services",
+		Long: `Run Binding-only STUN services.
+
+These commands do not require Relay database or operator secrets.`,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+	}
+	wrapFlagErrors(cmd)
+	cmd.AddCommand(newSTUNServeCmd(env, handlers))
+	return cmd
+}
+
+func newSTUNServeCmd(env runtimeEnv, handlers commandHandlers) *cobra.Command {
+	var cfg stunServeConfig
+	cmd := &cobra.Command{
+		Use:   "serve",
+		Short: "Start the Binding-only STUN UDP service",
+		Long: `Start the Binding-only STUN UDP service.
+
+This command requires no Relay database, app secret, or operator token.
+
+Optional environment variables:
+  - RELAY_STUN_LISTEN_ADDR (default 0.0.0.0:3478)
+  - RELAY_LOG_FILE`,
+		Example: `  relay stun serve
+  relay stun serve --listen-addr 0.0.0.0:3478
+  RELAY_LOG_FILE=/var/log/stun.log relay stun serve`,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		Args:          cobra.NoArgs,
+		RunE: func(c *cobra.Command, _ []string) error {
+			final, err := finalizeSTUNServeConfig(cfg, env.getenv)
+			if err != nil {
+				return err
+			}
+			return handlers.stunServe(c.Context(), final)
+		},
+	}
+	wrapFlagErrors(cmd)
+	applySTUNServeFlags(cmd.Flags(), &cfg)
 	return cmd
 }
 
@@ -453,6 +505,20 @@ func newCommandHandlers(env runtimeEnv) commandHandlers {
 			}
 
 			return startRelay(ctx, handler, env.listen, env.listenPacket, env.serveHTTP)
+		},
+		stunServe: func(ctx context.Context, cfg stunServeConfig) error {
+			logSink := env.stderr
+			if cfg.LogFile != "" {
+				f, err := os.OpenFile(cfg.LogFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o640)
+				if err != nil {
+					return fmt.Errorf("open log file %q: %w", cfg.LogFile, err)
+				}
+				defer f.Close()
+				logSink = f
+			}
+			logx.Setup(logSink)
+
+			return startSTUN(ctx, cfg.ListenAddr, env.listenPacket)
 		},
 		inviteCreate: func(ctx context.Context, cfg inviteCreateConfig) error {
 			return runInviteCreate(ctx, newHTTPOperatorClient(cfg.RelayAddr, cfg.OperatorToken, env.httpClient), cfg, env.stdout)

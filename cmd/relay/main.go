@@ -14,6 +14,11 @@ import (
 	"yuanbohan/tunnel/internal/logx"
 )
 
+const (
+	relaySTUNBindFailureAdvice      = `set --stun-listen-addr/RELAY_STUN_LISTEN_ADDR to another address or "off" to disable`
+	standaloneSTUNBindFailureAdvice = `set --listen-addr/RELAY_STUN_LISTEN_ADDR to another UDP address`
+)
+
 func main() {
 	if err := run(os.Args[1:], defaultRuntimeEnv()); err != nil {
 		log.Fatal(err)
@@ -26,6 +31,10 @@ func logRelayStarted(listenAddr, stunListenAddr string) {
 		fields = append(fields, logx.String("stun_listen_addr", stunListenAddr))
 	}
 	logx.Info("relay_started", fields...)
+}
+
+func logSTUNStarted(listenAddr string) {
+	logx.Info("stun_started", logx.String("listen_addr", listenAddr))
 }
 
 func startRelay(
@@ -43,12 +52,9 @@ func startRelay(
 
 	var stunConn net.PacketConn
 	if stunListenAddr := relayconfig.RelaySTUNListenAddr(); stunListenAddr != "" {
-		if listenPacket == nil {
-			listenPacket = net.ListenPacket
-		}
-		stunConn, err = listenPacket("udp", stunListenAddr)
+		stunConn, err = bindSTUNListener(stunListenAddr, listenPacket, relaySTUNBindFailureAdvice)
 		if err != nil {
-			return fmt.Errorf("bind STUN UDP listener %q failed; set --stun-listen-addr/RELAY_STUN_LISTEN_ADDR to another address or \"off\" to disable: %w", stunListenAddr, err)
+			return err
 		}
 	}
 
@@ -57,7 +63,7 @@ func startRelay(
 	if stunConn != nil {
 		defer stunConn.Close()
 		go func() {
-			if err := (&stunserver.Server{}).Serve(serveCtx, stunConn); err != nil && serveCtx.Err() == nil {
+			if err := serveSTUN(serveCtx, stunConn); err != nil && serveCtx.Err() == nil {
 				logx.Warn("stun_server_stopped", logx.String("error", err.Error()))
 			}
 		}()
@@ -69,6 +75,38 @@ func startRelay(
 	}
 	logRelayStarted(ln.Addr().String(), boundSTUNAddr)
 	return serve(newHTTPServer(handler), ln)
+}
+
+func startSTUN(
+	ctx context.Context,
+	listenAddr string,
+	listenPacket func(network, address string) (net.PacketConn, error),
+) error {
+	conn, err := bindSTUNListener(listenAddr, listenPacket, standaloneSTUNBindFailureAdvice)
+	if err != nil {
+		return err
+	}
+	logSTUNStarted(conn.LocalAddr().String())
+	return serveSTUN(ctx, conn)
+}
+
+func bindSTUNListener(
+	listenAddr string,
+	listenPacket func(network, address string) (net.PacketConn, error),
+	failureAdvice string,
+) (net.PacketConn, error) {
+	if listenPacket == nil {
+		listenPacket = net.ListenPacket
+	}
+	conn, err := listenPacket("udp", listenAddr)
+	if err != nil {
+		return nil, fmt.Errorf("bind STUN UDP listener %q failed; %s: %w", listenAddr, failureAdvice, err)
+	}
+	return conn, nil
+}
+
+func serveSTUN(ctx context.Context, conn net.PacketConn) error {
+	return (&stunserver.Server{}).Serve(ctx, conn)
 }
 
 func newHTTPServer(handler http.Handler) *http.Server {
