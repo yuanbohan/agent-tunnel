@@ -14,6 +14,11 @@ import (
 	"yuanbohan/tunnel/internal/logx"
 )
 
+const (
+	relaySTUNBindFailureAdvice      = `set --stun-listen-addr/RELAY_STUN_LISTEN_ADDR to another address or "off" to disable`
+	standaloneSTUNBindFailureAdvice = `set --listen-addr/RELAY_STUN_LISTEN_ADDR to another UDP address`
+)
+
 func main() {
 	if err := run(os.Args[1:], defaultRuntimeEnv()); err != nil {
 		log.Fatal(err)
@@ -47,7 +52,7 @@ func startRelay(
 
 	var stunConn net.PacketConn
 	if stunListenAddr := relayconfig.RelaySTUNListenAddr(); stunListenAddr != "" {
-		stunConn, err = bindSTUNListener(stunListenAddr, listenPacket)
+		stunConn, err = bindSTUNListener(stunListenAddr, listenPacket, relaySTUNBindFailureAdvice)
 		if err != nil {
 			return err
 		}
@@ -77,7 +82,7 @@ func startSTUN(
 	listenAddr string,
 	listenPacket func(network, address string) (net.PacketConn, error),
 ) error {
-	conn, err := bindSTUNListener(listenAddr, listenPacket)
+	conn, err := bindSTUNListener(listenAddr, listenPacket, standaloneSTUNBindFailureAdvice)
 	if err != nil {
 		return err
 	}
@@ -88,13 +93,14 @@ func startSTUN(
 func bindSTUNListener(
 	listenAddr string,
 	listenPacket func(network, address string) (net.PacketConn, error),
+	failureAdvice string,
 ) (net.PacketConn, error) {
 	if listenPacket == nil {
 		listenPacket = net.ListenPacket
 	}
 	conn, err := listenPacket("udp", listenAddr)
 	if err != nil {
-		return nil, fmt.Errorf("bind STUN UDP listener %q failed; set --stun-listen-addr/RELAY_STUN_LISTEN_ADDR to another address or \"off\" to disable: %w", listenAddr, err)
+		return nil, fmt.Errorf("bind STUN UDP listener %q failed; %s: %w", listenAddr, failureAdvice, err)
 	}
 	return conn, nil
 }

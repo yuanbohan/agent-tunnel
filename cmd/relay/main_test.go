@@ -94,6 +94,12 @@ func TestStartSTUNDoesNotLogBeforeBind(t *testing.T) {
 	if !strings.Contains(err.Error(), `bind STUN UDP listener "127.0.0.1:3478" failed`) {
 		t.Fatalf("error = %q, want bind failure context", err.Error())
 	}
+	if !strings.Contains(err.Error(), "--listen-addr/RELAY_STUN_LISTEN_ADDR") {
+		t.Fatalf("error = %q, want standalone STUN listen advice", err.Error())
+	}
+	if strings.Contains(err.Error(), "--stun-listen-addr") || strings.Contains(err.Error(), `"off" to disable`) {
+		t.Fatalf("error = %q, want no relay-only STUN advice", err.Error())
+	}
 	if got := buf.String(); got != "" {
 		t.Fatalf("log = %q, want no startup log on STUN bind failure", got)
 	}
@@ -166,6 +172,12 @@ func TestStartRelayDoesNotLogBeforeSTUNBind(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatal("expected STUN bind failure")
+	}
+	if !strings.Contains(err.Error(), "--stun-listen-addr/RELAY_STUN_LISTEN_ADDR") {
+		t.Fatalf("error = %q, want relay STUN listen advice", err.Error())
+	}
+	if !strings.Contains(err.Error(), `"off" to disable`) {
+		t.Fatalf("error = %q, want disable advice for relay serve", err.Error())
 	}
 	if got := buf.String(); got != "" {
 		t.Fatalf("log = %q, want no startup log on STUN bind failure", got)

@@ -51,7 +51,7 @@ func defaultRelay() Relay {
 func SetupRelay(getenv func(string) string, listenAddrOverride string, stunListenAddrOverride string) error {
 	cfg := defaultRelay()
 	cfg.ListenAddr = envOrDefault(getenv, "RELAY_LISTEN_ADDR", cfg.ListenAddr)
-	cfg.STUNListenAddr = normalizeSTUNListenAddr(envOrDefault(getenv, "RELAY_STUN_LISTEN_ADDR", cfg.STUNListenAddr))
+	cfg.STUNListenAddr = NormalizeSTUNListenAddr(envOrDefault(getenv, "RELAY_STUN_LISTEN_ADDR", cfg.STUNListenAddr))
 	cfg.DatabaseURL = envValue(getenv, "RELAY_DATABASE_URL")
 	cfg.AppSecret = envValue(getenv, "RELAY_APP_SECRET")
 	cfg.OperatorToken = envValue(getenv, "RELAY_OPERATOR_TOKEN")
@@ -60,7 +60,7 @@ func SetupRelay(getenv func(string) string, listenAddrOverride string, stunListe
 		cfg.ListenAddr = trimmed
 	}
 	if trimmed := strings.TrimSpace(stunListenAddrOverride); trimmed != "" {
-		cfg.STUNListenAddr = normalizeSTUNListenAddr(trimmed)
+		cfg.STUNListenAddr = NormalizeSTUNListenAddr(trimmed)
 	}
 
 	switch {
@@ -86,7 +86,7 @@ func UseRelayForTest(cfg Relay) func() {
 		next.ListenAddr = cfg.ListenAddr
 	}
 	if cfg.STUNListenAddr != "" {
-		next.STUNListenAddr = normalizeSTUNListenAddr(cfg.STUNListenAddr)
+		next.STUNListenAddr = NormalizeSTUNListenAddr(cfg.STUNListenAddr)
 	}
 	if cfg.DatabaseURL != "" {
 		next.DatabaseURL = cfg.DatabaseURL
@@ -176,7 +176,8 @@ func envValue(getenv func(string) string, key string) string {
 	return strings.TrimSpace(getenv(key))
 }
 
-func normalizeSTUNListenAddr(value string) string {
+// NormalizeSTUNListenAddr maps disabled sentinel values to an empty listen address.
+func NormalizeSTUNListenAddr(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "off", "disabled", "none", "false":
 		return ""

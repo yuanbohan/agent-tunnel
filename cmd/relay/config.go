@@ -130,7 +130,7 @@ func finalizeSTUNServeConfig(cfg stunServeConfig, getenv func(string) string) (s
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = envOrDefault(getenv, "RELAY_STUN_LISTEN_ADDR", defaultRelaySTUNListenAddr)
 	}
-	cfg.ListenAddr = normalizeSTUNListenAddr(cfg.ListenAddr)
+	cfg.ListenAddr = relayconfig.NormalizeSTUNListenAddr(cfg.ListenAddr)
 	if cfg.ListenAddr == "" {
 		return stunServeConfig{}, usagef("missing STUN listen address; relay stun serve requires a UDP listener")
 	}
@@ -341,15 +341,6 @@ func envValue(getenv func(string) string, key string) string {
 		return ""
 	}
 	return strings.TrimSpace(getenv(key))
-}
-
-func normalizeSTUNListenAddr(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "off", "disabled", "none", "false":
-		return ""
-	default:
-		return strings.TrimSpace(value)
-	}
 }
 
 func newFlagSet(name string) *pflag.FlagSet {
