@@ -9,6 +9,7 @@ expected_host="${RELAY_CN_HOST:-8.133.195.191}"
 ssh_user="${RELAY_CN_SSH_USER:-ubuntu}"
 compose_dir="${RELAY_CN_COMPOSE_DIR:-/opt/agentunnel/compose}"
 website_root="${RELAY_CN_WEBSITE_ROOT:-/var/www/agentunnel-website}"
+nginx_site_path="${RELAY_CN_NGINX_SITE_PATH:-/etc/nginx/sites-available/${domain}}"
 
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
@@ -84,23 +85,36 @@ print_diagnostics() {
 	fi
 }
 
-http_check_remote() {
-	local check="$1"
-	local expected_code="$2"
-	local path="$3"
-	local body_pattern="${4:-}"
-	local headers_file="$tmpdir/${check}.headers"
-	local body_file="$tmpdir/${check}.body"
-	local raw_file="$tmpdir/${check}.raw"
-	local code
+truncate_text() {
+	local text="$1"
+	local max_len="${2:-160}"
 
-	if ! ssh -o StrictHostKeyChecking=no "${ssh_user}@${expected_host}" \
-		"curl -ksS --resolve ${domain}:443:127.0.0.1 -D - -o - https://${domain}${path}" \
-		>"$raw_file" 2>"$tmpdir/${check}.stderr"; then
-		fail_result "$check" "request failed for ${path}"
-		print_diagnostics "${check} stderr" "$tmpdir/${check}.stderr"
+	if [ "${#text}" -le "$max_len" ]; then
+		printf '%s' "$text"
 		return
 	fi
+
+	printf '%s...' "${text:0:$((max_len - 3))}"
+}
+
+join_by_comma_space() {
+	local out=""
+	local item
+
+	for item in "$@"; do
+		if [ -n "$out" ]; then
+			out="${out}, "
+		fi
+		out="${out}${item}"
+	done
+
+	printf '%s' "$out"
+}
+
+split_http_response() {
+	local raw_file="$1"
+	local headers_file="$2"
+	local body_file="$3"
 
 	awk '{
 		line = $0
@@ -122,19 +136,118 @@ http_check_remote() {
 			body = 1
 		}
 	}' "$raw_file" >"$headers_file"
+}
+
+print_http_response_summary() {
+	local label="$1"
+	local path="$2"
+	local headers_file="$3"
+	local body_file="$4"
+	local status_line
+	local content_type
+	local body_summary
+	local html_title
+
+	status_line="$(awk '/^HTTP\// { line = $0 } END { print line }' "$headers_file")"
+	content_type="$(awk 'BEGIN { IGNORECASE = 1 } /^Content-Type:/ { sub(/^Content-Type:[[:space:]]*/, "", $0); print; exit }' "$headers_file")"
+
+	printf '\n🔎 %s response\n' "$label" >&2
+	[ -n "$status_line" ] && printf 'Status: %s\n' "$status_line" >&2
+	printf 'Path: %s\n' "$path" >&2
+	[ -n "$content_type" ] && printf 'Content-Type: %s\n' "$content_type" >&2
+
+	if printf '%s' "$content_type" | grep -qi 'text/html'; then
+		html_title="$(
+			tr '\n' ' ' <"$body_file" |
+				sed -n 's:.*<title>[[:space:]]*\([^<][^<]*\)[[:space:]]*</title>.*:\1:p' |
+				head -n 1
+		)"
+		if [ -n "$html_title" ]; then
+			printf 'HTML title: %s\n' "$(truncate_text "$html_title" 120)" >&2
+		fi
+	fi
+
+	body_summary="$(
+		awk 'NF { print; exit }' "$body_file" |
+			sed 's/[[:space:]]\+/ /g'
+	)"
+	if [ -n "$body_summary" ] && [ -z "$html_title" ]; then
+		printf 'Body summary: %s\n' "$(truncate_text "$body_summary" 160)" >&2
+	fi
+
+	if printf '%s' "$content_type" | grep -qi 'text/html' && grep -Eqi '<!doctype html|<html' "$body_file"; then
+		printf 'Hint: request likely fell through to the website root instead of an exact relay/nginx websocket location.\n' >&2
+	fi
+}
+
+check_remote_nginx_routes() {
+	local check="nginx-site-routes"
+	local site_file="$tmpdir/${check}.conf"
+	local summary_file="$tmpdir/${check}.summary"
+	local missing=()
+	local route
+
+	if ! ssh -o StrictHostKeyChecking=no "${ssh_user}@${expected_host}" \
+		"sudo cat '${nginx_site_path}'" \
+		>"$site_file" 2>"$tmpdir/${check}.stderr"; then
+		fail_result "$check" "could not read ${nginx_site_path}"
+		print_diagnostics "${check} stderr" "$tmpdir/${check}.stderr"
+		return
+	fi
+
+	for route in \
+		"/agent/ws" \
+		"/device/ws" \
+		"/healthz" \
+		"/connectivity/daemon/ws" \
+		"/connectivity/computer/ws" \
+		"/connectivity/tunnel/ws"; do
+		if ! grep -Fq "location = ${route}" "$site_file"; then
+			missing+=("${route}")
+		fi
+	done
+
+	if [ "${#missing[@]}" -ne 0 ]; then
+		grep -n 'location = /' "$site_file" >"$summary_file" || true
+		fail_result "$check" "missing locations in ${nginx_site_path}: $(join_by_comma_space "${missing[@]}"); run make nginx-relay-cn"
+		print_diagnostics "${check} configured locations" "$summary_file"
+		return
+	fi
+
+	pass_result "$check" "${nginx_site_path} contains relay websocket and health routes"
+}
+
+http_check_remote() {
+	local check="$1"
+	local expected_code="$2"
+	local path="$3"
+	local body_pattern="${4:-}"
+	local headers_file="$tmpdir/${check}.headers"
+	local body_file="$tmpdir/${check}.body"
+	local raw_file="$tmpdir/${check}.raw"
+	local code
+
+	if ! ssh -o StrictHostKeyChecking=no "${ssh_user}@${expected_host}" \
+		"curl -ksS --resolve ${domain}:443:127.0.0.1 -D - -o - https://${domain}${path}" \
+		>"$raw_file" 2>"$tmpdir/${check}.stderr"; then
+		fail_result "$check" "request failed for ${path}"
+		print_diagnostics "${check} stderr" "$tmpdir/${check}.stderr"
+		return
+	fi
+
+	split_http_response "$raw_file" "$headers_file" "$body_file"
 
 	code="$(awk '/^HTTP\// { code = $2 } END { print code }' "$raw_file")"
 
 	if [ "$code" != "$expected_code" ]; then
 		fail_result "$check" "expected HTTP ${expected_code}, got ${code:-<empty>}"
-		print_diagnostics "${check} headers" "$headers_file"
-		print_diagnostics "${check} body" "$body_file"
+		print_http_response_summary "$check" "$path" "$headers_file" "$body_file"
 		return
 	fi
 
 	if [ -n "$body_pattern" ] && ! grep -q "$body_pattern" "$body_file"; then
 		fail_result "$check" "HTTP ${code}, body did not match ${body_pattern}"
-		print_diagnostics "${check} body" "$body_file"
+		print_http_response_summary "$check" "$path" "$headers_file" "$body_file"
 		return
 	fi
 
@@ -146,6 +259,8 @@ http_check_websocket_auth() {
 	local expected_code="$2"
 	local path="$3"
 	local raw_file="$tmpdir/${check}.raw"
+	local headers_file="$tmpdir/${check}.headers"
+	local body_file="$tmpdir/${check}.body"
 	local code
 
 	if ! ssh -o StrictHostKeyChecking=no "${ssh_user}@${expected_host}" \
@@ -160,11 +275,12 @@ http_check_websocket_auth() {
 		return
 	fi
 
+	split_http_response "$raw_file" "$headers_file" "$body_file"
 	code="$(awk '/^HTTP\// { code = $2 } END { print code }' "$raw_file")"
 
 	if [ "$code" != "$expected_code" ]; then
 		fail_result "$check" "expected HTTP ${expected_code}, got ${code:-<empty>}"
-		print_diagnostics "${check} response" "$raw_file"
+		print_http_response_summary "$check" "$path" "$headers_file" "$body_file"
 		return
 	fi
 
@@ -192,6 +308,8 @@ elif [ "$resolved_stun_host" != "$expected_host" ]; then
 else
 	pass_result "dns-stun" "${stun_domain} -> ${resolved_stun_host}"
 fi
+
+check_remote_nginx_routes
 
 if ssh -o StrictHostKeyChecking=no "${ssh_user}@${expected_host}" \
 	"test -f '${compose_dir}/.env'" >/dev/null 2>"$tmpdir/remote-env.stderr"; then
@@ -237,10 +355,12 @@ fi
 http_check_remote "website-root" "200" "/" "<!doctype html\\|<html"
 http_check_remote "healthz" "200" "/healthz" '"status":"ok"'
 http_check_remote "api-sessions" "401" "/api/sessions" '"code":1016'
-http_check_websocket_auth "connectivity-app-ws" "401" "/api/connectivity/app/ws"
+http_check_websocket_auth "connectivity-app-ws" "401" "/api/connectivity/ws"
+http_check_websocket_auth "connectivity-app-ws-legacy" "401" "/api/connectivity/app/ws"
 http_check_websocket_auth "agent-ws" "401" "/agent/ws"
 http_check_websocket_auth "device-ws" "401" "/device/ws"
-http_check_websocket_auth "connectivity-daemon-ws" "401" "/connectivity/daemon/ws"
+http_check_websocket_auth "connectivity-computer-ws" "401" "/connectivity/computer/ws"
+http_check_websocket_auth "connectivity-daemon-ws-legacy" "401" "/connectivity/daemon/ws"
 http_check_websocket_auth "connectivity-tunnel-ws" "403" "/connectivity/tunnel/ws?token=invalid"
 
 stun_check_out="$tmpdir/stun-check.out"

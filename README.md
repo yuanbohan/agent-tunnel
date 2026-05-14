@@ -335,7 +335,7 @@ make compose-up-stack-relay-cn # first rollout/full-stack update
 make compose-stop-relay-cn  # stop relay-cn services without removing containers
 make relay-cn-ops           # print the common relay-cn Docker operator commands
 make relay-cn-invite-list   # run `relay invite list` inside the relay-cn relay container
-make relay-cn-status        # check website, relay health, auth paths, Compose state, and public STUN
+make relay-cn-status        # check nginx routes, website, relay health, auth paths, Compose state, and public STUN
 make deploy-website-relay-cn # relay-cn website bundle from ../agent-tunnel-website
 make compose-sync-dev       # sync Compose assets to dev
 make compose-up-dev         # pull images and start/update dev services
@@ -385,7 +385,7 @@ make compose-up-relay-cn    # routine Relay-only Compose update on relay-cn
 make compose-up-stun-relay-cn # rare STUN-only Compose update on relay-cn
 make compose-up-stack-relay-cn # full-stack Compose update on relay-cn
 make compose-stop-relay-cn  # stop relay Compose services on relay-cn
-make relay-cn-status        # check relay-cn website, relay health, auth paths, Compose state, and public STUN
+make relay-cn-status        # check relay-cn nginx routes, website, relay health, auth paths, Compose state, and public STUN
 make deploy-website-dev   # build ../agent-tunnel-website and publish it to the dev host
 make deploy-website-relay-cn  # build ../agent-tunnel-website and publish it to the relay-cn host
 make test              # go test ./...

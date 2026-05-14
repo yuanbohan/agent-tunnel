@@ -597,10 +597,14 @@ func TestConnectivityRelayTunnelRejectsReusedToken(t *testing.T) {
 	if err := appConn.WriteJSON(protocol.ConnectivityFrame{Type: "relay_tunnel_request", RequestID: "request-1", AttemptID: "attempt-1", DaemonID: "dev-1"}); err != nil {
 		t.Fatalf("relay_tunnel_request WriteJSON returned error: %v", err)
 	}
-	var daemonReady protocol.ConnectivityFrame
-	readConnectivityFrame(t, daemonConn, &daemonReady)
 	var appReady protocol.ConnectivityFrame
+	// The app ready frame is emitted only after the daemon ready frame has been
+	// issued, so this test can focus on single-use token redemption without
+	// waiting on an unrelated daemon-side read.
 	readConnectivityFrame(t, appConn, &appReady)
+	if appReady.Type != "relay_tunnel_ready" || appReady.Actor != "client" || appReady.TunnelToken == "" {
+		t.Fatalf("app ready = %#v, want client tunnel token", appReady)
+	}
 
 	first := dialTunnelWS(t, wsBase+"/connectivity/tunnel/ws", appReady.TunnelToken)
 	defer first.Close()
@@ -620,7 +624,6 @@ func TestConnectivityRelayTunnelRejectsReusedToken(t *testing.T) {
 		}
 		t.Fatalf("reused token status = %d, want 403", status)
 	}
-	_ = daemonReady
 }
 
 func TestConnectivityDaemonWebSocketClosesOnAgentTokenRevoke(t *testing.T) {

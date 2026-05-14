@@ -275,7 +275,7 @@ relay-cn-psql: ## Open a PostgreSQL shell on relay-cn using the Compose postgres
 relay-cn-logs: ## Tail the persisted Relay structured log on relay-cn.
 	@ssh -t "$(RELAY_CN_SSH_DEST)" 'sudo tail -n 100 -f /opt/agentunnel/logs/relay/relay.log'
 
-relay-cn-status: ## Check relay-cn DNS, website, relay health, API auth paths, websocket auth paths, and Compose service state.
+relay-cn-status: ## Check relay-cn DNS, nginx site routes, website, relay health, canonical+legacy websocket auth paths, and Compose service state.
 	@./scripts/relay-cn-status.sh
 
 restart-dev: ## Restart only the remote `agentunnel-relay` systemd service. Use after manual config fixes or to bounce the process without redeploying binaries.
