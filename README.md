@@ -9,7 +9,7 @@ The remote contract now has two live-only surfaces:
 
 On attach, the owning `tunnel` process sends a fresh terminal-state snapshot, which may include up to 10,000 lines of bounded agent-local normal-buffer scrollback, and then continues streaming live PTY bytes on that same websocket. The `snapshot_done` control message may also include bounded agent-local submit anchors for jump-dot navigation, and already attached clients may receive live `submit_anchor` controls for newly recorded submit Enter events.
 
-`tunnel` starts a real CLI command such as `claude`, `codex`, `gemini`, `qwen`, or `aider`, keeps the launching terminal interactive, and registers the session with a relay server. A local `tunnel run` also best-effort ensures the background daemon and registers session metadata, a bounded latest preview, coalesced terminal snapshots, and live output bytes over a local-only broker socket for trusted connectivity transports; `tunnel run` remains the PTY and terminal-mirror owner. The relay is API-only: it authenticates app clients with user-scoped bearer tokens, can bind app sessions to client device fingerprints, authenticates agents with user-owned long-lived agent tokens, lists live sessions, lists currently online computer daemons, brokers session-scoped attaches, forwards structured input, forwards session stop control, forwards computer launch requests, carries connectivity pairing/visibility/rendezvous control messages, serves Binding-only STUN for direct UDP discovery, and provides an opaque WebSocket QUIC fallback tunnel. Session discovery now includes best-effort Git branch metadata for the startup directory, optional local daemon identity through `device_id`, `launch_source` (`local` or `mobile`), and best-effort machine identity metadata from the registering agent, including platform family, platform id, and normalized computer name. Operator maintenance routes stay host-local outside the public `/api/` namespace. It does not retain transcript history and it does not emulate the terminal.
+`tunnel` starts a real CLI command such as `claude`, `codex`, `gemini`, `qwen`, or `aider`, keeps the launching terminal interactive, and registers the session with a relay server. A local `tunnel run` also best-effort ensures the background daemon and registers session metadata, a bounded latest preview, coalesced terminal snapshots, and live output bytes over a local-only broker socket for trusted connectivity transports; `tunnel run` remains the PTY and terminal-mirror owner. The relay is API-only: it authenticates app clients with user-scoped bearer tokens, can bind app sessions to client device fingerprints, authenticates agents with user-owned long-lived agent tokens, lists live sessions, lists currently online computer daemons, brokers session-scoped attaches, forwards structured input, forwards session stop control, forwards computer launch requests, carries connectivity pairing/visibility/rendezvous control messages, pairs with the same-image Binding-only STUN service for direct UDP discovery, and provides an opaque WebSocket QUIC fallback tunnel. Session discovery now includes best-effort Git branch metadata for the startup directory, optional local daemon identity through `device_id`, `launch_source` (`local` or `mobile`), and best-effort machine identity metadata from the registering agent, including platform family, platform id, and normalized computer name. Operator maintenance routes stay host-local outside the public `/api/` namespace. It does not retain transcript history and it does not emulate the terminal.
 
 On startup, `tunnel` must establish relay registration during the startup wait window. If registration does not succeed, startup exits with a relay connection error and does not launch the local terminal session.
 
@@ -304,7 +304,7 @@ export TUNNEL_BASE_URL=https://diaro.me
 ./bin/tunnel run --label "feature-branch" claude
 ```
 
-Publish Relay images from the private repo Actions tab by running `Release`, selecting `relay`, and entering a plain version such as `v0.1.0`. The workflow resolves source tag `relay-v0.1.0`, builds and verifies the image, then creates or validates that source tag immediately before pushing `ghcr.io/yuanbohan/agent-tunnel-relay:v0.1.0`. Set `RELAY_IMAGE_TAG` in the remote `.env` to the exact plain version you want to run; do not deploy from a mutable `latest` tag.
+Publish Relay images from the private repo Actions tab by running `Release`, selecting `relay`, and entering a plain version such as `v0.1.0`. The workflow resolves source tag `relay-v0.1.0`, builds and verifies the image, then creates or validates that source tag immediately before pushing `ghcr.io/yuanbohan/agent-tunnel-relay:v0.1.0`. Compose uses that one image package for both the `relay` HTTP/WebSocket service and the Binding-only `stun` UDP service. Set `RELAY_IMAGE_TAG` and `STUN_IMAGE_TAG` in the remote `.env` to exact plain versions; do not deploy from a mutable `latest` tag. On the first split-service rollout, both tags should point at the first release that includes `relay stun serve`.
 
 The GHCR package is private. Set `relay_ghcr_token` in the environment's Ansible secrets file so `make compose-up-*` can log in to GHCR as `yuanbohan` before pulling.
 
@@ -329,11 +329,13 @@ Deploy or update the Compose stack:
 
 ```bash
 make compose-sync-relay-cn  # sync Compose assets to relay-cn
-make compose-up-relay-cn    # pull images and start/update relay-cn services
+make compose-up-relay-cn    # routine Relay-only update; leaves STUN untouched
+make compose-up-stun-relay-cn # rare STUN-only update
+make compose-up-stack-relay-cn # first rollout/full-stack update
 make compose-stop-relay-cn  # stop relay-cn services without removing containers
 make relay-cn-ops           # print the common relay-cn Docker operator commands
 make relay-cn-invite-list   # run `relay invite list` inside the relay-cn relay container
-make relay-cn-status        # check relay-cn website, relay health, API auth paths, websocket auth paths, and Compose state
+make relay-cn-status        # check website, relay health, auth paths, Compose state, and public STUN
 make deploy-website-relay-cn # relay-cn website bundle from ../agent-tunnel-website
 make compose-sync-dev       # sync Compose assets to dev
 make compose-up-dev         # pull images and start/update dev services
@@ -348,13 +350,16 @@ The Compose file hardcodes the non-secret runtime defaults for production operat
 
 - Relay listens in-container on `0.0.0.0:8586`
 - Docker publishes Relay to the host on `127.0.0.1:8586`
-- Relay listens for Binding-only STUN on UDP `0.0.0.0:3478` unless `RELAY_STUN_LISTEN_ADDR=off`
-- Docker publishes the STUN listener to the host on UDP `3478`
+- Relay disables embedded STUN in Compose with `RELAY_STUN_LISTEN_ADDR=off`
+- The separate `stun` service runs `relay stun serve` from the same image package
+- Docker publishes STUN directly to the host on UDP `3478`; nginx does not proxy STUN
 - PostgreSQL uses database `agent_tunnel`
 - PostgreSQL uses role `relay_user`
 - PostgreSQL stores data in Docker volume `relay-postgres-data`
 
-PostgreSQL data lives in the fixed `relay-postgres-data` Docker named volume. Relay structured logs are appended inside the container to `/var/log/agentunnel/relay.log`, which Compose persists on the host at `/opt/agentunnel/logs/relay/relay.log`. `deploy/postgres/latest.sql` initializes only an empty volume. Updating an existing database schema is a manual operator step: update `deploy/postgres/latest.sql` in the same code change, then run the required SQL on the server before deploying a Relay image that depends on it.
+DNS for production should point `agentunnel.cn` and `www.agentunnel.cn` at nginx for HTTP/WebSocket traffic, and `stun.agentunnel.cn` at the same VPS for direct UDP `3478` today. The separate STUN hostname lets operators move STUN later without changing the Relay hostname. The VPS cloud security group and any host firewall must allow inbound `3478/udp`.
+
+PostgreSQL data lives in the fixed `relay-postgres-data` Docker named volume. Relay structured logs are appended inside the container to `/var/log/agentunnel/relay.log`, which Compose persists on the host at `/opt/agentunnel/logs/relay/relay.log`. STUN logs are written beside it as `/opt/agentunnel/logs/relay/stun.log`. `deploy/postgres/latest.sql` initializes only an empty volume. Updating an existing database schema is a manual operator step: update `deploy/postgres/latest.sql` in the same code change, then run the required SQL on the server before deploying a Relay image that depends on it.
 
 Relay production operations are Docker Compose only: update `/opt/agentunnel/compose/.env`, run `docker compose`, and execute operator commands inside the `relay` container. Legacy binary/systemd paths may remain in the repository during the transition, but they are not part of the current production operating model. Website deploy stays separate: `make deploy-website-*` runs `npm ci`, builds `../agent-tunnel-website`, rejects bundle symlinks, uploads a release under `/var/www/agentunnel-website/releases`, and atomically repoints `/var/www/agentunnel-website/current`.
 
@@ -373,12 +378,14 @@ make install-dev       # installs packages and syncs the dev nginx config
 make install-relay-cn  # installs packages, certbot, and syncs the relay-cn nginx config
 make docker-relay-image-test # build the Relay Docker image and verify embedded version metadata
 make compose-sync-dev     # sync relay Compose assets to dev
-make compose-up-dev       # pull and start/update relay Compose services on dev
+make compose-up-dev       # routine Relay-only Compose update on dev
 make compose-stop-dev     # stop relay Compose services on dev
 make compose-sync-relay-cn  # sync relay Compose assets to relay-cn
-make compose-up-relay-cn    # pull and start/update relay Compose services on relay-cn
+make compose-up-relay-cn    # routine Relay-only Compose update on relay-cn
+make compose-up-stun-relay-cn # rare STUN-only Compose update on relay-cn
+make compose-up-stack-relay-cn # full-stack Compose update on relay-cn
 make compose-stop-relay-cn  # stop relay Compose services on relay-cn
-make relay-cn-status        # check relay-cn website, relay health, API auth paths, websocket auth paths, and Compose state
+make relay-cn-status        # check relay-cn website, relay health, auth paths, Compose state, and public STUN
 make deploy-website-dev   # build ../agent-tunnel-website and publish it to the dev host
 make deploy-website-relay-cn  # build ../agent-tunnel-website and publish it to the relay-cn host
 make test              # go test ./...

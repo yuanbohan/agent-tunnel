@@ -49,9 +49,12 @@ behavior.
 
 ## Implementation Summary
 
-- Relay now starts a Binding-only STUN UDP listener from `relay serve` when
-  `RELAY_STUN_LISTEN_ADDR` is enabled. Docker Compose publishes UDP `3478` and
-  documents the `stun.<relay-domain>` firewall/DNS expectation.
+- Relay can start a Binding-only STUN UDP listener from `relay serve` when
+  `RELAY_STUN_LISTEN_ADDR` is enabled for local/manual deployments. Production
+  Docker Compose runs STUN separately with `relay stun serve`, publishes UDP
+  `3478` directly on the VPS, and documents the `stun.agentunnel.cn`
+  firewall/DNS expectation. Nginx remains HTTP/WebSocket only and does not
+  proxy STUN.
 - `internal/connectivity/direct` provides reusable UDP sockets, same-socket
   STUN discovery, candidate normalization/filtering, UDP probes, and
   direct-first attempt orchestration with relay fallback reasons.
@@ -75,13 +78,14 @@ behavior.
 - `go test ./internal/protocol ./internal/relay/connectivity ./internal/relay/handler`
 - `go test ./internal/connectivity/direct ./internal/connectivity/interop ./internal/tunnel/daemon`
 - `go test ./internal/connectivity/sessionproto ./internal/connectivity/interop ./internal/tunnel/daemon`
+- `go test ./cmd/stuncheck ./internal/connectivity/direct ./internal/connectivity/stun`
 
 ## Known Gaps
 
 - Production Android direct UDP and `quiche` integration remain Step 6.
 - Production cone-NAT and symmetric-NAT measurement has not been run; this is
-  left for deployed edge operations after this repository's Go implementation
-  can be exercised against real networks.
+  left for deployed edge operations after `relay-cn-status` verifies the public
+  `stun.agentunnel.cn:3478` Binding path against real networks.
 - The daemon direct hint currently uses local UDP candidates from its direct
   socket; production deployments should prefer STUN-observed public candidates
   once Step 6/operations supplies the app-side STUN endpoint configuration.

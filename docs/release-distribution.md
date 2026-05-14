@@ -93,11 +93,11 @@ Those same public assets are the only source used by native `tunnel update` and 
    - `GitCommit=<sha>`
    - `GitBranch=<source tag>`
    - `BuildTime=<timestamp>`
-7. The workflow runs `relay version` inside the image and requires the first line to report the plain version and the `branch:` line to report the resolved source tag.
+7. The workflow runs `relay version` inside the image and requires the first line to report the plain version and the `branch:` line to report the resolved source tag. It also verifies the same image exposes `relay stun serve`, keeps default command `relay serve`, and advertises both `8586/tcp` and `3478/udp`.
 8. After Relay-specific validation succeeds, the workflow creates or validates source tag `relay-v0.1.2`.
 9. The workflow pushes `ghcr.io/yuanbohan/agent-tunnel-relay:<plain version>`.
 
-Compose deployments pin `RELAY_IMAGE_TAG` to the desired semver tag. They should not track a mutable `latest` tag.
+Compose deployments pin `RELAY_IMAGE_TAG` and `STUN_IMAGE_TAG` to desired semver tags from this same image package. They should not track a mutable `latest` tag.
 
 ## Commit Messages
 
