@@ -12,21 +12,23 @@ The workflow is:
 .github/workflows/release.yml
 ```
 
-It builds `Dockerfile.relay`, verifies `relay version`, verifies the `relay stun serve` command path, and pushes:
+It builds `Dockerfile.relay` once, verifies `relay version`, verifies the `relay stun serve` command path, and pushes the same build artifact under both service-specific image names:
 
 ```text
 ghcr.io/yuanbohan/agent-tunnel-relay:<version>
+ghcr.io/yuanbohan/agent-tunnel-stun:<version>
 ```
 
 For example:
 
 ```text
 ghcr.io/yuanbohan/agent-tunnel-relay:v0.1.0
+ghcr.io/yuanbohan/agent-tunnel-stun:v0.1.0
 ```
 
-The image name does not need to match the GitHub repository name. The repository can be `agent-tunnel` while the GHCR package/image is `agent-tunnel-relay`.
+The image names do not need to match the GitHub repository name. The repository can be `agent-tunnel` while the GHCR images are `agent-tunnel-relay` and `agent-tunnel-stun`.
 
-Do not deploy from `latest`. The deployed versions are the exact values of `RELAY_IMAGE_TAG` and `STUN_IMAGE_TAG` in the remote Compose `.env`. Both services use the same GHCR image package; separate tags let routine Relay updates avoid recreating STUN.
+Do not deploy from `latest`. The deployed versions are the exact values of `RELAY_IMAGE_TAG` and `STUN_IMAGE_TAG` in the remote Compose `.env`. The `relay` service pulls `ghcr.io/yuanbohan/agent-tunnel-relay:${RELAY_IMAGE_TAG}` and the `stun` service pulls `ghcr.io/yuanbohan/agent-tunnel-stun:${STUN_IMAGE_TAG}`. Separate tags let routine Relay updates avoid recreating STUN.
 
 ## GitHub Setup
 
@@ -48,9 +50,10 @@ After the first successful tag release, check:
 
 ```text
 GitHub repository or owner page -> Packages -> agent-tunnel-relay
+GitHub repository or owner page -> Packages -> agent-tunnel-stun
 ```
 
-The Relay GHCR package is private. Docker login uses the fixed GitHub username `yuanbohan`, so the only deployment secret you need is a token that can read packages. Store it only in the local Ansible secrets file, not in the repository:
+The Relay and STUN GHCR packages are private. Docker login uses the fixed GitHub username `yuanbohan`, so the only deployment secret you need is a token that can read packages. Store it only in the local Ansible secrets file, not in the repository:
 
 ```yaml
 # ansible/host_vars/relay-cn/relay-secrets.yml
@@ -551,6 +554,7 @@ Wait for the GitHub Actions workflow to publish:
 
 ```text
 ghcr.io/yuanbohan/agent-tunnel-relay:v0.1.1
+ghcr.io/yuanbohan/agent-tunnel-stun:v0.1.1
 ```
 
 Then update the remote `.env`:
@@ -594,7 +598,7 @@ sudo tail -n 100 /opt/agentunnel/logs/relay/relay.log
 
 ## Troubleshooting
 
-If image pull fails with `denied`, confirm `relay_ghcr_token` is set in the relevant Ansible secrets file and that the token has package read access for the private `agent-tunnel-relay` GHCR package.
+If image pull fails with `denied`, confirm `relay_ghcr_token` is set in the relevant Ansible secrets file and that the token has package read access for the private `agent-tunnel-relay` and `agent-tunnel-stun` GHCR packages.
 
 If Compose says a required variable is missing, edit:
 

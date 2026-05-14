@@ -34,7 +34,7 @@ services:
       - ../logs/relay:/var/log/agentunnel
 
   stun:
-    image: ghcr.io/yuanbohan/agent-tunnel-relay:${STUN_IMAGE_TAG:?set STUN_IMAGE_TAG}
+    image: ghcr.io/yuanbohan/agent-tunnel-stun:${STUN_IMAGE_TAG:?set STUN_IMAGE_TAG}
     restart: unless-stopped
     command: ["stun", "serve"]
     environment:

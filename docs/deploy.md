@@ -1,6 +1,6 @@
 # Relay Deploy
 
-This guide is for deploys started from your local checkout. The primary relay deployment path is Docker Compose: the server runs PostgreSQL, Relay HTTP/WebSocket, and Binding-only STUN containers. Relay and STUN use the same GitHub Container Registry image package with separate tag pins.
+This guide is for deploys started from your local checkout. The primary relay deployment path is Docker Compose: the server runs PostgreSQL, Relay HTTP/WebSocket, and Binding-only STUN containers. Relay and STUN use the same release build artifact, published under separate GitHub Container Registry image names with separate tag pins.
 
 For the complete Docker Compose operating guide, including all remote paths and environment files, use [docker-operation.md](./docker-operation.md).
 
@@ -18,15 +18,16 @@ For commands run after SSHing into the VPS, use [operation.md](./operation.md).
 
 ## Image Release
 
-Open the private repo Actions tab, run `Release`, select `relay`, and enter a plain version such as `v0.1.0`. The workflow resolves source tag `relay-v0.1.0`, runs tests, builds the Relay image, verifies `relay version` plus the STUN-only command path, creates or validates the source tag after Relay-specific validation succeeds, and then pushes the verified image:
+Open the private repo Actions tab, run `Release`, select `relay`, and enter a plain version such as `v0.1.0`. The workflow resolves source tag `relay-v0.1.0`, runs tests, builds one Relay/STUN image artifact, verifies `relay version` plus the STUN-only command path, creates or validates the source tag after Relay-specific validation succeeds, and then pushes the verified image under both service-specific names:
 
 ```text
 ghcr.io/yuanbohan/agent-tunnel-relay:v0.1.0
+ghcr.io/yuanbohan/agent-tunnel-stun:v0.1.0
 ```
 
 Deploy Compose with explicit version tags. The first split-service rollout should set both `RELAY_IMAGE_TAG` and `STUN_IMAGE_TAG` to the first release that includes `relay stun serve`; routine Relay updates later change only `RELAY_IMAGE_TAG`. Do not use a mutable `latest` tag as the deployment source of truth.
 
-The GHCR package is private. Set `relay_ghcr_token` in `ansible/host_vars/<env>/relay-secrets.yml` before running `make compose-pull-*` or `make compose-up-*`. The Ansible role logs in to GHCR as `yuanbohan`, and the token only needs package read access. For `relay-cn`, keep `relay_certbot_email` in the same local file for TLS bootstrap. Runtime Relay and PostgreSQL secrets belong only in the remote Compose `.env`.
+The GHCR packages are private. Set `relay_ghcr_token` in `ansible/host_vars/<env>/relay-secrets.yml` before running `make compose-pull-*` or `make compose-up-*`. The Ansible role logs in to GHCR as `yuanbohan`, and the token only needs package read access. For `relay-cn`, keep `relay_certbot_email` in the same local file for TLS bootstrap. Runtime Relay and PostgreSQL secrets belong only in the remote Compose `.env`.
 
 ## First Host Setup
 

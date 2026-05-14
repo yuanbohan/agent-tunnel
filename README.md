@@ -304,9 +304,9 @@ export TUNNEL_BASE_URL=https://diaro.me
 ./bin/tunnel run --label "feature-branch" claude
 ```
 
-Publish Relay images from the private repo Actions tab by running `Release`, selecting `relay`, and entering a plain version such as `v0.1.0`. The workflow resolves source tag `relay-v0.1.0`, builds and verifies the image, then creates or validates that source tag immediately before pushing `ghcr.io/yuanbohan/agent-tunnel-relay:v0.1.0`. Compose uses that one image package for both the `relay` HTTP/WebSocket service and the Binding-only `stun` UDP service. Set `RELAY_IMAGE_TAG` and `STUN_IMAGE_TAG` in the remote `.env` to exact plain versions; do not deploy from a mutable `latest` tag. On the first split-service rollout, both tags should point at the first release that includes `relay stun serve`.
+Publish Relay images from the private repo Actions tab by running `Release`, selecting `relay`, and entering a plain version such as `v0.1.0`. The workflow resolves source tag `relay-v0.1.0`, builds and verifies one Relay/STUN image artifact, then creates or validates that source tag immediately before pushing both `ghcr.io/yuanbohan/agent-tunnel-relay:v0.1.0` and `ghcr.io/yuanbohan/agent-tunnel-stun:v0.1.0`. Compose uses the Relay image name for the `relay` HTTP/WebSocket service and the STUN image name for the Binding-only `stun` UDP service. Set `RELAY_IMAGE_TAG` and `STUN_IMAGE_TAG` in the remote `.env` to exact plain versions; do not deploy from a mutable `latest` tag. On the first split-service rollout, both tags should point at the first release that includes `relay stun serve`.
 
-The GHCR package is private. Set `relay_ghcr_token` in the environment's Ansible secrets file so `make compose-up-*` can log in to GHCR as `yuanbohan` before pulling.
+The GHCR packages are private. Set `relay_ghcr_token` in the environment's Ansible secrets file so `make compose-up-*` can log in to GHCR as `yuanbohan` before pulling.
 
 Keep host/bootstrap config in Ansible:
 
@@ -351,7 +351,7 @@ The Compose file hardcodes the non-secret runtime defaults for production operat
 - Relay listens in-container on `0.0.0.0:8586`
 - Docker publishes Relay to the host on `127.0.0.1:8586`
 - Relay disables embedded STUN in Compose with `RELAY_STUN_LISTEN_ADDR=off`
-- The separate `stun` service runs `relay stun serve` from the same image package
+- The separate `stun` service runs `relay stun serve` from `ghcr.io/yuanbohan/agent-tunnel-stun:${STUN_IMAGE_TAG}`
 - Docker publishes STUN directly to the host on UDP `3478`; nginx does not proxy STUN
 - PostgreSQL uses database `agent_tunnel`
 - PostgreSQL uses role `relay_user`

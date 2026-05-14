@@ -10,7 +10,7 @@ origin: docs/brainstorms/2026-05-14-relay-cn-split-stun-compose-deployment-requi
 
 ## Summary
 
-Add a STUN-only startup mode to the existing Relay binary, then split the Compose deployment into separately version-pinned `relay` and `stun` services that use the same GHCR image package. Routine `relay-cn` updates should recreate only Relay by default; STUN stays pinned and publicly reachable on direct UDP `3478`.
+Add a STUN-only startup mode to the existing Relay binary, then split the Compose deployment into separately version-pinned `relay` and `stun` services that use the same release build artifact under separate GHCR image names. Routine `relay-cn` updates should recreate only Relay by default; STUN stays pinned and publicly reachable on direct UDP `3478`.
 
 ---
 
@@ -24,7 +24,7 @@ The origin document defines an operations split: Relay changes often, while Bind
 
 - R1. Compose must run Relay HTTP/WebSocket traffic and Binding-only STUN as separate services.
 - R2. Relay startup must support disabling STUN so Relay updates do not bind or restart the public STUN listener.
-- R3. The STUN service must run from the existing Relay image package through a STUN-only startup path.
+- R3. The STUN service must run from a STUN-specific GHCR image name that points at the same release build artifact as Relay, through a STUN-only startup path.
 - R4. STUN-only startup must not require PostgreSQL, `RELAY_APP_SECRET`, or `RELAY_OPERATOR_TOKEN`.
 - R5. STUN remains Binding-only; no TURN, UDP relay, ICE, WebRTC, or media forwarding.
 - R6. Compose must support separate `RELAY_IMAGE_TAG` and `STUN_IMAGE_TAG` pins.
@@ -35,20 +35,20 @@ The origin document defines an operations split: Relay changes often, while Bind
 - R11. Deployment docs must state that UDP STUN is exposed directly on the VPS and is not proxied by nginx.
 - R12. Invite/user operator commands must keep targeting the Relay service.
 - R13. Runtime Relay/PostgreSQL secrets remain only in remote `/opt/agentunnel/compose/.env`.
-- R14. The existing `relay` Release workflow continues publishing one GHCR image package.
-- R15. Image smoke checks must verify metadata for the shared image used by both services.
+- R14. The existing `relay` Release workflow continues running one Docker build and publishes that artifact under both Relay and STUN GHCR image names.
+- R15. Image smoke checks must verify metadata for both service-specific image names.
 - R16. Docs must explain two-service runtime, separate tags, first rollout, routine Relay update, rare STUN update, DNS, firewall, and verification.
 - R17. Existing PostgreSQL schema snapshot/manual-SQL rules remain unchanged.
 
 **Origin actors:** A1 Maintainer, A2 GitHub Actions release workflow, A3 Relay operator, A4 Docker Compose stack, A5 STUN clients
 **Origin flows:** F1 First split-service rollout, F2 Routine Relay update, F3 Rare STUN update
-**Origin acceptance examples:** AE1 split service restart, AE2 independent tags, AE3 STUN-only startup, AE4 STUN status check, AE5 one GHCR image package
+**Origin acceptance examples:** AE1 split service restart, AE2 independent tags, AE3 STUN-only startup, AE4 STUN status check, AE5 one build artifact with two GHCR image names
 
 ---
 
 ## Scope Boundaries
 
-- Do not create a separate `agent-tunnel-stun` image package, Dockerfile, or release workflow.
+- Do not create a separate STUN Dockerfile or independent STUN release workflow.
 - Do not add TURN, UDP relay, ICE, WebRTC, or public third-party STUN.
 - Do not proxy STUN through nginx. Nginx remains HTTP/WebSocket reverse proxy only.
 - Do not bundle nginx, TLS, or certbot into Compose.
@@ -73,7 +73,7 @@ The origin document defines an operations split: Relay changes often, while Bind
 - `internal/config/relay.go` currently requires database URL, app secret, and operator token through `SetupRelay`; STUN-only startup should avoid this path.
 - `deploy/compose/compose.yaml` currently publishes UDP `3478` from the `relay` service and hardcodes `RELAY_STUN_LISTEN_ADDR=0.0.0.0:3478`.
 - `scripts/relay-cn-status.sh` already checks DNS, remote `.env`, Compose service presence, local health, public HTTP/API/WebSocket auth paths, and Compose state.
-- `.github/workflows/release.yml`, `Dockerfile.relay`, and `scripts/test-relay-docker-image.sh` already publish and smoke-test one Relay image package.
+- `.github/workflows/release.yml`, `Dockerfile.relay`, and `scripts/test-relay-docker-image.sh` already publish and smoke-test the Relay image artifact.
 - `makefiles/deploy.mk` already has `compose-*` and `relay-cn-*` targets; new lifecycle targets should follow that naming style.
 - `docs/docker-operation.md`, `docs/deploy.md`, `docs/operation.md`, and `README.md` are the primary operator-facing docs for Compose deploys.
 
@@ -105,7 +105,7 @@ The origin document defines an operations split: Relay changes often, while Bind
 
 - STUN hostname: use `stun.agentunnel.cn` pointing at the `relay-cn` VPS.
 - UDP exposure model: open `3478/udp` in the cloud firewall/security group and any host firewall; do not route STUN through nginx.
-- Image package model: keep one GHCR package, not a separate STUN image.
+- Image naming model: publish the same release build artifact as both `agent-tunnel-relay` and `agent-tunnel-stun`.
 - Routine update default: Relay-only update paths should avoid recreating STUN unless the operator explicitly chooses full-stack or STUN update.
 
 ### Deferred to Implementation
@@ -121,7 +121,9 @@ The origin document defines an operations split: Relay changes often, while Bind
 
 ```mermaid
 flowchart LR
-    GHCR["ghcr.io/yuanbohan/agent-tunnel-relay"]
+    Build["one Relay/STUN build artifact"]
+    RelayImage["ghcr.io/yuanbohan/agent-tunnel-relay"]
+    STUNImage["ghcr.io/yuanbohan/agent-tunnel-stun"]
     Env["remote .env\nRELAY_IMAGE_TAG\nSTUN_IMAGE_TAG"]
     PG["postgres service\nnamed volume"]
     Relay["relay service\nHTTP/WebSocket\nSTUN off"]
@@ -130,8 +132,8 @@ flowchart LR
     DNSA["agentunnel.cn"]
     DNSS["stun.agentunnel.cn"]
 
-    GHCR --> Relay
-    GHCR --> STUN
+    Build --> RelayImage --> Relay
+    Build --> STUNImage --> STUN
     Env --> Relay
     Env --> STUN
     PG --> Relay
@@ -194,7 +196,7 @@ flowchart LR
 
 ### U2. Split Compose services and image tags
 
-**Goal:** Change the Compose runtime from one Relay service with embedded STUN to separate `relay` and `stun` services using independent tag pins from the same image package.
+**Goal:** Change the Compose runtime from one Relay service with embedded STUN to separate `relay` and `stun` services using independent tag pins from service-specific image names backed by the same build artifact.
 
 **Requirements:** R1, R2, R6, R7, R8, R12, R13, AE1, AE2, AE3, AE5
 
@@ -209,7 +211,7 @@ flowchart LR
 **Approach:**
 - Keep `postgres` unchanged except for any service dependency adjustments required by the split.
 - Set the `relay` service image from `RELAY_IMAGE_TAG`, pass Relay/PostgreSQL secrets only to `relay`, disable Relay's embedded STUN listener, and publish only the host-local HTTP port.
-- Add a `stun` service using the same GHCR image package with `STUN_IMAGE_TAG`, the STUN-only command, no database/app/operator secrets, and direct UDP `3478` publication.
+- Add a `stun` service using `ghcr.io/yuanbohan/agent-tunnel-stun:${STUN_IMAGE_TAG}`, the STUN-only command, no database/app/operator secrets, and direct UDP `3478` publication.
 - Keep first-rollout ergonomics simple by showing the same tag for `RELAY_IMAGE_TAG` and `STUN_IMAGE_TAG` in the example, while documenting that they diverge after the initial split release.
 - Ensure the Compose file makes the service boundary visible in `docker compose ps`.
 
@@ -391,7 +393,7 @@ flowchart LR
 
 ## System-Wide Impact
 
-- **Interaction graph:** One GHCR image now backs two Compose services. HTTP/WebSocket traffic flows through nginx to `relay`; STUN clients use direct UDP to `stun`.
+- **Interaction graph:** One release build artifact is published under Relay and STUN image names. HTTP/WebSocket traffic flows through nginx to `relay`; STUN clients use direct UDP to `stun`.
 - **Error propagation:** Relay database/config failures should only affect `relay`; STUN bind/firewall failures should only affect `stun` and status checks.
 - **State lifecycle risks:** STUN remains stateless. PostgreSQL state remains isolated to `postgres` and Relay.
 - **API surface parity:** Relay HTTP/WebSocket API contracts do not change. CLI surface grows with a STUN-only command.

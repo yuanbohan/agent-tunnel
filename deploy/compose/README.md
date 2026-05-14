@@ -8,7 +8,7 @@ This Compose project runs Relay HTTP/WebSocket traffic, Binding-only STUN, and P
 install -m 600 /dev/null .env
 ```
 
-Populate `.env` with `RELAY_IMAGE_TAG`, `STUN_IMAGE_TAG`, `POSTGRES_PASSWORD`, `RELAY_APP_SECRET`, and `RELAY_OPERATOR_TOKEN`. Set both image tags to immutable release tags such as `v0.1.0`. Do not use mutable tags as the deployment source of truth. On the first split-service rollout, `RELAY_IMAGE_TAG` and `STUN_IMAGE_TAG` usually point to the same release; later routine Relay updates can move only `RELAY_IMAGE_TAG`.
+Populate `.env` with `RELAY_IMAGE_TAG`, `STUN_IMAGE_TAG`, `POSTGRES_PASSWORD`, `RELAY_APP_SECRET`, and `RELAY_OPERATOR_TOKEN`. Set both image tags to immutable release tags such as `v0.1.0`; Compose pulls Relay from `ghcr.io/yuanbohan/agent-tunnel-relay` and STUN from `ghcr.io/yuanbohan/agent-tunnel-stun`. Do not use mutable tags as the deployment source of truth. On the first split-service rollout, `RELAY_IMAGE_TAG` and `STUN_IMAGE_TAG` usually point to the same release; later routine Relay updates can move only `RELAY_IMAGE_TAG`.
 
 `POSTGRES_PASSWORD` is interpolated into `RELAY_DATABASE_URL`, so use URL-safe characters for the password unless you replace the composed DSN with an explicitly encoded one in `compose.yaml`.
 The checked-in `.env.example` is a local reference file; the Ansible sync path intentionally does not upload it to the server.

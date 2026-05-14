@@ -7,7 +7,7 @@ topic: relay-cn-split-stun-compose-deployment
 
 ## Summary
 
-Deploy `relay-cn` with Docker Compose using one Relay GHCR image package but two independently managed runtime services: `relay` for HTTP/WebSocket Relay traffic and `stun` for Binding-only UDP STUN. Relay should be easy to update frequently, while STUN should stay pinned to a stable image tag until the STUN code or deployment contract changes.
+Deploy `relay-cn` with Docker Compose using one release build artifact published under separate GHCR image names, with two independently managed runtime services: `relay` for HTTP/WebSocket Relay traffic and `stun` for Binding-only UDP STUN. Relay should be easy to update frequently, while STUN should stay pinned to a stable image tag until the STUN code or deployment contract changes.
 
 ---
 
@@ -15,14 +15,14 @@ Deploy `relay-cn` with Docker Compose using one Relay GHCR image package but two
 
 The repository already has a Docker Compose deployment path for Relay and PostgreSQL, and the current Relay binary can start an embedded Binding-only STUN listener from `relay serve`. That coupling is operationally awkward for `relay-cn`: Relay will change often as product behavior evolves, but STUN is deliberately small and stable, and restarting or repinning it on every Relay update adds avoidable operational surface.
 
-The deployment target is a complete `relay-cn` stack managed by Docker Compose. It needs to preserve the existing Compose production boundaries: PostgreSQL is containerized, runtime secrets live in the remote Compose `.env`, Relay images are pulled from private GHCR, nginx remains the HTTPS reverse proxy for HTTP/WebSocket traffic, and schema changes for existing databases stay manual. The new need is to separate the runtime lifecycle of Relay and STUN without creating a separate STUN image package.
+The deployment target is a complete `relay-cn` stack managed by Docker Compose. It needs to preserve the existing Compose production boundaries: PostgreSQL is containerized, runtime secrets live in the remote Compose `.env`, Relay/STUN images are pulled from private GHCR, nginx remains the HTTPS reverse proxy for HTTP/WebSocket traffic, and schema changes for existing databases stay manual. The new need is to separate the runtime lifecycle of Relay and STUN without creating a separate STUN Dockerfile or independent release workflow.
 
 ---
 
 ## Actors
 
 - A1. Maintainer: decides release versions, triggers GitHub Actions releases, and updates deployment docs.
-- A2. GitHub Actions release workflow: builds and publishes the Relay image package to GHCR.
+- A2. GitHub Actions release workflow: builds the Relay/STUN image artifact once and publishes service-specific image names to GHCR.
 - A3. Relay operator: prepares `relay-cn` secrets, pins image tags, starts services, and verifies health.
 - A4. Docker Compose stack: runs PostgreSQL, Relay, and STUN as separately addressable services.
 - A5. STUN clients: use the public UDP STUN endpoint for direct connectivity candidate discovery.
@@ -60,7 +60,7 @@ The deployment target is a complete `relay-cn` stack managed by Docker Compose. 
 
 - R1. The Compose deployment must run Relay HTTP/WebSocket traffic and Binding-only STUN as separate services, not as one combined `relay serve` process.
 - R2. The Relay service must be able to run with STUN disabled so Relay restarts and updates do not also bind or restart the public STUN listener.
-- R3. The STUN service must be able to run from the existing Relay image package using a STUN-only startup path.
+- R3. The STUN service must be able to run from a STUN-specific GHCR image name that points at the same release build artifact as Relay, using a STUN-only startup path.
 - R4. The STUN-only service must not require PostgreSQL, Relay app secret, or Relay operator token configuration.
 - R5. The STUN service must expose only Binding-only STUN behavior; it must not add TURN, UDP relay, ICE, or media-forwarding responsibilities.
 
@@ -80,8 +80,8 @@ The deployment target is a complete `relay-cn` stack managed by Docker Compose. 
 
 **Release and Documentation**
 
-- R14. The GitHub Actions release path can keep publishing one GHCR image package for the Relay binary; no separate STUN GHCR package is required.
-- R15. The Relay image build and release smoke checks must still verify release metadata for the image used by both services.
+- R14. The GitHub Actions release path should keep one Docker build for the Relay binary and publish that artifact under both Relay and STUN GHCR image names.
+- R15. The Relay image build and release smoke checks must verify release metadata for both service-specific image names.
 - R16. Deployment docs must explain the two-service model, separate tag pins, first rollout expectation, routine Relay update path, rare STUN update path, and STUN verification.
 - R17. Existing PostgreSQL schema rules remain unchanged: fresh databases initialize from the full schema snapshot, and existing deployed databases are changed manually by an operator.
 
@@ -93,7 +93,7 @@ The deployment target is a complete `relay-cn` stack managed by Docker Compose. 
 - AE2. **Covers R6, R7, R9.** Given `RELAY_IMAGE_TAG=v0.2.4` and `STUN_IMAGE_TAG=v0.2.1`, when the operator updates only `RELAY_IMAGE_TAG` and runs the documented Relay update path, Compose updates Relay without changing the STUN image tag.
 - AE3. **Covers R3, R5, R8.** Given the first split-service rollout uses one new image tag for both services, when the STUN service starts, it uses the STUN-only startup path and exposes Binding-only STUN rather than the Relay HTTP/WebSocket server.
 - AE4. **Covers R10, R11.** Given `relay-cn` is running, when the operator runs the status check, the output includes a UDP/STUN result in addition to existing HTTP/WebSocket checks.
-- AE5. **Covers R14, R15.** Given the maintainer runs the existing Release workflow for `relay`, when the image is published to GHCR, that single image can be used by both the Relay service and the STUN service through separate Compose tags.
+- AE5. **Covers R14, R15.** Given the maintainer runs the existing Release workflow for `relay`, when the image is published to GHCR, the same build artifact is available as both `agent-tunnel-relay` and `agent-tunnel-stun` through separate Compose tags.
 
 ---
 
@@ -108,7 +108,7 @@ The deployment target is a complete `relay-cn` stack managed by Docker Compose. 
 
 ## Scope Boundaries
 
-- Do not create a separate `agent-tunnel-stun` image package or release workflow in this iteration.
+- Do not create a separate STUN Dockerfile or independent STUN release workflow in this iteration.
 - Do not add TURN, UDP relay, ICE, WebRTC, or public third-party STUN dependency.
 - Do not bundle nginx, TLS, or certbot into Compose; host nginx remains the HTTP/WebSocket reverse proxy.
 - Do not change Relay auth, session routing, attach semantics, or connectivity rendezvous semantics except as needed to keep STUN startup separate.
@@ -119,7 +119,7 @@ The deployment target is a complete `relay-cn` stack managed by Docker Compose. 
 
 ## Key Decisions
 
-- Use one image package and two startup modes: this avoids operating a second GHCR package while still decoupling service lifecycle.
+- Use one Docker build artifact and two image names: this avoids a second build/release path while making the STUN service image reference unambiguous.
 - Pin Relay and STUN independently: this matches their different update frequency and reduces unnecessary STUN churn.
 - Make STUN-only startup secret-free: Binding-only STUN should not depend on Relay database or app/operator credentials.
 - Keep the first rollout explicit: both tags can start on the same release, but the operational model should support divergence immediately after.
@@ -130,7 +130,7 @@ The deployment target is a complete `relay-cn` stack managed by Docker Compose. 
 
 - Current repository state has STUN embedded in Relay startup; a dedicated STUN-only startup path does not currently exist.
 - Current Compose state publishes UDP `3478` from the Relay service; split deployment requires moving that public UDP responsibility to the STUN service.
-- The existing Release workflow and `Dockerfile.relay` remain the source for the shared image package.
+- The existing Release workflow and `Dockerfile.relay` remain the source for the shared build artifact.
 - `relay-cn` has or will have Docker Engine, Docker Compose plugin, GHCR pull credentials, remote Compose `.env`, host firewall rules for UDP `3478`, and DNS for the public Relay/STUN hostnames.
 
 ---

@@ -4,7 +4,7 @@ This guide is for commands run on the VPS after SSH login. For deploys started f
 
 For the complete Docker Compose operating guide, including all remote paths and environment files, use [docker-operation.md](./docker-operation.md).
 
-The primary relay operations model is Docker Compose. Relay HTTP/WebSocket traffic, Binding-only STUN, and PostgreSQL run as separate services in `deploy/compose/compose.yaml`, with runtime secrets stored only in the remote `.env`. Relay and STUN use the same GHCR image package but have separate tag pins.
+The primary relay operations model is Docker Compose. Relay HTTP/WebSocket traffic, Binding-only STUN, and PostgreSQL run as separate services in `deploy/compose/compose.yaml`, with runtime secrets stored only in the remote `.env`. Relay and STUN use the same release build artifact, published under separate GHCR image names with separate tag pins.
 
 ## Environment File
 
