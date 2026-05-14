@@ -33,6 +33,22 @@ func TestLogRelayStartedWritesListenAddr(t *testing.T) {
 	}
 }
 
+func TestLogSTUNStartedWritesListenAddr(t *testing.T) {
+	var buf bytes.Buffer
+	restore := logx.UseWriterForTest(&buf)
+	defer restore()
+
+	logSTUNStarted("127.0.0.1:3478")
+
+	got := buf.String()
+	if !strings.Contains(got, `"event":"stun_started"`) {
+		t.Fatalf("log = %q, want event stun_started", got)
+	}
+	if !strings.Contains(got, `"listen_addr":"127.0.0.1:3478"`) {
+		t.Fatalf("log = %q, want listen_addr 127.0.0.1:3478", got)
+	}
+}
+
 func TestStartRelayDoesNotLogBeforeBind(t *testing.T) {
 	var buf bytes.Buffer
 	restoreLogs := logx.UseWriterForTest(&buf)
@@ -57,6 +73,75 @@ func TestStartRelayDoesNotLogBeforeBind(t *testing.T) {
 	}
 	if got := buf.String(); got != "" {
 		t.Fatalf("log = %q, want no startup log on bind failure", got)
+	}
+}
+
+func TestStartSTUNDoesNotLogBeforeBind(t *testing.T) {
+	var buf bytes.Buffer
+	restoreLogs := logx.UseWriterForTest(&buf)
+	defer restoreLogs()
+
+	err := startSTUN(
+		context.Background(),
+		"127.0.0.1:3478",
+		func(string, string) (net.PacketConn, error) {
+			return nil, errors.New("stun bind failed")
+		},
+	)
+	if err == nil {
+		t.Fatal("expected STUN bind failure")
+	}
+	if !strings.Contains(err.Error(), `bind STUN UDP listener "127.0.0.1:3478" failed`) {
+		t.Fatalf("error = %q, want bind failure context", err.Error())
+	}
+	if got := buf.String(); got != "" {
+		t.Fatalf("log = %q, want no startup log on STUN bind failure", got)
+	}
+}
+
+func TestStartSTUNLogsBoundListenerAddr(t *testing.T) {
+	var buf bytes.Buffer
+	restoreLogs := logx.UseWriterForTest(&buf)
+	defer restoreLogs()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	connReady := make(chan net.PacketConn, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- startSTUN(ctx, "127.0.0.1:0", func(network, address string) (net.PacketConn, error) {
+			conn, err := net.ListenPacket(network, address)
+			if err == nil {
+				connReady <- conn
+			}
+			return conn, err
+		})
+	}()
+
+	var boundAddr string
+	select {
+	case conn := <-connReady:
+		boundAddr = conn.LocalAddr().String()
+	case err := <-errCh:
+		t.Fatalf("startSTUN returned before binding: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for STUN bind")
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for !strings.Contains(buf.String(), `"event":"stun_started"`) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	if err := <-errCh; err != nil {
+		t.Fatalf("startSTUN returned error: %v", err)
+	}
+
+	got := buf.String()
+	if !strings.Contains(got, `"listen_addr":"`+boundAddr+`"`) {
+		t.Fatalf("log = %q, want bound listen_addr %q", got, boundAddr)
+	}
+	if strings.Contains(got, `"listen_addr":"127.0.0.1:0"`) {
+		t.Fatalf("log = %q, want actual bound address instead of configured :0 address", got)
 	}
 }
 
