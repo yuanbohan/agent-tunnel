@@ -104,7 +104,7 @@ sudo tail -f /opt/agentunnel/logs/relay/relay.log
 ```
 
 Healthy `healthz` output should include `"status":"ok"`.
-From the repository checkout, `make relay-cn-status` also checks `stun.agentunnel.cn:3478` with a real STUN Binding request.
+From the repository checkout, `make relay-cn-status` also checks nginx route coverage, current plus legacy relay websocket auth paths, and `stun.agentunnel.cn:3478` with a real STUN Binding request.
 
 ## Operator Commands
 

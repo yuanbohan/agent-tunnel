@@ -143,7 +143,7 @@ sudo tail -f /opt/agentunnel/logs/relay/relay.log
 ```
 
 Healthy `healthz` output should be JSON with `"status":"ok"`.
-Use `make relay-cn-status` from the checkout to verify HTTP/WebSocket paths and the public STUN Binding response from `stun.agentunnel.cn:3478`.
+Use `make relay-cn-status` from the checkout to verify nginx route coverage, current plus legacy HTTP/WebSocket paths, and the public STUN Binding response from `stun.agentunnel.cn:3478`. If it reports website HTML fallback for a relay websocket path, re-render nginx with `make nginx-relay-cn`.
 
 ## Website Deploy
 
