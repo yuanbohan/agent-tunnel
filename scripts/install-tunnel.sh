@@ -80,6 +80,57 @@ detect_arch() {
 	esac
 }
 
+tmux_available() {
+	case "${TUNNEL_INSTALL_TMUX_AVAILABLE:-}" in
+		1|true|yes) return 0 ;;
+		0|false|no) return 1 ;;
+	esac
+	command -v tmux >/dev/null 2>&1
+}
+
+tmux_install_guidance() {
+	case "$os" in
+		darwin)
+			printf 'tmux is required for mobile-created Tunnel workspaces; install it with `brew install tmux`.\n'
+			;;
+		linux)
+			if [ -r /etc/os-release ]; then
+				distro_id=$(sed -n 's/^ID=//p' /etc/os-release | head -n 1 | tr -d '"')
+			else
+				distro_id=""
+			fi
+			case "$distro_id" in
+				ubuntu|debian)
+					printf 'tmux is required for mobile-created Tunnel workspaces; install it with `sudo apt install tmux`.\n'
+					;;
+				fedora)
+					printf 'tmux is required for mobile-created Tunnel workspaces; install it with `sudo dnf install tmux`.\n'
+					;;
+				centos|rhel|rocky|almalinux)
+					printf 'tmux is required for mobile-created Tunnel workspaces; install it with `sudo yum install tmux`.\n'
+					;;
+				arch)
+					printf 'tmux is required for mobile-created Tunnel workspaces; install it with `sudo pacman -S tmux`.\n'
+					;;
+				*)
+					printf 'tmux is required for mobile-created Tunnel workspaces; install `tmux` with your system package manager.\n'
+					;;
+			esac
+			;;
+		*)
+			printf 'tmux is required for mobile-created Tunnel workspaces; install `tmux` with your system package manager.\n'
+			;;
+	esac
+}
+
+warn_if_tmux_missing() {
+	if tmux_available; then
+		return 0
+	fi
+	printf 'warning: '
+	tmux_install_guidance
+}
+
 curl_fetch() {
 	curl \
 		--fail \
@@ -211,3 +262,5 @@ case ":$PATH:" in
 		printf 'add %s to PATH to run tunnel globally\n' "$install_dir"
 		;;
 esac
+
+warn_if_tmux_missing

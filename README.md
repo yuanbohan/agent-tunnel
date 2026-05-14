@@ -9,9 +9,9 @@ The remote contract now has two live-only surfaces:
 
 On attach, the owning `tunnel` process sends a fresh terminal-state snapshot, which may include up to 10,000 lines of bounded agent-local normal-buffer scrollback, and then continues streaming live PTY bytes on that same websocket. The `snapshot_done` control message may also include bounded agent-local submit anchors for jump-dot navigation, and already attached clients may receive live `submit_anchor` controls for newly recorded submit Enter events.
 
-`tunnel` starts a real CLI command such as `claude`, `codex`, `gemini`, `qwen`, or `aider`, keeps the launching terminal interactive, and registers the session with a relay server. A local `tunnel run` also best-effort ensures the background daemon and registers session metadata, a bounded latest preview, coalesced terminal snapshots, and live output bytes over a local-only broker socket for trusted connectivity transports; `tunnel run` remains the PTY and terminal-mirror owner. The relay is API-only: it authenticates app clients with user-scoped bearer tokens, can bind app sessions to client device fingerprints, authenticates agents with user-owned long-lived agent tokens, lists live sessions, lists currently online computer daemons, brokers session-scoped attaches, forwards structured input, forwards session stop control, forwards computer launch requests, carries connectivity pairing/visibility/rendezvous control messages, pairs with the same-image Binding-only STUN service for direct UDP discovery, and provides an opaque WebSocket QUIC fallback tunnel. Session discovery now includes best-effort Git branch metadata for the startup directory, optional local daemon identity through `device_id`, `launch_source` (`local` or `mobile`), and best-effort machine identity metadata from the registering agent, including platform family, platform id, and normalized computer name. Operator maintenance routes stay host-local outside the public `/api/` namespace. It does not retain transcript history and it does not emulate the terminal.
+`tunnel` starts a real CLI command such as `claude`, `codex`, `gemini`, `qwen`, or `aider`, keeps the launching terminal interactive, and registers the session with a relay server. A local `tunnel run` also requires a compatible background daemon and registers session metadata, a bounded latest preview, coalesced terminal snapshots, and live output bytes over a local-only broker socket for trusted connectivity transports before the user command starts; `tunnel run` remains the PTY and terminal-mirror owner. The relay is API-only: it authenticates app clients with user-scoped bearer tokens, can bind app sessions to client device fingerprints, authenticates agents with user-owned long-lived agent tokens, lists live sessions, lists currently online computer daemons, brokers session-scoped attaches, forwards structured input, forwards session stop control, forwards computer launch requests, carries connectivity pairing/visibility/rendezvous control messages, pairs with the same-image Binding-only STUN service for direct UDP discovery, and provides an opaque WebSocket QUIC fallback tunnel. Session discovery now includes best-effort Git branch metadata for the startup directory, optional local daemon identity through `device_id`, `launch_source` (`local` or `mobile`), and best-effort machine identity metadata from the registering agent, including platform family, platform id, and normalized computer name. Operator maintenance routes stay host-local outside the public `/api/` namespace. It does not retain transcript history and it does not emulate the terminal.
 
-On startup, `tunnel` must establish relay registration during the startup wait window. If registration does not succeed, startup exits with a relay connection error and does not launch the local terminal session.
+On startup, `tunnel` must establish Relay registration and daemon broker registration during the startup wait window. If either registration does not succeed, startup exits before terminal setup and does not launch the local command.
 
 After startup, if the relay socket drops, `tunnel` keeps retrying with backoff (3s → 5m, with pauses between attempts), while local terminal work continues unchanged.
 
@@ -62,6 +62,7 @@ curl -fsSL https://raw.githubusercontent.com/yuanbohan/tunnel/main/install.sh | 
 ```
 
 The installer writes `tunnel` to `~/.local/bin/tunnel` and supports `darwin/arm64`, `darwin/amd64`, `linux/amd64`, and `linux/arm64`.
+After a successful install, it prints non-blocking guidance when `tmux` is missing. Tunnel never auto-installs `tmux`; users install it manually when they want mobile-created workspace sessions.
 Official release packages also publish a `checksums.txt` manifest used by native `tunnel update` and `tunnel rollback`.
 
 After install, Tunnel has three binary lifecycle paths:
@@ -138,7 +139,7 @@ make build
 
 This stores one local fallback token in `~/.tunnel/auth.json`. `TUNNEL_AUTH_TOKEN` still has higher priority when you need to override the saved login for CI, scripts, or one-off operator work.
 
-If you use the hosted relay at `https://diaro.me`, `--base-url` is optional because that is the default.
+If you use the hosted relay at `https://agentunnel.cn`, `--base-url` is optional because that is the default.
 
 ### 3. Start tunnel
 
@@ -151,7 +152,7 @@ Launch a session with the saved local login:
 Or with a label:
 
 ```bash
-./bin/tunnel run -l api-fix --base-url https://diaro.me codex
+./bin/tunnel run -l api-fix --base-url https://agentunnel.cn codex
 ```
 
 Expected stderr output when relay is available during startup:
@@ -185,23 +186,37 @@ tunnel update
 tunnel rollback
 ```
 
-### 2b. Manage the device daemon
+### 2b. Manage the local daemon
 
-`tunnel run` best-effort starts or connects to the same-base-URL and same-auth-context daemon automatically so local sessions can register with the local broker. Broker reconnects re-check the daemon's Relay base URL and non-secret auth-context fingerprint before sending local session metadata, previews, snapshots, or live output. You can still manage the daemon explicitly, and you should check its status before relying on remote launch:
+`tunnel run` requires a same-base-URL and same-auth-context daemon. It starts the daemon when needed, waits for the local broker to accept the session id, and only then starts the user command. Broker reconnects re-check the daemon's Relay base URL and non-secret auth-context fingerprint before sending local session metadata, previews, snapshots, or live output. You can manage the daemon explicitly, and should start it before relying on mobile-created sessions:
 
 ```bash
 ./bin/tunnel auth login --base-url http://127.0.0.1:8586
 ./bin/tunnel daemon start
 ./bin/tunnel daemon status
 ./bin/tunnel daemon doctor
-./bin/tunnel daemon broker sessions --json
 ```
 
 `tunnel daemon start` uses the same auth precedence as `tunnel run`: `TUNNEL_AUTH_TOKEN` first, then the saved local login in `~/.tunnel/auth.json`.
 
-`tunnel run --daemon auto|off|required ...` controls only the daemon-local broker registration path. `auto` is the default best-effort mode, `off` preserves pure Relay-only local session startup, and `required` fails startup if a matching daemon broker cannot be reached.
+Pairing and trusted-client management are top-level commands:
 
-`tunnel daemon start --json`, `tunnel daemon status --json`, `tunnel daemon doctor --json`, `tunnel daemon broker sessions --json`, `tunnel daemon pair --json`, `tunnel daemon pair pending --json`, `tunnel daemon pair confirm ... --json`, `tunnel daemon devices --json`, and `tunnel daemon revoke ... --json` expose machine-readable daemon state and pairing/trust results for automation. `tunnel daemon pair` without `--json` prints a terminal QR code plus the payload for human pairing. JSON-capable daemon commands return a single `{"error":{"code":"...","message":"..."}}` envelope on command failures while preserving a non-zero exit status. Human `daemon start` output warns when launch readiness is degraded.
+```bash
+./bin/tunnel pair
+./bin/tunnel pair devices
+./bin/tunnel pair revoke <fingerprint>
+```
+
+`tunnel pair` prints a terminal QR code, waits for the client response, and lets the user enter the 6-digit pairing code in the same command. `tunnel pair --json`, `tunnel pair devices --json`, and `tunnel pair revoke <fingerprint> --json` keep machine-readable automation paths. JSON-capable daemon and pair commands return a single `{"error":{"code":"...","message":"..."}}` envelope on command failures while preserving a non-zero exit status. Human `daemon start` output warns when launch readiness is degraded.
+
+Workspace view commands are separate from session management:
+
+```bash
+./bin/tunnel workspace open
+./bin/tunnel workspace close
+```
+
+Use `tunnel session list` to see live account sessions and `tunnel session stop <session-id>` to stop one. `tunnel session list --json` prints the same account-level live sessions in a machine-readable shape for automation. `workspace close` only detaches one local tmux workspace view; it does not stop the daemon or terminate sessions.
 
 The daemon connectivity core can run without `tmux`. Missing `tmux` reports degraded launch readiness and prevents tmux-backed remote launch, but it does not prevent local broker registration or pairing/connectivity control paths.
 
@@ -252,14 +267,14 @@ Stronger delivery guarantees, transcript history, and remote-driven PTY sizing a
 
 Remote launch is computer-daemon-backed and tmux-backed:
 
-- `tunnel run` auto-ensures a matching daemon for local broker registration by default; users can disable or require this with `--daemon`, and can also run `tunnel daemon start` explicitly
+- `tunnel run` requires a matching daemon and broker registration before starting the user command; users can also run `tunnel daemon start` explicitly so the computer is discoverable before any local session exists
 - the daemon stays online until `tunnel daemon stop`
 - clients use `GET /api/computers` to discover only currently connected computers
 - `POST /api/computers/:computerID/sessions` always returns a `request_id`; success is `status: "session_ready"` plus `session_id`, and failure is `status: "failed"` plus a structured `reason` such as `command_not_allowed`, `device_offline`, `busy`, `path_not_found`, or `launch_timeout`
 - a successful launch creates a new dedicated tmux session and runs `tunnel run <command>` there
 - when that launched `tunnel run <command>` exits, the tmux session stays available and returns to an interactive shell prompt
-- users can inspect or resume the local workspace from any terminal with `tunnel daemon open`, detach one open workspace view with `tunnel daemon close`, or list sessions with `tunnel daemon sessions`
-- `tunnel daemon close` is the inverse of `open`: it closes a local tmux workspace view if one is open, but it does not stop the daemon or terminate any session
+- users can inspect or resume the local workspace from any terminal with `tunnel workspace open`, or detach one open workspace view with `tunnel workspace close`
+- `tunnel workspace close` is the inverse of `open`: it closes a local tmux workspace view if one is open, but it does not stop the daemon or terminate any session
 - mobile/API session shutdown uses `DELETE /api/sessions/:sessionID`; it sends `stop_session` to the owning `tunnel run` process, so local-launched and mobile-launched sessions use the same shutdown path
 - the daemon owns local launch state such as allowlist, busy/not-busy, tmux workspace health, doctor output, and last failure
 - the relay only keeps transient online routing for connected daemons; if a daemon disconnects, it disappears from `GET /api/computers` immediately
@@ -299,7 +314,7 @@ sudo docker compose --env-file .env exec relay relay invite create --count 3 --e
 After the user registers in the app, on each developer machine:
 
 ```bash
-export TUNNEL_BASE_URL=https://diaro.me
+export TUNNEL_BASE_URL=https://agentunnel.cn
 ./bin/tunnel auth login
 ./bin/tunnel run --label "feature-branch" claude
 ```

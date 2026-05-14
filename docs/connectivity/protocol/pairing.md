@@ -15,7 +15,7 @@ This document captures the target pairing contract for the QUIC session-connecti
 
 - client app is already logged in
 - daemon belongs to the same account
-- user runs `tunnel daemon pair`
+- user runs `tunnel pair`
 - Relay is reachable for pairing response transport in phase 1
 
 ## Device Identity Model
@@ -51,7 +51,7 @@ Their main jobs are:
 
 ## Invitation Model
 
-`tunnel daemon pair` creates one short-lived, one-time invitation.
+`tunnel pair` creates one short-lived, one-time invitation.
 
 Recommended invitation payload. The current payload version is `2`.
 
@@ -74,7 +74,7 @@ The daemon signs the invitation so the client can verify that the invitation pay
 1. daemon reserves a short-lived `correlation_id` with Relay
 2. Relay replies with the authenticated `account_id`
 3. daemon creates the signed invitation locally
-4. CLI prints a terminal QR code and pairing metadata; `--json` prints the machine-readable invitation payload
+4. CLI prints a terminal QR code, waits for the client response, and prompts for the 6-digit SAS; `--json` prints the machine-readable invitation payload
 5. client imports the invitation payload through real QR scanning
 6. client verifies:
    - invitation signature
@@ -255,7 +255,7 @@ The daemon MUST persist invitation state across daemon restarts to prevent reuse
 
 Phase-1 rules:
 
-- when `tunnel daemon pair` mints an invitation, the daemon writes a record to local state containing:
+- when `tunnel pair` mints an invitation, the daemon writes a record to local state containing:
   - `invitation_id`
   - `nonce`
   - `correlation_id`
@@ -287,8 +287,8 @@ The daemon remains authoritative for revoke.
 
 Phase-1 management surface:
 
-- `tunnel daemon devices`
-- `tunnel daemon revoke <device>`
+- `tunnel pair devices`
+- `tunnel pair revoke <fingerprint>`
 
 After revoke:
 
@@ -314,7 +314,7 @@ To support actionable UI, both daemon and client implementations SHOULD surface 
 
 | Code | Meaning | User-facing recovery |
 |---|---|---|
-| `pairing_invitation_expired` | invitation `expires_at` is in the past | run `tunnel daemon pair` again to mint a new invitation |
+| `pairing_invitation_expired` | invitation `expires_at` is in the past | run `tunnel pair` again to mint a new invitation |
 | `pairing_invitation_invalid` | invitation payload could not be parsed or its signature did not verify | re-import or check the daemon CLI output |
 | `pairing_invitation_consumed` | invitation has already completed once | mint a new invitation |
 | `pairing_account_mismatch` | client is logged into a different account than the invitation binds | log in with the matching account |
@@ -330,7 +330,7 @@ Client UI MUST surface a human-readable explanation for each code rather than di
 The architecture cannot in-band revoke a daemon device key. Recovery is operational:
 
 - generate a new daemon device key pair (typically by reinstalling daemon state or running an explicit `tunnel daemon reset-identity` command in a future phase)
-- run `tunnel daemon pair` and re-pair every client device against the new identity
+- run `tunnel pair` and re-pair every client device against the new identity
 - the old fingerprint is overwritten in each client device's local trust store after the new pair completes successfully
 
 Phase 1 does not provide automatic key rotation. Operators should treat daemon device keys with the same care as SSH host keys.

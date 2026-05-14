@@ -21,7 +21,7 @@ This document intentionally does not cover operator-only routes or the legacy `t
 Examples in this document assume a relay base URL such as:
 
 ```text
-https://diaro.me
+https://agentunnel.cn
 ```
 
 ### Token Types
@@ -33,7 +33,7 @@ The relay currently uses three token classes:
 | App access token | mobile/web/native app clients | `Authorization: Bearer <access-token>` on app-facing `/api/...` routes, `GET /api/sessions/:sessionID/attach/ws`, and `GET /api/connectivity/ws` |
 | App refresh token | app clients | JSON body for `POST /api/auth/refresh` |
 | Agent token | created by app clients, used later by `tunnel` | returned by `POST /api/agent-tokens`; used by `/agent/ws`, `/device/ws`, `/connectivity/computer/ws`, `GET /api/sessions`, and `DELETE /api/sessions/:sessionID` |
-| Fallback tunnel token | app and daemon connectivity peers | one-time `token` query parameter on `GET /connectivity/tunnel/ws`; issued through `relay_tunnel_ready` and bound to one actor and attempt |
+| Fallback tunnel token | app and daemon connectivity peers | one-time `Authorization: Bearer <single-use-token>` on `GET /connectivity/tunnel/ws`; issued through `relay_tunnel_ready` and bound to one actor and attempt |
 
 ### JSON Request Rules
 
@@ -804,7 +804,9 @@ as the winning path for that attempt and can later send `direct_session_close`
 to cancel the accepted daemon-local direct transport after logout, token
 revocation, trusted-device revocation, or account deletion. Relay stores
 rendezvous and accepted-direct state only in memory and expires or removes it
-through those lifecycle events.
+through those lifecycle events. Daemon-local direct transports are tied to the
+current daemon Relay connectivity socket and close locally if that socket
+disconnects.
 
 After a paired daemon is visible, app peers may request fallback tunnel setup:
 
@@ -934,7 +936,7 @@ endpoint below and then runs QUIC/TLS over the resulting packet tunnel.
 
 ### `GET /connectivity/tunnel/ws`
 
-Auth: one-time fallback tunnel token in `Authorization: Bearer <single-use-token>`. The old `token` query parameter is accepted only as a compatibility alias and must not be used by new clients.
+Auth: one-time fallback tunnel token in `Authorization: Bearer <single-use-token>`.
 
 Example:
 
@@ -1049,7 +1051,7 @@ Success response:
 
 Notes:
 
-- this is destructive session shutdown, not the local `tunnel daemon close` workspace-view action
+- this is destructive session shutdown, not the local `tunnel workspace close` workspace-view action
 - local-launched and mobile-launched sessions use the same stop path
 - the relay sends `stop_session` to the owning `/agent/ws` connection, removes the live session from discovery, and closes active attaches with `session_stopped`
 - the owning `tunnel run` process exits after receiving `stop_session`

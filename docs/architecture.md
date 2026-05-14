@@ -4,7 +4,7 @@ This document describes the current system shape for the attach-based protocol.
 
 ## System Shape
 
-`tunnel` owns the real local agent process, its PTY, and the authoritative current terminal state for that session. Built-in CLI commands own the top-level namespace, and local command launch happens only through `tunnel run <command>`. Every PATH-resolved launcher command follows the same path: one local PTY child, one session hub, one headless terminal mirror, one outbound relay connector, and no launcher-specific sidecar. In the connectivity path, `tunnel run` also best-effort registers metadata, a throttled bounded latest preview, coalesced terminal snapshots, and live output bytes with the local daemon broker after verifying the daemon Relay base URL and auth-context fingerprint, but it remains the PTY and mirror owner.
+`tunnel` owns the real local agent process, its PTY, and the authoritative current terminal state for that session. Built-in CLI commands own the top-level namespace, and local command launch happens only through `tunnel run <command>`. Every PATH-resolved launcher command follows the same path: one local PTY child, one session hub, one headless terminal mirror, one outbound relay connector, one required local daemon broker registration, and no launcher-specific sidecar. In the connectivity path, `tunnel run` registers metadata, a throttled bounded latest preview, coalesced terminal snapshots, and live output bytes with the local daemon broker after verifying the daemon Relay base URL and auth-context fingerprint, but it remains the PTY and mirror owner.
 
 Separately, `tunnel daemon` owns one background machine runtime. That daemon has its own local control socket, a separate long-lived local broker socket for `tunnel run` registrations, its own live relay connector on `/device/ws`, a connectivity connector on `/connectivity/computer/ws`, and its own dedicated tmux workspace used to create future remote-launched `tunnel run <command>` sessions when tmux is available. The daemon is the state authority for device launch behavior, paired client trust, and live local broker roster/cache. The relay only brokers currently online daemon connections, live connectivity visibility derived from daemon-local trusted rosters, and short-lived correlations needed to turn one launch request into one later `session_ready` result.
 
@@ -22,7 +22,7 @@ The local terminal is still the primary and most complete view of the PTY sessio
 
 `tunnel` enforces strict startup gating and runtime reconnect:
 
-- startup gating: relay registration must succeed during the startup wait window
+- startup gating: relay registration and daemon broker registration must both succeed before the user command starts
 - runtime behavior: if relay outages occur, local terminal work continues; the connector retries registration with backoff
 - before interactive `tunnel run`, Tunnel may perform one native binary update check at most once per 24-hour interval, prompt in English, and re-exec the same command under a newly installed binary
 
@@ -79,7 +79,7 @@ It owns:
 - terminal-native login that exchanges relay username/password for one locally saved agent token in `~/.tunnel/auth.json`
 - persistent CLI state under `~/.tunnel/`, with `settings.json` as the user-editable settings file and `updater.json` as internal updater state
 - runtime auth precedence for `tunnel run`: `TUNNEL_AUTH_TOKEN` first, then `~/.tunnel/auth.json`
-- runtime auth precedence for daemon startup, whether explicit through `tunnel daemon start` or best-effort from `tunnel run`: `TUNNEL_AUTH_TOKEN` first, then `~/.tunnel/auth.json`
+- runtime auth precedence for daemon startup, whether explicit through `tunnel daemon start` or required from `tunnel run`: `TUNNEL_AUTH_TOKEN` first, then `~/.tunnel/auth.json`
 - automatic startup-update disable through `TUNNEL_UPDATE_DISABLED` or `~/.tunnel/settings.json` `env` overrides
 - launcher resolution
 - PTY lifecycle and local terminal raw mode
@@ -111,7 +111,7 @@ It owns:
 - synchronously evicting live sessions when a user is deleted or an agent token is revoked
 - closing affected app-side attaches when an app session logs out or a password change revokes app sessions, without disconnecting the owning agent
 - tracking only currently online `/device/ws` connections and the transient request-correlation state needed to turn one launch request into one `session_ready` result or timeout
-- tracking only currently online `/connectivity/computer/ws` and `/api/connectivity/ws` peers for paired-daemon visibility, REST-submitted pairing response routing, short-lived direct rendezvous hint exchange, accepted direct-session close routing, and fallback/direct winner selection; trusted client rosters are daemon-local and are rebuilt into Relay visibility when the daemon reconnects
+- tracking only currently online `/connectivity/computer/ws` and `/api/connectivity/ws` peers for paired-daemon visibility, REST-submitted pairing response routing, short-lived direct rendezvous hint exchange, accepted direct-session close routing, and fallback/direct winner selection; daemon-local direct transports are closed when the daemon connectivity socket disconnects, and trusted client rosters are daemon-local and are rebuilt into Relay visibility when the daemon reconnects
 - issuing short-lived, actor-specific fallback tunnel tokens and forwarding fallback WebSocket binary messages as opaque encrypted QUIC packets
 
 The relay does not own:
@@ -213,14 +213,17 @@ Remote clients follow the PTY size. They do not compete to become size authority
 
 ## Startup And Relay Continuity
 
-Relay registration is a startup gate for local session launch; if it fails, launch fails.
+Relay registration and local daemon broker registration are startup gates for local session launch; if either fails, launch fails before terminal setup and child process startup.
 
 ```text
 tunnel launch
 → connector starts trying /agent/ws
-→ if registration succeeds during the startup wait window:
+→ if Relay registration succeeds during the startup wait window:
+     ensure compatible local daemon
+     register session with daemon broker
+→ if daemon broker registration succeeds:
      local session starts in connected mode
-→ if registration fails during startup:
+→ if Relay or daemon broker registration fails during startup:
      launch fails and no local session starts
 → if a later relay disconnect happens:
      local PTY session continues uninterrupted
@@ -243,7 +246,7 @@ Closing the agent process ends the session. A later agent launch starts a differ
 
 The device-launch lifecycle is separate from session attach:
 
-1. `tunnel run` may best-effort auto-start the background daemon for local broker registration; `tunnel daemon start` remains available for explicit lifecycle management. Broker reconnects are local-only and must continue to verify the daemon Relay base URL and auth-context fingerprint before sending session metadata, previews, snapshots, or live output.
+1. `tunnel run` requires a compatible background daemon and broker registration before starting the user command; `tunnel daemon start` remains available for explicit lifecycle management and mobile computer discovery. Broker reconnects after successful startup are local-only and must continue to verify the daemon Relay base URL and auth-context fingerprint before sending session metadata, previews, snapshots, or live output.
 2. That runtime persists a stable `device_id`, connects to `/device/ws`, connects to `/connectivity/computer/ws`, and serves local control plus broker sockets.
 3. `GET /api/computers` lists only currently connected devices for the owning user.
 4. `POST /api/computers/:id/sessions` routes one request to that live device daemon and assigns a relay-scoped `request_id`.

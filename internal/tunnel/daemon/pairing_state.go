@@ -125,6 +125,7 @@ type TrustedAndroidDevice struct {
 	Status      string `json:"status"`
 	PairedAt    int64  `json:"paired_at"`
 	RevokedAt   *int64 `json:"revoked_at,omitempty"`
+	Warning     string `json:"warning,omitempty"`
 }
 
 type PendingPairingResponseRecord struct {
@@ -209,8 +210,9 @@ type PairInvitationOptions struct {
 }
 
 type PairingCompletion struct {
-	Device TrustedAndroidDevice `json:"device"`
-	SAS    string               `json:"sas"`
+	Device  TrustedAndroidDevice `json:"device"`
+	SAS     string               `json:"sas"`
+	Warning string               `json:"warning,omitempty"`
 }
 
 type PendingPairingResponse struct {

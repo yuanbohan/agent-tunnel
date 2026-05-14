@@ -59,13 +59,13 @@ sequenceDiagram
 sequenceDiagram
     autonumber
     participant User
-    participant DaemonCLI as tunnel daemon pair
+    participant DaemonCLI as tunnel pair
     participant DaemonConn as Daemon ConnMgr
     participant RelayRT as Relay RT
     participant AndroidUI as Android UI
     participant AndroidConn as Android ConnMgr
 
-    User->>DaemonCLI: run `tunnel daemon pair`
+    User->>DaemonCLI: run `tunnel pair`
     DaemonConn->>RelayRT: reserve short-lived correlation_id
     RelayRT-->>DaemonConn: correlation_id + account_id
     DaemonCLI->>DaemonConn: create one-time invitation

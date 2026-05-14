@@ -15,6 +15,7 @@ import (
 
 const (
 	brokerFrameRegisterSession = "register_session"
+	brokerFrameRegisterAck     = "register_ack"
 	brokerFrameSessionUpdate   = "session_update"
 	brokerFramePreviewUpdate   = "preview_update"
 	brokerFrameSnapshotUpdate  = "snapshot_update"
@@ -675,6 +676,7 @@ func (s *BrokerServer) serveConn(conn net.Conn) {
 			_ = conn.SetReadDeadline(time.Time{})
 			registeredSessionID = sessionID
 			s.broker.register(*frame.Session, owner)
+			_ = owner.writeFrame(BrokerFrame{Type: brokerFrameRegisterAck, SessionID: sessionID})
 		case brokerFrameSessionUpdate:
 			if frame.Session == nil {
 				continue

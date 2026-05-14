@@ -230,6 +230,9 @@ func ConfirmPendingPairing(ctx context.Context, paths Paths, invitationID, sas s
 		return PairingCompletion{}, fmt.Errorf("%w; start it with `tunnel daemon start`", ErrNotRunning)
 	}
 	if response.Error != "" {
+		if response.Error == ErrPairingSASMismatch.Error() {
+			return PairingCompletion{}, ErrPairingSASMismatch
+		}
 		return PairingCompletion{}, errors.New(response.Error)
 	}
 	if response.PairCompletion == nil {

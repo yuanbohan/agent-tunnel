@@ -92,6 +92,7 @@ PATH="/usr/bin:/bin" HOME="$home_dir" \
 TUNNEL_INSTALL_BASE_URL="$base_url" \
 TUNNEL_RELEASE_BASE_URL="$release_base_url" \
 TUNNEL_INSTALL_DIR="$home_dir/.local/bin" \
+TUNNEL_INSTALL_TMUX_AVAILABLE=0 \
 "$script_dir/install-tunnel.sh" >"$tmpdir/install.out"
 
 if [ ! -x "$home_dir/.local/bin/tunnel" ]; then
@@ -109,11 +110,17 @@ if ! grep -q "add $home_dir/.local/bin to PATH" "$tmpdir/install.out"; then
 	exit 1
 fi
 
+if ! grep -q "warning: tmux is required for mobile-created Tunnel workspaces" "$tmpdir/install.out"; then
+	printf 'error: installer did not print tmux readiness warning\n' >&2
+	exit 1
+fi
+
 mv "$fixture_root/latest.json" "$fixture_root/latest.json.hidden"
 PATH="/usr/bin:/bin" HOME="$home_dir" \
 VERSION="$version" \
 TUNNEL_RELEASE_BASE_URL="$release_base_url" \
 TUNNEL_INSTALL_DIR="$home_dir/.local/bin" \
+TUNNEL_INSTALL_TMUX_AVAILABLE=1 \
 "$script_dir/install-tunnel.sh" >/dev/null
 mv "$fixture_root/latest.json.hidden" "$fixture_root/latest.json"
 

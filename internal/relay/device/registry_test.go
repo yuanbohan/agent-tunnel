@@ -414,6 +414,52 @@ func TestRegistryLaunchReturnsTimeoutWhenCallerContextEnds(t *testing.T) {
 	}
 }
 
+func TestRegistryLaunchTimeoutRequestsWorkspaceCleanupAfterAccepted(t *testing.T) {
+	registry := NewRegistry()
+	peer := &fakeDevicePeer{}
+	owner := DeviceOwner{UserID: 1}
+	registry.RegisterOwned(protocol.DeviceInfo{DeviceID: "dev-1"}, owner, peer)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	resultCh := make(chan LaunchResult, 1)
+	go func() {
+		resultCh <- registry.Launch(ctx, "dev-1", 1, "codex", "/repo", "")
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for peer.sentCount() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if peer.sentCount() == 0 {
+		t.Fatal("timed out waiting for launch request")
+	}
+	launch := peer.sentFrame(0)
+	if _, ok := registry.ResolveLaunchIfOwner("dev-1", peer, launch.RequestID, LaunchStatusAccepted, "", "launch_fixed"); !ok {
+		t.Fatal("ResolveLaunchIfOwner returned false for accepted launch")
+	}
+	cancel()
+
+	select {
+	case result := <-resultCh:
+		if result.Status != LaunchStatusFailed || result.Reason != "launch_timeout" {
+			t.Fatalf("result = %#v, want launch_timeout", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for launch timeout")
+	}
+	deadline = time.Now().Add(time.Second)
+	for peer.sentCount() < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if peer.sentCount() < 2 {
+		t.Fatal("timed out waiting for cleanup terminate request")
+	}
+	cleanup := peer.sentFrame(1)
+	if cleanup.Type != "terminate_request" || cleanup.WorkspaceSession != "launch_fixed" || cleanup.SessionID != "" {
+		t.Fatalf("cleanup = %#v, want terminate_request for launch_fixed", cleanup)
+	}
+}
+
 func TestRegistryTerminateRoutesToOwningDevice(t *testing.T) {
 	registry := NewRegistry()
 	peer := &fakeDevicePeer{}

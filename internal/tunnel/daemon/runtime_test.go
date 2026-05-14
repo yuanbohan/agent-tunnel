@@ -6,9 +6,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	connectivitypairing "yuanbohan/tunnel/internal/connectivity/pairing"
+	"yuanbohan/tunnel/internal/connectivity/pairtest"
 	"yuanbohan/tunnel/internal/protocol"
 )
 
@@ -186,6 +189,24 @@ func TestRunCleansUpPersistedStateOnSocketStartupFailure(t *testing.T) {
 	}
 }
 
+func TestCurrentRunningStatusIgnoresLivePIDWhenControlSocketUnavailable(t *testing.T) {
+	paths := testPaths(t)
+	if err := writeJSONFile(paths.StatusFile, StatusInfo{
+		Running: true,
+		PID:     os.Getpid(),
+	}); err != nil {
+		t.Fatalf("writeJSONFile returned error: %v", err)
+	}
+
+	status, err := currentRunningStatus(context.Background(), paths)
+	if err != nil {
+		t.Fatalf("currentRunningStatus returned error: %v", err)
+	}
+	if status.Running {
+		t.Fatalf("status = %#v, want stopped when control socket is unavailable", status)
+	}
+}
+
 func TestSendConnectivityEventBlockingWaitsForConsumer(t *testing.T) {
 	state := &runtimeState{
 		connectivityEvents: make(chan protocol.ConnectivityFrame),
@@ -222,6 +243,117 @@ func TestSendConnectivityEventBlockingReturnsFalseWhenCanceled(t *testing.T) {
 	if state.sendConnectivityEventBlocking(ctx, protocol.ConnectivityPairCompletedFrame("android-a")) {
 		t.Fatal("sendConnectivityEventBlocking returned true after context cancellation")
 	}
+}
+
+func TestConfirmPendingPairingReturnsCompletionWhenConnectivityQueueUnavailable(t *testing.T) {
+	paths := testPaths(t)
+	invitation, sas, fingerprint := storeRuntimeTestPendingPairing(t, paths)
+	state := &runtimeState{}
+
+	response := handleConfirmPendingPairing(context.Background(), paths, state, Request{
+		InvitationID: invitation.InvitationID,
+		SAS:          sas,
+	})
+	if response.Error != "" {
+		t.Fatalf("response error = %q, want pairing completion", response.Error)
+	}
+	if response.PairCompletion == nil {
+		t.Fatal("PairCompletion is nil, want trusted pairing completion")
+	}
+	if response.PairCompletion.Device.Fingerprint != fingerprint {
+		t.Fatalf("completion fingerprint = %q, want %q", response.PairCompletion.Device.Fingerprint, fingerprint)
+	}
+	if response.PairCompletion.Warning != connectivityEventQueueWarning {
+		t.Fatalf("completion warning = %q, want queue warning", response.PairCompletion.Warning)
+	}
+	devices, err := ListTrustedAndroidDevices(paths)
+	if err != nil {
+		t.Fatalf("ListTrustedAndroidDevices returned error: %v", err)
+	}
+	if len(devices) != 1 || devices[0].Fingerprint != fingerprint {
+		t.Fatalf("trusted devices = %#v, want completed pairing persisted", devices)
+	}
+}
+
+func TestRevokeTrustedDeviceReturnsRevokedDeviceWhenConnectivityQueueUnavailable(t *testing.T) {
+	paths := testPaths(t)
+	fingerprint := strings.Repeat("a", 64)
+	if err := UpsertTrustedAndroidDevice(paths, TrustedAndroidDevice{
+		Fingerprint: fingerprint,
+		PublicKey:   strings.Repeat("b", 64),
+		DisplayName: "Pixel",
+		PairedAt:    time.Now().UTC().Unix(),
+	}); err != nil {
+		t.Fatalf("UpsertTrustedAndroidDevice returned error: %v", err)
+	}
+	state := &runtimeState{}
+
+	response := handleRevokeTrustedDevice(context.Background(), paths, state, Request{DeviceFingerprint: fingerprint})
+	if response.Error != "" {
+		t.Fatalf("response error = %q, want revoked device", response.Error)
+	}
+	if response.TrustedDevice == nil {
+		t.Fatal("TrustedDevice is nil, want revoked device")
+	}
+	if response.TrustedDevice.Fingerprint != fingerprint {
+		t.Fatalf("revoked fingerprint = %q, want %q", response.TrustedDevice.Fingerprint, fingerprint)
+	}
+	if response.TrustedDevice.Warning != connectivityEventQueueWarning {
+		t.Fatalf("revoked warning = %q, want queue warning", response.TrustedDevice.Warning)
+	}
+	devices, err := ListTrustedAndroidDevices(paths)
+	if err != nil {
+		t.Fatalf("ListTrustedAndroidDevices returned error: %v", err)
+	}
+	if len(devices) != 0 {
+		t.Fatalf("trusted devices = %#v, want revoked device removed locally", devices)
+	}
+}
+
+func storeRuntimeTestPendingPairing(t *testing.T, paths Paths) (PairInvitation, string, string) {
+	t.Helper()
+	identity, err := ReadOrCreateConnectivityIdentity(paths)
+	if err != nil {
+		t.Fatalf("ReadOrCreateConnectivityIdentity returned error: %v", err)
+	}
+	now := time.Now().UTC()
+	invitation, err := CreatePairInvitation(paths, PairInvitationOptions{
+		BaseURL:        "https://relay.example.com",
+		DeviceID:       "dev_test",
+		DisplayName:    "Test Mac",
+		AccountID:      "acct-1",
+		CorrelationID:  "corr-test",
+		Now:            now,
+		DaemonIdentity: identity,
+	})
+	if err != nil {
+		t.Fatalf("CreatePairInvitation returned error: %v", err)
+	}
+	android, err := pairtest.NewClient("Pixel")
+	if err != nil {
+		t.Fatalf("NewClient returned error: %v", err)
+	}
+	response, sas, err := android.PairingResponse(connectivitypairing.Invitation{
+		Version:           connectivitypairing.Version,
+		AccountID:         invitation.AccountID,
+		DaemonID:          invitation.DeviceID,
+		DaemonDisplayName: invitation.DisplayName,
+		DaemonPublicKey:   invitation.DaemonPublicKey,
+		DaemonFingerprint: invitation.DaemonFingerprint,
+		InvitationID:      invitation.InvitationID,
+		CorrelationID:     invitation.CorrelationID,
+		Nonce:             invitation.Nonce,
+		ExpiresAt:         invitation.ExpiresAt,
+		RelayBaseURL:      invitation.RelayBaseURL,
+		Signature:         invitation.Signature,
+	}, "acct-1")
+	if err != nil {
+		t.Fatalf("PairingResponse returned error: %v", err)
+	}
+	if _, err := StorePendingPairingResponse(paths, response, now.Add(time.Minute)); err != nil {
+		t.Fatalf("StorePendingPairingResponse returned error: %v", err)
+	}
+	return invitation, sas, android.Fingerprint
 }
 
 func TestAcquireStartupLockWaitsForRelease(t *testing.T) {

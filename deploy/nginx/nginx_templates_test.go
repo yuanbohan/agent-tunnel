@@ -24,6 +24,7 @@ func TestConnectivityWebSocketRoutesStayProxiedInNginxTemplates(t *testing.T) {
 				"location /api/",
 				"location = /connectivity/computer/ws",
 				"location = /connectivity/daemon/ws",
+				"location = /connectivity/tunnel/ws",
 				"proxy_http_version 1.1",
 				"proxy_set_header Upgrade $http_upgrade",
 				"proxy_set_header Connection $connection_upgrade",

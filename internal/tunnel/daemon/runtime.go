@@ -21,6 +21,7 @@ import (
 const readySignalEnv = "TUNNEL_DAEMON_READY_FD"
 const daemonAuthTokenEnv = "TUNNEL_AUTH_TOKEN"
 const connectivityEventEnqueueTimeout = 5 * time.Second
+const connectivityEventQueueWarning = "relay connectivity event queue unavailable"
 
 var daemonStartupLockTimeout = 10 * time.Second
 
@@ -287,14 +288,7 @@ func Run(ctx context.Context, options RuntimeOptions, readyWriter io.Writer) err
 			}
 			return Response{PendingPairing: pending}
 		case actionConfirmPendingPairing:
-			completion, err := ConfirmPendingPairingResponse(options.Paths, request.InvitationID, request.SAS, time.Now().UTC())
-			if err != nil {
-				return Response{Error: err.Error()}
-			}
-			if !state.sendConnectivityEventBlocking(requestCtx, protocol.ConnectivityPairCompletedFrame(completion.Device.Fingerprint)) {
-				return Response{Error: "relay connectivity event queue unavailable"}
-			}
-			return Response{PairCompletion: &completion}
+			return handleConfirmPendingPairing(requestCtx, options.Paths, state, request)
 		case actionDevices:
 			devices, err := ListTrustedAndroidDevices(options.Paths)
 			if err != nil {
@@ -304,19 +298,7 @@ func Run(ctx context.Context, options RuntimeOptions, readyWriter io.Writer) err
 		case actionBrokerSessions:
 			return Response{BrokerSessions: state.broker.Snapshot()}
 		case actionRevokeDevice:
-			revoked, err := RevokeTrustedAndroidDevice(options.Paths, request.DeviceFingerprint)
-			if err != nil {
-				return Response{Error: err.Error()}
-			}
-			state.cancelPendingDirectAttempts("", revoked.Fingerprint)
-			state.cancelActiveDirectTransports("", revoked.Fingerprint)
-			if !state.sendConnectivityEventBlocking(requestCtx, protocol.ConnectivityFrame{
-				Type:               "client_revoked",
-				AndroidFingerprint: revoked.Fingerprint,
-			}) {
-				return Response{Error: "relay connectivity event queue unavailable"}
-			}
-			return Response{TrustedDevice: &revoked}
+			return handleRevokeTrustedDevice(requestCtx, options.Paths, state, request)
 		case actionStop:
 			state.stop()
 			state.markStopped()
@@ -370,6 +352,33 @@ func Run(ctx context.Context, options RuntimeOptions, readyWriter io.Writer) err
 	case err := <-brokerErrCh:
 		return err
 	}
+}
+
+func handleConfirmPendingPairing(ctx context.Context, paths Paths, state *runtimeState, request Request) Response {
+	completion, err := ConfirmPendingPairingResponse(paths, request.InvitationID, request.SAS, time.Now().UTC())
+	if err != nil {
+		return Response{Error: err.Error()}
+	}
+	if !state.sendConnectivityEventBlocking(ctx, protocol.ConnectivityPairCompletedFrame(completion.Device.Fingerprint)) {
+		completion.Warning = connectivityEventQueueWarning
+	}
+	return Response{PairCompletion: &completion}
+}
+
+func handleRevokeTrustedDevice(ctx context.Context, paths Paths, state *runtimeState, request Request) Response {
+	revoked, err := RevokeTrustedAndroidDevice(paths, request.DeviceFingerprint)
+	if err != nil {
+		return Response{Error: err.Error()}
+	}
+	state.cancelPendingDirectAttempts("", revoked.Fingerprint)
+	state.cancelActiveDirectTransports("", revoked.Fingerprint)
+	if !state.sendConnectivityEventBlocking(ctx, protocol.ConnectivityFrame{
+		Type:               "client_revoked",
+		AndroidFingerprint: revoked.Fingerprint,
+	}) {
+		revoked.Warning = connectivityEventQueueWarning
+	}
+	return Response{TrustedDevice: &revoked}
 }
 
 func LoadStatus(paths Paths) (StatusInfo, error) {
@@ -744,7 +753,7 @@ func cleanupStaleStartupLock(lockPath string) {
 
 func currentRunningStatus(ctx context.Context, paths Paths) (StatusInfo, error) {
 	status, err := Status(ctx, paths)
-	if err == nil && status.Running {
+	if err == nil {
 		return status, nil
 	}
 

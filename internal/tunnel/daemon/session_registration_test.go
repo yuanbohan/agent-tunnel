@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -54,6 +55,66 @@ func TestSessionRegistrationClientRegistersAndPushesPreview(t *testing.T) {
 	full, ok := broker.SnapshotBySession("sess-1")
 	if !ok || len(full.LatestSnapshot) == 0 || full.SnapshotCols == 0 || full.SnapshotRows == 0 {
 		t.Fatalf("snapshot = %#v, want terminal snapshot bytes and dimensions", full)
+	}
+}
+
+func TestSessionRegistrationClientWaitUntilRegisteredReturnsAfterBrokerAck(t *testing.T) {
+	paths := testPaths(t)
+	broker, server, cancel := startBrokerForTest(t, paths)
+	defer cancel()
+	defer server.Close()
+
+	client := NewSessionRegistrationClient(paths, protocol.SessionInfo{
+		SessionID:      "sess-ack",
+		CWD:            "/repo",
+		CommandPreview: "codex",
+		StartedAt:      1,
+	})
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	go client.Run(ctx)
+	defer client.Close()
+
+	waitCtx, cancelWait := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelWait()
+	if err := client.WaitUntilRegistered(waitCtx); err != nil {
+		t.Fatalf("WaitUntilRegistered returned error: %v", err)
+	}
+	if _, ok := broker.SnapshotBySession("sess-ack"); !ok {
+		t.Fatal("broker missing registered session after WaitUntilRegistered returned")
+	}
+}
+
+func TestSessionRegistrationClientWaitUntilRegisteredReturnsLastPreAckError(t *testing.T) {
+	client := NewSessionRegistrationClient(Paths{}, protocol.SessionInfo{SessionID: "sess-error"})
+	client.sleep = func(context.Context, time.Duration) bool { return false }
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	go client.Run(ctx)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for client.lastRegistrationError() == nil && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if client.lastRegistrationError() == nil {
+		t.Fatal("lastRegistrationError = nil, want broker setup error")
+	}
+
+	waitCtx, cancelWait := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancelWait()
+	err := client.WaitUntilRegistered(waitCtx)
+	if err == nil || !strings.Contains(err.Error(), "broker socket path is empty") {
+		t.Fatalf("WaitUntilRegistered error = %v, want broker socket setup error", err)
+	}
+}
+
+func TestSessionRegistrationClientWaitUntilRegisteredTimesOut(t *testing.T) {
+	client := NewSessionRegistrationClient(testPaths(t), protocol.SessionInfo{SessionID: "sess-timeout"})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	err := client.WaitUntilRegistered(ctx)
+	if err == nil || !strings.Contains(err.Error(), "timed out waiting for daemon broker") {
+		t.Fatalf("WaitUntilRegistered error = %v, want timeout", err)
 	}
 }
 

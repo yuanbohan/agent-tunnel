@@ -32,13 +32,14 @@ Detail: `protocol/transport.md`, `protocol/relay.md`.
 
 ---
 
-### D2 — Daemon Auto-Start
+### D2 — Required Local Daemon
 
 - `tunnel run` checks for the local daemon socket on startup.
 - If the daemon is not running, `tunnel run` forks one as a detached child process before opening its PTY.
+- `tunnel run` waits for the local broker to accept its session id before opening its PTY.
 - The daemon process is parent-detached: it survives `tunnel run` exit.
 - The default user path does not require managing daemon lifecycle as an explicit step.
-- `tunnel run --daemon auto|off|required` controls this broker path for automation and diagnostics; `auto` remains the default.
+- There is no public `tunnel run --daemon` bypass in this revision.
 
 The check-and-fork path is internal to `tunnel run`; it is not a public daemon subcommand.
 
@@ -147,12 +148,12 @@ device. If `quiche` packaging blocks, fall back to `kwik` per
 - daemon identity persistence (`connectivity_identity.json` in the daemon state directory, mode 0600).
 - invitation persistence (`~/.tunnel/invitations.json`).
 - SAS computation with golden vectors checked in (≥ 3 cases) before any pairing UI is built.
-- `tunnel daemon pair` reserves Relay correlation and prints a terminal QR code; `--json` prints the signed invitation payload.
+- `tunnel pair` reserves Relay correlation, prints a terminal QR code, waits for the client response, and prompts for the 6-digit SAS; `--json` prints the signed invitation payload.
 - Test client (Go-only, no Android required) completes a full pair end-to-end through Relay.
 - `tunnel run` daemon auto-start path works from cold.
 - Local broker socket: `tunnel run` registers, pushes preview, daemon caches latest preview.
 
-**Exit criterion**: golden test (`tunnel daemon pair` + test client) passes; daemon-state sweep tests pass; local broker roundtrip < 5ms.
+**Exit criterion**: golden test (`tunnel pair` + test client) passes; daemon-state sweep tests pass; local broker roundtrip < 5ms.
 
 ### 1.2 — Relay Control Plane + Fallback Transport
 

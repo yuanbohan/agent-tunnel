@@ -219,7 +219,7 @@ func TestParseRunArgsRejectsBareHostBaseURL(t *testing.T) {
 	setEnv(t, "TUNNEL_BASE_URL", "")
 	setEnv(t, "TUNNEL_AUTH_TOKEN", "secret")
 
-	_, err := parseRunArgsForTest([]string{"run", "--base-url", "diaro.me", "codex"})
+	_, err := parseRunArgsForTest([]string{"run", "--base-url", "agentunnel.cn", "codex"})
 	if err == nil {
 		t.Fatal("expected error for invalid base URL")
 	}
@@ -309,8 +309,8 @@ func TestParseRunArgsIgnoresLegacyAuthTokenEnv(t *testing.T) {
 }
 
 func TestRelayWebSocketBaseURL(t *testing.T) {
-	if got := relayWebSocketBaseURL("https://diaro.me"); got != "wss://diaro.me" {
-		t.Fatalf("relayWebSocketBaseURL(https) = %q, want wss://diaro.me", got)
+	if got := relayWebSocketBaseURL(defaultTunnelBaseURL); got != "wss://agentunnel.cn" {
+		t.Fatalf("relayWebSocketBaseURL(https) = %q, want wss://agentunnel.cn", got)
 	}
 	if got := relayWebSocketBaseURL("http://127.0.0.1:8586/base"); got != "ws://127.0.0.1:8586/base" {
 		t.Fatalf("relayWebSocketBaseURL(http) = %q, want ws://127.0.0.1:8586/base", got)
