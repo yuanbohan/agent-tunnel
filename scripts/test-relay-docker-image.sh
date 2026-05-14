@@ -37,5 +37,30 @@ if [ "$got_branch" != "$git_branch" ]; then
     exit 1
 fi
 
+stun_help="$(docker run --rm "$image" stun serve --help)"
+case "$stun_help" in
+    *"Start the Binding-only STUN UDP service"*) ;;
+    *)
+        printf 'error: relay image does not expose relay stun serve help\n' >&2
+        exit 1
+        ;;
+esac
+
+image_cmd="$(docker image inspect "$image" --format '{{json .Config.Cmd}}')"
+if [ "$image_cmd" != '["serve"]' ]; then
+    printf 'error: relay image default command is %s, want ["serve"]\n' "$image_cmd" >&2
+    exit 1
+fi
+
+exposed_ports="$(docker image inspect "$image" --format '{{json .Config.ExposedPorts}}')"
+case "$exposed_ports" in
+    *'"8586/tcp"'*'"3478/udp"'*|*'"3478/udp"'*'"8586/tcp"'*) ;;
+    *)
+        printf 'error: relay image exposes ports %s, want 8586/tcp and 3478/udp\n' "$exposed_ports" >&2
+        exit 1
+        ;;
+esac
+
 printf 'verified relay image version: %s\n' "$got"
 printf 'verified relay image branch: %s\n' "$got_branch"
+printf 'verified relay image STUN command and exposed ports\n'

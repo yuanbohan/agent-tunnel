@@ -163,6 +163,9 @@ jobs:
         run: |
           version_line="$(docker run --rm "$RELAY_IMAGE_NAME:$RELEASE_VERSION" version | awk 'NR==1 {print $2}')"
           branch_line="$(docker run --rm "$RELAY_IMAGE_NAME:$RELEASE_VERSION" version | awk 'NR==2 {print $2}')"
+          stun_help="$(docker run --rm "$RELAY_IMAGE_NAME:$RELEASE_VERSION" stun serve --help)"
+          image_cmd="$(docker image inspect "$RELAY_IMAGE_NAME:$RELEASE_VERSION" --format '{{json .Config.Cmd}}')"
+          exposed_ports="$(docker image inspect "$RELAY_IMAGE_NAME:$RELEASE_VERSION" --format '{{json .Config.ExposedPorts}}')"
           if [ "$version_line" != "$RELEASE_VERSION" ]; then
             printf 'error: relay image reports version %s, want %s\n' "$version_line" "$RELEASE_VERSION" >&2
             exit 1
@@ -171,8 +174,27 @@ jobs:
             printf 'error: relay image reports branch %s, want %s\n' "$branch_line" "${{ steps.source_tag.outputs.tag }}" >&2
             exit 1
           fi
+          case "$stun_help" in
+            *"Start the Binding-only STUN UDP service"*) ;;
+            *)
+              printf 'error: relay image does not expose relay stun serve help\n' >&2
+              exit 1
+              ;;
+          esac
+          if [ "$image_cmd" != '["serve"]' ]; then
+            printf 'error: relay image default command is %s, want ["serve"]\n' "$image_cmd" >&2
+            exit 1
+          fi
+          case "$exposed_ports" in
+            *'"8586/tcp"'*'"3478/udp"'*|*'"3478/udp"'*'"8586/tcp"'*) ;;
+            *)
+              printf 'error: relay image exposes ports %s, want 8586/tcp and 3478/udp\n' "$exposed_ports" >&2
+              exit 1
+              ;;
+          esac
           printf 'verified relay image version: %s\n' "$version_line"
           printf 'verified relay image branch: %s\n' "$branch_line"
+          printf 'verified relay image STUN command and exposed ports\n'
 
       - name: Log in to GitHub Container Registry
         if: ${{ inputs.product == 'relay' }}
