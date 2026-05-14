@@ -233,6 +233,7 @@ compose-down-relay-cn: ## Stop and remove Docker Compose relay containers on the
 relay-cn-ops: ## Print the common Docker Compose operator commands for relay-cn.
 	@printf '%s\n' \
 	'relay-cn quick ops (run from your Mac in this repo):' \
+	'  make compose-sync-relay-cn                            # sync Compose assets without starting services' \
 	'  make compose-up-relay-cn                              # routine Relay-only update' \
 	'  make compose-up-stun-relay-cn                         # rare STUN-only update' \
 	'  make compose-up-stack-relay-cn                        # first rollout/full-stack update' \
@@ -243,7 +244,7 @@ relay-cn-ops: ## Print the common Docker Compose operator commands for relay-cn.
 	'  make relay-cn-user-delete RELAY_CN_USERNAME=alice        # destructive' \
 	'  make relay-cn-psql                                       # open PostgreSQL shell' \
 	'  make relay-cn-logs                                       # tail Relay structured logs' \
-	'  make relay-cn-status                                     # end-to-end health check'
+	'  make relay-cn-status                                     # end-to-end health check incl. public STUN'
 
 relay-cn-relay-version: ## Print the relay version from the running relay-cn container.
 	@ssh "$(RELAY_CN_SSH_DEST)" 'cd "$(RELAY_CN_COMPOSE_DIR)" && sudo docker compose --env-file .env exec relay relay version'
