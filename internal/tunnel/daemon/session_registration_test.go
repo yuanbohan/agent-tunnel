@@ -155,6 +155,24 @@ func TestSessionRegistrationClientRoutesBrokerCommandsToHub(t *testing.T) {
 	}
 }
 
+func TestSessionRegistrationClientRunsStopHandlerForMatchingSession(t *testing.T) {
+	client := NewSessionRegistrationClient(testPaths(t), protocol.SessionInfo{SessionID: "sess-1"})
+	stops := 0
+	client.SetStopHandler(func() {
+		stops++
+	})
+
+	client.handleBrokerFrame(BrokerFrame{Type: brokerFrameStopSession, SessionID: "sess-2"})
+	if stops != 0 {
+		t.Fatalf("stops = %d, want no stop for mismatched session", stops)
+	}
+
+	client.handleBrokerFrame(BrokerFrame{Type: brokerFrameStopSession, SessionID: "sess-1"})
+	if stops != 1 {
+		t.Fatalf("stops = %d, want one stop for matching session", stops)
+	}
+}
+
 func TestSessionRegistrationClientCloseSendsSessionGone(t *testing.T) {
 	paths := testPaths(t)
 	broker, server, cancel := startBrokerForTest(t, paths)

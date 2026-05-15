@@ -21,6 +21,7 @@ const (
 	brokerFrameSnapshotUpdate  = "snapshot_update"
 	brokerFrameOutputBytes     = "output_bytes"
 	brokerFrameSessionGone     = "session_gone"
+	brokerFrameStopSession     = "stop_session"
 	brokerFrameInputText       = "input_text"
 	brokerFrameInputKey        = "input_key"
 	brokerFrameResize          = "resize"
@@ -156,6 +157,19 @@ func (b *Broker) Snapshot() []BrokerSessionSnapshot {
 	out := make([]BrokerSessionSnapshot, 0, len(b.sessions))
 	for _, state := range b.sessions {
 		out = append(out, brokerSessionMetadataSnapshot(state))
+	}
+	return out
+}
+
+func (b *Broker) SessionList() []BrokerSessionSnapshot {
+	if b == nil {
+		return nil
+	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	out := make([]BrokerSessionSnapshot, 0, len(b.sessions))
+	for _, state := range b.sessions {
+		out = append(out, BrokerSessionSnapshot{BrokerSession: state.session})
 	}
 	return out
 }
@@ -441,6 +455,24 @@ func (b *Broker) RouteResize(sessionID string, interactiveOwner any, cols, rows 
 		SessionID: sessionID,
 		Cols:      cols,
 		Rows:      rows,
+	})
+}
+
+func (b *Broker) StopSession(sessionID string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if b == nil || sessionID == "" {
+		return ErrBrokerSessionUnavailable
+	}
+	b.mu.RLock()
+	state, ok := b.sessions[sessionID]
+	owner := state.owner
+	b.mu.RUnlock()
+	if !ok || owner == nil || owner.conn == nil {
+		return ErrBrokerSessionUnavailable
+	}
+	return owner.writeFrame(BrokerFrame{
+		Type:      brokerFrameStopSession,
+		SessionID: sessionID,
 	})
 }
 

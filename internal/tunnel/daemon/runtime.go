@@ -22,8 +22,10 @@ const readySignalEnv = "TUNNEL_DAEMON_READY_FD"
 const daemonAuthTokenEnv = "TUNNEL_AUTH_TOKEN"
 const connectivityEventEnqueueTimeout = 5 * time.Second
 const connectivityEventQueueWarning = "relay connectivity event queue unavailable"
+const sessionStopConfirmTimeout = 4 * time.Second
 
 var daemonStartupLockTimeout = 10 * time.Second
+var ErrSessionStopTimeout = errors.New("timed out waiting for local session to stop")
 
 type RuntimeOptions struct {
 	Paths     Paths
@@ -297,6 +299,19 @@ func Run(ctx context.Context, options RuntimeOptions, readyWriter io.Writer) err
 			return Response{TrustedDevices: devices}
 		case actionRevokeDevice:
 			return handleRevokeTrustedDevice(requestCtx, options.Paths, state, request)
+		case actionSessionList:
+			return Response{Sessions: state.broker.SessionList()}
+		case actionSessionStop:
+			if err := state.broker.StopSession(request.SessionID); err != nil {
+				if errors.Is(err, ErrBrokerSessionUnavailable) {
+					return Response{Error: ErrSessionNotFound.Error()}
+				}
+				return Response{Error: err.Error()}
+			}
+			if err := waitForBrokerSessionGone(requestCtx, state.broker, request.SessionID, sessionStopConfirmTimeout); err != nil {
+				return Response{Error: err.Error()}
+			}
+			return Response{}
 		case actionStop:
 			state.stop()
 			state.markStopped()
@@ -349,6 +364,37 @@ func Run(ctx context.Context, options RuntimeOptions, readyWriter io.Writer) err
 		return err
 	case err := <-brokerErrCh:
 		return err
+	}
+}
+
+func waitForBrokerSessionGone(ctx context.Context, broker *Broker, sessionID string, timeout time.Duration) error {
+	if broker == nil {
+		return ErrBrokerSessionUnavailable
+	}
+	if !broker.HasSession(sessionID) {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+			if !broker.HasSession(sessionID) {
+				return nil
+			}
+			return ErrSessionStopTimeout
+		case <-ticker.C:
+			if !broker.HasSession(sessionID) {
+				return nil
+			}
+		}
 	}
 }
 

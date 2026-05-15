@@ -49,6 +49,9 @@ func TestBrokerServerRegistersSessionAndCachesLatestPreview(t *testing.T) {
 	if err := encoder.Encode(BrokerFrame{Type: brokerFramePreviewUpdate, SessionID: "sess-1", Preview: "latest output", UpdatedAt: 1_700_000_002}); err != nil {
 		t.Fatalf("preview Encode returned error: %v", err)
 	}
+	if err := encoder.Encode(BrokerFrame{Type: brokerFrameSnapshotUpdate, SessionID: "sess-1", Snapshot: []byte("terminal secret"), SnapshotCols: 80, SnapshotRows: 24}); err != nil {
+		t.Fatalf("snapshot Encode returned error: %v", err)
+	}
 
 	snapshot := waitForBrokerSnapshot(t, broker, 1)
 	got := snapshot[0]
@@ -57,6 +60,13 @@ func TestBrokerServerRegistersSessionAndCachesLatestPreview(t *testing.T) {
 	}
 	if got.LatestPreview != "latest output" {
 		t.Fatalf("LatestPreview = %q, want latest output", got.LatestPreview)
+	}
+	list := broker.SessionList()
+	if len(list) != 1 || list[0].SessionID != "sess-1" {
+		t.Fatalf("SessionList = %#v, want sess-1 metadata", list)
+	}
+	if list[0].LatestPreview != "" || len(list[0].LatestSnapshot) != 0 || list[0].SnapshotCols != 0 || list[0].SnapshotRows != 0 {
+		t.Fatalf("SessionList leaked terminal state: %#v", list[0])
 	}
 }
 
@@ -204,6 +214,62 @@ func TestBrokerRoutesRemoteCommandsToSessionOwner(t *testing.T) {
 	}
 	if err := <-routeErr; err != nil {
 		t.Fatalf("RouteResize returned error: %v", err)
+	}
+}
+
+func TestBrokerStopSessionRoutesToSessionOwner(t *testing.T) {
+	broker := NewBroker()
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	owner := &brokerConnection{conn: serverConn}
+	broker.register(BrokerSession{SessionID: "sess-1", CWD: "/repo", CommandPreview: "codex", StartedAt: 10}, owner)
+
+	stopErr := make(chan error, 1)
+	go func() {
+		stopErr <- broker.StopSession("sess-1")
+	}()
+
+	var got BrokerFrame
+	if err := json.NewDecoder(clientConn).Decode(&got); err != nil {
+		t.Fatalf("Decode stop frame returned error: %v", err)
+	}
+	if got.Type != brokerFrameStopSession || got.SessionID != "sess-1" {
+		t.Fatalf("stop frame = %#v, want stop_session for sess-1", got)
+	}
+	if err := <-stopErr; err != nil {
+		t.Fatalf("StopSession returned error: %v", err)
+	}
+}
+
+func TestBrokerStopSessionRejectsUnknownSession(t *testing.T) {
+	broker := NewBroker()
+	if err := broker.StopSession("missing"); !errors.Is(err, ErrBrokerSessionUnavailable) {
+		t.Fatalf("StopSession error = %v, want ErrBrokerSessionUnavailable", err)
+	}
+}
+
+func TestWaitForBrokerSessionGoneWaitsForRemoval(t *testing.T) {
+	broker := NewBroker()
+	owner := &brokerConnection{}
+	broker.register(BrokerSession{SessionID: "sess-1", CWD: "/repo", CommandPreview: "codex", StartedAt: 10}, owner)
+
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		broker.remove("sess-1", owner)
+	}()
+
+	if err := waitForBrokerSessionGone(context.Background(), broker, "sess-1", time.Second); err != nil {
+		t.Fatalf("waitForBrokerSessionGone returned error: %v", err)
+	}
+}
+
+func TestWaitForBrokerSessionGoneTimesOut(t *testing.T) {
+	broker := NewBroker()
+	broker.register(BrokerSession{SessionID: "sess-1", CWD: "/repo", CommandPreview: "codex", StartedAt: 10}, &brokerConnection{})
+
+	if err := waitForBrokerSessionGone(context.Background(), broker, "sess-1", 10*time.Millisecond); !errors.Is(err, ErrSessionStopTimeout) {
+		t.Fatalf("waitForBrokerSessionGone error = %v, want ErrSessionStopTimeout", err)
 	}
 }
 

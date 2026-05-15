@@ -2,7 +2,6 @@ package connector
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"sync"
@@ -11,7 +10,6 @@ import (
 
 	"github.com/gorilla/websocket"
 	"yuanbohan/tunnel/internal/protocol"
-	"yuanbohan/tunnel/internal/tunnel/session"
 )
 
 type State string
@@ -32,75 +30,42 @@ var defaultReconnectBackoff = []time.Duration{
 	5 * time.Minute,
 }
 
-const defaultPendingInputLimit = 128
 const defaultWSWriteTimeout = 5 * time.Second
-
-// Some terminal UIs only react to submit correctly when text and Enter arrive
-// as distinct input events instead of one combined PTY write.
-const defaultSubmitEnterGap = 120 * time.Millisecond
 
 var errOutboundBackpressure = errors.New("connector outbound backpressure")
 
 // Connector is the one place where the local runtime meets the relay protocol.
 //
-// Upstream producers feeding this object:
-// - session.Hub output fanout via WriteOutput()
-//
 // Downstream consumer:
-// - relay `/agent/ws`, which receives register/attach frames
-//
-// Reverse data path:
-// - relay input frames come back through handleInbound() into the bound Hub
+// - relay `/agent/ws`, which receives register and launch correlation frames.
 type Connector struct {
 	url           string
 	token         string
 	info          protocol.SessionInfo
 	launchContext protocol.LaunchContext
 	infoMu        sync.RWMutex
+	launchReadyMu sync.RWMutex
+	launchReady   *protocol.LaunchContext
 
-	initialCols int
-	initialRows int
-	outbound    chan outboundFrame
-	ephemeral   chan outboundFrame
-	dialer      *websocket.Dialer
-	reconnect   atomic.Bool
-	hubMu       sync.RWMutex
-	hub         *session.Hub
-	stopMu      sync.RWMutex
-	stopHandler func()
-	pendingIn   []protocol.AgentFrame
-	connectTTL  time.Duration
+	outbound   chan outboundFrame
+	dialer     *websocket.Dialer
+	reconnect  atomic.Bool
+	connectTTL time.Duration
 
 	stateMu      sync.RWMutex
 	state        State
 	subscribers  map[chan State]struct{}
 	retryBackoff []time.Duration
 	sleep        func(context.Context, time.Duration) bool
-	mirror       *session.TerminalMirror
-	attachMu     sync.Mutex
-	attached     map[string]struct{}
 	writeTimeout time.Duration
-	inputMu      sync.Mutex
-	inputScanner submitInputScanner
 
 	connMu       sync.Mutex
 	activeConn   connectionCloser
 	overflowChan chan error
 }
 
-type submitInputScanner struct {
-	inBracketedPaste bool
-	pending          []byte
-}
-
 type outboundFrame struct {
-	json   any
-	binary []byte
-}
-
-type readResult struct {
-	control *protocol.AgentFrame
-	err     error
+	json any
 }
 
 type connectionCloser interface {
@@ -113,13 +78,10 @@ func New(url, token string, info protocol.SessionInfo) *Connector {
 		token:        token,
 		info:         info,
 		outbound:     make(chan outboundFrame, 128),
-		ephemeral:    make(chan outboundFrame, 128),
 		dialer:       websocket.DefaultDialer,
 		state:        StateDisconnected,
 		subscribers:  make(map[chan State]struct{}),
 		retryBackoff: append([]time.Duration(nil), defaultReconnectBackoff...),
-		mirror:       session.NewTerminalMirror(0, 0),
-		attached:     make(map[string]struct{}),
 		writeTimeout: defaultWSWriteTimeout,
 		sleep: func(ctx context.Context, d time.Duration) bool {
 			timer := time.NewTimer(d)
@@ -137,38 +99,6 @@ func New(url, token string, info protocol.SessionInfo) *Connector {
 	return c
 }
 
-func (c *Connector) BindHub(hub *session.Hub) {
-	if hub == nil {
-		return
-	}
-
-	if cols, rows := hub.CurrentSize(); cols > 0 && rows > 0 {
-		c.applyResize(cols, rows, false)
-	}
-	hub.AddResizeListener("connector", func(cols, rows int) {
-		c.applyResize(cols, rows, true)
-	})
-	hub.SetInputObserver(func(data []byte) func(error) {
-		return c.observeInputForSubmitAnchors(data)
-	})
-
-	c.hubMu.Lock()
-	c.hub = hub
-	pending := append([]protocol.AgentFrame(nil), c.pendingIn...)
-	c.pendingIn = nil
-	c.hubMu.Unlock()
-
-	for _, frame := range pending {
-		c.deliverInputToHub(hub, frame)
-	}
-}
-
-func (c *Connector) SetStopHandler(handler func()) {
-	c.stopMu.Lock()
-	defer c.stopMu.Unlock()
-	c.stopHandler = handler
-}
-
 func (c *Connector) SetLaunchContext(launchContext protocol.LaunchContext) {
 	c.infoMu.Lock()
 	defer c.infoMu.Unlock()
@@ -179,13 +109,13 @@ func (c *Connector) MarkLaunchReady(launchContext protocol.LaunchContext) {
 	if launchContext.Source != protocol.SessionLaunchSourceMobile || launchContext.RequestID == "" {
 		return
 	}
+	c.launchReadyMu.Lock()
+	c.launchReady = &protocol.LaunchContext{
+		Source:    launchContext.Source,
+		RequestID: launchContext.RequestID,
+	}
+	c.launchReadyMu.Unlock()
 	c.enqueuePersistentJSON(protocol.LaunchReadyFrame(launchContext))
-}
-
-func (c *Connector) SetInitialSize(cols, rows int) {
-	c.initialCols = cols
-	c.initialRows = rows
-	c.applyResize(cols, rows, false)
 }
 
 func (c *Connector) SetInitialConnectTimeout(timeout time.Duration) {
@@ -257,27 +187,6 @@ func (c *Connector) WaitUntilConnected(ctx context.Context, timeout time.Duratio
 	}
 }
 
-func (c *Connector) WriteOutput(data []byte) error {
-	dataCopy := append([]byte(nil), data...)
-
-	c.attachMu.Lock()
-	c.mirror.WriteOutput(dataCopy)
-	attached := make([]string, 0, len(c.attached))
-	for clientID := range c.attached {
-		attached = append(attached, clientID)
-	}
-	c.attachMu.Unlock()
-
-	for _, clientID := range attached {
-		packet, err := protocol.EncodeTerminalBytesPacket(clientID, dataCopy)
-		if err != nil {
-			continue
-		}
-		c.enqueueEphemeralBinary(packet)
-	}
-	return nil
-}
-
 func (c *Connector) Run(ctx context.Context) {
 	c.setState(StateConnecting)
 	attempt := 0
@@ -333,6 +242,10 @@ func (c *Connector) runOnce(ctx context.Context, connectTimeout time.Duration) (
 		_ = conn.Close()
 		return false, err
 	}
+	if err := c.writeStickyLaunchReady(conn); err != nil {
+		_ = conn.Close()
+		return false, err
+	}
 
 	c.setState(StateConnected)
 	return true, c.serveConnection(ctx, conn)
@@ -340,17 +253,16 @@ func (c *Connector) runOnce(ctx context.Context, connectTimeout time.Duration) (
 
 func (c *Connector) serveConnection(ctx context.Context, conn *websocket.Conn) error {
 	defer conn.Close()
-	defer c.clearConnectionState()
 	defer c.setState(StateReconnecting)
 
 	done := make(chan struct{})
 	defer close(done)
-	incoming := make(chan readResult, 1)
+	readErr := make(chan error, 1)
 	overflow := make(chan error, 1)
 	c.setActiveConnection(conn, overflow)
 	defer c.clearActiveConnection()
 
-	go c.readLoop(conn, done, incoming)
+	go c.readLoop(conn, done, readErr)
 
 	for {
 		select {
@@ -360,14 +272,11 @@ func (c *Connector) serveConnection(ctx context.Context, conn *websocket.Conn) e
 			if err != nil {
 				return err
 			}
-		case result, ok := <-incoming:
+		case err, ok := <-readErr:
 			if !ok {
 				return nil
 			}
-			if result.err != nil {
-				return result.err
-			}
-			if err := c.handleInbound(conn, result); err != nil {
+			if err != nil {
 				return err
 			}
 			continue
@@ -381,77 +290,42 @@ func (c *Connector) serveConnection(ctx context.Context, conn *websocket.Conn) e
 			if err != nil {
 				return err
 			}
-		case result, ok := <-incoming:
+		case err, ok := <-readErr:
 			if !ok {
 				return nil
 			}
-			if result.err != nil {
-				return result.err
-			}
-			if err := c.handleInbound(conn, result); err != nil {
-				return err
-			}
-		case frame := <-c.ephemeral:
-			if err := c.writeOutboundFrame(conn, frame); err != nil {
+			if err != nil {
 				return err
 			}
 		case frame := <-c.outbound:
-			if err := c.writeOutboundFrame(conn, frame); err != nil {
+			if err := c.writeJSON(conn, frame.json); err != nil {
 				return err
 			}
 		}
 	}
-}
-
-func (c *Connector) handleInbound(conn *websocket.Conn, result readResult) error {
-	if result.control == nil {
-		return nil
-	}
-
-	switch result.control.Type {
-	case "attach_open":
-		if result.control.ClientID == "" {
-			return nil
-		}
-		if err := c.handleAttachOpen(conn, result.control.ClientID); err != nil {
-			return err
-		}
-	case "attach_close":
-		if result.control.ClientID == "" {
-			return nil
-		}
-		c.handleAttachClose(result.control.ClientID)
-	case "input_text", "input_key":
-		c.routeInput(*result.control)
-	case "stop_session":
-		c.handleStopSession()
-	}
-	return nil
-}
-
-func (c *Connector) handleStopSession() {
-	c.stopMu.RLock()
-	handler := c.stopHandler
-	c.stopMu.RUnlock()
-	if handler != nil {
-		handler()
-	}
-}
-
-func (c *Connector) writeOutboundFrame(conn *websocket.Conn, frame outboundFrame) error {
-	if frame.binary != nil {
-		return c.writeBinary(conn, frame.binary)
-	}
-	if frame.json == nil {
-		return nil
-	}
-	return c.writeJSON(conn, frame.json)
 }
 
 func (c *Connector) infoSnapshot() (protocol.SessionInfo, protocol.LaunchContext) {
 	c.infoMu.RLock()
 	defer c.infoMu.RUnlock()
 	return c.info, c.launchContext
+}
+
+func (c *Connector) launchReadySnapshot() (protocol.LaunchContext, bool) {
+	c.launchReadyMu.RLock()
+	defer c.launchReadyMu.RUnlock()
+	if c.launchReady == nil {
+		return protocol.LaunchContext{}, false
+	}
+	return *c.launchReady, true
+}
+
+func (c *Connector) writeStickyLaunchReady(conn *websocket.Conn) error {
+	launchContext, ok := c.launchReadySnapshot()
+	if !ok {
+		return nil
+	}
+	return c.writeJSON(conn, protocol.LaunchReadyFrame(launchContext))
 }
 
 func (c *Connector) initialConnectTimeout(attempt int) time.Duration {
@@ -510,309 +384,23 @@ func (c *Connector) pushState(ch chan State, state State) {
 	}
 }
 
-func (c *Connector) readLoop(conn *websocket.Conn, done <-chan struct{}, incoming chan<- readResult) {
-	defer close(incoming)
+func (c *Connector) readLoop(conn *websocket.Conn, done <-chan struct{}, readErr chan<- error) {
+	defer close(readErr)
 
 	for {
-		messageType, raw, err := conn.ReadMessage()
+		_, _, err := conn.ReadMessage()
 		if err != nil {
-			if !deliverReadResult(done, incoming, readResult{err: err}) {
+			if !deliverReadErr(done, readErr, err) {
 				return
 			}
 			return
 		}
-		if messageType != websocket.TextMessage {
-			continue
-		}
-
-		var frame protocol.AgentFrame
-		if err := json.Unmarshal(raw, &frame); err != nil {
-			continue
-		}
-		if !deliverReadResult(done, incoming, readResult{control: &frame}) {
-			return
-		}
-	}
-}
-
-func (c *Connector) routeInput(frame protocol.AgentFrame) {
-	c.hubMu.RLock()
-	hub := c.hub
-	c.hubMu.RUnlock()
-	if hub != nil {
-		c.deliverInputToHub(hub, frame)
-		return
-	}
-
-	c.hubMu.Lock()
-	if c.hub != nil {
-		hub = c.hub
-		c.hubMu.Unlock()
-		c.deliverInputToHub(hub, frame)
-		return
-	}
-	if len(c.pendingIn) >= defaultPendingInputLimit {
-		c.pendingIn = c.pendingIn[1:]
-	}
-	c.pendingIn = append(c.pendingIn, frame)
-	c.hubMu.Unlock()
-}
-
-func (c *Connector) deliverInputToHub(hub *session.Hub, frame protocol.AgentFrame) {
-	switch frame.Type {
-	case "input_text":
-		if frame.Submit {
-			_ = hub.WriteInputSequenceWithGap(defaultSubmitEnterGap, session.EncodeRemoteSubmitInput(frame.Text)...)
-			return
-		}
-		_ = hub.WriteInput(session.EncodeRemoteTextInput(frame.Text))
-	case "input_key":
-		if data, ok := session.EncodeRemoteKeyInput(frame.Key); ok {
-			_ = hub.WriteInput(data)
-		}
-	}
-}
-
-// observeInputForSubmitAnchors is called by the Hub before each PTY input
-// write. It counts carriage returns (outside bracketed paste), records submit
-// anchors into the mirror, and returns a callback the Hub invokes after the
-// write succeeds or fails. On failure, recorded anchors are removed and the
-// scanner state is rolled back.
-//
-// Anchor recording and the PTY write are not atomic: after recordSubmitAnchors
-// releases attachMu, concurrent output may advance the mirror before the PTY
-// write completes. This is acceptable because mirror mutations are serialized,
-// xterm markers track later buffer shifts, and failed writes remove the anchors
-// and roll back scanner state.
-func (c *Connector) observeInputForSubmitAnchors(data []byte) func(error) {
-	count, restoreScanner := c.countSubmitEnters(data)
-	if count == 0 {
-		return func(err error) {
-			if err != nil {
-				restoreScanner()
-			}
-		}
-	}
-
-	anchors := c.recordSubmitAnchors(count)
-	return func(err error) {
-		if err == nil {
-			c.emitSubmitAnchors(anchors)
-			return
-		}
-		restoreScanner()
-		c.removeSubmitAnchors(anchors)
-	}
-}
-
-func (c *Connector) countSubmitEnters(data []byte) (int, func()) {
-	c.inputMu.Lock()
-	defer c.inputMu.Unlock()
-
-	previous := c.inputScanner.clone()
-	count := c.inputScanner.count(data)
-	return count, func() {
-		c.inputMu.Lock()
-		defer c.inputMu.Unlock()
-		c.inputScanner = previous
-	}
-}
-
-func (c *Connector) recordSubmitAnchors(count int) []session.SubmitAnchor {
-	c.attachMu.Lock()
-	defer c.attachMu.Unlock()
-
-	anchors := make([]session.SubmitAnchor, 0, count)
-	for range count {
-		if anchor, ok := c.mirror.RecordSubmitAnchor(); ok {
-			anchors = append(anchors, anchor)
-		}
-	}
-	return anchors
-}
-
-func (c *Connector) removeSubmitAnchors(anchors []session.SubmitAnchor) {
-	if len(anchors) == 0 {
-		return
-	}
-
-	c.attachMu.Lock()
-	defer c.attachMu.Unlock()
-	for _, anchor := range anchors {
-		c.mirror.RemoveSubmitAnchor(anchor.ID)
-	}
-}
-
-func (c *Connector) emitSubmitAnchors(anchors []session.SubmitAnchor) {
-	if len(anchors) == 0 {
-		return
-	}
-
-	c.attachMu.Lock()
-	attached := make([]string, 0, len(c.attached))
-	for clientID := range c.attached {
-		attached = append(attached, clientID)
-	}
-	c.attachMu.Unlock()
-
-	if len(attached) == 0 {
-		return
-	}
-
-	for _, anchor := range protocolSubmitAnchors(anchors) {
-		for _, clientID := range attached {
-			c.enqueueEphemeralJSON(protocol.SubmitAnchorFrame(clientID, anchor))
-		}
-	}
-}
-
-func (s submitInputScanner) clone() submitInputScanner {
-	return submitInputScanner{
-		inBracketedPaste: s.inBracketedPaste,
-		pending:          append([]byte(nil), s.pending...),
-	}
-}
-
-func (s *submitInputScanner) count(data []byte) int {
-	const (
-		bracketedPasteStart = "\x1b[200~"
-		bracketedPasteEnd   = "\x1b[201~"
-	)
-
-	buffer := append(append([]byte(nil), s.pending...), data...)
-	s.pending = nil
-	count := 0
-
-	for i := 0; i < len(buffer); {
-		remaining := buffer[i:]
-		if s.inBracketedPaste {
-			if hasPrefixString(remaining, bracketedPasteEnd) {
-				s.inBracketedPaste = false
-				i += len(bracketedPasteEnd)
-				continue
-			}
-			if isPartialPrefix(remaining, bracketedPasteEnd) {
-				s.pending = append([]byte(nil), remaining...)
-				break
-			}
-			i++
-			continue
-		}
-
-		if hasPrefixString(remaining, bracketedPasteStart) {
-			s.inBracketedPaste = true
-			i += len(bracketedPasteStart)
-			continue
-		}
-		if isPartialPrefix(remaining, bracketedPasteStart) {
-			s.pending = append([]byte(nil), remaining...)
-			break
-		}
-		if buffer[i] == '\r' {
-			count++
-		}
-		i++
-	}
-	return count
-}
-
-func hasPrefixString(data []byte, prefix string) bool {
-	return len(data) >= len(prefix) && string(data[:len(prefix)]) == prefix
-}
-
-func isPartialPrefix(data []byte, prefix string) bool {
-	return len(data) < len(prefix) && len(data) > 0 && prefix[:len(data)] == string(data)
-}
-
-func (c *Connector) handleAttachOpen(conn *websocket.Conn, clientID string) error {
-	c.attachMu.Lock()
-	snapshot, cols, rows, anchors := c.mirror.SnapshotWithSubmitAnchors()
-	c.attached[clientID] = struct{}{}
-	c.attachMu.Unlock()
-
-	if err := c.writeOutboundFrame(conn, outboundFrame{
-		json: protocol.AttachReadyFrame(clientID, cols, rows),
-	}); err != nil {
-		return err
-	}
-	if len(snapshot) > 0 {
-		if packet, err := protocol.EncodeTerminalBytesPacket(clientID, snapshot); err == nil {
-			if err := c.writeOutboundFrame(conn, outboundFrame{binary: packet}); err != nil {
-				return err
-			}
-		}
-	}
-	return c.writeOutboundFrame(conn, outboundFrame{
-		json: protocol.SnapshotDoneFrame(clientID, protocolSubmitAnchors(anchors)...),
-	})
-}
-
-func (c *Connector) handleAttachClose(clientID string) {
-	c.attachMu.Lock()
-	defer c.attachMu.Unlock()
-	delete(c.attached, clientID)
-}
-
-func (c *Connector) applyResize(cols, rows int, emit bool) {
-	if cols <= 0 || rows <= 0 {
-		return
-	}
-
-	c.attachMu.Lock()
-	c.mirror.Resize(cols, rows)
-	hasAttached := len(c.attached) > 0
-	c.attachMu.Unlock()
-
-	if emit && hasAttached {
-		c.enqueueEphemeralJSON(protocol.ResizeFrame(cols, rows))
 	}
 }
 
 func (c *Connector) enqueuePersistentJSON(v any) {
 	if !c.tryEnqueue(c.outbound, outboundFrame{json: v}) {
 		c.signalOverflow(errOutboundBackpressure)
-	}
-}
-
-func (c *Connector) enqueueEphemeralJSON(v any) {
-	if !c.tryEnqueue(c.ephemeral, outboundFrame{json: v}) {
-		c.signalOverflow(errOutboundBackpressure)
-	}
-}
-
-func (c *Connector) enqueueEphemeralBinary(payload []byte) {
-	if !c.tryEnqueue(c.ephemeral, outboundFrame{binary: append([]byte(nil), payload...)}) {
-		c.signalOverflow(errOutboundBackpressure)
-	}
-}
-
-func protocolSubmitAnchors(anchors []session.SubmitAnchor) []protocol.SubmitAnchor {
-	if len(anchors) == 0 {
-		return nil
-	}
-	out := make([]protocol.SubmitAnchor, len(anchors))
-	for i, anchor := range anchors {
-		out[i] = protocol.SubmitAnchor{
-			ID:          anchor.ID,
-			Line:        anchor.Line,
-			SubmittedAt: anchor.SubmittedAt,
-		}
-	}
-	return out
-}
-
-func (c *Connector) clearConnectionState() {
-	c.attachMu.Lock()
-	c.attached = make(map[string]struct{})
-	c.attachMu.Unlock()
-
-	for {
-		select {
-		case <-c.ephemeral:
-		case <-c.outbound:
-		default:
-			return
-		}
 	}
 }
 
@@ -863,13 +451,6 @@ func (c *Connector) writeJSON(conn *websocket.Conn, v any) error {
 	return conn.WriteJSON(v)
 }
 
-func (c *Connector) writeBinary(conn *websocket.Conn, payload []byte) error {
-	if err := c.setWriteDeadline(conn); err != nil {
-		return err
-	}
-	return conn.WriteMessage(websocket.BinaryMessage, payload)
-}
-
 func (c *Connector) setWriteDeadline(conn *websocket.Conn) error {
 	if c.writeTimeout <= 0 {
 		return nil
@@ -877,9 +458,9 @@ func (c *Connector) setWriteDeadline(conn *websocket.Conn) error {
 	return conn.SetWriteDeadline(time.Now().Add(c.writeTimeout))
 }
 
-func deliverReadResult(done <-chan struct{}, incoming chan<- readResult, result readResult) bool {
+func deliverReadErr(done <-chan struct{}, readErr chan<- error, err error) bool {
 	select {
-	case incoming <- result:
+	case readErr <- err:
 		return true
 	case <-done:
 		return false

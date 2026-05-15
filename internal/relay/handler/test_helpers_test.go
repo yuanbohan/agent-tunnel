@@ -89,40 +89,6 @@ func (p *recordingAgentPeer) Frames() []protocol.AgentFrame {
 	return append([]protocol.AgentFrame(nil), p.frames...)
 }
 
-type recordingAttachPeer struct {
-	mu          sync.Mutex
-	controls    []protocol.AttachControlMessage
-	binaries    [][]byte
-	closeReason []string
-}
-
-func (p *recordingAttachPeer) SendControl(msg protocol.AttachControlMessage) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.controls = append(p.controls, msg)
-	return nil
-}
-
-func (p *recordingAttachPeer) SendBinary(payload []byte) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.binaries = append(p.binaries, append([]byte(nil), payload...))
-	return nil
-}
-
-func (p *recordingAttachPeer) Close(reason string) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.closeReason = append(p.closeReason, reason)
-	return nil
-}
-
-func (p *recordingAttachPeer) CloseReasons() []string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return append([]string(nil), p.closeReason...)
-}
-
 type fakeStore struct {
 	now                func() time.Time
 	nextUserID         int64
@@ -736,39 +702,6 @@ func readAgentFrame(t *testing.T, conn *websocket.Conn) protocol.AgentFrame {
 	return frame
 }
 
-func readAttachControl(t *testing.T, conn *websocket.Conn) protocol.AttachControlMessage {
-	t.Helper()
-	for {
-		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-		messageType, payload, err := conn.ReadMessage()
-		if err != nil {
-			t.Fatalf("ReadMessage returned error: %v", err)
-		}
-		if messageType != websocket.TextMessage {
-			continue
-		}
-		var msg protocol.AttachControlMessage
-		if err := json.Unmarshal(payload, &msg); err != nil {
-			t.Fatalf("Unmarshal returned error: %v", err)
-		}
-		return msg
-	}
-}
-
-func readAttachBinary(t *testing.T, conn *websocket.Conn) []byte {
-	t.Helper()
-	for {
-		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-		messageType, payload, err := conn.ReadMessage()
-		if err != nil {
-			t.Fatalf("ReadMessage returned error: %v", err)
-		}
-		if messageType == websocket.BinaryMessage {
-			return payload
-		}
-	}
-}
-
 func dialAndRegisterAgent(t *testing.T, serverURL, agentToken, sessionID string) *websocket.Conn {
 	t.Helper()
 	return dialAndRegisterAgentWithLaunchRequest(t, serverURL, agentToken, sessionID, "")
@@ -852,25 +785,13 @@ func waitForOwnedSession(t *testing.T, registry *Registry, sessionID string, use
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, ok := registry.SessionForUser(sessionID, userID); ok {
+		if registry.HasSession(sessionID) {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 
 	t.Fatalf("session %q for user %d was not registered before timeout", sessionID, userID)
-}
-
-func dialAttachClient(t *testing.T, serverURL, accessToken, sessionID string) *websocket.Conn {
-	t.Helper()
-	wsURL := "ws" + strings.TrimPrefix(serverURL, "http") + "/api/sessions/" + sessionID + "/attach/ws"
-	headers := http.Header{}
-	headers.Set("Authorization", bearerAuth(accessToken))
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, headers)
-	if err != nil {
-		t.Fatalf("Dial attach returned error: %v", err)
-	}
-	return conn
 }
 
 func timePtr(t time.Time) *time.Time { return &t }

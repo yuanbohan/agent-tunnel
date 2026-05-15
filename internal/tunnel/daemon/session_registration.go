@@ -54,6 +54,9 @@ type SessionRegistrationClient struct {
 	hubMu           sync.Mutex
 	hub             *tunnelsession.Hub
 	pendingCommands []BrokerFrame
+
+	stopMu      sync.RWMutex
+	stopHandler func()
 }
 
 func NewSessionRegistrationClient(paths Paths, info protocol.SessionInfo) *SessionRegistrationClient {
@@ -126,6 +129,15 @@ func (c *SessionRegistrationClient) SetExpectedDaemonContext(baseURL, authToken 
 	}
 	c.expectedBaseURL = strings.TrimSpace(baseURL)
 	c.expectedAuthContextFingerprint = AuthContextFingerprint(authToken)
+}
+
+func (c *SessionRegistrationClient) SetStopHandler(handler func()) {
+	if c == nil {
+		return
+	}
+	c.stopMu.Lock()
+	c.stopHandler = handler
+	c.stopMu.Unlock()
 }
 
 func BrokerSessionFromSessionInfo(info protocol.SessionInfo) BrokerSession {
@@ -436,9 +448,25 @@ func (c *SessionRegistrationClient) handleBrokerFrame(frame BrokerFrame) {
 		if strings.TrimSpace(frame.SessionID) == c.session.SessionID {
 			c.markRegistered()
 		}
+	case brokerFrameStopSession:
+		if strings.TrimSpace(frame.SessionID) == c.session.SessionID {
+			c.handleStopSession()
+		}
 	case brokerFrameInputText, brokerFrameInputKey, brokerFrameResize:
 		c.routeBrokerCommand(frame)
 	default:
+	}
+}
+
+func (c *SessionRegistrationClient) handleStopSession() {
+	if c == nil {
+		return
+	}
+	c.stopMu.RLock()
+	handler := c.stopHandler
+	c.stopMu.RUnlock()
+	if handler != nil {
+		handler()
 	}
 }
 

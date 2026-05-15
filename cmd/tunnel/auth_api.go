@@ -7,11 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
-	"yuanbohan/tunnel/internal/protocol"
 	handlertypes "yuanbohan/tunnel/internal/relay/handler/types"
 )
 
@@ -56,22 +54,6 @@ func (api *relayAuthAPI) createAgentToken(ctx context.Context, accessToken, name
 		"name": name,
 	}, http.StatusCreated, &out)
 	return out, err
-}
-
-func (api *relayAuthAPI) listSessions(ctx context.Context, token string) ([]protocol.SessionInfo, error) {
-	var out []protocol.SessionInfo
-	err := api.doJSON(ctx, http.MethodGet, "/api/sessions", token, nil, http.StatusOK, &out)
-	return out, err
-}
-
-func (api *relayAuthAPI) stopSession(ctx context.Context, token, sessionID string) (handlertypes.StopSessionResponse, error) {
-	var out handlertypes.StopSessionResponse
-	err := api.doJSON(ctx, http.MethodDelete, "/api/sessions/"+urlPathEscape(sessionID), token, nil, http.StatusOK, &out)
-	return out, err
-}
-
-func urlPathEscape(value string) string {
-	return strings.ReplaceAll(url.QueryEscape(value), "+", "%20")
 }
 
 func (api *relayAuthAPI) doJSON(ctx context.Context, method, path, accessToken string, requestBody any, wantStatus int, out any) error {

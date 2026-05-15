@@ -114,7 +114,7 @@ func DeleteUser(operatorSvc *operator.OperatorService, registry *session.Registr
 			WriteOperatorError(c.Writer, err)
 			return
 		}
-		registry.DisconnectUserSessions(result.UserID, "account_deleted")
+		registry.DisconnectUserSessions(result.UserID)
 		if connectivityRegistry != nil {
 			connectivityRegistry.DisconnectUser(result.UserID)
 		}

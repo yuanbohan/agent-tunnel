@@ -1,47 +1,43 @@
 # agent-tunnel
 
-Launch a terminal agent locally and expose the running PTY through retained Relay session attach APIs and daemon-backed mobile connectivity.
+Launch a terminal agent locally and expose daemon-backed mobile connectivity without making Relay the terminal data plane.
 
 Cross-repository protocol decisions live in [yuanbohan/agent-tunnel-protocols](https://github.com/yuanbohan/agent-tunnel-protocols). This repository keeps the Go implementation, Relay API mirror, daemon behavior, and operational docs aligned with that protocol source of truth.
 
-The remote contract now has separate live-only surfaces:
+The remote contract has separate live-only surfaces:
 
-- classic Relay session attach: retained clients discover live sessions with `GET /api/sessions`, then attach to one session with `GET /api/sessions/:id/attach/ws`
 - computer launch control plane: app clients discover currently online computers with `GET /api/computers`, then ask one computer daemon to launch `tunnel run <command>` with required `cwd`, optional `label`, and wait for `session_ready`
-- official mobile companion session transport: after launch, the mobile companion treats `session_ready.session_id` as a correlation key and waits for the daemon connectivity transport to report the session through `session_index` or `session_upsert`; session roster, preview, terminal snapshots/live bytes, input, resize, and mobile session detail do not come from Relay session list/detail/attach APIs
+- mobile companion session transport: after launch, the mobile companion treats `session_ready.session_id` as a correlation key and waits for the daemon connectivity transport to report the session through `session_index` or `session_upsert`; session roster, preview, terminal snapshots/live bytes, input, resize, and mobile session detail do not come from Relay
+- local CLI session management: `tunnel session list` and `tunnel session stop <session-id>` use this computer's daemon control socket and broker state
 
-On classic Relay attach, the owning `tunnel` process sends a fresh terminal-state snapshot, which may include up to 10,000 lines of bounded agent-local normal-buffer scrollback, and then continues streaming live PTY bytes on that same websocket. The `snapshot_done` control message may also include bounded agent-local submit anchors for jump-dot navigation, and already attached clients may receive live `submit_anchor` controls for newly recorded submit Enter events.
-
-`tunnel` starts a real CLI command such as `claude`, `codex`, `gemini`, `qwen`, or `aider`, keeps the launching terminal interactive, and registers the session with a relay server. A local `tunnel run` also requires a compatible background daemon and registers session metadata, a bounded latest preview, coalesced terminal snapshots, and live output bytes over a local-only broker socket for trusted connectivity transports before the user command starts; `tunnel run` remains the PTY and terminal-mirror owner. The relay is API-only: it authenticates app clients with user-scoped bearer tokens, can bind app sessions to client device fingerprints, authenticates agents with user-owned long-lived agent tokens, retains classic live session APIs, lists currently online computer daemons, brokers classic session-scoped attaches, forwards structured input for classic attaches, forwards session stop control, forwards computer launch requests, carries connectivity pairing/visibility/rendezvous control messages, pairs with the same-image Binding-only STUN service for direct UDP discovery, and provides an opaque WebSocket QUIC fallback tunnel. Session discovery now includes best-effort Git branch metadata for the startup directory, optional local daemon identity through `device_id`, `launch_source` (`local` or `mobile`), and best-effort machine identity metadata from the registering agent, including platform family, platform id, and normalized computer name. Operator maintenance routes stay host-local outside the public `/api/` namespace. It does not retain transcript history and it does not emulate the terminal.
+`tunnel` starts a real CLI command such as `claude`, `codex`, `gemini`, `qwen`, or `aider`, keeps the launching terminal interactive, and registers launch ownership with Relay. A local `tunnel run` requires a compatible background daemon and registers session metadata, a bounded latest preview, coalesced terminal snapshots, and live output bytes over a local-only broker socket for trusted connectivity transports before the user command starts; `tunnel run` remains the PTY and terminal-mirror owner. Relay authenticates app clients with user-scoped bearer tokens, can bind app sessions to client device fingerprints, authenticates agents with user-owned long-lived agent tokens, lists currently online computer daemons, forwards computer launch requests, carries connectivity pairing/visibility/rendezvous control messages, pairs with the same-image Binding-only STUN service for direct UDP discovery, and provides an opaque WebSocket QUIC fallback tunnel. Operator maintenance routes stay host-local outside the public `/api/` namespace. Relay does not retain transcript history, expose account-wide session discovery, expose session attach, or emulate the terminal.
 
 On startup, `tunnel` must establish Relay registration and daemon broker registration during the startup wait window. If either registration does not succeed, startup exits before terminal setup and does not launch the local command.
 
 After startup, if the relay socket drops, `tunnel` keeps retrying with backoff (3s → 5m, with pauses between attempts), while local terminal work continues unchanged.
 
-The local terminal remains the primary view of the PTY session. Remote clients are intentionally narrower:
+The local terminal remains the primary view of the PTY session. Trusted mobile clients are intentionally narrower:
 
-- they can recover the current screen state on a fresh attach
-- they can recover bounded recent normal-buffer scrollback, currently up to 10,000 lines, when the agent mirror still has it
-- they can recover bounded submit anchors when those anchors still map into the fresh snapshot context
-- they can continue receiving live terminal bytes and live submit-anchor controls after that snapshot
-- they do not get full transcript replay, durable history recovery, or exact missed-byte recovery in this protocol revision
+- they receive current daemon broker session state through daemon connectivity transport
+- they can receive current terminal snapshots, latest previews, and live output through the daemon transport
+- they do not get Relay-owned transcript replay, durable history recovery, account-wide session sharing, or terminal bytes from Relay
 
-Client input uses structured events:
+Daemon transport client input uses structured events:
 
 - `input_text` for normal typing, pasted text, IME-committed text, and explicit submit via `submit: true`
 - `input_key` for special keys only
 
-The relay forwards those events to the owning `tunnel` session. `tunnel` translates supported key events into PTY bytes locally, and it handles `input_text { submit: true }` as one serialized submit operation: write the provided text first, then write the same carriage return semantics used for `ENTER`, with no interleaving input for that session. Any local or remote input write that sends the `ENTER` carriage return outside a bracketed-paste region may create a bounded agent-local submit anchor for snapshots and live attached clients; anchors are navigation hints, not transcript records or exact Codex-rendered message markers.
+The daemon broker routes those events to the owning `tunnel` session. `tunnel` translates supported key events into PTY bytes locally, and it handles `input_text { submit: true }` as one serialized submit operation: write the provided text first, then write the same carriage return semantics used for `ENTER`, with no interleaving input for that session.
 
 ## Cloud Principle: Multi-Tenant Session Isolation
 
 For any hosted relay deployment, multi-tenant isolation is a hard product invariant.
 
 - every agent token is owned by exactly one user account
-- when `tunnel` connects to `/agent/ws`, the relay binds that live session to the owning user of that token
-- `GET /api/sessions` returns only the authenticated user's live sessions
-- `GET /api/sessions/:id/attach/ws` treats another user's session as not found
-- one user's token must never list, reveal, or attach to another user's session, even when both users are online at the same time
+- when `tunnel` connects to `/agent/ws`, the relay binds that live owner state to the owning user of that token
+- app-facing computer presence and launch requests are user-scoped
+- daemon connectivity visibility is scoped by account, trusted client fingerprint, and daemon-local trusted rosters
+- one user's token must never reveal or control another user's computers, launch correlations, fallback tunnels, or connectivity peers
 
 This is one of the most important cloud guarantees in Agent Tunnel.
 
@@ -219,7 +215,7 @@ Workspace view commands are separate from session management:
 ./bin/tunnel workspace close
 ```
 
-Use `tunnel session list` to see live account sessions and `tunnel session stop <session-id>` to stop one. `tunnel session list --json` prints the same account-level live sessions in a machine-readable shape for automation. `workspace close` only detaches one local tmux workspace view; it does not stop the daemon or terminate sessions.
+Use `tunnel session list` to see live sessions on this computer and `tunnel session stop <session-id>` to stop one local session through the daemon broker. `tunnel session list --json` prints the same local-computer sessions in a machine-readable shape for automation. `workspace close` only detaches one local tmux workspace view; it does not stop the daemon or terminate sessions.
 
 The daemon connectivity core can run without `tmux`. Missing `tmux` reports degraded launch readiness and prevents tmux-backed remote launch, but it does not prevent local broker registration or pairing/connectivity control paths.
 
@@ -229,46 +225,24 @@ The connectivity path is direct-first for the Go simulator and daemon-side imple
 
 App clients authenticate with bearer tokens returned by `POST /api/auth/login`.
 
-Classic Relay attach clients use retained relay APIs:
-
-- `GET /api/sessions` to list sessions whose owning agent is currently online
-- `GET /api/sessions/:id/attach/ws` to attach to one online session
-
-The official mobile companion does not use Relay session list/detail/attach as its post-launch session authority. It uses Relay for auth, account policy, pairing, computer presence, rendezvous, fallback tunnel setup, and `POST /api/computers/:computerID/sessions`; after `session_ready`, it waits for the daemon connectivity transport to report the launched session through `session_index` or `session_upsert`.
+The mobile companion uses Relay for auth, account policy, pairing, computer presence, rendezvous, fallback tunnel setup, and `POST /api/computers/:computerID/sessions`; after `session_ready`, it waits for the daemon connectivity transport to report the launched session through `session_index` or `session_upsert`.
 
 See [docs/api.md](docs/api.md) for the current repo-local public app-facing endpoint inventory, auth requirements, request and response examples, and error contracts.
 
-Browser attach clients must be same-origin with the relay. Native clients that do not send an `Origin` header remain supported.
-
 Device daemons connect separately on `/device/ws`. Reverse proxies for hosted relay deployments must forward that path alongside `/api/` and `/agent/ws`.
+## Session Transport Model
 
-The attach websocket is session-scoped:
-
-- the first JSON control message is `attached` with `session_id`, `cols`, and `rows`
-- the next binary frames are snapshot bytes for the current terminal state, including up to 10,000 lines of bounded agent-local normal-buffer scrollback when available
-- a `snapshot_done` control message marks the boundary after which binary frames are live PTY bytes, and may include bounded submit anchors
-- later `submit_anchor` control messages may add live submit anchors for already attached clients
-- later `resize` control messages tell the client to resize its terminal emulator
-- client input goes back on the same websocket as JSON `input_text` and `input_key`
-
-If the attach drops, the client should create a fresh terminal emulator state and open a fresh attach. Recovery in this protocol revision is fresh snapshot recovery, not transcript replay. A fresh snapshot may include up to 10,000 lines of bounded in-memory scrollback, but it is not a replay of every missed PTY byte.
-
-## Session Attach Model
-
-The current remote model is:
+The current remote/mobile model is:
 
 - `tunnel` owns the PTY and maintains the authoritative headless terminal mirror for that running session
-- the relay stores live session metadata such as `started_at`
-- the relay also stores session metadata such as `git_branch`, optional local daemon `device_id`, `platform_family`, `platform_id`, and normalized `computer_name`
+- the daemon broker keeps live local session metadata, latest preview, latest coalesced terminal snapshot, and live output bytes for trusted daemon transports
+- Relay stores only live owner/correlation state needed for `/agent/ws` registration, launch readiness, token/user cleanup, and online daemon routing
 - `started_at` is a Unix timestamp encoded as a JSON integer in seconds
-- a remote attach asks the agent for the current terminal state, plus up to 10,000 lines of bounded in-memory normal-buffer scrollback when available, not for relay-owned or durable old output history
-- a remote attach may also receive up to 256 bounded submit anchors that map to rows in the restored snapshot buffer; these anchors expire with agent-local retained context
-- after the initial snapshot, the same attach continues as an ordered live byte stream for that client and may receive live `submit_anchor` controls for newly recorded submit Enter events
-- if the owning agent disconnects, the relay closes active attaches and removes the session from discovery immediately
-- if an app session logs out or all app sessions are revoked by password change, the relay closes the affected app-side attaches but leaves the owning agent session online
-- if the terminal is currently on the alternate screen, the snapshot restores that current alt-screen state; any preserved history comes from the underlying normal buffer, not from alt-screen replay
+- mobile clients receive session rows and terminal streams from daemon connectivity transport, not Relay session APIs
+- if the owning `tunnel run` process disconnects from the daemon broker, the daemon removes that local session from broker state
+- if the Relay socket drops after startup, local terminal work and daemon-local session transport continue according to their own connectivity state
 
-Stronger delivery guarantees, transcript history, and remote-driven PTY sizing are out of scope for this protocol revision.
+Stronger delivery guarantees, transcript history, and Relay-driven PTY sizing are out of scope for this protocol revision.
 
 ## Computer Launch Model
 
@@ -283,7 +257,7 @@ Remote launch is computer-daemon-backed and tmux-backed:
 - when that launched `tunnel run <command>` exits, the tmux session stays available and returns to an interactive shell prompt
 - users can inspect or resume the local workspace from any terminal with `tunnel workspace open`, or detach one open workspace view with `tunnel workspace close`
 - `tunnel workspace close` is the inverse of `open`: it closes a local tmux workspace view if one is open, but it does not stop the daemon or terminate any session
-- retained Relay/API session shutdown uses `DELETE /api/sessions/:sessionID`; it sends `stop_session` to the owning `tunnel run` process, so local-launched and mobile-launched sessions use the same account-level shutdown path, but this endpoint is not the official mobile companion session authority
+- local session shutdown uses `tunnel session stop <session-id>` through the local daemon broker; it is scoped to sessions on this computer and does not stop sessions on other computers through Relay
 - the daemon owns local launch state such as allowlist, busy/not-busy, tmux workspace health, doctor output, and last failure
 - the relay only keeps transient online routing for connected daemons; if a daemon disconnects, it disappears from `GET /api/computers` immediately
 
@@ -428,7 +402,8 @@ See [docs/local-e2e.md](docs/local-e2e.md) for the Docker-backed local E2E workf
 
 See [docs/api.md](docs/api.md) for the current public app-facing relay API reference.
 See [docs/protocol.md](docs/protocol.md) for the full wire format specification.
-See [docs/tui-attach-flow.md](docs/tui-attach-flow.md) for the end-to-end snapshot, live-byte, relay, and client reconnect flow.
+See [docs/connectivity/protocol/transport.md](docs/connectivity/protocol/transport.md) for the daemon-owned session transport used by trusted mobile clients.
+See [docs/tui-attach-flow.md](docs/tui-attach-flow.md) for the tombstone of the removed Relay attach path.
 See [docs/deployment.md](docs/deployment.md) for VPS deployment, nginx/TLS setup, and operations guide.
 See [docs/operation.md](docs/operation.md) for day-to-day relay CLI usage and operator command examples.
 See [docs/release-distribution.md](docs/release-distribution.md) for public `tunnel` release publishing and distribution-repo operations.

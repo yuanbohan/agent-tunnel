@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"yuanbohan/tunnel/internal/protocol"
+	"yuanbohan/tunnel/internal/tunnel/daemon"
 )
 
 type sessionRow struct {
@@ -51,29 +52,28 @@ var sessionTableColumns = []tableColumn{
 }
 
 func runSessionList(ctx context.Context, args sessionCommandArgs, stdout, stderr io.Writer) error {
-	auth, err := resolveRuntimeAuth(newAuthStore(), osEnv)
+	paths, err := resolveDaemonPaths()
 	if err != nil {
 		return err
 	}
-	sessions, err := newAuthAPI(args.BaseURL).listSessions(ctx, auth.Token)
+	sessions, err := daemon.ListSessions(ctx, paths)
 	if err != nil {
 		return err
 	}
-	localDeviceID := sessionDeviceID()
 	if args.JSON {
 		jsonRows := make([]sessionListJSONRow, 0, len(sessions))
-		for _, info := range sessions {
-			jsonRows = append(jsonRows, buildSessionJSONRow(info, localDeviceID))
+		for _, snapshot := range sessions {
+			jsonRows = append(jsonRows, buildSessionJSONRow(sessionInfoFromBrokerSnapshot(snapshot)))
 		}
 		return writeIndentedJSON(stdout, jsonRows)
 	}
 	rows := make([]sessionRow, 0, len(sessions))
 	now := time.Now()
-	for _, info := range sessions {
-		rows = append(rows, buildSessionRow(info, localDeviceID, now))
+	for _, snapshot := range sessions {
+		rows = append(rows, buildSessionRow(sessionInfoFromBrokerSnapshot(snapshot), now))
 	}
 	if len(rows) == 0 {
-		_, _ = io.WriteString(stdout, "No live sessions.\n")
+		_, _ = io.WriteString(stdout, "No local live sessions.\n")
 		return nil
 	}
 	renderSessionTable(stdout, rows)
@@ -85,19 +85,36 @@ func runSessionStop(ctx context.Context, args sessionCommandArgs, sessionID stri
 	if sessionID == "" {
 		return usageWithHelp(sessionStopHelpText(), "session id must not be empty")
 	}
-	auth, err := resolveRuntimeAuth(newAuthStore(), osEnv)
+	paths, err := resolveDaemonPaths()
 	if err != nil {
 		return err
 	}
-	if _, err := newAuthAPI(args.BaseURL).stopSession(ctx, auth.Token, sessionID); err != nil {
+	if err := daemon.StopSession(ctx, paths, sessionID); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(stdout, "stopped session %s\n", sessionID)
 	return nil
 }
 
-func buildSessionRow(info protocol.SessionInfo, localDeviceID string, now time.Time) sessionRow {
-	scope := sessionScope(info, localDeviceID)
+func sessionInfoFromBrokerSnapshot(snapshot daemon.BrokerSessionSnapshot) protocol.SessionInfo {
+	return protocol.SessionInfo{
+		SessionID:      strings.TrimSpace(snapshot.SessionID),
+		DeviceID:       strings.TrimSpace(snapshot.DeviceID),
+		Launcher:       strings.TrimSpace(snapshot.Launcher),
+		Label:          strings.TrimSpace(snapshot.Label),
+		CWD:            strings.TrimSpace(snapshot.CWD),
+		CommandPreview: strings.TrimSpace(snapshot.CommandPreview),
+		GitBranch:      strings.TrimSpace(snapshot.GitBranch),
+		StartedAt:      snapshot.StartedAt,
+		PlatformFamily: strings.TrimSpace(snapshot.PlatformFamily),
+		PlatformID:     strings.TrimSpace(snapshot.PlatformID),
+		ComputerName:   strings.TrimSpace(snapshot.ComputerName),
+		LaunchSource:   strings.TrimSpace(snapshot.LaunchSource),
+	}
+}
+
+func buildSessionRow(info protocol.SessionInfo, now time.Time) sessionRow {
+	scope := sessionScope()
 	machine := sessionMachine(info)
 	if scope == "local" {
 		machine = "This machine"
@@ -114,9 +131,9 @@ func buildSessionRow(info protocol.SessionInfo, localDeviceID string, now time.T
 	}
 }
 
-func buildSessionJSONRow(info protocol.SessionInfo, localDeviceID string) sessionListJSONRow {
+func buildSessionJSONRow(info protocol.SessionInfo) sessionListJSONRow {
 	return sessionListJSONRow{
-		Scope:          sessionScope(info, localDeviceID),
+		Scope:          sessionScope(),
 		Source:         sessionLaunchSource(info.LaunchSource),
 		SessionID:      strings.TrimSpace(info.SessionID),
 		DeviceID:       strings.TrimSpace(info.DeviceID),
@@ -132,16 +149,8 @@ func buildSessionJSONRow(info protocol.SessionInfo, localDeviceID string) sessio
 	}
 }
 
-func sessionScope(info protocol.SessionInfo, localDeviceID string) string {
-	localDeviceID = strings.TrimSpace(localDeviceID)
-	sessionDeviceID := strings.TrimSpace(info.DeviceID)
-	if localDeviceID == "" || sessionDeviceID == "" {
-		return "unknown"
-	}
-	if localDeviceID == sessionDeviceID {
-		return "local"
-	}
-	return "remote"
+func sessionScope() string {
+	return "local"
 }
 
 func sessionLaunchSource(launchSource string) string {

@@ -28,13 +28,9 @@ type fakeRelayConnector struct {
 	state         connector.State
 	runCalledCh   chan struct{}
 	runCalledOnce sync.Once
-	boundHub      *session.Hub
-	initialCols   int
-	initialRows   int
 	connectTTL    time.Duration
 	launchContext protocol.LaunchContext
 	launchReady   protocol.LaunchContext
-	stopHandler   func()
 	stateCh       chan connector.State
 }
 
@@ -45,6 +41,7 @@ type fakeLocalRegistration struct {
 	output        [][]byte
 	waitErr       error
 	waitHook      func(context.Context)
+	stopHandler   func()
 }
 
 func (f *fakeLocalRegistration) Run(context.Context) {
@@ -67,6 +64,10 @@ func (f *fakeLocalRegistration) WriteOutput(data []byte) error {
 
 func (f *fakeLocalRegistration) BindHub(*session.Hub) {}
 
+func (f *fakeLocalRegistration) SetStopHandler(handler func()) {
+	f.stopHandler = handler
+}
+
 func (f *fakeLocalRegistration) WaitUntilRegistered(ctx context.Context) error {
 	if f.waitHook != nil {
 		f.waitHook(ctx)
@@ -84,11 +85,6 @@ func stubDetectGitBranch(t *testing.T, branch string) {
 	})
 }
 
-func (f *fakeRelayConnector) SetInitialSize(cols, rows int) {
-	f.initialCols = cols
-	f.initialRows = rows
-}
-
 func (f *fakeRelayConnector) SetInitialConnectTimeout(timeout time.Duration) {
 	f.connectTTL = timeout
 }
@@ -99,14 +95,6 @@ func (f *fakeRelayConnector) SetLaunchContext(launchContext protocol.LaunchConte
 
 func (f *fakeRelayConnector) MarkLaunchReady(launchContext protocol.LaunchContext) {
 	f.launchReady = launchContext
-}
-
-func (f *fakeRelayConnector) SetStopHandler(handler func()) {
-	f.stopHandler = handler
-}
-
-func (f *fakeRelayConnector) BindHub(hub *session.Hub) {
-	f.boundHub = hub
 }
 
 func (f *fakeRelayConnector) Run(context.Context) {
@@ -130,10 +118,6 @@ func (f *fakeRelayConnector) SubscribeStateChanges() (<-chan connector.State, fu
 
 func (f *fakeRelayConnector) CurrentState() connector.State {
 	return f.state
-}
-
-func (f *fakeRelayConnector) WriteOutput([]byte) error {
-	return nil
 }
 
 func setTestEnv(t *testing.T) {
@@ -578,8 +562,8 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
 	if gotSinks == nil {
 		t.Fatal("startSession did not receive initial sinks")
 	}
-	if _, ok := gotSinks["relay"]; !ok {
-		t.Fatalf("initial sinks = %#v, want relay sink", gotSinks)
+	if _, ok := gotSinks["relay"]; ok {
+		t.Fatalf("initial sinks = %#v, did not expect relay sink", gotSinks)
 	}
 	if gotInfo.Launcher != "codex" {
 		t.Fatalf("Launcher = %q, want codex", gotInfo.Launcher)
@@ -809,6 +793,120 @@ func TestRunWithArgsStopsBeforeTerminalPrepWhenBrokerRegistrationFails(t *testin
 	}
 	if !stopCalled {
 		t.Fatal("runWithArgs did not stop the daemon it auto-started after broker registration failure")
+	}
+}
+
+func TestRunWithArgsInstallsStopHandlerBeforeBrokerRegistrationWait(t *testing.T) {
+	setTestEnv(t)
+
+	oldResolve := resolveLauncher
+	oldPrepare := prepareLocalTerminal
+	oldStartSession := startSession
+	oldNewConnector := newConnector
+	oldEnsureTunnelRunDaemon := ensureTunnelRunDaemon
+	oldNewSessionRegistration := newSessionRegistration
+	t.Cleanup(func() {
+		resolveLauncher = oldResolve
+		prepareLocalTerminal = oldPrepare
+		startSession = oldStartSession
+		newConnector = oldNewConnector
+		ensureTunnelRunDaemon = oldEnsureTunnelRunDaemon
+		newSessionRegistration = oldNewSessionRegistration
+	})
+
+	resolveLauncher = func(name string, args []string) (launcher.Command, error) {
+		return launcher.Command{Name: name, Path: "/usr/bin/codex", Args: append([]string(nil), args...)}, nil
+	}
+	newConnector = func(url, token string, info protocol.SessionInfo) relayConnector {
+		t.Fatal("newConnector should not be called before broker registration succeeds")
+		return nil
+	}
+	ensureTunnelRunDaemon = func(context.Context, string, string) (tunnelRunDaemonEnsureResult, error) {
+		return tunnelRunDaemonEnsureResult{Paths: daemon.Paths{BrokerSocketPath: "/tmp/broker.sock"}}, nil
+	}
+	registration := &fakeLocalRegistration{waitErr: errors.New("forced broker registration failure")}
+	registration.waitHook = func(context.Context) {
+		if registration.stopHandler == nil {
+			t.Fatal("stop handler was not installed before waiting for broker registration")
+		}
+		registration.stopHandler()
+	}
+	newSessionRegistration = func(daemon.Paths, string, string, protocol.SessionInfo) localSessionRegistration {
+		return registration
+	}
+	prepareLocalTerminal = func() (*session.LocalTerminal, error) {
+		t.Fatal("prepareLocalTerminal should not be called before broker registration succeeds")
+		return nil, nil
+	}
+	startSession = func(context.Context, string, []string, map[string]session.OutputSink) (*session.Running, error) {
+		t.Fatal("startSession should not be called before broker registration succeeds")
+		return nil, nil
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := runWithArgs([]string{"tunnel", "run", "codex"}, &stdout, &stderr); err != nil {
+		t.Fatalf("runWithArgs error = %v, want clean local stop", err)
+	}
+	if !registration.closeCalled {
+		t.Fatal("local registration was not closed after stop handler ran")
+	}
+}
+
+func TestRunWithArgsLocalStopBeforeSessionStartClosesRegistration(t *testing.T) {
+	setTestEnv(t)
+
+	oldResolve := resolveLauncher
+	oldPrepare := prepareLocalTerminal
+	oldStartSession := startSession
+	oldNewConnector := newConnector
+	oldEnsureTunnelRunDaemon := ensureTunnelRunDaemon
+	oldNewSessionRegistration := newSessionRegistration
+	t.Cleanup(func() {
+		resolveLauncher = oldResolve
+		prepareLocalTerminal = oldPrepare
+		startSession = oldStartSession
+		newConnector = oldNewConnector
+		ensureTunnelRunDaemon = oldEnsureTunnelRunDaemon
+		newSessionRegistration = oldNewSessionRegistration
+	})
+
+	resolveLauncher = func(name string, args []string) (launcher.Command, error) {
+		return launcher.Command{Name: name, Path: "/usr/bin/codex", Args: append([]string(nil), args...)}, nil
+	}
+	newConnector = func(url, token string, info protocol.SessionInfo) relayConnector {
+		t.Fatal("newConnector should not be called after local stop before session start")
+		return nil
+	}
+	ensureTunnelRunDaemon = func(context.Context, string, string) (tunnelRunDaemonEnsureResult, error) {
+		return tunnelRunDaemonEnsureResult{Paths: daemon.Paths{BrokerSocketPath: "/tmp/broker.sock"}}, nil
+	}
+	registration := &fakeLocalRegistration{}
+	registration.waitHook = func(context.Context) {
+		if registration.stopHandler == nil {
+			t.Fatal("stop handler was not installed")
+		}
+		registration.stopHandler()
+	}
+	newSessionRegistration = func(daemon.Paths, string, string, protocol.SessionInfo) localSessionRegistration {
+		return registration
+	}
+	prepareLocalTerminal = func() (*session.LocalTerminal, error) {
+		t.Fatal("prepareLocalTerminal should not be called after local stop before session start")
+		return nil, nil
+	}
+	startSession = func(context.Context, string, []string, map[string]session.OutputSink) (*session.Running, error) {
+		t.Fatal("startSession should not be called after local stop before session start")
+		return nil, nil
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := runWithArgs([]string{"tunnel", "run", "codex"}, &stdout, &stderr); err != nil {
+		t.Fatalf("runWithArgs error = %v, want clean local stop", err)
+	}
+	if !registration.closeCalled {
+		t.Fatal("local registration was not closed after pre-start stop")
 	}
 }
 

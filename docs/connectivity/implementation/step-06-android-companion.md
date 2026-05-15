@@ -42,7 +42,7 @@ Implement production Android behavior against the proven protocol. Android uses 
 - Billing purchase flow
 - New transport semantics
 - Go repo implementation details
-- Reintroducing Relay session list/detail/attach/monitoring/notification paths as official Android companion session authority
+- Reintroducing Relay session list/detail/attach/monitoring/notification paths
 
 ## Acceptance Checklist
 
@@ -52,7 +52,7 @@ Implement production Android behavior against the proven protocol. Android uses 
 - [ ] Pro downgrade to Free requires choosing one active computer before multi-computer auto-connect.
 - [ ] Free and Pro session rows, preview, detail attach, reconnect, and path badge behavior are identical inside one active computer.
 - [ ] Relay `session_ready.session_id` is used only to correlate launch with daemon transport session state.
-- [ ] Android does not use `GET /api/sessions`, Relay attach, or Relay stop as its official post-launch session authority.
+- [ ] Android uses daemon transport, not Relay session endpoints, as its post-launch session authority.
 - [ ] Only the focused terminal receives input.
 - [ ] Account switch closes transports and clears account-derived local policy state.
 - [ ] Direct/relay badge copy does not imply different encryption.
@@ -63,7 +63,7 @@ Android implementation remains not started in this repository. Upstream Go contr
 
 - Relay `POST /api/computers/:computerID/sessions` returns `session_ready.session_id` as a control-plane launch correlation key.
 - The official mobile companion waits for daemon transport `session_index` or `session_upsert` carrying that same broker-known `session_id`.
-- Retained Relay session list/detail/attach/stop APIs remain documented as classic/account-level behavior, not Android's post-launch session authority.
+- Relay session list/detail/attach/stop APIs have been removed from the Go repo contract; Android deletion work should not preserve a hidden compatibility path.
 
 ## Verification Performed
 
