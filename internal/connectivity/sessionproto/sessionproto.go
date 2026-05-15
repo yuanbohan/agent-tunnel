@@ -1,6 +1,9 @@
 package sessionproto
 
 const (
+	ssotProtocolSource        = "https://github.com/yuanbohan/agent-tunnel-protocols"
+	ssotProtocolCompatibility = 2 // protocol transport compatibility line (SSOT source)
+
 	ActorMobile = "mobile"
 	ActorDaemon = "daemon"
 
@@ -9,7 +12,7 @@ const (
 
 	// ProtocolVersion mirrors agent-tunnel-protocols:docs/protocol.md.
 	// Version 2 is the JSON daemon transport protocol.
-	ProtocolVersion = 2
+	ProtocolVersion = ssotProtocolCompatibility
 )
 
 type Hello struct {
