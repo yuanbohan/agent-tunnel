@@ -162,7 +162,7 @@ sequenceDiagram
 - STUN is only used to learn public UDP mappings.
 - Relay carries rendezvous hints but never terminal data.
 - daemon transport starts only for tier-allowed trusted computers
-- Direct success means the daemon becomes the source of session list and preview / interactive routing.
+- Direct success means the daemon becomes the official mobile companion source of session roster and preview / interactive routing.
 - Free and Pro session rows behave identically once the computer is active.
 
 ## Flow 3: Direct Attempt Fails And Falls Back To Relay
@@ -225,7 +225,7 @@ sequenceDiagram
 - Direct and relay are different carriers, not different business protocols.
 - Fallback creates a new QUIC/TLS connection. It does not migrate the failed direct connection in place.
 - Relay Tunnel forwards encrypted QUIC packets only.
-- After fallback succeeds, daemon resends session list over the new connection.
+- After fallback succeeds, daemon resends the session roster over the new connection.
 
 ## Flow 4: Preview And Interactive For Any Session In An Active Computer
 

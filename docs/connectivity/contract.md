@@ -2,7 +2,7 @@
 
 ## Status
 
-This document is the canonical phase-1 must-ship contract. When two docs disagree, this one wins. Decisions here were confirmed on 2026-04-26 and should not be changed without a new architecture review.
+This document is this repository's phase-1 implementation contract. Cross-repository protocol decisions live in [yuanbohan/agent-tunnel-protocols](https://github.com/yuanbohan/agent-tunnel-protocols); keep this file aligned with that protocol source of truth. Within this repository's connectivity docs, when two docs disagree, this file wins. Decisions here were confirmed on 2026-04-26 and should not be changed without a new architecture review.
 
 This is intentionally short. Detail lives in the linked specs. Use this file to scope work.
 

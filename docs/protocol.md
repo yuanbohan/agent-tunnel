@@ -1,6 +1,6 @@
 # Agent Tunnel Relay Protocol
 
-This document describes the current relay-facing contract for clients and agents.
+This document describes this repository's current relay-facing implementation contract for clients and agents. Cross-repository protocol decisions live in [yuanbohan/agent-tunnel-protocols](https://github.com/yuanbohan/agent-tunnel-protocols); keep this mirror aligned with that protocol source of truth.
 
 It supersedes the older replay/frame model. Clients should build against this attach-based protocol, not against `/api/updates/ws`, `/api/sessions/:id/frames`, `ReplayFrame`, or `latest_seq`.
 
@@ -17,7 +17,8 @@ The current protocol is built around these boundaries:
 - The relay is a discovery, auth, and routing layer. It does not retain transcript history and does not emulate the terminal.
 - Hosted relay deployments rely on strict multi-tenant isolation: sessions are owned by the user behind the authenticating agent token, and other users must not discover or attach to them.
 - Sessions are discoverable only while the owning agent websocket is connected. If the agent disconnects, the session disappears from discovery immediately and reappears when the agent re-registers with the same `session_id`.
-- Remote viewing is session-scoped: a client attaches to one session, receives a fresh terminal-state snapshot, and then receives subsequent live PTY bytes on that same attach.
+- Retained Relay/classic remote viewing is session-scoped: a client attaches to one session, receives a fresh terminal-state snapshot, and then receives subsequent live PTY bytes on that same attach.
+- The official mobile companion uses Relay for auth, account policy, pairing, computer presence, rendezvous, fallback tunnel setup, and computer launch; after launch, its session roster, preview, terminal snapshots/live bytes, input, resize, and session detail come from daemon connectivity transport.
 - Remote recovery in this revision is fresh snapshot recovery only. Snapshot bytes may include up to 10,000 lines of bounded agent-local normal-buffer scrollback, but there is no transcript replay API.
 - The local terminal remains the most complete and authoritative foreground view of the PTY session.
 
@@ -32,10 +33,10 @@ All protocol timestamps are Unix timestamps represented as JSON integers in seco
 | `POST /api/computers/:computerID/sessions` | Client | Bearer | HTTP | Ask one currently online device daemon to launch `tunnel run <command>` and wait for the resulting session to become `session_ready` |
 | `GET /api/account/policy` | Client | Bearer | HTTP | Current account tier used by official app clients for trusted-computer limits |
 | `GET /api/connectivity/ws` | Client | Bearer | WebSocket | Fingerprint-bound app connectivity control plane for daemon visibility, direct rendezvous, and fallback tunnel setup |
-| `GET /api/sessions` | Client | Bearer | HTTP | Current live session snapshot for the authenticated user |
-| `DELETE /api/sessions/:id` | Client | Bearer | HTTP | Ask the owning online agent to stop one live session |
+| `GET /api/sessions` | Client | Bearer | HTTP | Retained Relay/classic current live session snapshot for the authenticated user |
+| `DELETE /api/sessions/:id` | Client | Bearer | HTTP | Retained Relay/account-level request asking the owning online agent to stop one live session |
 | `POST /api/pairing/responses` | Client | Bearer | HTTP | Submit one signed pairing response correlated to a reserved pairing invitation |
-| `GET /api/sessions/:id/attach/ws` | Client | Bearer | WebSocket | Attach to one live session owned by the authenticated user for snapshot, live bytes, resize events, and session-scoped structured input |
+| `GET /api/sessions/:id/attach/ws` | Client | Bearer | WebSocket | Retained Relay/classic attach to one live session owned by the authenticated user for snapshot, live bytes, resize events, and session-scoped structured input |
 | `GET /agent/ws` | Agent | Bearer | WebSocket | Agent registration, attach control, resize metadata, structured input forwarding, and client-routed terminal byte delivery |
 | `GET /device/ws` | Device daemon | Bearer | WebSocket | Device registration plus launch request/result routing for one online machine |
 | `GET /connectivity/computer/ws` | Device daemon | Bearer | WebSocket | Daemon connectivity control plane for trusted roster registration, pairing invitation correlation, revocation, and fallback tunnel readiness |
@@ -70,6 +71,8 @@ WebSocket attach notes:
 ## Session Snapshot
 
 `GET /api/sessions` returns an array of `SessionInfo` objects:
+
+This is the retained Relay/classic session snapshot. The official mobile companion's post-launch session roster comes from daemon connectivity transport `session_index` and `session_upsert`.
 
 ```json
 {
@@ -736,9 +739,10 @@ This keeps terminal behavior close to the PTY owner and avoids embedding termina
 
 ## Client Notes
 
-- clients should use `GET /api/sessions` to discover currently online sessions
-- legacy attach clients should use `GET /api/sessions/:id/attach/ws` as the foreground receive and input channel for one session
-- mobile connectivity clients should use the connectivity session transport after direct or fallback tunnel setup, with pairing responses submitted through `POST /api/pairing/responses`
+- retained Relay/classic clients should use `GET /api/sessions` to discover currently online sessions
+- retained Relay/classic attach clients should use `GET /api/sessions/:id/attach/ws` as the foreground receive and input channel for one session
+- official mobile connectivity clients should use the connectivity session transport after direct or fallback tunnel setup, with pairing responses submitted through `POST /api/pairing/responses`
+- after `POST /api/computers/:computerID/sessions` returns `session_ready`, official mobile connectivity clients should wait for daemon transport `session_index` or `session_upsert` for the matching `session_id` instead of polling Relay session list/detail/attach endpoints
 - clients should create a fresh terminal emulator state when opening a fresh attach
 - clients should size the terminal emulator on `attached` before feeding binary bytes
 - clients should treat `snapshot_done` as the boundary after which binary bytes are live PTY output

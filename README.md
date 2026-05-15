@@ -1,15 +1,18 @@
 # agent-tunnel
 
-Launch a terminal agent locally and expose the running PTY through relay-backed session attach and device-launch APIs.
+Launch a terminal agent locally and expose the running PTY through retained Relay session attach APIs and daemon-backed mobile connectivity.
 
-The remote contract now has two live-only surfaces:
+Cross-repository protocol decisions live in [yuanbohan/agent-tunnel-protocols](https://github.com/yuanbohan/agent-tunnel-protocols). This repository keeps the Go implementation, Relay API mirror, daemon behavior, and operational docs aligned with that protocol source of truth.
 
-- session attach: clients discover live sessions with `GET /api/sessions`, then attach to one session with `GET /api/sessions/:id/attach/ws`
-- computer launch: clients discover currently online computers with `GET /api/computers`, then ask one computer daemon to launch `tunnel run <command>` with required `cwd`, optional `label`, and wait for `session_ready`; any live session can later be stopped through `DELETE /api/sessions/:id`
+The remote contract now has separate live-only surfaces:
 
-On attach, the owning `tunnel` process sends a fresh terminal-state snapshot, which may include up to 10,000 lines of bounded agent-local normal-buffer scrollback, and then continues streaming live PTY bytes on that same websocket. The `snapshot_done` control message may also include bounded agent-local submit anchors for jump-dot navigation, and already attached clients may receive live `submit_anchor` controls for newly recorded submit Enter events.
+- classic Relay session attach: retained clients discover live sessions with `GET /api/sessions`, then attach to one session with `GET /api/sessions/:id/attach/ws`
+- computer launch control plane: app clients discover currently online computers with `GET /api/computers`, then ask one computer daemon to launch `tunnel run <command>` with required `cwd`, optional `label`, and wait for `session_ready`
+- official mobile companion session transport: after launch, the mobile companion treats `session_ready.session_id` as a correlation key and waits for the daemon connectivity transport to report the session through `session_index` or `session_upsert`; session roster, preview, terminal snapshots/live bytes, input, resize, and mobile session detail do not come from Relay session list/detail/attach APIs
 
-`tunnel` starts a real CLI command such as `claude`, `codex`, `gemini`, `qwen`, or `aider`, keeps the launching terminal interactive, and registers the session with a relay server. A local `tunnel run` also requires a compatible background daemon and registers session metadata, a bounded latest preview, coalesced terminal snapshots, and live output bytes over a local-only broker socket for trusted connectivity transports before the user command starts; `tunnel run` remains the PTY and terminal-mirror owner. The relay is API-only: it authenticates app clients with user-scoped bearer tokens, can bind app sessions to client device fingerprints, authenticates agents with user-owned long-lived agent tokens, lists live sessions, lists currently online computer daemons, brokers session-scoped attaches, forwards structured input, forwards session stop control, forwards computer launch requests, carries connectivity pairing/visibility/rendezvous control messages, pairs with the same-image Binding-only STUN service for direct UDP discovery, and provides an opaque WebSocket QUIC fallback tunnel. Session discovery now includes best-effort Git branch metadata for the startup directory, optional local daemon identity through `device_id`, `launch_source` (`local` or `mobile`), and best-effort machine identity metadata from the registering agent, including platform family, platform id, and normalized computer name. Operator maintenance routes stay host-local outside the public `/api/` namespace. It does not retain transcript history and it does not emulate the terminal.
+On classic Relay attach, the owning `tunnel` process sends a fresh terminal-state snapshot, which may include up to 10,000 lines of bounded agent-local normal-buffer scrollback, and then continues streaming live PTY bytes on that same websocket. The `snapshot_done` control message may also include bounded agent-local submit anchors for jump-dot navigation, and already attached clients may receive live `submit_anchor` controls for newly recorded submit Enter events.
+
+`tunnel` starts a real CLI command such as `claude`, `codex`, `gemini`, `qwen`, or `aider`, keeps the launching terminal interactive, and registers the session with a relay server. A local `tunnel run` also requires a compatible background daemon and registers session metadata, a bounded latest preview, coalesced terminal snapshots, and live output bytes over a local-only broker socket for trusted connectivity transports before the user command starts; `tunnel run` remains the PTY and terminal-mirror owner. The relay is API-only: it authenticates app clients with user-scoped bearer tokens, can bind app sessions to client device fingerprints, authenticates agents with user-owned long-lived agent tokens, retains classic live session APIs, lists currently online computer daemons, brokers classic session-scoped attaches, forwards structured input for classic attaches, forwards session stop control, forwards computer launch requests, carries connectivity pairing/visibility/rendezvous control messages, pairs with the same-image Binding-only STUN service for direct UDP discovery, and provides an opaque WebSocket QUIC fallback tunnel. Session discovery now includes best-effort Git branch metadata for the startup directory, optional local daemon identity through `device_id`, `launch_source` (`local` or `mobile`), and best-effort machine identity metadata from the registering agent, including platform family, platform id, and normalized computer name. Operator maintenance routes stay host-local outside the public `/api/` namespace. It does not retain transcript history and it does not emulate the terminal.
 
 On startup, `tunnel` must establish Relay registration and daemon broker registration during the startup wait window. If either registration does not succeed, startup exits before terminal setup and does not launch the local command.
 
@@ -224,12 +227,16 @@ The connectivity path is direct-first for the Go simulator and daemon-side imple
 
 ### 3. Connect a client
 
-App clients authenticate with bearer tokens returned by `POST /api/auth/login` and use the relay APIs:
+App clients authenticate with bearer tokens returned by `POST /api/auth/login`.
+
+Classic Relay attach clients use retained relay APIs:
 
 - `GET /api/sessions` to list sessions whose owning agent is currently online
 - `GET /api/sessions/:id/attach/ws` to attach to one online session
 
-See [docs/api.md](docs/api.md) for the current public app-facing endpoint inventory, auth requirements, request and response examples, and error contracts.
+The official mobile companion does not use Relay session list/detail/attach as its post-launch session authority. It uses Relay for auth, account policy, pairing, computer presence, rendezvous, fallback tunnel setup, and `POST /api/computers/:computerID/sessions`; after `session_ready`, it waits for the daemon connectivity transport to report the launched session through `session_index` or `session_upsert`.
+
+See [docs/api.md](docs/api.md) for the current repo-local public app-facing endpoint inventory, auth requirements, request and response examples, and error contracts.
 
 Browser attach clients must be same-origin with the relay. Native clients that do not send an `Origin` header remain supported.
 
@@ -271,11 +278,12 @@ Remote launch is computer-daemon-backed and tmux-backed:
 - the daemon stays online until `tunnel daemon stop`
 - clients use `GET /api/computers` to discover only currently connected computers
 - `POST /api/computers/:computerID/sessions` always returns a `request_id`; success is `status: "session_ready"` plus `session_id` after the launched agent has registered, joined the local daemon broker, started its PTY process, and sent `launch_ready`; failure is `status: "failed"` plus a structured `reason` such as `command_not_allowed`, `device_offline`, `busy`, `path_not_found`, or `launch_timeout`
+- for the official mobile companion, `session_ready.session_id` is a control-plane launch result; the visible session row, preview, terminal snapshot/live bytes, input, resize, and session detail come from the daemon connectivity transport after that same session id appears in `session_index` or `session_upsert`
 - a successful launch creates a new dedicated tmux session and runs `tunnel run <command>` there
 - when that launched `tunnel run <command>` exits, the tmux session stays available and returns to an interactive shell prompt
 - users can inspect or resume the local workspace from any terminal with `tunnel workspace open`, or detach one open workspace view with `tunnel workspace close`
 - `tunnel workspace close` is the inverse of `open`: it closes a local tmux workspace view if one is open, but it does not stop the daemon or terminate any session
-- mobile/API session shutdown uses `DELETE /api/sessions/:sessionID`; it sends `stop_session` to the owning `tunnel run` process, so local-launched and mobile-launched sessions use the same shutdown path
+- retained Relay/API session shutdown uses `DELETE /api/sessions/:sessionID`; it sends `stop_session` to the owning `tunnel run` process, so local-launched and mobile-launched sessions use the same account-level shutdown path, but this endpoint is not the official mobile companion session authority
 - the daemon owns local launch state such as allowlist, busy/not-busy, tmux workspace health, doctor output, and last failure
 - the relay only keeps transient online routing for connected daemons; if a daemon disconnects, it disappears from `GET /api/computers` immediately
 
@@ -359,7 +367,7 @@ make deploy-website-dev     # dev website bundle from ../agent-tunnel-website
 
 The Compose role syncs `deploy/compose/` and `deploy/postgres/latest.sql`, but it does not overwrite the real remote `.env`. It also does not sync `.env.example` to the server. Create `/opt/agentunnel/compose/.env` manually on the server and keep secrets there. The checked-in example intentionally leaves secrets blank so Compose fails until the values are filled in.
 
-For Docker Compose operations, the remote `/opt/agentunnel/compose/.env` is the runtime source of truth for Relay and PostgreSQL configuration. Do not maintain duplicate runtime secrets in local Ansible files.
+For Docker Compose operations, the remote `/opt/agentunnel/compose/.env` is authoritative for Relay and PostgreSQL runtime configuration. Do not maintain duplicate runtime secrets in local Ansible files.
 
 The Compose file hardcodes the non-secret runtime defaults for production operations:
 

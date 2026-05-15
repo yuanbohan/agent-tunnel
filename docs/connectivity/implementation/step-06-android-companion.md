@@ -13,7 +13,7 @@ related_guide: docs/plans/2026-04-28-002-feat-quic-connectivity-review-guide.md
 
 ## Purpose
 
-Implement production Android behavior against the proven protocol.
+Implement production Android behavior against the proven protocol. Android uses Relay for auth, account policy, pairing, computer presence, rendezvous, fallback tunnel setup, and computer launch; after launch, daemon transport is the session roster/detail/interactive authority.
 
 ## Major Modules
 
@@ -34,6 +34,7 @@ Implement production Android behavior against the proven protocol.
 - Production Android app behavior matches the documented UX/state machines.
 - Free / Pro trusted-computer behavior is enforced in the app.
 - Reconnect rebuilds state from daemon snapshots and session subscriptions.
+- New Session is scoped to trusted computer sections and waits for daemon transport `session_index` or `session_upsert` after Relay returns `session_ready`.
 
 ## Out Of Scope
 
@@ -41,6 +42,7 @@ Implement production Android behavior against the proven protocol.
 - Billing purchase flow
 - New transport semantics
 - Go repo implementation details
+- Reintroducing Relay session list/detail/attach/monitoring/notification paths as official Android companion session authority
 
 ## Acceptance Checklist
 
@@ -49,6 +51,8 @@ Implement production Android behavior against the proven protocol.
 - [ ] Pro auto-connects online trusted computers up to ten and blocks pairing the eleventh.
 - [ ] Pro downgrade to Free requires choosing one active computer before multi-computer auto-connect.
 - [ ] Free and Pro session rows, preview, detail attach, reconnect, and path badge behavior are identical inside one active computer.
+- [ ] Relay `session_ready.session_id` is used only to correlate launch with daemon transport session state.
+- [ ] Android does not use `GET /api/sessions`, Relay attach, or Relay stop as its official post-launch session authority.
 - [ ] Only the focused terminal receives input.
 - [ ] Account switch closes transports and clears account-derived local policy state.
 - [ ] Direct/relay badge copy does not imply different encryption.

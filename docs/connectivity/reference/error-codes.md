@@ -2,7 +2,7 @@
 
 ## Status
 
-This document is the single source of truth for structured error codes used across the connectivity stack. Each code has a stable name, a defined trigger, the side that emits it, and a recommended user-facing string template.
+This document is this repository's structured error-code catalog for the connectivity stack. Each code has a stable name, a defined trigger, the side that emits it, and a recommended user-facing string template.
 
 When adding a new error condition, register it here first, then reference this document from the protocol or implementation doc that triggers it. Do not mint codes ad hoc.
 

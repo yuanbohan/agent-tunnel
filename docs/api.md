@@ -1,6 +1,6 @@
 # Agent Tunnel Public Relay API
 
-This document is the source of truth for the relay server's current public app-facing API surface.
+This document is the repo-local implementation reference for the relay server's current public app-facing API surface. Cross-repository protocol decisions live in [yuanbohan/agent-tunnel-protocols](https://github.com/yuanbohan/agent-tunnel-protocols); keep this file aligned with that protocol source of truth.
 
 If any public relay route, app-facing auth requirement, request body, success response, error status or reason, or client attach WebSocket message changes, update this file in the same change.
 
@@ -13,6 +13,12 @@ This file covers:
 For lower-level wire details such as the binary attach packet format, also see [docs/protocol.md](./protocol.md).
 
 This document intentionally does not cover operator-only routes or the legacy `tunnel`-owned agent sockets at `/agent/ws` and `/device/ws`.
+
+## Official Mobile Companion Boundary
+
+The official mobile companion uses Relay for auth, account policy, pairing, computer presence, rendezvous, fallback tunnel setup, and computer launch. After a launch returns `session_ready`, the companion treats `session_id` as a correlation key and waits for the daemon connectivity transport to report that session through `session_index` or `session_upsert`.
+
+The retained Relay session APIs (`GET /api/sessions`, `DELETE /api/sessions/:sessionID`, and `GET /api/sessions/:sessionID/attach/ws`) remain documented below for classic Relay attach clients and account-level live-session operations. They are not the official mobile companion authority for session roster, previews, terminal snapshots/live bytes, input, resize, or mobile session detail after launch.
 
 ## Conventions
 
@@ -30,7 +36,7 @@ The relay currently uses three token classes:
 
 | Token | Used By | Where It Goes |
 |-------|---------|---------------|
-| App access token | mobile/web/native app clients | `Authorization: Bearer <access-token>` on app-facing `/api/...` routes, `GET /api/sessions/:sessionID/attach/ws`, and `GET /api/connectivity/ws` |
+| App access token | mobile/web/native app clients, including retained classic attach clients | `Authorization: Bearer <access-token>` on app-facing `/api/...` routes, retained `GET /api/sessions/:sessionID/attach/ws`, and `GET /api/connectivity/ws` |
 | App refresh token | app clients | JSON body for `POST /api/auth/refresh` |
 | Agent token | created by app clients, used later by `tunnel` | returned by `POST /api/agent-tokens`; used by `/agent/ws`, `/device/ws`, `/connectivity/computer/ws`, `GET /api/sessions`, and `DELETE /api/sessions/:sessionID` |
 | Fallback tunnel token | app and daemon connectivity peers | one-time `Authorization: Bearer <single-use-token>` on `GET /connectivity/tunnel/ws`; issued through `relay_tunnel_ready` and bound to one actor and attempt |
@@ -98,6 +104,8 @@ Code map (excerpt):
 
 ### Session Model
 
+This section describes the retained Relay session API model for classic attach clients and account-level live-session operations. The official mobile companion uses daemon connectivity transport session metadata after launch.
+
 - `GET /api/sessions` returns only live sessions whose owning agent socket is currently connected
 - session discovery is user-scoped
 - user-scoped discovery and attach authorization are a hard multi-tenant guarantee for hosted relay deployments
@@ -118,7 +126,8 @@ Code map (excerpt):
 - computer identity is stable through `computer_id`; display metadata such as `display_name`, `platform_family`, and `platform_id` are refreshed when the daemon re-registers
 - computer presence is live-only; there is no offline or historical computer list in this API revision
 - `POST /api/computers/:computerID/sessions` reports `session_ready` or a structured launch failure and does not auto-attach to the later session
-- `DELETE /api/sessions/:sessionID` can stop any live session owned by the authenticated user
+- for the official mobile companion, `session_ready.session_id` is followed by daemon connectivity transport convergence; Relay does not become the mobile session roster/detail/interactive authority
+- `DELETE /api/sessions/:sessionID` can stop any live session owned by the authenticated user as a retained Relay/account-level operation
 
 ## Public HTTP API
 
@@ -254,8 +263,9 @@ Notes:
 
 - the relay may hold this request open for roughly 20-30 seconds while waiting for the launched session to become ready
 - `status: "session_ready"` is the only success state in this contract
-- a successful daemon-launched session appears in `GET /api/sessions`; its `device_id` is whatever the launched `tunnel run` reports from local daemon state
-- `session_id` from the launch response can be used immediately with the normal session discovery and attach flow
+- a successful daemon-launched session still registers with Relay for retained classic/account-level live-session APIs; its `device_id` is whatever the launched `tunnel run` reports from local daemon state
+- official mobile companion clients should treat `session_id` from the launch response as a launch correlation key and wait for the daemon connectivity transport to report the matching session through `session_index` or `session_upsert`
+- retained classic Relay attach clients may use `session_id` with the Relay session discovery and attach flow
 - the launch flow still does not auto-attach to the new session
 
 ### `POST /api/auth/register`
@@ -955,7 +965,9 @@ paired-device trust is revoked.
 
 ### `GET /api/sessions`
 
-List the authenticated user's live sessions.
+List the authenticated user's live sessions for retained Relay/classic attach clients and account-level live-session operations.
+
+Official mobile companion note: this endpoint is not the companion's post-launch session roster or detail authority. The companion waits for daemon connectivity transport `session_index` or `session_upsert`.
 
 Auth: app access token
 
@@ -1026,7 +1038,7 @@ Ask the owning online `tunnel run` process to stop one live session.
 
 Auth: app access token or agent token
 
-Compatibility note: `POST /api/sessions/:sessionID/stop` remains available as a legacy alias in this revision.
+Compatibility note: `POST /api/sessions/:sessionID/stop` remains available as a legacy alias in this revision. This retained Relay stop path is account-level/classic behavior, not the official mobile companion session authority.
 
 Headers:
 
@@ -1069,7 +1081,9 @@ Error responses:
 
 ### `GET /api/sessions/:sessionID/attach/ws`
 
-Attach to one live session owned by the authenticated user.
+Attach to one live session owned by the authenticated user for retained Relay/classic clients.
+
+Official mobile companion note: mobile session detail, terminal snapshots/live bytes, input, and resize use daemon connectivity transport instead of this Relay attach websocket after launch.
 
 Auth: app access token
 

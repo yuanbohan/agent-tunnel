@@ -2,7 +2,7 @@
 
 ## Status
 
-This document collects the core state machines of the QUIC session-connectivity architecture. Tier policy is computer-scoped only; there is no per-session tier state.
+This document collects the core state machines of the QUIC session-connectivity architecture. Tier policy is computer-scoped only; there is no per-session tier state. For the official mobile companion, per-session UI state is derived from daemon transport `session_index`, `session_upsert`, and `session_gone`, not Relay session list/detail/attach endpoints.
 
 ## Per-Daemon Transport State
 
