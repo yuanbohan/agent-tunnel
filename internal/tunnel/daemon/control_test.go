@@ -40,38 +40,6 @@ func TestStatusReadsLiveDaemonResponse(t *testing.T) {
 	}
 }
 
-func TestBrokerSessionsReadsLiveDaemonResponse(t *testing.T) {
-	paths := testPaths(t)
-	if err := EnsureRuntimeDirs(paths); err != nil {
-		t.Fatalf("EnsureRuntimeDirs returned error: %v", err)
-	}
-
-	server, err := NewServer(paths.SocketPath, func(context.Context, Request) Response {
-		return Response{BrokerSessions: []BrokerSessionSnapshot{{
-			BrokerSession: BrokerSession{SessionID: "sess-1", Label: "api-fix", CWD: "/repo"},
-			LatestPreview: "ready",
-		}}}
-	})
-	if err != nil {
-		t.Fatalf("NewServer returned error: %v", err)
-	}
-	defer server.Close()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func() {
-		_ = server.Serve(ctx)
-	}()
-	time.Sleep(50 * time.Millisecond)
-
-	sessions, err := BrokerSessions(context.Background(), paths)
-	if err != nil {
-		t.Fatalf("BrokerSessions returned error: %v", err)
-	}
-	if len(sessions) != 1 || sessions[0].SessionID != "sess-1" || sessions[0].LatestPreview != "ready" {
-		t.Fatalf("sessions = %#v, want live broker session", sessions)
-	}
-}
-
 func TestConfirmPendingPairingPreservesSASMismatchSentinel(t *testing.T) {
 	paths := testPaths(t)
 	if err := EnsureRuntimeDirs(paths); err != nil {

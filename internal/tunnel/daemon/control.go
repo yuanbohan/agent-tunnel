@@ -19,7 +19,6 @@ const (
 	actionConfirmPendingPairing = "confirm_pending_pairing"
 	actionDevices               = "devices"
 	actionRevokeDevice          = "revoke_device"
-	actionBrokerSessions        = "broker_sessions"
 )
 
 var ErrNotRunning = errors.New("daemon is not running")
@@ -59,7 +58,6 @@ type Response struct {
 	PairCompletion *PairingCompletion       `json:"pair_completion,omitempty"`
 	TrustedDevices []TrustedAndroidDevice   `json:"trusted_devices,omitempty"`
 	TrustedDevice  *TrustedAndroidDevice    `json:"trusted_device,omitempty"`
-	BrokerSessions []BrokerSessionSnapshot  `json:"broker_sessions,omitempty"`
 	Error          string                   `json:"error,omitempty"`
 }
 
@@ -250,17 +248,6 @@ func TrustedDevices(ctx context.Context, paths Paths) ([]TrustedAndroidDevice, e
 		return nil, errors.New(response.Error)
 	}
 	return response.TrustedDevices, nil
-}
-
-func BrokerSessions(ctx context.Context, paths Paths) ([]BrokerSessionSnapshot, error) {
-	response, err := request(ctx, paths.SocketPath, Request{Action: actionBrokerSessions})
-	if err != nil {
-		return nil, fmt.Errorf("%w; start it with `tunnel daemon start`", ErrNotRunning)
-	}
-	if response.Error != "" {
-		return nil, errors.New(response.Error)
-	}
-	return response.BrokerSessions, nil
 }
 
 func RevokeTrustedDevice(ctx context.Context, paths Paths, fingerprint string) (TrustedAndroidDevice, error) {

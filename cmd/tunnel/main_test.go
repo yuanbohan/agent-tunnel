@@ -33,6 +33,7 @@ type fakeRelayConnector struct {
 	initialRows   int
 	connectTTL    time.Duration
 	launchContext protocol.LaunchContext
+	launchReady   protocol.LaunchContext
 	stopHandler   func()
 	stateCh       chan connector.State
 }
@@ -94,6 +95,10 @@ func (f *fakeRelayConnector) SetInitialConnectTimeout(timeout time.Duration) {
 
 func (f *fakeRelayConnector) SetLaunchContext(launchContext protocol.LaunchContext) {
 	f.launchContext = launchContext
+}
+
+func (f *fakeRelayConnector) MarkLaunchReady(launchContext protocol.LaunchContext) {
+	f.launchReady = launchContext
 }
 
 func (f *fakeRelayConnector) SetStopHandler(handler func()) {
@@ -501,6 +506,8 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
 	oldWaitForExit := waitForExit
 	oldNewConnector := newConnector
 	oldEnsureTunnelRunDaemon := ensureTunnelRunDaemon
+	oldNewSessionRegistration := newSessionRegistration
+	oldDaemonStop := daemonStop
 	t.Cleanup(func() {
 		resolveLauncher = oldResolve
 		prepareLocalTerminal = oldPrepare
@@ -509,6 +516,8 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
 		waitForExit = oldWaitForExit
 		newConnector = oldNewConnector
 		ensureTunnelRunDaemon = oldEnsureTunnelRunDaemon
+		newSessionRegistration = oldNewSessionRegistration
+		daemonStop = oldDaemonStop
 	})
 
 	resolveLauncher = func(name string, args []string) (launcher.Command, error) {
@@ -763,7 +772,8 @@ func TestRunWithArgsStopsBeforeTerminalPrepWhenBrokerRegistrationFails(t *testin
 		return launcher.Command{Name: name, Path: "/usr/bin/codex", Args: append([]string(nil), args...)}, nil
 	}
 	newConnector = func(url, token string, info protocol.SessionInfo) relayConnector {
-		return &fakeRelayConnector{waitConnected: true, state: connector.StateConnected}
+		t.Fatal("newConnector should not be called before broker registration succeeds")
+		return nil
 	}
 	ensureTunnelRunDaemon = func(context.Context, string, string) (tunnelRunDaemonEnsureResult, error) {
 		return tunnelRunDaemonEnsureResult{
@@ -1145,6 +1155,56 @@ func TestEnsureDaemonForTunnelRunAcceptsMatchingAuthContext(t *testing.T) {
 
 func TestRunDaemonStartReturnsExistingDaemonWhenAuthContextMatches(t *testing.T) {
 	t.Setenv(tunnelAuthTokenEnv, "token-a")
+	oldResolvePaths := resolveDaemonPaths
+	oldDaemonStatus := daemonStatus
+	oldNewStore := newAuthStore
+	oldStartDaemon := startDaemon
+	t.Cleanup(func() {
+		resolveDaemonPaths = oldResolvePaths
+		daemonStatus = oldDaemonStatus
+		newAuthStore = oldNewStore
+		startDaemon = oldStartDaemon
+	})
+
+	resolveDaemonPaths = func() (daemon.Paths, error) {
+		return daemon.Paths{}, nil
+	}
+	daemonStatus = func(ctx context.Context, paths daemon.Paths) (daemon.StatusInfo, error) {
+		return daemon.StatusInfo{
+			Running:                true,
+			PID:                    42,
+			DeviceID:               "dev_existing",
+			AuthContextFingerprint: daemon.AuthContextFingerprint("token-a"),
+		}, nil
+	}
+	newAuthStore = func() authStore {
+		return &fakeStore{loadErr: errStoredAuthNotFound}
+	}
+	startDaemon = func(ctx context.Context, options daemon.StartOptions) (daemon.StartResult, error) {
+		t.Fatal("startDaemon should not be called when daemon is already running")
+		return daemon.StartResult{}, nil
+	}
+
+	var stdout bytes.Buffer
+	if err := runDaemonStart(context.Background(), "http://127.0.0.1:8586", &stdout, io.Discard); err != nil {
+		t.Fatalf("runDaemonStart returned error: %v", err)
+	}
+	if got := stdout.String(); got != "daemon already running (pid=42 device_id=dev_existing)\n" {
+		t.Fatalf("stdout = %q, want already-running message", got)
+	}
+}
+
+func TestRunDaemonStartReturnsExistingDaemonWhenLocalAuthUnavailable(t *testing.T) {
+	oldEnv, existed := os.LookupEnv(tunnelAuthTokenEnv)
+	os.Unsetenv(tunnelAuthTokenEnv)
+	t.Cleanup(func() {
+		if existed {
+			os.Setenv(tunnelAuthTokenEnv, oldEnv)
+		} else {
+			os.Unsetenv(tunnelAuthTokenEnv)
+		}
+	})
+
 	oldResolvePaths := resolveDaemonPaths
 	oldDaemonStatus := daemonStatus
 	oldNewStore := newAuthStore
@@ -2562,6 +2622,9 @@ func TestRunWithArgsForwardsLaunchContextFromInternalFlags(t *testing.T) {
 	if fakeConnector.launchContext.RequestID != "req-123" {
 		t.Fatalf("launchContext.RequestID = %q, want req-123", fakeConnector.launchContext.RequestID)
 	}
+	if fakeConnector.launchReady != (protocol.LaunchContext{}) {
+		t.Fatalf("launchReady = %#v, want no ready signal when session start fails", fakeConnector.launchReady)
+	}
 }
 
 func TestStartupBannerUsesRelayState(t *testing.T) {
@@ -2717,9 +2780,23 @@ func TestRunWithArgsFailsStartupWhenRelayCannotConnect(t *testing.T) {
 	newConnector = func(url, token string, info protocol.SessionInfo) relayConnector {
 		return &fakeRelayConnector{waitConnected: false, state: connector.StateReconnecting}
 	}
+	registration := &fakeLocalRegistration{}
 	ensureTunnelRunDaemon = func(context.Context, string, string) (tunnelRunDaemonEnsureResult, error) {
-		t.Fatal("ensureTunnelRunDaemon should not be called before Relay startup succeeds")
-		return tunnelRunDaemonEnsureResult{}, nil
+		return tunnelRunDaemonEnsureResult{
+			Paths:   daemon.Paths{SocketPath: "/tmp/daemon.sock", BrokerSocketPath: "/tmp/broker.sock"},
+			Started: true,
+		}, nil
+	}
+	newSessionRegistration = func(daemon.Paths, string, string, protocol.SessionInfo) localSessionRegistration {
+		return registration
+	}
+	stopCalled := false
+	daemonStop = func(ctx context.Context, paths daemon.Paths) error {
+		stopCalled = true
+		if paths.SocketPath != "/tmp/daemon.sock" {
+			t.Fatalf("daemonStop paths = %#v, want auto-started daemon paths", paths)
+		}
+		return nil
 	}
 
 	var stdout bytes.Buffer
@@ -2736,6 +2813,12 @@ func TestRunWithArgsFailsStartupWhenRelayCannotConnect(t *testing.T) {
 	}
 	if startCalled {
 		t.Fatal("runWithArgs started child despite startup relay failure")
+	}
+	if !registration.closeCalled {
+		t.Fatal("runWithArgs did not close daemon broker registration after relay failure")
+	}
+	if !stopCalled {
+		t.Fatal("runWithArgs did not stop the daemon it auto-started after relay failure")
 	}
 	if got := stderr.String(); got != "" {
 		t.Fatalf("stderr = %q", got)

@@ -209,7 +209,7 @@ Request fields:
 
 Success response always uses the standard success envelope. The launch result is carried in `body`.
 
-When the launch completes successfully, success means `session_ready`: the newly started `tunnel` process has registered with the relay and now has a concrete `session_id`.
+When the launch completes successfully, success means `session_ready`: the newly started `tunnel` process has registered with the relay, its local daemon broker registration has succeeded, its PTY process has started, and it now has a concrete `session_id`.
 
 Successful body:
 
@@ -252,7 +252,7 @@ Known `reason` values in this revision:
 
 Notes:
 
-- the relay may hold this request open for roughly 20-30 seconds while waiting for the launched session to register
+- the relay may hold this request open for roughly 20-30 seconds while waiting for the launched session to become ready
 - `status: "session_ready"` is the only success state in this contract
 - a successful daemon-launched session appears in `GET /api/sessions`; its `device_id` is whatever the launched `tunnel run` reports from local daemon state
 - `session_id` from the launch response can be used immediately with the normal session discovery and attach flow

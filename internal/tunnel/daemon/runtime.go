@@ -295,8 +295,6 @@ func Run(ctx context.Context, options RuntimeOptions, readyWriter io.Writer) err
 				return Response{Error: err.Error()}
 			}
 			return Response{TrustedDevices: devices}
-		case actionBrokerSessions:
-			return Response{BrokerSessions: state.broker.Snapshot()}
 		case actionRevokeDevice:
 			return handleRevokeTrustedDevice(requestCtx, options.Paths, state, request)
 		case actionStop:

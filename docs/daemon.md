@@ -60,7 +60,7 @@ Do not add daemon or workspace commands that create a custom tmux dashboard, pic
 }
 ```
 
-Stable daemon command error codes are `daemon_not_running`, `pairing_invitation_not_found`, `pairing_invitation_expired`, `pairing_invitation_consumed`, `pairing_sas_mismatch`, `trusted_device_not_found`, `invalid_android_fingerprint` (legacy code name), `connectivity_event_queue_unavailable`, and `daemon_command_failed`. `doctor --json` still returns its diagnostic report when checks complete; a non-zero diagnostic exit code is not replaced with an error envelope. Human `start` output may include warnings such as degraded launch readiness.
+Stable daemon command error codes are `daemon_not_running`, `pairing_invitation_not_found`, `pairing_invitation_expired`, `pairing_invitation_consumed`, `pairing_sas_mismatch`, `trusted_device_not_found`, `invalid_client_fingerprint`, `connectivity_event_queue_unavailable`, and `daemon_command_failed`. `doctor --json` still returns its diagnostic report when checks complete; a non-zero diagnostic exit code is not replaced with an error envelope. Human `start` output may include warnings such as degraded launch readiness.
 
 ## Local State
 
@@ -134,11 +134,11 @@ The daemon-side launch handler owns immediate local validation:
 6. Create one tmux-backed launch session with scoped `TUNNEL_BASE_URL` and `TUNNEL_AUTH_TOKEN`, hidden `tunnel run --launch-source mobile --launch-request-id <id>` metadata, optional `--label`, and the requested command.
 7. Return `accepted` only after the tmux session is created.
 
-After `accepted`, the relay waits for the launched `tunnel run` process to register through `/agent/ws` with a `launch_context` containing `source: "mobile"` and the same request id. The relay returns `session_ready` only when that registration supplies the new `session_id`.
+After `accepted`, the relay waits for the launched `tunnel run` process to register through `/agent/ws` and then send `launch_ready` with a `launch_context` containing `source: "mobile"` and the same request id. `launch_ready` is sent only after the local daemon broker accepts the session and the PTY process has started. The relay returns `session_ready` only after that ready signal supplies the new `session_id`.
 
 If the relay wait times out after the daemon has already returned `accepted` with a `workspace_session`, the relay sends a best-effort `terminate_request` for that workspace session so a failed mobile launch does not leave a stray daemon-managed tmux session behind.
 
-Launch source metadata must not be passed through environment variables. It is carried as internal `tunnel run` flags and then as the agent registration `launch_context`; the relay validates the context before exposing `launch_source: "mobile"` to clients.
+Launch source metadata must not be passed through environment variables. It is carried as internal `tunnel run` flags and then as the agent `launch_context`; the relay validates the context before exposing `launch_source: "mobile"` to clients.
 
 The mobile/API launch flow must not auto-attach to the new session. Clients may use normal session discovery and attach APIs after launch completes.
 

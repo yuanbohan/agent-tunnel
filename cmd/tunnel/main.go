@@ -54,6 +54,7 @@ type relayConnector interface {
 	SetInitialSize(cols, rows int)
 	SetInitialConnectTimeout(timeout time.Duration)
 	SetLaunchContext(protocol.LaunchContext)
+	MarkLaunchReady(protocol.LaunchContext)
 	SetStopHandler(func())
 	BindHub(hub *session.Hub)
 	Run(ctx context.Context)
@@ -234,36 +235,6 @@ func runTunnelSession(ctx context.Context, stdin io.Reader, parsed runArgs, stdo
 		LaunchSource:   launchSource,
 	}
 
-	relay := newConnector(relayURL, resolvedAuth.Token, info)
-	relay.SetLaunchContext(launchContext)
-	relay.SetInitialConnectTimeout(startupRelayWait)
-	var (
-		runningMu     sync.Mutex
-		running       *session.Running
-		stopRequested bool
-	)
-	relay.SetStopHandler(func() {
-		runningMu.Lock()
-		current := running
-		if current == nil {
-			stopRequested = true
-		}
-		runningMu.Unlock()
-		if current != nil {
-			_ = current.Close()
-		}
-	})
-	go relay.Run(ctx)
-	if !relay.WaitUntilConnected(ctx, startupRelayWait) {
-		if ctx.Err() != nil {
-			return nil
-		}
-		return fmt.Errorf("failed to connect to the relay server")
-	}
-	if ctx.Err() != nil {
-		return nil
-	}
-
 	daemonEnsure, err := ensureTunnelRunDaemon(ctx, parsed.BaseURL, resolvedAuth.Token)
 	if err != nil {
 		return fmt.Errorf("daemon is required for tunnel run: %w", err)
@@ -298,8 +269,46 @@ func runTunnelSession(ctx context.Context, stdin io.Reader, parsed runArgs, stdo
 	}
 	defer localRegistration.Close()
 
+	relayInfo := brokerInfo
+	relay := newConnector(relayURL, resolvedAuth.Token, relayInfo)
+	relay.SetLaunchContext(launchContext)
+	relay.SetInitialConnectTimeout(startupRelayWait)
+	var (
+		runningMu     sync.Mutex
+		running       *session.Running
+		stopRequested bool
+	)
+	relay.SetStopHandler(func() {
+		runningMu.Lock()
+		current := running
+		if current == nil {
+			stopRequested = true
+		}
+		runningMu.Unlock()
+		if current != nil {
+			_ = current.Close()
+		}
+	})
+	relayCtx, cancelRelay := context.WithCancel(ctx)
+	defer cancelRelay()
+	go relay.Run(relayCtx)
+	if !relay.WaitUntilConnected(ctx, startupRelayWait) {
+		cancelRelay()
+		stopAutoStartedDaemon(daemonEnsure)
+		if ctx.Err() != nil {
+			return nil
+		}
+		return fmt.Errorf("failed to connect to the relay server")
+	}
+	if ctx.Err() != nil {
+		cancelRelay()
+		stopAutoStartedDaemon(daemonEnsure)
+		return nil
+	}
+
 	local, err := prepareLocalTerminal()
 	if err != nil {
+		cancelRelay()
 		stopAutoStartedDaemon(daemonEnsure)
 		return err
 	}
@@ -317,6 +326,7 @@ func runTunnelSession(ctx context.Context, stdin io.Reader, parsed runArgs, stdo
 
 	started, err := startSession(ctx, command.Path, command.Args, initialSinks)
 	if err != nil {
+		cancelRelay()
 		stopAutoStartedDaemon(daemonEnsure)
 		return err
 	}
@@ -331,6 +341,9 @@ func runTunnelSession(ctx context.Context, stdin io.Reader, parsed runArgs, stdo
 
 	relay.BindHub(started.Hub)
 	localRegistration.BindHub(started.Hub)
+	if !shouldStop {
+		relay.MarkLaunchReady(launchContext)
+	}
 
 	if parsed.Verbose {
 		fmt.Fprint(stderr, startupBanner(command.Name, sessionID))
@@ -380,9 +393,6 @@ func ensureDaemonForTunnelRun(ctx context.Context, baseURL, authToken string) (t
 		return tunnelRunDaemonEnsureResult{Paths: paths}, fmt.Errorf("failed to start daemon: %w", err)
 	}
 	status := result.Status
-	if result.AlreadyRunning {
-		status = result.Status
-	}
 	ensureResult := tunnelRunDaemonEnsureResult{Paths: paths, Started: !result.AlreadyRunning}
 	if runningBaseURL := strings.TrimSpace(status.BaseURL); runningBaseURL != "" && runningBaseURL != baseURL {
 		stopAutoStartedDaemon(ensureResult)
@@ -520,6 +530,10 @@ func resolveDaemonAuth() (resolvedAuth, error) {
 	return resolveRuntimeAuth(newAuthStore(), osEnv)
 }
 
+func authUnavailable(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "no auth token available")
+}
+
 func ensureDaemonPlatformSupported() error {
 	switch runtime.GOOS {
 	case "darwin", "linux":
@@ -554,10 +568,10 @@ func runDaemonStartWithOptions(ctx context.Context, rawBaseURL string, stdout, s
 			return fmt.Errorf("daemon already running against %s; stop it before starting with %s", runningBaseURL, baseURL)
 		}
 		auth, err := resolveDaemonAuth()
-		if err != nil {
+		if err != nil && !authUnavailable(err) {
 			return err
 		}
-		if !daemon.AuthContextMatches(status, auth.Token) {
+		if err == nil && !daemon.AuthContextMatches(status, auth.Token) {
 			return errors.New("daemon already running with a different auth context; stop it with `tunnel daemon stop`, then run `tunnel daemon start` again")
 		}
 		if options.JSON {
@@ -731,7 +745,7 @@ func daemonCommandErrorCode(err error) string {
 	case errors.Is(err, daemon.ErrTrustedDeviceNotFound) || message == daemon.ErrTrustedDeviceNotFound.Error():
 		return "trusted_device_not_found"
 	case errors.Is(err, daemon.ErrInvalidAndroidFingerprint) || message == daemon.ErrInvalidAndroidFingerprint.Error():
-		return "invalid_android_fingerprint"
+		return "invalid_client_fingerprint"
 	case message == "relay connectivity event queue unavailable":
 		return "connectivity_event_queue_unavailable"
 	default:

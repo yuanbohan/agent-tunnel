@@ -270,7 +270,7 @@ Remote launch is computer-daemon-backed and tmux-backed:
 - `tunnel run` requires a matching daemon and broker registration before starting the user command; users can also run `tunnel daemon start` explicitly so the computer is discoverable before any local session exists
 - the daemon stays online until `tunnel daemon stop`
 - clients use `GET /api/computers` to discover only currently connected computers
-- `POST /api/computers/:computerID/sessions` always returns a `request_id`; success is `status: "session_ready"` plus `session_id`, and failure is `status: "failed"` plus a structured `reason` such as `command_not_allowed`, `device_offline`, `busy`, `path_not_found`, or `launch_timeout`
+- `POST /api/computers/:computerID/sessions` always returns a `request_id`; success is `status: "session_ready"` plus `session_id` after the launched agent has registered, joined the local daemon broker, started its PTY process, and sent `launch_ready`; failure is `status: "failed"` plus a structured `reason` such as `command_not_allowed`, `device_offline`, `busy`, `path_not_found`, or `launch_timeout`
 - a successful launch creates a new dedicated tmux session and runs `tunnel run <command>` there
 - when that launched `tunnel run <command>` exits, the tmux session stays available and returns to an interactive shell prompt
 - users can inspect or resume the local workspace from any terminal with `tunnel workspace open`, or detach one open workspace view with `tunnel workspace close`

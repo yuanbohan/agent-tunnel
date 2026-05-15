@@ -252,8 +252,8 @@ The device-launch lifecycle is separate from session attach:
 4. `POST /api/computers/:id/sessions` routes one request to that live device daemon and assigns a relay-scoped `request_id`.
 5. The daemon decides locally whether the request is allowed, whether it is already busy, whether local `tmux` is available, whether the requested `cwd` is valid, and whether a new tmux-backed session can be created.
 6. If the daemon accepts the launch locally, it starts a new tmux session running `tunnel run <command>` with the requested cwd and optional label, and it passes the launch correlation forward.
-7. The later `tunnel run <command>` process registers a normal session on `/agent/ws`, includes that launch correlation, and supplies its own platform and computer identity metadata as part of the session registration.
-8. The relay completes the pending mobile launch request as `session_ready` when it sees the matching session registration, marks the live session with `launch_source: "mobile"`, or returns a structured timeout failure if that registration does not arrive in time.
+7. The later `tunnel run <command>` process registers with the local daemon broker, registers a normal session on `/agent/ws`, includes that launch correlation, supplies its own platform and computer identity metadata, starts the PTY process, and then sends `launch_ready`.
+8. The relay completes the pending mobile launch request as `session_ready` when it sees matching `launch_ready`, marks the live session with `launch_source: "mobile"`, or returns a structured timeout failure if readiness does not arrive in time.
 9. Session discovery and attach then proceed through the unchanged session APIs, with device identity coming from the session itself rather than from launch correlation.
 10. If a client later calls `DELETE /api/sessions/:id`, the relay sends `stop_session` to the owning agent, removes the live session from discovery, and closes active attaches with `session_stopped`.
 
