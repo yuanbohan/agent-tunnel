@@ -4,6 +4,17 @@
 
 This document captures this repository's daemon-to-Android transport protocol mirror for session connectivity. Cross-repository protocol decisions live in [yuanbohan/agent-tunnel-protocols](https://github.com/yuanbohan/agent-tunnel-protocols). It replaces the old WebRTC/DataChannel direction with a simpler QUIC-based transport.
 
+This repository-level mirror is bound to the SSOT compatibility line for protocol
+version 2. Until machine-readable SSOT fixtures are added upstream, the runtime
+contract is tracked with local tests in `internal/connectivity/frame` and
+`internal/connectivity/sessionproto` that preserve:
+
+- explicit frame-type alignment
+- explicit payload field alignment
+- unknown-field and unknown-frame tolerance checks
+
+Those tests should be updated in the same change as any SSOT contract update.
+
 ## Transport Responsibilities
 
 The end-to-end transport carries:
@@ -245,7 +256,13 @@ implementation lands.
 - receivers MUST tolerate unknown frame `type` values (silently drop, log at info level)
 - protocol-breaking changes bump `protocol_version` in `hello`
 
-JSON was chosen over CBOR / protobuf for phase 1 to keep tcpdump output and customer-support log dumps human-readable. Phase-2 may introduce a CBOR profile under `protocol_version = 2` if Android JSON-parse cost becomes load-bearing (see `../contract.md` open TODOs).
+JSON was chosen over CBOR / protobuf for phase 1 to keep tcpdump output and customer-support log dumps human-readable. The
+protocol contract is anchored to SSOT `agent-tunnel-protocols`; unknown JSON fields are ignored and unknown frame types are tolerated.
+Receivers MUST tolerate future protocol deltas by:
+- ignoring unknown JSON object members
+- tolerating unknown frame type values
+
+Phase-2 may introduce a CBOR profile under `protocol_version = 2` if Android JSON-parse cost becomes load-bearing (see `../contract.md` open TODOs).
 
 ### Control Stream Frame Ordering
 
@@ -321,6 +338,10 @@ Phase-1 daemon-to-Android session metadata fields:
 - `online`
 
 Preview text is **not** a session metadata field. It is delivered separately through `preview_snapshot` so the app can update list rows and preview content independently.
+
+This field set is intentionally compact and SSOT-aligned for launch convergence:
+- `session_id` is the canonical identity used by app/daemon matching.
+- No additional terminal-content or per-launch convergence fields are included in this contract unless SSOT adds an explicit requirement.
 
 #### Sanitization
 

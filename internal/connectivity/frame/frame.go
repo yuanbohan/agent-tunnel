@@ -8,6 +8,13 @@ import (
 )
 
 const (
+	// SSOT provenance anchor:
+	// frame type bytes are mirrored from agent-tunnel-protocols transport protocol for
+	// protocol compatibility line 2, with this table as the local implementation copy
+	// until machine-readable SSOT fixtures are available.
+	ssotProtocolSource          = "https://github.com/yuanbohan/agent-tunnel-protocols"
+	ssotProtocolCompatibilityV2 = 2
+
 	TypeHello              byte = 0x01
 	TypeSessionIndex       byte = 0x02
 	TypePreviewSubscribe   byte = 0x03

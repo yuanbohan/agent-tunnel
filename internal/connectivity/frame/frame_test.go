@@ -6,6 +6,13 @@ import (
 	"fmt"
 	"io"
 	"testing"
+
+	"yuanbohan/tunnel/internal/connectivity/sessionproto"
+)
+
+const (
+	ssotFrameTypesSource = "https://github.com/yuanbohan/agent-tunnel-protocols"
+	ssotProtocolVersion  = 2
 )
 
 func TestEncodeDecodeRoundTrip(t *testing.T) {
@@ -77,6 +84,79 @@ func TestStep4FrameTypeRegistry(t *testing.T) {
 			t.Fatalf("frame type 0x%02x reused by %s and %s", tt.typ, previous, tt.name)
 		}
 		seen[tt.typ] = tt.name
+	}
+}
+
+func TestSSOTFrameTypeRegistryMatchesLocalMirrorForProtocolV2(t *testing.T) {
+	if ssotProtocolVersion == 0 || ssotFrameTypesSource == "" {
+		t.Fatal("SSOT frame mirror provenance is missing")
+	}
+	if ssotFrameTypesSource != ssotProtocolSource {
+		t.Fatalf("ssotFrameTypesSource=%q, want %q", ssotFrameTypesSource, ssotProtocolSource)
+	}
+	if ssotProtocolVersion != ssotProtocolCompatibilityV2 {
+		t.Fatalf("ssotProtocolVersion=%d, want %d", ssotProtocolVersion, ssotProtocolCompatibilityV2)
+	}
+	if ssotProtocolVersion != sessionproto.ProtocolVersion {
+		t.Fatalf("ssotProtocolVersion=%d, want %d", ssotProtocolVersion, sessionproto.ProtocolVersion)
+	}
+	if ssotProtocolVersion != 2 {
+		t.Fatalf("ssotProtocolVersion=%d, want 2", ssotProtocolVersion)
+	}
+
+	expected := map[string]byte{
+		"hello":              0x01,
+		"session_index":       0x02,
+		"preview_subscribe":   0x03,
+		"session_upsert":      0x04,
+		"session_gone":        0x05,
+		"preview_unsubscribe": 0x06,
+		"preview_snapshot":    0x07,
+		"interactive_request": 0x08,
+		"interactive_granted": 0x09,
+		"interactive_denied":  0x0a,
+		"interactive_release": 0x0b,
+		"input_text":          0x0c,
+		"input_key":           0x0d,
+		"resize":              0x0e,
+		"path_state":          0x0f,
+		"snapshot_begin":      0x10,
+		"snapshot_chunk":      0x11,
+		"live_bytes":          0x12,
+		"snapshot_end":        0x13,
+		"error":               0x7f,
+	}
+
+	got := map[string]byte{
+		"hello":              TypeHello,
+		"session_index":      TypeSessionIndex,
+		"preview_subscribe":  TypePreviewSubscribe,
+		"session_upsert":     TypeSessionUpsert,
+		"session_gone":       TypeSessionGone,
+		"preview_unsubscribe": TypePreviewUnsubscribe,
+		"preview_snapshot":    TypePreviewSnapshot,
+		"interactive_request": TypeInteractiveRequest,
+		"interactive_granted": TypeInteractiveGranted,
+		"interactive_denied":  TypeInteractiveDenied,
+		"interactive_release": TypeInteractiveRelease,
+		"input_text":          TypeInputText,
+		"input_key":           TypeInputKey,
+		"resize":              TypeResize,
+		"path_state":          TypePathState,
+		"snapshot_begin":      TypeSnapshotBegin,
+		"snapshot_chunk":      TypeSnapshotChunk,
+		"live_bytes":          TypeLiveBytes,
+		"snapshot_end":        TypeSnapshotEnd,
+		"error":               TypeError,
+	}
+
+	if len(got) != len(expected) {
+		t.Fatalf("mirror registry size = %d, want %d", len(got), len(expected))
+	}
+	for name, expectedType := range expected {
+		if got[name] != expectedType {
+			t.Fatalf("SSOT frame type mismatch for %s: got 0x%02x, want 0x%02x", name, got[name], expectedType)
+		}
 	}
 }
 

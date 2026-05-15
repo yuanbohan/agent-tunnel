@@ -15,6 +15,16 @@ or a physical device:
   raw `snapshot_chunk`, JSON `snapshot_end`, and raw `live_bytes`
 - direct UDP and Relay-like packet-carrier paths
 - QUIC over a WebSocket-like packet carrier
+- transport frame and payload shapes that are SSOT-aligned for protocol compatibility line 2
+
+This repository keeps a temporary local protocol mirror for:
+- frame type bytes (as implemented in `internal/connectivity/frame`)
+- payload structs and JSON shapes (as implemented in `internal/connectivity/sessionproto`)
+- compatibility tests that assert unknown JSON fields and unknown frame types are tolerated
+
+Authoritative intent is defined in `agent-tunnel-protocols`; until machine-readable
+fixtures exist there, these tests and this simulator serve as the local implementation
+traceability anchor. Remove this note once SSOT fixtures are consumed directly here.
 
 FIXME(Android): This directory does not prove that the production Android app
 can package `quiche`, install the required certificate verification callback, or
