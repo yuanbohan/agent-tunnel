@@ -742,7 +742,7 @@ This keeps terminal behavior close to the PTY owner and avoids embedding termina
 - retained Relay/classic clients should use `GET /api/sessions` to discover currently online sessions
 - retained Relay/classic attach clients should use `GET /api/sessions/:id/attach/ws` as the foreground receive and input channel for one session
 - official mobile connectivity clients should use the connectivity session transport after direct or fallback tunnel setup, with pairing responses submitted through `POST /api/pairing/responses`
-- after `POST /api/computers/:computerID/sessions` returns `session_ready`, official mobile connectivity clients should wait for daemon transport `session_index` or `session_upsert` for the matching `session_id` instead of polling Relay session list/detail/attach endpoints
+- after `POST /api/computers/:computerID/sessions` returns `session_ready`, official mobile connectivity clients should wait for daemon transport `session_index` or `session_upsert` for the matching broker-known `session_id` instead of polling Relay session list/detail/attach endpoints
 - clients should create a fresh terminal emulator state when opening a fresh attach
 - clients should size the terminal emulator on `attached` before feeding binary bytes
 - clients should treat `snapshot_done` as the boundary after which binary bytes are live PTY output

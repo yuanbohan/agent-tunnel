@@ -220,6 +220,8 @@ Success response always uses the standard success envelope. The launch result is
 
 When the launch completes successfully, success means `session_ready`: the newly started `tunnel` process has registered with the relay, its local daemon broker registration has succeeded, its PTY process has started, and it now has a concrete `session_id`.
 
+For the official mobile companion, that `session_id` is the handoff key between Relay launch correlation and daemon transport session state. Relay does not promise that the companion can render, attach, or interact with the session from this HTTP response alone; the companion waits until the daemon connectivity transport publishes the same `session_id` through `session_index` or `session_upsert`.
+
 Successful body:
 
 ```json
@@ -264,7 +266,7 @@ Notes:
 - the relay may hold this request open for roughly 20-30 seconds while waiting for the launched session to become ready
 - `status: "session_ready"` is the only success state in this contract
 - a successful daemon-launched session still registers with Relay for retained classic/account-level live-session APIs; its `device_id` is whatever the launched `tunnel run` reports from local daemon state
-- official mobile companion clients should treat `session_id` from the launch response as a launch correlation key and wait for the daemon connectivity transport to report the matching session through `session_index` or `session_upsert`
+- official mobile companion clients should treat `session_id` from the launch response as a launch correlation key and wait for the daemon connectivity transport to report the matching broker-known session through `session_index` or `session_upsert`
 - retained classic Relay attach clients may use `session_id` with the Relay session discovery and attach flow
 - the launch flow still does not auto-attach to the new session
 

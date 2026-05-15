@@ -6,7 +6,7 @@ This document explains the end-to-end remote viewing path for one running TUI se
 - the agent-side `xterm-go` terminal mirror
 - snapshot generation on attach
 - live terminal-byte delivery through the relay
-- client rendering and mobile reconnect behavior
+- retained Relay/classic client rendering and reconnect behavior
 
 It is a narrative companion to [docs/protocol.md](./protocol.md) and [docs/architecture.md](./architecture.md). The protocol document is this repository's Relay attach wire-format reference. This document explains how the pieces fit together in practice.
 
@@ -269,15 +269,17 @@ The client should not:
 - keep using an old emulator after disconnect and pretend no bytes were missed
 - treat reconnect as transcript replay
 
-## 8. Mobile Reconnect Playbook
+## 8. Retained Relay Reconnect Playbook
 
-Mobile reconnect behavior should be built around fresh attach, not byte catch-up.
+Retained Relay/classic client reconnect behavior should be built around fresh attach, not byte catch-up.
+
+Official mobile companion note: after launch, the companion uses daemon connectivity transport for session roster, terminal snapshots/live bytes, input, resize, and session detail. The Relay attach flow below is retained classic behavior, not the official mobile post-launch path.
 
 ### Case A: client network drop while the session is still connected
 
 What happened:
 
-- the mobile app lost the attach websocket
+- the client lost the attach websocket
 - the agent may have kept running and producing output
 - the client may have missed arbitrary live bytes
 
@@ -331,9 +333,9 @@ That means:
 - do not assume a disappeared session will come back under the same id
 - if the user starts a new tunnel process later, the client should discover the new session separately
 
-## 9. Mobile Client Block
+## 9. Retained Relay Client Block
 
-This section is written for the mobile client implementation directly.
+This section is written for retained Relay/classic clients that still use `GET /api/sessions/:id/attach/ws`.
 
 The client implementation can be viewed as two loops:
 
@@ -354,11 +356,11 @@ flowchart LR
   RETRY --> DISCOVER
 ```
 
-### Mobile Client Responsibilities
+### Retained Relay Client Responsibilities
 
-The mobile app should treat one attach as one terminal-emulator session.
+The client should treat one attach as one terminal-emulator session.
 
-For each attached session, the app should hold:
+For each attached session, the client should hold:
 
 - `session_id`
 - websocket connection state
@@ -367,13 +369,13 @@ For each attached session, the app should hold:
 - the most recent `cols` and `rows`
 - whether the target `session_id` is currently present in `GET /api/sessions`
 
-The mobile app should not hold:
+The client should not hold:
 
 - an append-only transcript as the rendering authority
 - a partially trusted emulator that survives disconnects
 - assumptions that missed bytes can be fetched later
 
-### Mobile Attach Algorithm
+### Retained Relay Attach Algorithm
 
 When the user opens a session:
 
@@ -392,7 +394,7 @@ Implementation note:
 - both byte streams go into the same emulator instance
 - `snapshot_done` is a lifecycle boundary, not a rendering format switch
 
-### Mobile Event Handling
+### Retained Relay Event Handling
 
 Handle relay-to-client messages like this:
 
@@ -405,7 +407,7 @@ Handle relay-to-client messages like this:
 - `resize`: resize the emulator immediately
 - `closing`: stop input, close the websocket, discard the emulator, and move into reconnect logic based on `reason`
 
-### Mobile Input Rules
+### Retained Relay Input Rules
 
 While attach is healthy:
 
@@ -419,7 +421,7 @@ When attach is not healthy:
 - do not queue unbounded input locally for later replay
 - require a fresh attach before sending more terminal input
 
-### Mobile Reconnect State Machine
+### Retained Relay Reconnect State Machine
 
 Use this mental model:
 
@@ -446,7 +448,7 @@ Recommended transitions:
 - `reconnect_wait -> discovering`: retry session discovery
 - `discovering -> idle`: session disappeared and should be treated as ended
 
-### Mobile Reconnect Rules
+### Retained Relay Reconnect Rules
 
 On any attach loss, default to this sequence:
 
@@ -460,7 +462,7 @@ Safe default:
 
 - never continue rendering from a pre-disconnect emulator unless the websocket definitely stayed healthy and no bytes were missed
 
-### Mobile Reconnect Decision Diagram
+### Retained Relay Reconnect Decision Diagram
 
 ```mermaid
 flowchart TD
@@ -481,14 +483,14 @@ flowchart TD
   WAIT --> ENDED
 ```
 
-### Mobile Transport Notes
+### Retained Relay Transport Notes
 
-- native mobile clients may omit the `Origin` header
+- native clients may omit the `Origin` header
 - websocket binary frame boundaries are not semantic terminal boundaries
 - partial escape sequences are valid across frame splits
 - the renderer must be a real terminal emulator, not a custom line-oriented parser
 
-### Mobile Failure Handling
+### Retained Relay Failure Handling
 
 Handle these cases explicitly:
 
@@ -500,7 +502,7 @@ Handle these cases explicitly:
 - `closing: account_deleted`: stop input, discard local terminal state, and require account recovery or operator follow-up instead of retrying attach
 - plain websocket close without `closing`: assume bytes may have been missed and do a fresh attach flow
 
-### Mobile Checklist
+### Retained Relay Checklist
 
 - create a fresh emulator per attach
 - size on `attached` before consuming later bytes
@@ -517,7 +519,7 @@ Resize remains session-wide and follows the PTY owner. The client must resize it
 
 Structured input still goes over the attach websocket as `input_text` and `input_key`. If the attach is gone or the session is offline, the client should stop sending input and wait for a fresh attach.
 
-When local-terminal input or mobile attach input sends an `ENTER` carriage return outside a bracketed-paste region, the owning agent may record a bounded submit anchor for future fresh attaches and emit a live `submit_anchor` control to currently attached clients. Mobile Local Draft usually does this through `input_text { submit: true }`; mobile Remote Streaming usually does this through `input_key { key: "ENTER" }`. Draft text without `\r` and non-Enter special keys do not create anchors; any carriage return embedded in non-paste text is still Enter-bearing PTY input.
+When local-terminal input or remote attach input sends an `ENTER` carriage return outside a bracketed-paste region, the owning agent may record a bounded submit anchor for future fresh attaches and emit a live `submit_anchor` control to currently attached clients. Local-draft clients usually do this through `input_text { submit: true }`; remote-streaming clients usually do this through `input_key { key: "ENTER" }`. Draft text without `\r` and non-Enter special keys do not create anchors; any carriage return embedded in non-paste text is still Enter-bearing PTY input.
 
 ## 11. What This Model Guarantees
 

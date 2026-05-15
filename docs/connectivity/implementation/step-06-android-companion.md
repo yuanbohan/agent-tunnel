@@ -59,15 +59,22 @@ Implement production Android behavior against the proven protocol. Android uses 
 
 ## Implementation Summary
 
-Not started.
+Android implementation remains not started in this repository. Upstream Go contract evidence for the New Session handoff is in place:
+
+- Relay `POST /api/computers/:computerID/sessions` returns `session_ready.session_id` as a control-plane launch correlation key.
+- The official mobile companion waits for daemon transport `session_index` or `session_upsert` carrying that same broker-known `session_id`.
+- Retained Relay session list/detail/attach/stop APIs remain documented as classic/account-level behavior, not Android's post-launch session authority.
 
 ## Verification Performed
 
-Not started.
+- `go test ./internal/tunnel/daemon`
+- `go test ./internal/relay/... ./internal/connectivity/...`
+- Daemon transport coverage proves a broker session known before transport connect appears in initial `session_index`, and a broker session registered after transport connect emits `session_upsert`.
+- Relay launch coverage remains scoped to request correlation, `accepted`, `launch_ready`, timeout, ownership, and cleanup; Relay fallback/carrier coverage keeps encrypted tunnel payloads opaque.
 
 ## Known Gaps
 
-Not started.
+Android still needs to implement the bounded wait and user-visible error handling for launch success followed by delayed daemon transport convergence.
 
 ## Follow-Up For Step 7
 
