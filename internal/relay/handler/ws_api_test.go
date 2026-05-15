@@ -426,6 +426,46 @@ func TestDeviceWebSocketPendingPeerCannotRegisterAfterTokenRevoke(t *testing.T) 
 	}
 }
 
+func TestAgentWebSocketCannotRegisterAfterTokenRevoke(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	issued := env.login(t, "alice", "password123")
+	agentToken := env.createAgentToken(t, user.ID, "Laptop")
+
+	server := httptest.NewServer(env.handler(nil))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/agent/ws"
+	headers := http.Header{}
+	headers.Set("Authorization", bearerAuth(agentToken.Plaintext))
+	agentConn, _, err := websocket.DefaultDialer.Dial(wsURL, headers)
+	if err != nil {
+		t.Fatalf("Dial agent websocket returned error: %v", err)
+	}
+	defer agentConn.Close()
+
+	revokeResp := doBearerDELETE(t, server.URL+"/api/agent-tokens/"+agentToken.Record.ID, issued.AccessToken)
+	defer revokeResp.Body.Close()
+	decodeAPIEnvelopeFromResponse(t, revokeResp, http.StatusOK, nil)
+
+	err = agentConn.WriteJSON(protocol.RegisterFrame(protocol.SessionInfo{
+		SessionID: "sess-revoked",
+		Launcher:  "codex",
+		CWD:       "/repo",
+	}))
+	if err == nil {
+		_ = agentConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_, _, err = agentConn.ReadMessage()
+	}
+	if err == nil {
+		t.Fatal("agent websocket stayed usable after token revoke")
+	}
+	if env.registry.HasSession("sess-revoked") {
+		t.Fatal("revoked token registered a live agent session")
+	}
+}
+
 func TestAgentWebSocketRejectsUnknownAgentToken(t *testing.T) {
 	env := newHandlerTestEnv(t)
 	server := httptest.NewServer(env.handler(nil))

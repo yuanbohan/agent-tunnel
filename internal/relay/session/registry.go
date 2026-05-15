@@ -140,19 +140,19 @@ func deactivateAgentPeer(peer AgentPeer) {
 	}
 }
 
-func (r *Registry) DisconnectUserSessions(userID int64, reason string) int {
+func (r *Registry) DisconnectUserSessions(userID int64) int {
 	return r.disconnectMatching(func(live *liveSession) bool {
 		return live.owner.UserID == userID
-	}, reason)
+	})
 }
 
-func (r *Registry) DisconnectAgentTokenSessions(agentTokenID string, reason string) int {
+func (r *Registry) DisconnectAgentTokenSessions(agentTokenID string) int {
 	return r.disconnectMatching(func(live *liveSession) bool {
 		return live.owner.AgentTokenID == agentTokenID
-	}, reason)
+	})
 }
 
-func (r *Registry) disconnectMatching(match func(*liveSession) bool, reason string) int {
+func (r *Registry) disconnectMatching(match func(*liveSession) bool) int {
 	r.mu.Lock()
 	type disconnectedSession struct {
 		peer AgentPeer

@@ -2,7 +2,6 @@ package connector
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"sync"
@@ -31,7 +30,6 @@ var defaultReconnectBackoff = []time.Duration{
 	5 * time.Minute,
 }
 
-const defaultPendingInputLimit = 128
 const defaultWSWriteTimeout = 5 * time.Second
 
 var errOutboundBackpressure = errors.New("connector outbound backpressure")
@@ -46,9 +44,10 @@ type Connector struct {
 	info          protocol.SessionInfo
 	launchContext protocol.LaunchContext
 	infoMu        sync.RWMutex
+	launchReadyMu sync.RWMutex
+	launchReady   *protocol.LaunchContext
 
 	outbound   chan outboundFrame
-	ephemeral  chan outboundFrame
 	dialer     *websocket.Dialer
 	reconnect  atomic.Bool
 	connectTTL time.Duration
@@ -66,13 +65,7 @@ type Connector struct {
 }
 
 type outboundFrame struct {
-	json   any
-	binary []byte
-}
-
-type readResult struct {
-	control *protocol.AgentFrame
-	err     error
+	json any
 }
 
 type connectionCloser interface {
@@ -85,7 +78,6 @@ func New(url, token string, info protocol.SessionInfo) *Connector {
 		token:        token,
 		info:         info,
 		outbound:     make(chan outboundFrame, 128),
-		ephemeral:    make(chan outboundFrame, 128),
 		dialer:       websocket.DefaultDialer,
 		state:        StateDisconnected,
 		subscribers:  make(map[chan State]struct{}),
@@ -117,6 +109,12 @@ func (c *Connector) MarkLaunchReady(launchContext protocol.LaunchContext) {
 	if launchContext.Source != protocol.SessionLaunchSourceMobile || launchContext.RequestID == "" {
 		return
 	}
+	c.launchReadyMu.Lock()
+	c.launchReady = &protocol.LaunchContext{
+		Source:    launchContext.Source,
+		RequestID: launchContext.RequestID,
+	}
+	c.launchReadyMu.Unlock()
 	c.enqueuePersistentJSON(protocol.LaunchReadyFrame(launchContext))
 }
 
@@ -244,6 +242,10 @@ func (c *Connector) runOnce(ctx context.Context, connectTimeout time.Duration) (
 		_ = conn.Close()
 		return false, err
 	}
+	if err := c.writeStickyLaunchReady(conn); err != nil {
+		_ = conn.Close()
+		return false, err
+	}
 
 	c.setState(StateConnected)
 	return true, c.serveConnection(ctx, conn)
@@ -251,17 +253,16 @@ func (c *Connector) runOnce(ctx context.Context, connectTimeout time.Duration) (
 
 func (c *Connector) serveConnection(ctx context.Context, conn *websocket.Conn) error {
 	defer conn.Close()
-	defer c.clearConnectionState()
 	defer c.setState(StateReconnecting)
 
 	done := make(chan struct{})
 	defer close(done)
-	incoming := make(chan readResult, 1)
+	readErr := make(chan error, 1)
 	overflow := make(chan error, 1)
 	c.setActiveConnection(conn, overflow)
 	defer c.clearActiveConnection()
 
-	go c.readLoop(conn, done, incoming)
+	go c.readLoop(conn, done, readErr)
 
 	for {
 		select {
@@ -271,14 +272,11 @@ func (c *Connector) serveConnection(ctx context.Context, conn *websocket.Conn) e
 			if err != nil {
 				return err
 			}
-		case result, ok := <-incoming:
+		case err, ok := <-readErr:
 			if !ok {
 				return nil
 			}
-			if result.err != nil {
-				return result.err
-			}
-			if err := c.handleInbound(conn, result); err != nil {
+			if err != nil {
 				return err
 			}
 			continue
@@ -292,46 +290,42 @@ func (c *Connector) serveConnection(ctx context.Context, conn *websocket.Conn) e
 			if err != nil {
 				return err
 			}
-		case result, ok := <-incoming:
+		case err, ok := <-readErr:
 			if !ok {
 				return nil
 			}
-			if result.err != nil {
-				return result.err
-			}
-			if err := c.handleInbound(conn, result); err != nil {
-				return err
-			}
-		case frame := <-c.ephemeral:
-			if err := c.writeOutboundFrame(conn, frame); err != nil {
+			if err != nil {
 				return err
 			}
 		case frame := <-c.outbound:
-			if err := c.writeOutboundFrame(conn, frame); err != nil {
+			if err := c.writeJSON(conn, frame.json); err != nil {
 				return err
 			}
 		}
 	}
 }
 
-func (c *Connector) handleInbound(conn *websocket.Conn, result readResult) error {
-	return nil
-}
-
-func (c *Connector) writeOutboundFrame(conn *websocket.Conn, frame outboundFrame) error {
-	if frame.binary != nil {
-		return c.writeBinary(conn, frame.binary)
-	}
-	if frame.json == nil {
-		return nil
-	}
-	return c.writeJSON(conn, frame.json)
-}
-
 func (c *Connector) infoSnapshot() (protocol.SessionInfo, protocol.LaunchContext) {
 	c.infoMu.RLock()
 	defer c.infoMu.RUnlock()
 	return c.info, c.launchContext
+}
+
+func (c *Connector) launchReadySnapshot() (protocol.LaunchContext, bool) {
+	c.launchReadyMu.RLock()
+	defer c.launchReadyMu.RUnlock()
+	if c.launchReady == nil {
+		return protocol.LaunchContext{}, false
+	}
+	return *c.launchReady, true
+}
+
+func (c *Connector) writeStickyLaunchReady(conn *websocket.Conn) error {
+	launchContext, ok := c.launchReadySnapshot()
+	if !ok {
+		return nil
+	}
+	return c.writeJSON(conn, protocol.LaunchReadyFrame(launchContext))
 }
 
 func (c *Connector) initialConnectTimeout(attempt int) time.Duration {
@@ -390,26 +384,15 @@ func (c *Connector) pushState(ch chan State, state State) {
 	}
 }
 
-func (c *Connector) readLoop(conn *websocket.Conn, done <-chan struct{}, incoming chan<- readResult) {
-	defer close(incoming)
+func (c *Connector) readLoop(conn *websocket.Conn, done <-chan struct{}, readErr chan<- error) {
+	defer close(readErr)
 
 	for {
-		messageType, raw, err := conn.ReadMessage()
+		_, _, err := conn.ReadMessage()
 		if err != nil {
-			if !deliverReadResult(done, incoming, readResult{err: err}) {
+			if !deliverReadErr(done, readErr, err) {
 				return
 			}
-			return
-		}
-		if messageType != websocket.TextMessage {
-			continue
-		}
-
-		var frame protocol.AgentFrame
-		if err := json.Unmarshal(raw, &frame); err != nil {
-			continue
-		}
-		if !deliverReadResult(done, incoming, readResult{control: &frame}) {
 			return
 		}
 	}
@@ -418,23 +401,6 @@ func (c *Connector) readLoop(conn *websocket.Conn, done <-chan struct{}, incomin
 func (c *Connector) enqueuePersistentJSON(v any) {
 	if !c.tryEnqueue(c.outbound, outboundFrame{json: v}) {
 		c.signalOverflow(errOutboundBackpressure)
-	}
-}
-
-func (c *Connector) enqueueEphemeralJSON(v any) {
-	if !c.tryEnqueue(c.ephemeral, outboundFrame{json: v}) {
-		c.signalOverflow(errOutboundBackpressure)
-	}
-}
-
-func (c *Connector) clearConnectionState() {
-	for {
-		select {
-		case <-c.ephemeral:
-		case <-c.outbound:
-		default:
-			return
-		}
 	}
 }
 
@@ -485,13 +451,6 @@ func (c *Connector) writeJSON(conn *websocket.Conn, v any) error {
 	return conn.WriteJSON(v)
 }
 
-func (c *Connector) writeBinary(conn *websocket.Conn, payload []byte) error {
-	if err := c.setWriteDeadline(conn); err != nil {
-		return err
-	}
-	return conn.WriteMessage(websocket.BinaryMessage, payload)
-}
-
 func (c *Connector) setWriteDeadline(conn *websocket.Conn) error {
 	if c.writeTimeout <= 0 {
 		return nil
@@ -499,9 +458,9 @@ func (c *Connector) setWriteDeadline(conn *websocket.Conn) error {
 	return conn.SetWriteDeadline(time.Now().Add(c.writeTimeout))
 }
 
-func deliverReadResult(done <-chan struct{}, incoming chan<- readResult, result readResult) bool {
+func deliverReadErr(done <-chan struct{}, readErr chan<- error, err error) bool {
 	select {
-	case incoming <- result:
+	case readErr <- err:
 		return true
 	case <-done:
 		return false

@@ -81,7 +81,7 @@ func RevokeAgentToken(agentTokens *auth.AgentTokenService, registry *session.Reg
 			WriteJSONError(c.Writer, http.StatusInternalServerError, "internal_error")
 			return
 		}
-		registry.DisconnectAgentTokenSessions(tokenID, "agent_token_revoked")
+		registry.DisconnectAgentTokenSessions(tokenID)
 		deviceRegistry.DisconnectAgentTokenDevices(tokenID)
 		if connectivityRegistry != nil {
 			connectivityRegistry.DisconnectAgentToken(tokenID)

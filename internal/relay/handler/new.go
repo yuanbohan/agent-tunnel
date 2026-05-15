@@ -96,7 +96,7 @@ func newRouter(
 	appRoutes.POST("/api/computers/:computerID/sessions", api.LaunchDevice(deviceRegistry))
 	appRoutes.POST("/api/pairing/responses", api.SubmitPairingResponse(connectivityRegistry, pairingThrottle))
 
-	router.GET("/agent/ws", middleware.AgentAuth(agentTokens), agent.Handle(registry, deviceRegistry))
+	router.GET("/agent/ws", middleware.AgentAuth(agentTokens), agent.Handle(registry, deviceRegistry, agentTokens))
 	router.GET("/device/ws", middleware.AgentAuth(agentTokens), devicehandler.Handle(deviceRegistry, registry, agentTokens))
 	router.GET("/connectivity/daemon/ws", middleware.AgentAuth(agentTokens), connectivityhandler.Daemon(connectivityRegistry, agentTokens))
 	router.GET("/connectivity/computer/ws", middleware.AgentAuth(agentTokens), connectivityhandler.Daemon(connectivityRegistry, agentTokens))

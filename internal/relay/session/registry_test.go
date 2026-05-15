@@ -176,7 +176,7 @@ func TestRegistryDisconnectUserSessionsRemovesOwnedSessions(t *testing.T) {
 	reg.RegisterOwned(protocol.SessionInfo{SessionID: "sess-a", Launcher: "codex"}, SessionOwner{UserID: 1, AgentTokenID: "agt-a"}, ownerA)
 	reg.RegisterOwned(protocol.SessionInfo{SessionID: "sess-b", Launcher: "codex"}, SessionOwner{UserID: 2, AgentTokenID: "agt-b"}, ownerB)
 
-	disconnected := reg.DisconnectUserSessions(1, "account_deleted")
+	disconnected := reg.DisconnectUserSessions(1)
 	if disconnected != 1 {
 		t.Fatalf("DisconnectUserSessions = %d, want 1", disconnected)
 	}
@@ -202,7 +202,7 @@ func TestRegistryDisconnectAgentTokenSessionsMatchesTokenOwnership(t *testing.T)
 	reg.RegisterOwned(protocol.SessionInfo{SessionID: "sess-a", Launcher: "codex"}, SessionOwner{UserID: 1, AgentTokenID: "agt-a"}, ownerA)
 	reg.RegisterOwned(protocol.SessionInfo{SessionID: "sess-b", Launcher: "codex"}, SessionOwner{UserID: 1, AgentTokenID: "agt-b"}, ownerB)
 
-	disconnected := reg.DisconnectAgentTokenSessions("agt-b", "agent_token_revoked")
+	disconnected := reg.DisconnectAgentTokenSessions("agt-b")
 	if disconnected != 1 {
 		t.Fatalf("DisconnectAgentTokenSessions = %d, want 1", disconnected)
 	}

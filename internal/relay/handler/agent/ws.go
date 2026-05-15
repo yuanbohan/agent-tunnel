@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"yuanbohan/tunnel/internal/config"
 	"yuanbohan/tunnel/internal/logx"
 	"yuanbohan/tunnel/internal/protocol"
+	relayauth "yuanbohan/tunnel/internal/relay/auth"
 	relaydevice "yuanbohan/tunnel/internal/relay/device"
 	"yuanbohan/tunnel/internal/relay/handler/httpx"
 	"yuanbohan/tunnel/internal/relay/handler/middleware"
@@ -27,9 +29,15 @@ type errString string
 
 func (e errString) Error() string { return string(e) }
 
-func Handle(registry *session.Registry, deviceRegistry *relaydevice.Registry) gin.HandlerFunc {
+const agentAuthRevalidationTimeout = 5 * time.Second
+
+func Handle(registry *session.Registry, deviceRegistry *relaydevice.Registry, agentTokens *relayauth.AgentTokenService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authenticated := middleware.AuthenticatedAgent(c)
+		token, ok := httpx.BearerTokenFromRequest(c.Request)
+		if !ok {
+			return
+		}
 
 		conn, err := allowAllOrigins.Upgrade(c.Writer, c.Request, nil)
 		if err != nil {
@@ -72,6 +80,9 @@ func Handle(registry *session.Registry, deviceRegistry *relaydevice.Registry) gi
 		tracker.RecordInbound(len(payload))
 		if register.Type != "register" || register.Session == nil {
 			loopErr = errInvalidAgentRegister
+			return
+		}
+		if !agentAuthStillValid(c, agentTokens, token, authenticated) {
 			return
 		}
 
@@ -141,6 +152,19 @@ func Handle(registry *session.Registry, deviceRegistry *relaydevice.Registry) gi
 			}
 		}
 	}
+}
+
+func agentAuthStillValid(c *gin.Context, agentTokens *relayauth.AgentTokenService, token string, authenticated relayauth.AuthenticatedAgentToken) bool {
+	if agentTokens == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), agentAuthRevalidationTimeout)
+	defer cancel()
+	current, err := agentTokens.Authenticate(ctx, token)
+	if err != nil {
+		return false
+	}
+	return current.User.ID == authenticated.User.ID && current.Token.ID == authenticated.Token.ID
 }
 
 func logWSUpgradeFailed(r *http.Request, role string) {

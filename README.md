@@ -402,7 +402,8 @@ See [docs/local-e2e.md](docs/local-e2e.md) for the Docker-backed local E2E workf
 
 See [docs/api.md](docs/api.md) for the current public app-facing relay API reference.
 See [docs/protocol.md](docs/protocol.md) for the full wire format specification.
-See [docs/tui-attach-flow.md](docs/tui-attach-flow.md) for the end-to-end snapshot, live-byte, relay, and client reconnect flow.
+See [docs/connectivity/protocol/transport.md](docs/connectivity/protocol/transport.md) for the daemon-owned session transport used by trusted mobile clients.
+See [docs/tui-attach-flow.md](docs/tui-attach-flow.md) for the tombstone of the removed Relay attach path.
 See [docs/deployment.md](docs/deployment.md) for VPS deployment, nginx/TLS setup, and operations guide.
 See [docs/operation.md](docs/operation.md) for day-to-day relay CLI usage and operator command examples.
 See [docs/release-distribution.md](docs/release-distribution.md) for public `tunnel` release publishing and distribution-repo operations.

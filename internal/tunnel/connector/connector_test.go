@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -75,6 +76,55 @@ func TestConnectorIncludesLaunchContextAndSendsLaunchReady(t *testing.T) {
 	ready := readConnectorFrame(t, framesCh)
 	if ready.Type != "launch_ready" || ready.LaunchContext == nil || *ready.LaunchContext != launchContext {
 		t.Fatalf("launch_ready = %#v, want launch context", ready)
+	}
+}
+
+func TestConnectorResendsLaunchReadyAfterReconnect(t *testing.T) {
+	launchContext := protocol.LaunchContext{Source: protocol.SessionLaunchSourceMobile, RequestID: "req-123"}
+	firstRegistered := make(chan struct{})
+	closeFirst := make(chan struct{})
+	readyCh := make(chan protocol.AgentFrame, 1)
+	var connections atomic.Int32
+
+	server := newConnectorTestServer(t, func(conn *websocket.Conn, register protocol.AgentFrame) {
+		switch connections.Add(1) {
+		case 1:
+			close(firstRegistered)
+			<-closeFirst
+			_ = conn.Close()
+		case 2:
+			var ready protocol.AgentFrame
+			if err := conn.ReadJSON(&ready); err != nil {
+				t.Errorf("ReadJSON launch_ready after reconnect returned error: %v", err)
+				return
+			}
+			readyCh <- ready
+		default:
+			t.Errorf("unexpected extra connector registration: %#v", register)
+		}
+	})
+	defer server.Close()
+
+	c := New(connectorWSURL(server), "token-1", protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"})
+	c.retryBackoff = []time.Duration{10 * time.Millisecond}
+	c.SetLaunchContext(launchContext)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Run(ctx)
+
+	select {
+	case <-firstRegistered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first registration")
+	}
+
+	c.MarkLaunchReady(launchContext)
+	close(closeFirst)
+
+	ready := readConnectorFrame(t, readyCh)
+	if ready.Type != "launch_ready" || ready.LaunchContext == nil || *ready.LaunchContext != launchContext {
+		t.Fatalf("launch_ready after reconnect = %#v, want launch context", ready)
 	}
 }
 
