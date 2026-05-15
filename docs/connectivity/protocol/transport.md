@@ -2,7 +2,7 @@
 
 ## Status
 
-This document captures the target daemon-to-Android transport for session connectivity. It replaces the old WebRTC/DataChannel direction with a simpler QUIC-based transport.
+This document captures this repository's daemon-to-Android transport protocol mirror for session connectivity. Cross-repository protocol decisions live in [yuanbohan/agent-tunnel-protocols](https://github.com/yuanbohan/agent-tunnel-protocols). It replaces the old WebRTC/DataChannel direction with a simpler QUIC-based transport.
 
 ## Transport Responsibilities
 
@@ -307,7 +307,7 @@ Each `session_upsert` carries the full current metadata object for that session 
 
 ### Session Metadata Contract
 
-This is the canonical session payload shape used by `session_index`, `session_upsert`, and (where applicable) `session_gone`. In the target design, Relay does not expose sessions; the daemon is the source of truth.
+This is the daemon transport session payload shape used by `session_index`, `session_upsert`, and (where applicable) `session_gone`. In the official mobile companion design, Relay session list/detail/attach APIs are not the mobile session authority; the daemon is authoritative.
 
 Phase-1 daemon-to-Android session metadata fields:
 

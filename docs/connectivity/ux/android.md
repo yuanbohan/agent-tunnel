@@ -2,7 +2,7 @@
 
 ## Status
 
-Phase-1 Android client behavior for the QUIC session-connectivity architecture. This reference defines what the app owns, what Relay owns, and what the daemon transport exposes.
+Phase-1 Android client behavior for the QUIC session-connectivity architecture. This repository mirrors the Android-facing contract; cross-repository protocol decisions live in [yuanbohan/agent-tunnel-protocols](https://github.com/yuanbohan/agent-tunnel-protocols). This reference defines what the app owns, what Relay owns, and what the daemon transport exposes.
 
 When this doc and `../contract.md` disagree, `../contract.md` wins.
 
@@ -11,6 +11,7 @@ When this doc and `../contract.md` disagree, `../contract.md` wins.
 - Login is required before any connectivity feature is available.
 - Relay provides account tier, daemon presence, pairing transport, rendezvous, and fallback tunnel setup.
 - Daemon transport provides sessions, previews, interactive traffic, input, resize, and path diagnostics.
+- After a Relay computer launch returns `session_ready`, Android waits for the daemon transport to report the matching `session_id` in `session_index` or `session_upsert`; it does not use Relay session list/detail/attach as post-launch authority.
 - Free and Pro differ only by trusted-computer count.
 - Inside one active trusted computer, Free and Pro session behavior is identical.
 - Do not implement tier-based session row states, preview restrictions, or Free-only session UI.
@@ -27,6 +28,7 @@ When this doc and `../contract.md` disagree, `../contract.md` wins.
 - fallback relay tunnel setup
 
 Relay never sends session lists or per-session policy.
+Relay session list/detail/attach endpoints are retained classic APIs, not official Android companion session authority.
 
 ### 2. Daemon Transport Plane
 
@@ -105,7 +107,7 @@ Do not auto-connect multiple computers before resolution.
 `tunnel run` on the user's computer starts the required daemon if it is not already running (`../contract.md` D2). From Android:
 
 - a computer that has run `tunnel run` at least once should have a daemon listening
-- computer presence in `computer_snapshot` is the source of truth for online status
+- computer presence in `computer_snapshot` is authoritative for online status
 - Android does not need "start daemon on the computer" UI in phase 1
 
 ## Pairing Flow

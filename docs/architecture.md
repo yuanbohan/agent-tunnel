@@ -1,6 +1,6 @@
 # Agent Tunnel Architecture
 
-This document describes the current system shape for the attach-based protocol.
+This document describes the current system shape for this repository's implementation. Cross-repository protocol decisions live in [yuanbohan/agent-tunnel-protocols](https://github.com/yuanbohan/agent-tunnel-protocols); keep this architecture mirror aligned with that protocol source of truth.
 
 ## System Shape
 
@@ -10,7 +10,7 @@ Separately, `tunnel daemon` owns one background machine runtime. That daemon has
 
 `docs/daemon.md` is the daemon-specific implementation contract. Changes to daemon lifecycle, tmux workspace ownership, launch validation, health reporting, or failure reasons must keep that contract aligned with this architecture document and the public API/protocol docs.
 
-The relay exposes authenticated APIs so external clients can register accounts, log in, manage agent tokens, discover live sessions, discover live computers with `GET /api/computers`, attach to one online session, request that one online computer daemon create a new session with `POST /api/computers/:computerID/sessions`, stop any owned live session, and use the connectivity control-plane WebSockets for pairing, paired-daemon visibility, direct rendezvous hints, and Relay fallback tunnel setup. Legacy device-named aliases remain available in this revision for compatibility. `relay serve` can own the Binding-only STUN UDP listener for local/manual deployments when enabled, while production Compose runs STUN as a separate `stun` service through `relay stun serve` from the STUN image name that points at the same release build artifact as Relay. Operator maintenance routes stay outside the public `/api/` namespace and are intended for host-local use only. PostgreSQL is the durable source of truth for users, invite codes, app sessions, app-session device fingerprints, account subscription tiers, agent tokens, and operator audit records. App auth uses opaque bearer access tokens with a nominal 24-hour lifetime, rotating refresh tokens with a 30-day sliding lifetime, and a 90-day absolute session lifetime anchored at the original login. The relay is not the terminal-state authority and it does not retain transcript history. Live session discovery includes best-effort Git branch metadata for the startup `cwd`, optional local daemon identity through `device_id`, relay-controlled `launch_source`, and device identity metadata such as `platform_family`, `platform_id`, and normalized `computer_name`.
+The relay exposes authenticated APIs so external clients can register accounts, log in, manage agent tokens, use retained classic live-session APIs, discover live computers with `GET /api/computers`, request that one online computer daemon create a new session with `POST /api/computers/:computerID/sessions`, stop any owned live session through retained account-level APIs, and use the connectivity control-plane WebSockets for pairing, paired-daemon visibility, direct rendezvous hints, and Relay fallback tunnel setup. For the official mobile companion, Relay is the auth, account policy, pairing, computer presence, rendezvous, fallback tunnel, and computer-launch control plane; daemon connectivity transport owns the post-launch session roster, preview, terminal snapshots/live bytes, input, resize, and session detail. Legacy device-named aliases remain available in this revision for compatibility. `relay serve` can own the Binding-only STUN UDP listener for local/manual deployments when enabled, while production Compose runs STUN as a separate `stun` service through `relay stun serve` from the STUN image name that points at the same release build artifact as Relay. Operator maintenance routes stay outside the public `/api/` namespace and are intended for host-local use only. PostgreSQL is the durable authority for users, invite codes, app sessions, app-session device fingerprints, account subscription tiers, agent tokens, and operator audit records. App auth uses opaque bearer access tokens with a nominal 24-hour lifetime, rotating refresh tokens with a 30-day sliding lifetime, and a 90-day absolute session lifetime anchored at the original login. The relay is not the terminal-state authority and it does not retain transcript history. Retained Relay live session discovery includes best-effort Git branch metadata for the startup `cwd`, optional local daemon identity through `device_id`, relay-controlled `launch_source`, and device identity metadata such as `platform_family`, `platform_id`, and normalized `computer_name`.
 
 For hosted deployments, the security invariant is strict user scoping: the user who owns the agent token also owns the live session, `GET /api/sessions` returns only that user's sessions, and cross-user attach attempts resolve as not found.
 
@@ -18,7 +18,7 @@ See [docs/api.md](./api.md) for the current endpoint inventory, auth requirement
 
 Protocol-facing timestamps such as `started_at` are Unix timestamps encoded as JSON integers in seconds.
 
-The local terminal is still the primary and most complete view of the PTY session. Remote access is session-scoped: a client attaches to one session, receives a fresh terminal-state snapshot that may include up to 10,000 lines of bounded agent-local normal-buffer scrollback, and then receives subsequent live PTY bytes on that same attach.
+The local terminal is still the primary and most complete view of the PTY session. Retained Relay/classic remote access is session-scoped: a client attaches to one session, receives a fresh terminal-state snapshot that may include up to 10,000 lines of bounded agent-local normal-buffer scrollback, and then receives subsequent live PTY bytes on that same attach. Official mobile companion interactive access uses the daemon connectivity transport after the target session appears in daemon transport session state.
 
 `tunnel` enforces strict startup gating and runtime reconnect:
 
@@ -128,9 +128,9 @@ The relay does not own:
 - offline device inventory
 - daemon health, last launch failure, stop history, or tmux-workspace state
 
-### Client
+### Retained Relay Attach Client
 
-The client is responsible for rendering a session-scoped attach correctly.
+Retained Relay/classic clients are responsible for rendering a session-scoped attach correctly.
 
 It should:
 
@@ -140,6 +140,8 @@ It should:
 - size its terminal emulator from the initial `attached` control message before feeding subsequent binary bytes
 - treat binary bytes before `snapshot_done` as snapshot bytes and binary bytes after it as live PTY bytes
 - rebuild terminal state from a fresh attach after disconnect instead of assuming transcript replay
+
+Official mobile companion clients should not use these Relay session list/detail/attach APIs as their post-launch session authority. They should use Relay for auth, account policy, pairing, computer presence, rendezvous, fallback, and launch, then use daemon connectivity transport session state for roster, preview, interactive traffic, input, resize, and detail.
 
 ## Attach Flow
 
@@ -254,8 +256,9 @@ The device-launch lifecycle is separate from session attach:
 6. If the daemon accepts the launch locally, it starts a new tmux session running `tunnel run <command>` with the requested cwd and optional label, and it passes the launch correlation forward.
 7. The later `tunnel run <command>` process registers with the local daemon broker, registers a normal session on `/agent/ws`, includes that launch correlation, supplies its own platform and computer identity metadata, starts the PTY process, and then sends `launch_ready`.
 8. The relay completes the pending mobile launch request as `session_ready` when it sees matching `launch_ready`, marks the live session with `launch_source: "mobile"`, or returns a structured timeout failure if readiness does not arrive in time.
-9. Session discovery and attach then proceed through the unchanged session APIs, with device identity coming from the session itself rather than from launch correlation.
-10. If a client later calls `DELETE /api/sessions/:id`, the relay sends `stop_session` to the owning agent, removes the live session from discovery, and closes active attaches with `session_stopped`.
+9. Retained Relay/classic session discovery and attach can proceed through the unchanged session APIs, with device identity coming from the session itself rather than from launch correlation.
+10. Official mobile companion session visibility waits for daemon connectivity transport `session_index` or `session_upsert` carrying the matching `session_id`; Relay `session_ready` is the control-plane launch result, not the companion session roster/detail/interactive authority.
+11. If a client later calls `DELETE /api/sessions/:id`, the relay sends `stop_session` to the owning agent, removes the live session from retained Relay discovery, and closes active Relay attaches with `session_stopped`. This remains an account-level/classic Relay operation, not the official mobile companion session authority.
 
 ## Package Map
 

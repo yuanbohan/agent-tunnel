@@ -2,7 +2,7 @@
 
 ## Status
 
-This document captures the Relay-owned control-plane protocol for the QUIC connectivity architecture. Step 2 implemented the auth/pairing/visibility subset. Step 4 adds fallback relay tunnel setup and opaque packet forwarding. Step 5 adds live rendezvous hint exchange for direct UDP attempts.
+This document captures this repository's Relay-owned control-plane protocol mirror for the QUIC connectivity architecture. Cross-repository protocol decisions live in [yuanbohan/agent-tunnel-protocols](https://github.com/yuanbohan/agent-tunnel-protocols). Step 2 implemented the auth/pairing/visibility subset. Step 4 adds fallback relay tunnel setup and opaque packet forwarding. Step 5 adds live rendezvous hint exchange for direct UDP attempts.
 
 ## Purpose
 

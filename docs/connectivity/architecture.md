@@ -2,9 +2,9 @@
 
 ## Status
 
-This document records the current architecture direction for direct session connectivity. The Go repository now implements the Step 5 server-side/STUN, Relay rendezvous, daemon-side direct path, Go simulator direct-first behavior, and Relay fallback proof points. Production Android direct-path compatibility is still Step 6 work.
+This document records this repository's architecture mirror for direct session connectivity. Cross-repository protocol decisions live in [yuanbohan/agent-tunnel-protocols](https://github.com/yuanbohan/agent-tunnel-protocols). The Go repository now implements the Step 5 server-side/STUN, Relay rendezvous, daemon-side direct path, Go simulator direct-first behavior, and Relay fallback proof points. Production Android direct-path compatibility is still Step 6 work.
 
-For the canonical phase-1 must-ship contract, see `contract.md`. When this document and `contract.md` disagree, `contract.md` wins.
+For this repository's phase-1 implementation contract, see `contract.md`. When this document and `contract.md` disagree, `contract.md` wins.
 
 Use this document together with:
 

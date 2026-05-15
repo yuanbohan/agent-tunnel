@@ -8,7 +8,7 @@ This document explains the end-to-end remote viewing path for one running TUI se
 - live terminal-byte delivery through the relay
 - client rendering and mobile reconnect behavior
 
-It is a narrative companion to [docs/protocol.md](./protocol.md) and [docs/architecture.md](./architecture.md). The protocol document is the wire-format source of truth. This document explains how the pieces fit together in practice.
+It is a narrative companion to [docs/protocol.md](./protocol.md) and [docs/architecture.md](./architecture.md). The protocol document is this repository's Relay attach wire-format reference. This document explains how the pieces fit together in practice.
 
 ## Mental Model
 
@@ -369,7 +369,7 @@ For each attached session, the app should hold:
 
 The mobile app should not hold:
 
-- an append-only transcript as the rendering source of truth
+- an append-only transcript as the rendering authority
 - a partially trusted emulator that survives disconnects
 - assumptions that missed bytes can be fetched later
 

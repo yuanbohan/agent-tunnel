@@ -18,7 +18,7 @@ This is a local-machine protocol only. It is not exposed to Relay.
 
 Each `tunnel run` process opens one long-lived local connection to the daemon and explicitly registers itself.
 
-That connection is the source of truth for:
+That daemon-local connection is authoritative for:
 
 - whether the session is alive
 - the session's current metadata
