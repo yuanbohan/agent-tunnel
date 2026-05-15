@@ -297,11 +297,11 @@ Purpose:
 - bootstrap the current session list for that daemon
 - replace `GET /api/sessions` in the target design
 
-The initial `session_index` MUST contain the full current session set known to the daemon's local broker.
+The initial `session_index` MUST contain the full current session set known to the daemon's local broker. This includes sessions launched through Relay control-plane requests when the resulting `tunnel run` has already registered with the local broker before the mobile transport connects.
 
 ### `session_upsert` / `session_gone`
 
-Sent by the daemon whenever session metadata changes or a session disappears.
+Sent by the daemon whenever session metadata changes or a session disappears. If a Relay-launched `tunnel run` registers with the local broker after the mobile transport is already connected, the daemon publishes that same `session_id` as a `session_upsert`.
 
 Each `session_upsert` carries the full current metadata object for that session — phase 1 prefers full replacement payloads over patch-style deltas.
 

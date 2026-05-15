@@ -34,7 +34,7 @@ func TestConnectivityTransportSendsSessionIndexAndPreviewSnapshots(t *testing.T)
 	broker := NewBroker()
 	owner := &brokerConnection{}
 	broker.register(BrokerSession{
-		SessionID:      "sess-1",
+		SessionID:      "sess-before",
 		Label:          "API fix",
 		CommandPreview: "codex",
 		CWD:            "/repo",
@@ -42,8 +42,8 @@ func TestConnectivityTransportSendsSessionIndexAndPreviewSnapshots(t *testing.T)
 		StartedAt:      100,
 		UpdatedAt:      101,
 	}, owner)
-	broker.updatePreview("sess-1", "cached preview", 102, owner)
-	broker.updateSnapshot("sess-1", []byte("full terminal snapshot"), 100, 30, owner)
+	broker.updatePreview("sess-before", "cached preview", 102, owner)
+	broker.updateSnapshot("sess-before", []byte("full terminal snapshot"), 100, 30, owner)
 	broker.register(BrokerSession{
 		SessionID:      "sess-2",
 		Label:          "Release notes",
@@ -75,23 +75,23 @@ func TestConnectivityTransportSendsSessionIndexAndPreviewSnapshots(t *testing.T)
 		t.Fatalf("hello = %#v, want daemon relay hello", hello)
 	}
 	index := readTestJSONFrame[sessionproto.SessionIndex](t, control, frame.TypeSessionIndex)
-	sessionsByID := make(map[string]sessionproto.SessionMetadata, len(index.Sessions))
-	for _, session := range index.Sessions {
-		sessionsByID[session.SessionID] = session
+	sessionsByID := sessionMetadataByID(t, index.Sessions)
+	if len(sessionsByID) != 2 || sessionsByID["sess-2"].CommandPreview != "vim" {
+		t.Fatalf("session index = %#v, want sess-before and sess-2 metadata", index)
 	}
-	if len(sessionsByID) != 2 || sessionsByID["sess-1"].CommandPreview != "codex" || sessionsByID["sess-2"].CommandPreview != "vim" {
-		t.Fatalf("session index = %#v, want sess-1 and sess-2 metadata", index)
+	if got := sessionsByID["sess-before"]; got.SessionID != "sess-before" || got.Label != "API fix" || got.CWD != "/repo" || got.CommandPreview != "codex" || got.GitBranch != "main" || got.StartedAt != 100 || got.UpdatedAt != 102 || !got.Online {
+		t.Fatalf("session index metadata = %#v, want broker-known sess-before", got)
 	}
 	pathState := readTestJSONFrame[sessionproto.PathState](t, control, frame.TypePathState)
 	if pathState.PathKind != sessionproto.PathRelay || pathState.AttemptID != "attempt-test" || pathState.FallbackReason != "direct_timeout" || pathState.DirectSetupLatencyMS != 3000 || pathState.RelaySetupLatencyMS != 120 {
 		t.Fatalf("pathState = %#v, want relay attempt diagnostics", pathState)
 	}
 
-	if err := writeTestJSONFrame(control, frame.TypePreviewSubscribe, sessionproto.PreviewSubscribe{SessionID: "sess-1"}); err != nil {
+	if err := writeTestJSONFrame(control, frame.TypePreviewSubscribe, sessionproto.PreviewSubscribe{SessionID: "sess-before"}); err != nil {
 		t.Fatalf("write preview_subscribe returned error: %v", err)
 	}
 	preview := readTestJSONFrame[sessionproto.PreviewSnapshot](t, control, frame.TypePreviewSnapshot)
-	if preview.SessionID != "sess-1" || preview.Preview != "cached preview" || preview.UpdatedAt != 102 {
+	if preview.SessionID != "sess-before" || preview.Preview != "cached preview" || preview.UpdatedAt != 102 {
 		t.Fatalf("preview = %#v, want cached preview", preview)
 	}
 	if err := writeTestJSONFrame(control, frame.TypePreviewSubscribe, sessionproto.PreviewSubscribe{SessionID: "sess-2"}); err != nil {
@@ -102,22 +102,36 @@ func TestConnectivityTransportSendsSessionIndexAndPreviewSnapshots(t *testing.T)
 		t.Fatalf("second preview = %#v, want second cached preview", preview)
 	}
 
-	broker.updatePreview("sess-1", "new preview", 103, owner)
+	broker.updatePreview("sess-before", "new preview", 103, owner)
 	preview = readTestJSONFrame[sessionproto.PreviewSnapshot](t, control, frame.TypePreviewSnapshot)
 	if preview.Preview != "new preview" || preview.UpdatedAt != 103 {
 		t.Fatalf("preview = %#v, want updated preview", preview)
 	}
 
-	broker.updateSession(BrokerSession{SessionID: "sess-1", Label: "Renamed", CWD: "/repo", CommandPreview: "claude", StartedAt: 100, UpdatedAt: 104}, owner)
+	broker.updateSession(BrokerSession{SessionID: "sess-before", Label: "Renamed", CWD: "/repo", CommandPreview: "claude", StartedAt: 100, UpdatedAt: 104}, owner)
 	upsert := readTestJSONFrame[sessionproto.SessionUpsert](t, control, frame.TypeSessionUpsert)
-	if upsert.Session.Label != "Renamed" || upsert.Session.CommandPreview != "claude" {
+	if upsert.Session.SessionID != "sess-before" || upsert.Session.Label != "Renamed" || upsert.Session.CommandPreview != "claude" {
 		t.Fatalf("upsert = %#v, want replacement metadata", upsert)
 	}
 
-	broker.remove("sess-1", owner)
+	broker.register(BrokerSession{
+		SessionID:      "sess-after",
+		Label:          "Mobile launch",
+		CommandPreview: "codex --profile prod",
+		CWD:            "/repo/mobile",
+		GitBranch:      "feature/mobile",
+		StartedAt:      120,
+		UpdatedAt:      121,
+	}, owner)
+	upsert = readTestJSONFrame[sessionproto.SessionUpsert](t, control, frame.TypeSessionUpsert)
+	if got := upsert.Session; got.SessionID != "sess-after" || got.Label != "Mobile launch" || got.CWD != "/repo/mobile" || got.CommandPreview != "codex --profile prod" || got.GitBranch != "feature/mobile" || got.StartedAt != 120 || got.UpdatedAt != 121 || !got.Online {
+		t.Fatalf("post-connect register upsert = %#v, want broker-known sess-after", upsert)
+	}
+
+	broker.remove("sess-before", owner)
 	gone := readTestJSONFrame[sessionproto.SessionGone](t, control, frame.TypeSessionGone)
-	if gone.SessionID != "sess-1" {
-		t.Fatalf("gone = %#v, want sess-1", gone)
+	if gone.SessionID != "sess-before" {
+		t.Fatalf("gone = %#v, want sess-before", gone)
 	}
 
 	clientConn.CloseWithError(0, "done")
@@ -621,6 +635,21 @@ func readTestJSONFrame[T any](t *testing.T, r io.Reader, typ byte) T {
 		t.Fatalf("json.Unmarshal returned error: %v", err)
 	}
 	return payload
+}
+
+func sessionMetadataByID(t *testing.T, sessions []sessionproto.SessionMetadata) map[string]sessionproto.SessionMetadata {
+	t.Helper()
+	out := make(map[string]sessionproto.SessionMetadata, len(sessions))
+	for _, session := range sessions {
+		if session.SessionID == "" {
+			t.Fatalf("session index contains blank session id: %#v", sessions)
+		}
+		if _, exists := out[session.SessionID]; exists {
+			t.Fatalf("session index contains duplicate session id %q: %#v", session.SessionID, sessions)
+		}
+		out[session.SessionID] = session
+	}
+	return out
 }
 
 func readTestRawFrame(t *testing.T, r io.Reader, typ byte) []byte {
