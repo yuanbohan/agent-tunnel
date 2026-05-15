@@ -87,6 +87,9 @@ func TestConnectivityTransportSendsSessionIndexAndPreviewSnapshots(t *testing.T)
 		t.Fatalf("pathState = %#v, want relay attempt diagnostics", pathState)
 	}
 
+	if err := frame.Write(control, frame.Frame{Type: 0xfe, Payload: []byte("future frame")}); err != nil {
+		t.Fatalf("write unknown frame returned error: %v", err)
+	}
 	if err := writeTestJSONFrame(control, frame.TypePreviewSubscribe, sessionproto.PreviewSubscribe{SessionID: "sess-before"}); err != nil {
 		t.Fatalf("write preview_subscribe returned error: %v", err)
 	}

@@ -2,7 +2,7 @@
 
 ## Status
 
-This document is this repository's phase-1 implementation contract. Cross-repository protocol decisions live in [yuanbohan/agent-tunnel-protocols](https://github.com/yuanbohan/agent-tunnel-protocols); keep this file aligned with that protocol source of truth. Within this repository's connectivity docs, when two docs disagree, this file wins. Decisions here were confirmed on 2026-04-26 and should not be changed without a new architecture review.
+This document is this repository's phase-1 implementation contract. Cross-repository protocol decisions live in [yuanbohan/agent-tunnel-protocols](https://github.com/yuanbohan/agent-tunnel-protocols); keep this file aligned with that protocol source of truth. Local mirror provenance for connectivity surfaces is tracked in `docs/protocols/connectivity.md`. Within this repository's connectivity docs, when two docs disagree, this file wins for implementation status. Decisions here were confirmed on 2026-04-26 and should not be changed without a new architecture review.
 
 This is intentionally short. Detail lives in the linked specs. Use this file to scope work.
 
@@ -106,6 +106,8 @@ Detail: `protocol/transport.md` § Stream Model.
 ### D6 — Frame Encoding: JSON Payloads, Length-Framed
 
 - Outer frame: `[1 byte type] [varint length] [payload bytes]`.
+- `varint length` uses QUIC variable-length integer encoding.
+- Each frame payload is capped at 1 MiB (`1 << 20`).
 - Payload encoding for typed control frames: **JSON**.
 - Exception: `live_bytes` and `snapshot_chunk` carry raw PTY bytes, no JSON wrap. The outer length frame is sufficient.
 - Forward compatibility: receivers MUST ignore unknown JSON fields and unknown frame types. Protocol-breaking changes bump `protocol_version` in `hello`.
@@ -118,7 +120,7 @@ Detail: `protocol/transport.md` § Stream Model.
 
 **Phase-2 TODO**
 
-- If profiling shows JSON parse cost on Android > 5% of a frame's wall time, define `protocol_version = 2` with CBOR.
+- If profiling shows JSON parse cost on Android > 5% of a frame's wall time, define a new protocol version or compatibility-line decision for CBOR. `protocol_version = 2` remains the JSON protocol.
 
 Detail: `protocol/transport.md` § Control Stream Encoding.
 
@@ -219,6 +221,7 @@ packet forwarding. Android production runtime compatibility remains Step 6.
 - `protocol/relay.md` — control plane events and rate limits.
 - `protocol/pairing.md` — invitation + SAS.
 - `protocol/local-broker.md` — daemon ↔ tunnel run.
+- `../protocols/connectivity.md` — local mirror provenance for cross-repo SSOT alignment.
 - `ux/subscription.md` — Free / Pro computer-count product rule.
 - `ux/android.md` — Android client behavior reference.
 - `reference/decision-record.md` — historical decision rationale.

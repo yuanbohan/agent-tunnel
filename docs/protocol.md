@@ -1,6 +1,6 @@
 # Agent Tunnel Relay Protocol
 
-This document describes this repository's current relay-facing implementation contract for clients and agents. Cross-repository protocol decisions live in [yuanbohan/agent-tunnel-protocols](https://github.com/yuanbohan/agent-tunnel-protocols); keep this mirror aligned with that protocol source of truth.
+This document describes this repository's current relay-facing implementation contract for clients and agents. Cross-repository protocol decisions live in [yuanbohan/agent-tunnel-protocols](https://github.com/yuanbohan/agent-tunnel-protocols); keep this mirror aligned with that protocol source of truth. Connectivity protocol mirror provenance is tracked in [docs/protocols/connectivity.md](./protocols/connectivity.md).
 
 It supersedes the older replay/frame model. Clients should build against this attach-based protocol, not against `/api/updates/ws`, `/api/sessions/:id/frames`, `ReplayFrame`, or `latest_seq`.
 
@@ -764,4 +764,5 @@ This keeps terminal behavior close to the PTY owner and avoids embedding termina
 
 - [docs/api.md](./api.md)
 - [docs/architecture.md](./architecture.md)
+- [docs/protocols/connectivity.md](./protocols/connectivity.md)
 - [docs/tui-attach-flow.md](./tui-attach-flow.md)

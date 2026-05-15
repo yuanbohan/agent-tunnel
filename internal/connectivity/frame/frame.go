@@ -8,6 +8,7 @@ import (
 )
 
 const (
+	// Frame type values mirror agent-tunnel-protocols:docs/protocol.md.
 	TypeHello              byte = 0x01
 	TypeSessionIndex       byte = 0x02
 	TypePreviewSubscribe   byte = 0x03

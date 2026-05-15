@@ -7,6 +7,8 @@ const (
 	PathDirect = "direct"
 	PathRelay  = "relay"
 
+	// ProtocolVersion mirrors agent-tunnel-protocols:docs/protocol.md.
+	// Version 2 is the JSON daemon transport protocol.
 	ProtocolVersion = 2
 )
 

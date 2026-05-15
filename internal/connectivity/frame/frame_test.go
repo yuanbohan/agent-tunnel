@@ -44,35 +44,40 @@ func TestDecodeToleratesUnknownFrameType(t *testing.T) {
 	}
 }
 
-func TestStep4FrameTypeRegistry(t *testing.T) {
+func TestFrameTypeRegistryMatchesProtocolSSOT(t *testing.T) {
+	// Mirrors agent-tunnel-protocols:docs/protocol.md "Frame Type Registry".
 	tests := []struct {
 		name string
 		typ  byte
+		want byte
 	}{
-		{name: "hello", typ: TypeHello},
-		{name: "session_index", typ: TypeSessionIndex},
-		{name: "preview_subscribe", typ: TypePreviewSubscribe},
-		{name: "session_upsert", typ: TypeSessionUpsert},
-		{name: "session_gone", typ: TypeSessionGone},
-		{name: "preview_unsubscribe", typ: TypePreviewUnsubscribe},
-		{name: "preview_snapshot", typ: TypePreviewSnapshot},
-		{name: "interactive_request", typ: TypeInteractiveRequest},
-		{name: "interactive_granted", typ: TypeInteractiveGranted},
-		{name: "interactive_denied", typ: TypeInteractiveDenied},
-		{name: "interactive_release", typ: TypeInteractiveRelease},
-		{name: "input_text", typ: TypeInputText},
-		{name: "input_key", typ: TypeInputKey},
-		{name: "resize", typ: TypeResize},
-		{name: "path_state", typ: TypePathState},
-		{name: "snapshot_begin", typ: TypeSnapshotBegin},
-		{name: "snapshot_chunk", typ: TypeSnapshotChunk},
-		{name: "live_bytes", typ: TypeLiveBytes},
-		{name: "snapshot_end", typ: TypeSnapshotEnd},
-		{name: "error", typ: TypeError},
+		{name: "hello", typ: TypeHello, want: 0x01},
+		{name: "session_index", typ: TypeSessionIndex, want: 0x02},
+		{name: "preview_subscribe", typ: TypePreviewSubscribe, want: 0x03},
+		{name: "session_upsert", typ: TypeSessionUpsert, want: 0x04},
+		{name: "session_gone", typ: TypeSessionGone, want: 0x05},
+		{name: "preview_unsubscribe", typ: TypePreviewUnsubscribe, want: 0x06},
+		{name: "preview_snapshot", typ: TypePreviewSnapshot, want: 0x07},
+		{name: "interactive_request", typ: TypeInteractiveRequest, want: 0x08},
+		{name: "interactive_granted", typ: TypeInteractiveGranted, want: 0x09},
+		{name: "interactive_denied", typ: TypeInteractiveDenied, want: 0x0a},
+		{name: "interactive_release", typ: TypeInteractiveRelease, want: 0x0b},
+		{name: "input_text", typ: TypeInputText, want: 0x0c},
+		{name: "input_key", typ: TypeInputKey, want: 0x0d},
+		{name: "resize", typ: TypeResize, want: 0x0e},
+		{name: "path_state", typ: TypePathState, want: 0x0f},
+		{name: "snapshot_begin", typ: TypeSnapshotBegin, want: 0x10},
+		{name: "snapshot_chunk", typ: TypeSnapshotChunk, want: 0x11},
+		{name: "live_bytes", typ: TypeLiveBytes, want: 0x12},
+		{name: "snapshot_end", typ: TypeSnapshotEnd, want: 0x13},
+		{name: "error", typ: TypeError, want: 0x7f},
 	}
 
 	seen := make(map[byte]string)
 	for _, tt := range tests {
+		if tt.typ != tt.want {
+			t.Fatalf("%s frame type = 0x%02x, want SSOT value 0x%02x", tt.name, tt.typ, tt.want)
+		}
 		if previous, ok := seen[tt.typ]; ok {
 			t.Fatalf("frame type 0x%02x reused by %s and %s", tt.typ, previous, tt.name)
 		}

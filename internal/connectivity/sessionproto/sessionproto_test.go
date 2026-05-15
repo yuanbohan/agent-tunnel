@@ -4,8 +4,16 @@ import (
 	"bytes"
 	"encoding/json"
 	"reflect"
+	"slices"
 	"testing"
 )
+
+func TestProtocolVersionMatchesProtocolSSOTJSONTransport(t *testing.T) {
+	// Mirrors agent-tunnel-protocols:docs/protocol.md "Protocol Version".
+	if ProtocolVersion != 2 {
+		t.Fatalf("ProtocolVersion = %d, want SSOT JSON transport version 2", ProtocolVersion)
+	}
+}
 
 func TestPayloadsRoundTripAndIgnoreFutureFields(t *testing.T) {
 	tests := []struct {
@@ -78,6 +86,35 @@ func TestSessionMetadataDoesNotCarryPreviewText(t *testing.T) {
 	}
 }
 
+func TestSessionMetadataFieldSetMatchesProtocolSSOT(t *testing.T) {
+	raw, err := json.Marshal(sessionMetadata())
+	if err != nil {
+		t.Fatalf("Marshal returned error: %v", err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	got := make([]string, 0, len(fields))
+	for key := range fields {
+		got = append(got, key)
+	}
+	slices.Sort(got)
+	want := []string{
+		"command_preview",
+		"cwd",
+		"git_branch",
+		"label",
+		"online",
+		"session_id",
+		"started_at",
+		"updated_at",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("SessionMetadata fields = %v, want SSOT fields %v", got, want)
+	}
+}
+
 func TestSessionProtocolPayloadsDoNotCarryTierPolicyFields(t *testing.T) {
 	forbiddenKeys := map[string]struct{}{
 		"tier":                {},
@@ -87,11 +124,20 @@ func TestSessionProtocolPayloadsDoNotCarryTierPolicyFields(t *testing.T) {
 		"policy":              {},
 		"subscription":        {},
 		"entitlement":         {},
+		"terminal_bytes":      {},
+		"snapshot_bytes":      {},
+		"live_bytes":          {},
+		"launch_request_id":   {},
+		"launch_context":      {},
+		"path_authority":      {},
+		"path_badge":          {},
 	}
 	forbiddenTokens := [][]byte{
 		[]byte("policy_locked_session"),
 		[]byte("policy_determining_available_session"),
 		[]byte("unlocked_session_id"),
+		[]byte("SNAPSHOT_SECRET_"),
+		[]byte("LIVE_SECRET_"),
 	}
 
 	tests := []struct {

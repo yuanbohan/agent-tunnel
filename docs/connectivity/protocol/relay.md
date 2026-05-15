@@ -2,7 +2,7 @@
 
 ## Status
 
-This document captures this repository's Relay-owned control-plane protocol mirror for the QUIC connectivity architecture. Cross-repository protocol decisions live in [yuanbohan/agent-tunnel-protocols](https://github.com/yuanbohan/agent-tunnel-protocols). Step 2 implemented the auth/pairing/visibility subset. Step 4 adds fallback relay tunnel setup and opaque packet forwarding. Step 5 adds live rendezvous hint exchange for direct UDP attempts.
+This document captures this repository's Relay-owned control-plane protocol mirror for the QUIC connectivity architecture. Cross-repository protocol decisions live in [yuanbohan/agent-tunnel-protocols](https://github.com/yuanbohan/agent-tunnel-protocols), and local mirror provenance is tracked in `docs/protocols/connectivity.md`. Relay realtime remains gated for issue #134 unless the protocol SSOT explicitly includes a Relay connectivity document. Step 2 implemented the auth/pairing/visibility subset. Step 4 adds fallback relay tunnel setup and opaque packet forwarding. Step 5 adds live rendezvous hint exchange for direct UDP attempts.
 
 ## Purpose
 
@@ -443,6 +443,7 @@ When Relay is unavailable:
 
 ## References
 
+- `../../protocols/connectivity.md`
 - `../architecture.md`
 - `../contract.md`
 - `pairing.md`
