@@ -81,9 +81,15 @@ func (c *deviceConnector) serveOnce(ctx context.Context, handler *launchHandler)
 		return err
 	}
 	defer conn.Close()
+	_ = conn.SetReadDeadline(time.Now().Add(connectivityConnectorReadTimeout))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(connectivityConnectorReadTimeout))
+	})
+	stopPings := startConnectivityConnectorPingLoop(conn)
+	defer close(stopPings)
 
 	info := c.currentDeviceInfo()
-	if err := conn.WriteJSON(protocol.DeviceRegisterFrame(info)); err != nil {
+	if err := writeConnectivityConnectorJSON(conn, protocol.DeviceRegisterFrame(info)); err != nil {
 		return err
 	}
 	c.state.setRelayConnected(true)
@@ -104,10 +110,10 @@ func (c *deviceConnector) serveOnce(ctx context.Context, handler *launchHandler)
 				continue
 			}
 			result := handler.Handle(ctx, frame.RequestID, frame.Command, frame.CWD, frame.Label)
-			if err := conn.WriteJSON(protocol.DeviceLaunchResultFrameWithWorkspace(frame.RequestID, result.Status, result.Reason, result.WorkspaceSession)); err != nil {
+			if err := writeConnectivityConnectorJSON(conn, protocol.DeviceLaunchResultFrameWithWorkspace(frame.RequestID, result.Status, result.Reason, result.WorkspaceSession)); err != nil {
 				return err
 			}
-			if err := conn.WriteJSON(protocol.DeviceUpdateFrame(c.currentDeviceInfo())); err != nil {
+			if err := writeConnectivityConnectorJSON(conn, protocol.DeviceUpdateFrame(c.currentDeviceInfo())); err != nil {
 				return err
 			}
 		case "terminate_request":
@@ -115,7 +121,7 @@ func (c *deviceConnector) serveOnce(ctx context.Context, handler *launchHandler)
 				continue
 			}
 			result := handler.Terminate(ctx, frame.WorkspaceSession)
-			if err := conn.WriteJSON(protocol.DeviceTerminateResultFrame(frame.RequestID, result.Status, result.Reason)); err != nil {
+			if err := writeConnectivityConnectorJSON(conn, protocol.DeviceTerminateResultFrame(frame.RequestID, result.Status, result.Reason)); err != nil {
 				return err
 			}
 		}

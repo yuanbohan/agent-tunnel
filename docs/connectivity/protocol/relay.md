@@ -239,6 +239,11 @@ trusted client device, or account is no longer authorized. Relay rejects
 unavailable, expired, unpaired, wrong-account, malformed, or superseded attempts
 with `reason: "rendezvous_unavailable"`.
 
+Daemon-local direct transports are also bound to the current daemon Relay
+connectivity socket. If that socket disconnects, the daemon closes accepted
+direct transports for that socket instead of letting them outlive Relay-side
+authorization state.
+
 #### attempt_id Rules
 
 `attempt_id` is minted by the app client per direct/fallback attempt.

@@ -115,7 +115,7 @@ Pairing rules:
 - Android must already be logged in
 - same-account devices are not automatically trusted
 - trust is daemon-scoped
-- `tunnel daemon pair` reserves a live Relay correlation, receives the authenticated account id, and creates a short-lived, one-time invitation
+- `tunnel pair` reserves a live Relay correlation, receives the authenticated account id, creates a short-lived one-time invitation, and drives SAS confirmation in one CLI flow
 - forwarded Android responses remain pending until local SAS confirmation
 - the daemon is the trust root for device approval
 - Relay may carry pairing messages, but it does not decide trust

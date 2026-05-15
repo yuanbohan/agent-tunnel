@@ -19,7 +19,7 @@ terminal owner.
 ## Major Modules
 
 - Daemon connectivity core lifecycle
-- `tunnel run` auto-start or connect-to-daemon flow
+- Required `tunnel run` connect-to-daemon flow
 - Long-lived local session registration socket
 - Local session roster
 - Latest preview cache
@@ -27,7 +27,7 @@ terminal owner.
 
 ## In Scope
 
-- `tunnel run` registers itself with the daemon.
+- `tunnel run` registers itself with the daemon before starting the user command.
 - Daemon knows which local sessions exist.
 - Daemon has a latest preview per session.
 - Missing tmux degrades remote-launch health without blocking local broker registration.
@@ -43,15 +43,15 @@ terminal owner.
 - [x] Local `tunnel run` sessions appear in daemon-local roster.
 - [x] Session disappears when the local connection closes.
 - [x] Preview is generated locally, not by Relay.
-- [x] Current `tunnel run` startup and local terminal behavior are unchanged.
+- [x] The local terminal starts only after Relay registration and daemon broker registration have both succeeded.
 
 ## Implementation Summary
 
 - `internal/tunnel/daemon/broker.go` adds the daemon-owned long-lived Unix socket listener and live in-memory roster/cache.
-- `internal/tunnel/daemon/session_registration.go` adds the `tunnel run` side registration client. It keeps one broker connection open, retries after daemon/socket loss, verifies the daemon Relay base URL and auth-context fingerprint before each broker connect, sends full `register_session` metadata, sends throttled latest-preview replacements, and sends `session_gone` on close when possible.
+- `internal/tunnel/daemon/session_registration.go` adds the `tunnel run` side registration client. It keeps one broker connection open, retries after daemon/socket loss after startup, verifies the daemon Relay base URL and auth-context fingerprint before each broker connect, sends full `register_session` metadata, waits for the daemon broker `register_ack` during startup, sends throttled latest-preview replacements, and sends `session_gone` on close when possible.
 - `internal/tunnel/session/terminal_mirror.go` now exposes bounded plain-text preview generation from the owning `tunnel run` mirror. Preview normalization happens on the throttled broker sender path, not on every PTY output chunk.
-- `cmd/tunnel/main.go` now best-effort ensures a same-base-URL and same-auth-context daemon during `tunnel run` startup and adds the local registration client as a PTY output sink.
-- `tunnel run --daemon auto|off|required`, `tunnel daemon start/status/doctor --json`, and `tunnel daemon broker sessions --json` expose Step 3 daemon/broker control and observability without changing the Relay attach path.
+- `cmd/tunnel/main.go` now requires a same-base-URL and same-auth-context daemon during `tunnel run` startup, requires broker registration before launching the user command, and adds the local registration client as a PTY output sink.
+- `tunnel daemon start/status/doctor --json`, `tunnel daemon stop`, `tunnel session list`, `tunnel session stop <session-id>`, `tunnel workspace open`, and `tunnel workspace close` expose the public daemon, session, and local workspace surfaces without leaking daemon-local broker internals.
 - Daemon startup uses a daemon-local startup lock so concurrent cold `tunnel run` processes do not race to create competing daemon children.
 - The daemon broker enforces owner-only broker socket permissions, closes idle unregistered broker connections, removes stale same-connection re-registrations, and re-applies the preview size/normalization limit before caching previews.
 - `internal/tunnel/daemon/runtime.go` now starts the daemon connectivity core without tmux. Missing tmux initializes `launch_health: degraded` with `last_failure: tmux_not_found`, but control, pairing, connectivity realtime, and broker sockets still run.
@@ -68,7 +68,7 @@ terminal owner.
 
 ## Known Gaps
 
-- The broker roster/cache is daemon-local in Step 3. It is visible through `tunnel daemon broker sessions` for local diagnostics, but there is no mobile-visible session index yet.
+- The broker roster/cache is daemon-local. Public CLI session discovery is account-level and Relay-backed through `tunnel session list`; mobile visibility uses the daemon transport session index rather than a public broker-sessions command.
 - Peer credential enforcement is limited to owner-only socket path permissions plus same-owner socket checks on Linux/macOS before `tunnel run` sends metadata. Stronger per-platform credential checks remain future hardening.
 - Broker preview is latest-only in daemon memory. There is no preview history, durable preview storage, or Relay-visible preview.
 - Existing daemon/account mismatch protection verifies both Relay base URL and a non-secret auth-context fingerprint before `tunnel run` starts broker registration and before each broker reconnect. Step 4 transport fanout still must enforce paired-device visibility and authorization before exposing previews to paired devices.

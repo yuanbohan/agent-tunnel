@@ -10,6 +10,16 @@ ssh_user="${RELAY_CN_SSH_USER:-ubuntu}"
 compose_dir="${RELAY_CN_COMPOSE_DIR:-/opt/agentunnel/compose}"
 website_root="${RELAY_CN_WEBSITE_ROOT:-/var/www/agentunnel-website}"
 nginx_site_path="${RELAY_CN_NGINX_SITE_PATH:-/etc/nginx/sites-available/${domain}}"
+remote_timeout="${RELAY_CN_REMOTE_COMMAND_TIMEOUT:-20}"
+curl_connect_timeout="${RELAY_CN_CURL_CONNECT_TIMEOUT:-5}"
+curl_max_time="${RELAY_CN_CURL_MAX_TIME:-15}"
+ssh_options=(
+	-o StrictHostKeyChecking=no
+	-o BatchMode=yes
+	-o ConnectTimeout="${RELAY_CN_SSH_CONNECT_TIMEOUT:-10}"
+	-o ServerAliveInterval="${RELAY_CN_SSH_SERVER_ALIVE_INTERVAL:-5}"
+	-o ServerAliveCountMax="${RELAY_CN_SSH_SERVER_ALIVE_COUNT_MAX:-2}"
+)
 
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
@@ -83,6 +93,10 @@ print_diagnostics() {
 		printf '\n🔎 %s\n' "$label" >&2
 		cat "$file" >&2
 	fi
+}
+
+remote_ssh() {
+	ssh "${ssh_options[@]}" "${ssh_user}@${expected_host}" "$@"
 }
 
 truncate_text() {
@@ -187,8 +201,8 @@ check_remote_nginx_routes() {
 	local missing=()
 	local route
 
-	if ! ssh -o StrictHostKeyChecking=no "${ssh_user}@${expected_host}" \
-		"sudo cat '${nginx_site_path}'" \
+	if ! remote_ssh \
+		"timeout ${remote_timeout}s sudo cat '${nginx_site_path}'" \
 		>"$site_file" 2>"$tmpdir/${check}.stderr"; then
 		fail_result "$check" "could not read ${nginx_site_path}"
 		print_diagnostics "${check} stderr" "$tmpdir/${check}.stderr"
@@ -227,8 +241,8 @@ http_check_remote() {
 	local raw_file="$tmpdir/${check}.raw"
 	local code
 
-	if ! ssh -o StrictHostKeyChecking=no "${ssh_user}@${expected_host}" \
-		"curl -ksS --resolve ${domain}:443:127.0.0.1 -D - -o - https://${domain}${path}" \
+	if ! remote_ssh \
+		"timeout ${remote_timeout}s curl -ksS --connect-timeout ${curl_connect_timeout} --max-time ${curl_max_time} --resolve ${domain}:443:127.0.0.1 -D - -o - https://${domain}${path}" \
 		>"$raw_file" 2>"$tmpdir/${check}.stderr"; then
 		fail_result "$check" "request failed for ${path}"
 		print_diagnostics "${check} stderr" "$tmpdir/${check}.stderr"
@@ -258,17 +272,24 @@ http_check_websocket_auth() {
 	local check="$1"
 	local expected_code="$2"
 	local path="$3"
+	local bearer_token="${4:-}"
 	local raw_file="$tmpdir/${check}.raw"
 	local headers_file="$tmpdir/${check}.headers"
 	local body_file="$tmpdir/${check}.body"
 	local code
+	local auth_header=""
 
-	if ! ssh -o StrictHostKeyChecking=no "${ssh_user}@${expected_host}" \
-		"curl -kisS --http1.1 --resolve ${domain}:443:127.0.0.1 https://${domain}${path} \
+	if [ -n "$bearer_token" ]; then
+		auth_header="-H 'Authorization: Bearer ${bearer_token}'"
+	fi
+
+	if ! remote_ssh \
+		"timeout ${remote_timeout}s curl -kisS --http1.1 --connect-timeout ${curl_connect_timeout} --max-time ${curl_max_time} --resolve ${domain}:443:127.0.0.1 https://${domain}${path} \
 		 -H 'Connection: Upgrade' \
 		 -H 'Upgrade: websocket' \
 		 -H 'Sec-WebSocket-Version: 13' \
-		 -H 'Sec-WebSocket-Key: SGVsbG8sIHdvcmxkIQ=='" \
+		 -H 'Sec-WebSocket-Key: SGVsbG8sIHdvcmxkIQ==' \
+		 ${auth_header}" \
 		>"$raw_file" 2>"$tmpdir/${check}.stderr"; then
 		fail_result "$check" "request failed for ${path}"
 		print_diagnostics "${check} stderr" "$tmpdir/${check}.stderr"
@@ -311,16 +332,16 @@ fi
 
 check_remote_nginx_routes
 
-if ssh -o StrictHostKeyChecking=no "${ssh_user}@${expected_host}" \
-	"test -f '${compose_dir}/.env'" >/dev/null 2>"$tmpdir/remote-env.stderr"; then
+if remote_ssh \
+	"timeout ${remote_timeout}s test -f '${compose_dir}/.env'" >/dev/null 2>"$tmpdir/remote-env.stderr"; then
 	pass_result "remote-env" "${compose_dir}/.env exists"
 else
 	fail_result "remote-env" "${compose_dir}/.env is missing"
 	print_diagnostics "remote-env stderr" "$tmpdir/remote-env.stderr"
 fi
 
-if ssh -o StrictHostKeyChecking=no "${ssh_user}@${expected_host}" \
-	"cd '${compose_dir}' && sudo docker compose --env-file .env ps" \
+if remote_ssh \
+	"timeout ${remote_timeout}s sh -lc 'cd ${compose_dir} && sudo docker compose --env-file .env ps'" \
 	>"$compose_ps_file" 2>"$tmpdir/compose-ps.stderr"; then
 	if grep -q "compose-relay-1" "$compose_ps_file" && grep -q "compose-postgres-1" "$compose_ps_file" && grep -q "compose-stun-1" "$compose_ps_file"; then
 		pass_result "compose" "relay, postgres, and stun containers are present"
@@ -334,8 +355,8 @@ else
 fi
 
 relay_health="$(
-	ssh -o StrictHostKeyChecking=no "${ssh_user}@${expected_host}" \
-		"curl -fsS http://127.0.0.1:8586/healthz" 2>"$tmpdir/local-health.stderr"
+	remote_ssh \
+		"timeout ${remote_timeout}s curl -fsS --connect-timeout ${curl_connect_timeout} --max-time ${curl_max_time} http://127.0.0.1:8586/healthz" 2>"$tmpdir/local-health.stderr"
 )"
 if printf '%s\n' "$relay_health" | grep -q '"status":"ok"'; then
 	pass_result "local-relay" "127.0.0.1:8586/healthz reports ok"
@@ -344,8 +365,8 @@ else
 	print_diagnostics "local-relay stderr" "$tmpdir/local-health.stderr"
 fi
 
-if ssh -o StrictHostKeyChecking=no "${ssh_user}@${expected_host}" \
-	"test -f '${website_root}/current/index.html'" >/dev/null 2>"$tmpdir/website-file.stderr"; then
+if remote_ssh \
+	"timeout ${remote_timeout}s test -f '${website_root}/current/index.html'" >/dev/null 2>"$tmpdir/website-file.stderr"; then
 	pass_result "website-files" "${website_root}/current/index.html exists"
 else
 	fail_result "website-files" "${website_root}/current/index.html is missing"
@@ -361,7 +382,7 @@ http_check_websocket_auth "agent-ws" "401" "/agent/ws"
 http_check_websocket_auth "device-ws" "401" "/device/ws"
 http_check_websocket_auth "connectivity-computer-ws" "401" "/connectivity/computer/ws"
 http_check_websocket_auth "connectivity-daemon-ws-legacy" "401" "/connectivity/daemon/ws"
-http_check_websocket_auth "connectivity-tunnel-ws" "403" "/connectivity/tunnel/ws?token=invalid"
+http_check_websocket_auth "connectivity-tunnel-ws" "403" "/connectivity/tunnel/ws" "invalid"
 
 stun_check_out="$tmpdir/stun-check.out"
 if ./scripts/stun-check.sh "$stun_target" >"$stun_check_out" 2>"$tmpdir/stun-check.stderr"; then

@@ -13,6 +13,7 @@ import (
 
 const defaultRelayListenAddr = relayconfig.DefaultRelayListenAddr
 const defaultRelaySTUNListenAddr = relayconfig.DefaultRelaySTUNListenAddr
+const defaultRelayServeSTUNListenAddr = "off"
 
 type serveConfig struct {
 	ListenAddr     string
@@ -87,7 +88,7 @@ func usagef(format string, args ...any) error {
 // applyServeFlags registers serve-subcommand flags on fs.
 func applyServeFlags(fs *pflag.FlagSet, cfg *serveConfig) {
 	fs.StringVarP(&cfg.ListenAddr, "listen-addr", "a", "", "relay listen address (env: RELAY_LISTEN_ADDR)")
-	fs.StringVar(&cfg.STUNListenAddr, "stun-listen-addr", "", `STUN UDP listen address, or "off" to disable (env: RELAY_STUN_LISTEN_ADDR)`)
+	fs.StringVar(&cfg.STUNListenAddr, "stun-listen-addr", "", `embedded STUN UDP listen address, or "off" to disable (env: RELAY_STUN_LISTEN_ADDR, default: off)`)
 	fs.StringVarP(&cfg.LogFile, "log-file", "L", "", "append structured logs to this file (env: RELAY_LOG_FILE, default: stderr)")
 }
 
@@ -96,7 +97,7 @@ func finalizeServeConfig(cfg serveConfig, getenv func(string) string) (serveConf
 		cfg.ListenAddr = envOrDefault(getenv, "RELAY_LISTEN_ADDR", defaultRelayListenAddr)
 	}
 	if cfg.STUNListenAddr == "" {
-		cfg.STUNListenAddr = envOrDefault(getenv, "RELAY_STUN_LISTEN_ADDR", defaultRelaySTUNListenAddr)
+		cfg.STUNListenAddr = envOrDefault(getenv, "RELAY_STUN_LISTEN_ADDR", defaultRelayServeSTUNListenAddr)
 	}
 	if cfg.LogFile == "" {
 		cfg.LogFile = envValue(getenv, "RELAY_LOG_FILE")

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"yuanbohan/tunnel/internal/tunnel/daemon"
 	tunnelupdate "yuanbohan/tunnel/internal/tunnel/update"
 )
 
@@ -113,6 +114,74 @@ func TestRunManualUpdatePrintsRollbackUnavailableReason(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "rollback is unavailable") {
 		t.Fatalf("stdout = %q, want rollback guidance", stdout.String())
+	}
+}
+
+func TestRunManualUpdatePrintsTmuxReadinessWarningWhenMissing(t *testing.T) {
+	withTempHome(t)
+	engine := &fakeUpdaterEngine{
+		installLatestResult: tunnelupdate.InstallResult{
+			Updated:          true,
+			CurrentVersion:   "v0.1.7",
+			InstalledVersion: "v0.1.9",
+		},
+	}
+
+	oldNewUpdaterEngine := newUpdaterEngine
+	oldCheckTmuxAvailable := checkTmuxAvailable
+	newUpdaterEngine = func(callbacks updaterCallbacks) updaterEngine {
+		engine.beforeReplace = callbacks.beforeReplace
+		engine.onReplaceFailure = callbacks.onReplaceFailure
+		return engine
+	}
+	checkTmuxAvailable = func() error {
+		return daemon.ErrTmuxNotFound
+	}
+	t.Cleanup(func() {
+		newUpdaterEngine = oldNewUpdaterEngine
+		checkTmuxAvailable = oldCheckTmuxAvailable
+	})
+
+	var stdout bytes.Buffer
+	if err := runManualUpdate(context.Background(), &stdout, ioDiscard{}); err != nil {
+		t.Fatalf("runManualUpdate returned error: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "warning: tmux is required") {
+		t.Fatalf("stdout = %q, want tmux readiness warning", stdout.String())
+	}
+}
+
+func TestRunManualUpdateSkipsTmuxReadinessWarningWhenPresent(t *testing.T) {
+	withTempHome(t)
+	engine := &fakeUpdaterEngine{
+		installLatestResult: tunnelupdate.InstallResult{
+			Updated:          true,
+			CurrentVersion:   "v0.1.7",
+			InstalledVersion: "v0.1.9",
+		},
+	}
+
+	oldNewUpdaterEngine := newUpdaterEngine
+	oldCheckTmuxAvailable := checkTmuxAvailable
+	newUpdaterEngine = func(callbacks updaterCallbacks) updaterEngine {
+		engine.beforeReplace = callbacks.beforeReplace
+		engine.onReplaceFailure = callbacks.onReplaceFailure
+		return engine
+	}
+	checkTmuxAvailable = func() error {
+		return nil
+	}
+	t.Cleanup(func() {
+		newUpdaterEngine = oldNewUpdaterEngine
+		checkTmuxAvailable = oldCheckTmuxAvailable
+	})
+
+	var stdout bytes.Buffer
+	if err := runManualUpdate(context.Background(), &stdout, ioDiscard{}); err != nil {
+		t.Fatalf("runManualUpdate returned error: %v", err)
+	}
+	if strings.Contains(stdout.String(), "tmux is required") {
+		t.Fatalf("stdout = %q, did not expect tmux warning", stdout.String())
 	}
 }
 

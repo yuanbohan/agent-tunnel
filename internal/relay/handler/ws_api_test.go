@@ -221,7 +221,12 @@ func TestDeviceWebSocketLaunchRequestRoundTrip(t *testing.T) {
 			return
 		}
 
-		agentConnCh <- dialAndRegisterAgentWithLaunchRequestAndDeviceID(t, server.URL, agentToken.Plaintext, "sess-1", frame.RequestID, "dev-1")
+		agentConn := dialAndRegisterAgentWithLaunchRequestAndDeviceID(t, server.URL, agentToken.Plaintext, "sess-1", frame.RequestID, "dev-1")
+		if err := agentConn.WriteJSON(protocol.LaunchReadyFrame(protocol.LaunchContext{Source: protocol.SessionLaunchSourceMobile, RequestID: frame.RequestID})); err != nil {
+			t.Errorf("WriteJSON launch_ready returned error: %v", err)
+			return
+		}
+		agentConnCh <- agentConn
 	}()
 
 	resp := doBearerPOST(t, server.URL+"/api/devices/dev-1/launch", issued.AccessToken, `{"command":"codex","cwd":"/repo","label":"api-fix"}`)
@@ -305,6 +310,65 @@ func TestDeviceWebSocketLaunchRequestRoundTrip(t *testing.T) {
 	<-done
 }
 
+func TestDeviceWebSocketLaunchWaitsForAgentLaunchReady(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	issued := env.login(t, "alice", "password123")
+	agentToken := env.createAgentToken(t, user.ID, "Laptop")
+
+	server := httptest.NewServer(env.handler(nil))
+	defer server.Close()
+
+	deviceConn := dialAndRegisterDevice(t, server.URL, agentToken.Plaintext, protocol.DeviceInfo{
+		DeviceID:       "dev-1",
+		DisplayName:    "Test Mac",
+		PlatformFamily: "macos",
+		PlatformID:     "macos",
+	})
+	defer deviceConn.Close()
+
+	launchRespCh := make(chan handlertypes.DeviceLaunchResponse, 1)
+	go func() {
+		resp := doBearerPOST(t, server.URL+"/api/devices/dev-1/launch", issued.AccessToken, `{"command":"codex","cwd":"/repo"}`)
+		defer resp.Body.Close()
+		var launch handlertypes.DeviceLaunchResponse
+		decodeAPIEnvelopeFromResponse(t, resp, http.StatusOK, &launch)
+		launchRespCh <- launch
+	}()
+
+	var frame protocol.DeviceFrame
+	if err := deviceConn.ReadJSON(&frame); err != nil {
+		t.Fatalf("ReadJSON launch_request returned error: %v", err)
+	}
+	if err := deviceConn.WriteJSON(protocol.DeviceLaunchResultFrameWithWorkspace(frame.RequestID, "accepted", "", "launch_fixed")); err != nil {
+		t.Fatalf("WriteJSON accepted returned error: %v", err)
+	}
+
+	agentConn := dialAndRegisterAgentWithLaunchRequestAndDeviceID(t, server.URL, agentToken.Plaintext, "sess-1", frame.RequestID, "dev-1")
+	defer agentConn.Close()
+	waitForOwnedSession(t, env.registry, "sess-1", user.ID)
+
+	select {
+	case launch := <-launchRespCh:
+		t.Fatalf("launch completed before launch_ready: %#v", launch)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	if err := agentConn.WriteJSON(protocol.LaunchReadyFrame(protocol.LaunchContext{Source: protocol.SessionLaunchSourceMobile, RequestID: frame.RequestID})); err != nil {
+		t.Fatalf("WriteJSON launch_ready returned error: %v", err)
+	}
+
+	select {
+	case launch := <-launchRespCh:
+		if launch.Status != "session_ready" || launch.SessionID != "sess-1" || launch.RequestID != frame.RequestID {
+			t.Fatalf("launch = %#v, want session_ready sess-1", launch)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for launch response after launch_ready")
+	}
+}
+
 func TestDeviceWebSocketLateAcceptedLaunchBackfillsMobileSource(t *testing.T) {
 	env := newHandlerTestEnv(t)
 	env.addInvite(t, "AB2C3D")
@@ -343,6 +407,9 @@ func TestDeviceWebSocketLateAcceptedLaunchBackfillsMobileSource(t *testing.T) {
 	agentConn := dialAndRegisterAgentWithLaunchRequestAndDeviceID(t, server.URL, agentToken.Plaintext, "sess-1", frame.RequestID, "dev-1")
 	defer agentConn.Close()
 	waitForOwnedSession(t, env.registry, "sess-1", user.ID)
+	if err := agentConn.WriteJSON(protocol.LaunchReadyFrame(protocol.LaunchContext{Source: protocol.SessionLaunchSourceMobile, RequestID: frame.RequestID})); err != nil {
+		t.Fatalf("WriteJSON launch_ready returned error: %v", err)
+	}
 
 	beforeAcceptedResp := doBearerGET(t, server.URL+"/api/sessions", issued.AccessToken)
 	defer beforeAcceptedResp.Body.Close()

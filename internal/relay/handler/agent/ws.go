@@ -86,15 +86,6 @@ func Handle(registry *session.Registry, deviceRegistry *relaydevice.Registry) gi
 		if register.LaunchContext != nil && register.LaunchContext.Source == protocol.SessionLaunchSourceMobile {
 			launchRequestID = strings.TrimSpace(register.LaunchContext.RequestID)
 		}
-		if deviceRegistry != nil && launchRequestID != "" {
-			deviceOwner := relaydevice.DeviceOwner{
-				UserID:       authenticated.User.ID,
-				AgentTokenID: authenticated.Token.ID,
-			}
-			if _, ok := deviceRegistry.CompleteLaunchIfOwner(launchRequestID, deviceOwner, register.Session.SessionID); ok {
-				sessionInfo.LaunchSource = protocol.SessionLaunchSourceMobile
-			}
-		}
 		registry.RegisterOwned(sessionInfo, sessionOwner, peer)
 		defer registry.DisconnectIfOwner(register.Session.SessionID, peer)
 
@@ -137,6 +128,19 @@ func Handle(registry *session.Registry, deviceRegistry *relaydevice.Registry) gi
 					continue
 				}
 				switch frame.Type {
+				case "launch_ready":
+					if deviceRegistry != nil && frame.LaunchContext != nil && frame.LaunchContext.Source == protocol.SessionLaunchSourceMobile {
+						requestID := strings.TrimSpace(frame.LaunchContext.RequestID)
+						if requestID != "" {
+							deviceOwner := relaydevice.DeviceOwner{
+								UserID:       authenticated.User.ID,
+								AgentTokenID: authenticated.Token.ID,
+							}
+							if _, ok := deviceRegistry.CompleteLaunchIfOwner(requestID, deviceOwner, register.Session.SessionID); ok {
+								registry.SetLaunchSourceForUser(register.Session.SessionID, authenticated.User.ID, protocol.SessionLaunchSourceMobile)
+							}
+						}
+					}
 				case "resize":
 					if frame.Cols > 0 && frame.Rows > 0 {
 						registry.RouteResizeIfOwner(register.Session.SessionID, peer, frame.Cols, frame.Rows)

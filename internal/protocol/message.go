@@ -82,6 +82,14 @@ func RegisterFrameWithLaunchContext(info SessionInfo, launchContext LaunchContex
 	return frame
 }
 
+func LaunchReadyFrame(launchContext LaunchContext) AgentFrame {
+	frame := AgentFrame{Type: "launch_ready"}
+	if launchContext.Source != "" || launchContext.RequestID != "" {
+		frame.LaunchContext = &launchContext
+	}
+	return frame
+}
+
 func ResizeFrame(cols, rows int) AgentFrame {
 	return AgentFrame{
 		Type: "resize",

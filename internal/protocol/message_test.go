@@ -82,6 +82,25 @@ func TestStopSessionFrame(t *testing.T) {
 	}
 }
 
+func TestLaunchReadyFrame(t *testing.T) {
+	frame := LaunchReadyFrame(LaunchContext{Source: SessionLaunchSourceMobile, RequestID: "req-123"})
+	raw, err := json.Marshal(frame)
+	if err != nil {
+		t.Fatalf("Marshal returned error: %v", err)
+	}
+
+	var decoded AgentFrame
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	if decoded.Type != "launch_ready" {
+		t.Fatalf("Type = %q, want launch_ready", decoded.Type)
+	}
+	if decoded.LaunchContext == nil || decoded.LaunchContext.Source != SessionLaunchSourceMobile || decoded.LaunchContext.RequestID != "req-123" {
+		t.Fatalf("LaunchContext = %#v, want mobile req-123", decoded.LaunchContext)
+	}
+}
+
 func TestAttachOpenFrameRoundTrip(t *testing.T) {
 	frame := AttachOpenFrame("4d2c6ec8-787a-49c9-b9a0-5dbd8d31b7b1")
 

@@ -26,8 +26,8 @@ func TestLoadServeConfigDefaultsAndRequirements(t *testing.T) {
 	if cfg.ListenAddr != defaultRelayListenAddr {
 		t.Fatalf("ListenAddr = %q, want %q", cfg.ListenAddr, defaultRelayListenAddr)
 	}
-	if cfg.STUNListenAddr != defaultRelaySTUNListenAddr {
-		t.Fatalf("STUNListenAddr = %q, want %q", cfg.STUNListenAddr, defaultRelaySTUNListenAddr)
+	if cfg.STUNListenAddr != "" {
+		t.Fatalf("STUNListenAddr = %q, want disabled empty value by default", cfg.STUNListenAddr)
 	}
 }
 

@@ -12,7 +12,7 @@ This document explains the local end-to-end regression path for the real relay s
 - real `tunnel` startup
 - real attach over HTTP discovery plus WebSocket attach
 
-Everything here is intentionally local-only. Do not point this flow at `diaro.me` or any other remote relay.
+Everything here is intentionally local-only. Do not point this flow at `agentunnel.cn` or any other remote relay.
 
 The recommended local database for this workflow is a Dockerized `postgres:16.11-alpine` started through the repo script and Make targets added for local E2E.
 

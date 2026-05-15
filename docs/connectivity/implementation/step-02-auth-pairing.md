@@ -55,7 +55,7 @@ traffic.
 
 - App auth remains opaque bearer-token based. `POST /api/auth/login` and `POST /api/auth/refresh` now accept optional `client_fingerprint`; refresh rejects mismatches for fingerprint-bound sessions.
 - Users now have `subscription_tier` (`free`/`pro`) with `GET /api/account/policy`, local-only `POST /operator/users/tier`, and `relay user tier <username> <free|pro>`.
-- Daemon state now includes a separate Ed25519 connectivity identity, signed pairing invitations, persisted invitation state, pending pairing responses, trusted Android roster, `tunnel daemon pair`, `tunnel daemon pair pending`, `tunnel daemon pair confirm <invitation-id> <sas>`, `tunnel daemon devices`, and `tunnel daemon revoke <fingerprint>`.
+- Daemon state now includes a separate Ed25519 connectivity identity, signed pairing invitations, persisted invitation state, pending pairing responses, and the trusted Android roster. The public CLI surface is now `tunnel pair`, `tunnel pair devices`, and `tunnel pair revoke <fingerprint>`; invitation, pending-response, and confirm operations remain daemon-local implementation details behind the one-step pairing command.
 - Pairing transcript helpers sign and verify daemon invitations and Android responses and compute the documented SAS.
 - Relay has live-only connectivity app/daemon WebSockets at `/api/connectivity/app/ws` and `/connectivity/daemon/ws`; visibility is derived from daemon-reported trusted Android rosters, `pair_completed`, and app-session fingerprints.
 - A Go-only Android pairing helper exists under `internal/connectivity/pairtest`.
@@ -76,11 +76,11 @@ traffic.
 
 ## Known Gaps
 
-- QR rendering is not implemented; `tunnel daemon pair` prints the signed JSON invitation payload.
+- Terminal QR rendering is implemented by `tunnel pair`; JSON invitation output remains available with `tunnel pair --json` for automated tests and tooling.
 - Production Android code remains unimplemented and unvalidated; the current evidence is Go-only.
 - Session transport, preview, interactive attach, direct UDP, fallback QUIC tunnel, and STUN remain out of scope.
 
 ## Follow-Up For Step 3 Or Step 4
 
-- Step 3 should decide whether `tunnel daemon pair` stays JSON-only for tests or adds terminal QR rendering.
+- Step 3 and later flows should use the top-level `tunnel pair` surface rather than exposing daemon-local pairing internals.
 - Step 4 can rely on daemon-local connectivity identity and trusted Android roster, but should not assume terminal/session transport exists on connectivity WebSockets.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"strings"
@@ -35,13 +36,16 @@ type SessionRegistrationClient struct {
 	expectedBaseURL                string
 	expectedAuthContextFingerprint string
 
-	notify    chan struct{}
-	done      chan struct{}
-	closeOnce sync.Once
-	writeMu   sync.Mutex
+	notify         chan struct{}
+	registered     chan struct{}
+	done           chan struct{}
+	closeOnce      sync.Once
+	registeredOnce sync.Once
+	writeMu        sync.Mutex
 
 	mu              sync.Mutex
 	lastSentPreview string
+	lastRegisterErr error
 	pendingSnapshot bool
 	conn            net.Conn
 	encoder         *json.Encoder
@@ -59,6 +63,7 @@ func NewSessionRegistrationClient(paths Paths, info protocol.SessionInfo) *Sessi
 		mirror:       tunnelsession.NewTerminalMirror(0, 0),
 		throttle:     defaultPreviewThrottle,
 		notify:       make(chan struct{}, 1),
+		registered:   make(chan struct{}),
 		done:         make(chan struct{}),
 		now:          time.Now,
 		daemonStatus: Status,
@@ -76,6 +81,35 @@ func NewSessionRegistrationClient(paths Paths, info protocol.SessionInfo) *Sessi
 				return true
 			}
 		},
+	}
+}
+
+func (c *SessionRegistrationClient) WaitUntilRegistered(ctx context.Context) error {
+	if c == nil {
+		return errors.New("session registration client is nil")
+	}
+	select {
+	case <-c.registered:
+		return nil
+	default:
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	select {
+	case <-c.registered:
+		return nil
+	case <-c.done:
+		return errors.New("session registration closed before daemon broker accepted the session")
+	case <-ctx.Done():
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			if err := c.lastRegistrationError(); err != nil {
+				return fmt.Errorf("daemon broker registration failed before acknowledgement: %w", err)
+			}
+			return errors.New("timed out waiting for daemon broker to accept the session")
+		}
+		return ctx.Err()
 	}
 }
 
@@ -182,6 +216,9 @@ func (c *SessionRegistrationClient) Run(ctx context.Context) {
 			backoff = time.Second
 			continue
 		}
+		if !c.isRegistered() {
+			c.recordRegistrationError(err)
+		}
 		if !c.sleepWithDone(ctx, backoff) {
 			return
 		}
@@ -284,7 +321,7 @@ func (c *SessionRegistrationClient) runOnce(ctx context.Context) error {
 				SessionID: c.session.SessionID,
 				Preview:   preview,
 				UpdatedAt: protocol.UnixTimestamp(now),
-				}); err != nil {
+			}); err != nil {
 				return false, err
 			}
 		}
@@ -380,7 +417,7 @@ func (c *SessionRegistrationClient) runOnce(ctx context.Context) error {
 				continue
 			}
 			pending = preview
-				pendingSnapshot = pendingSnapshot || snapshot
+			pendingSnapshot = pendingSnapshot || snapshot
 			schedulePending(now)
 		case <-timerC:
 			timerC = nil
@@ -395,10 +432,53 @@ func (c *SessionRegistrationClient) runOnce(ctx context.Context) error {
 
 func (c *SessionRegistrationClient) handleBrokerFrame(frame BrokerFrame) {
 	switch frame.Type {
+	case brokerFrameRegisterAck:
+		if strings.TrimSpace(frame.SessionID) == c.session.SessionID {
+			c.markRegistered()
+		}
 	case brokerFrameInputText, brokerFrameInputKey, brokerFrameResize:
 		c.routeBrokerCommand(frame)
 	default:
 	}
+}
+
+func (c *SessionRegistrationClient) markRegistered() {
+	if c == nil {
+		return
+	}
+	c.registeredOnce.Do(func() {
+		close(c.registered)
+	})
+}
+
+func (c *SessionRegistrationClient) isRegistered() bool {
+	if c == nil {
+		return false
+	}
+	select {
+	case <-c.registered:
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *SessionRegistrationClient) recordRegistrationError(err error) {
+	if c == nil || err == nil {
+		return
+	}
+	c.mu.Lock()
+	c.lastRegisterErr = err
+	c.mu.Unlock()
+}
+
+func (c *SessionRegistrationClient) lastRegistrationError() error {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lastRegisterErr
 }
 
 func (c *SessionRegistrationClient) routeBrokerCommand(frame BrokerFrame) {

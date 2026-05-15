@@ -19,7 +19,7 @@ Defined in `pairing-protocol.md`. Emitted by daemon to Android (over the pairing
 
 | Code | Emitted By | Trigger | Recommended User-Facing String |
 |---|---|---|---|
-| `pairing_invitation_expired` | daemon | invitation `expires_at` is in the past | "This pairing code has expired. Run `tunnel daemon pair` again." |
+| `pairing_invitation_expired` | daemon | invitation `expires_at` is in the past | "This pairing code has expired. Run `tunnel pair` again." |
 | `pairing_invitation_invalid` | Android (local) or daemon | invitation payload could not be parsed; daemon signature verify failed | "Pairing code is invalid. Re-import or check the daemon CLI." |
 | `pairing_invitation_consumed` | daemon | invitation already completed once | "This pairing code has already been used. Mint a new one." |
 | `pairing_account_mismatch` | daemon | Relay-asserted Android account does not match invitation `account_id` | "You're signed in to a different account. Sign in with the matching account." |

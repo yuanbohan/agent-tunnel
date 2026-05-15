@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-const defaultTunnelBaseURL = "https://diaro.me"
+const defaultTunnelBaseURL = "https://agentunnel.cn"
 
 const (
 	tunnelBaseURLEnv        = "TUNNEL_BASE_URL"
@@ -18,21 +18,15 @@ type runArgs struct {
 	Verbose         bool
 	Label           string
 	BaseURL         string
-	DaemonMode      string
 	LaunchSource    string
 	LaunchRequestID string
 	Launcher        string
 	LauncherArgs    []string
 }
 
-const (
-	runDaemonModeAuto     = "auto"
-	runDaemonModeOff      = "off"
-	runDaemonModeRequired = "required"
-)
-
 type sessionCommandArgs struct {
 	BaseURL string
+	JSON    bool
 }
 
 type usageError struct {
@@ -74,6 +68,8 @@ func rootHelpText() string {
   tunnel auth <command>
   tunnel session <command>
   tunnel daemon <command>
+  tunnel pair [command]
+  tunnel workspace <command>
   tunnel update
   tunnel rollback
   tunnel --help
@@ -83,7 +79,9 @@ Commands:
   run         Launch a local command and connect it to the relay
   auth        Manage local tunnel authentication
   session     List and stop live tunnel sessions
-  daemon      Manage the background mobile-launch daemon
+  daemon      Manage the local background daemon
+  pair        Pair and manage trusted client devices
+  workspace   Open or close the Tunnel workspace view
   update      Update tunnel to the latest official release
   rollback    Roll back tunnel to the previous official release
   help        Show help for a command
@@ -103,11 +101,10 @@ Examples:
   tunnel session list
   tunnel session stop 1700000000000000000
   tunnel daemon start
-  tunnel daemon open
-  tunnel daemon close
-  tunnel daemon sessions
-  tunnel daemon pair
-  tunnel daemon devices
+  tunnel pair
+  tunnel pair devices
+  tunnel workspace open
+  tunnel workspace close
   tunnel update
   tunnel rollback
   tunnel run claude
@@ -117,7 +114,7 @@ Examples:
 
 func sessionHelpText() string {
 	return fmt.Sprintf(`Usage:
-  tunnel session list [--base-url url]
+  tunnel session list [--base-url url] [--json]
   tunnel session stop [--base-url url] <session-id>
   tunnel session --help
 
@@ -137,11 +134,12 @@ Examples:
 
 func sessionListHelpText() string {
 	return fmt.Sprintf(`Usage:
-  tunnel session list [--base-url url]
+  tunnel session list [--base-url url] [--json]
 
 Flags:
   -h, --help       Show this help message and exit
       --base-url   Relay base URL (fallback: %s, default: %s)
+      --json       Print live sessions as JSON
 `, tunnelBaseURLEnv, defaultTunnelBaseURL)
 }
 
@@ -157,7 +155,7 @@ Flags:
 
 func runHelpText() string {
 	return fmt.Sprintf(`Usage:
-  tunnel run [-l label] [--base-url url] [--daemon auto|off|required] <command> [args...]
+  tunnel run [-l label] [--base-url url] <command> [args...]
   tunnel run --help
 
 Arguments:
@@ -169,7 +167,6 @@ Flags:
   -v, --verbose    Print relay connection status on successful startup
   -l, --label      Optional session label for relay clients
       --base-url   Relay base URL (fallback: %s, default: %s)
-      --daemon     Daemon broker mode: auto, off, or required (default: auto)
 
 Environment:
   %s  Higher-priority auth token override for tunnel run
@@ -211,13 +208,6 @@ Commands:
   status      Show daemon status
   stop        Stop the background daemon
   doctor      Run daemon diagnostics
-  broker      Inspect daemon local broker state
-  open        Open the daemon tmux workspace
-  close       Close one open daemon tmux workspace view
-  sessions    List daemon tmux sessions
-  pair        Create or confirm pairing invitations
-  devices     List paired client devices
-  revoke      Revoke a paired client device
 
 Flags:
   -h, --help       Show this help message and exit
@@ -230,15 +220,6 @@ Examples:
   tunnel daemon status
   tunnel daemon stop
   tunnel daemon doctor
-  tunnel daemon broker sessions --json
-  tunnel daemon open
-  tunnel daemon close
-  tunnel daemon sessions
-  tunnel daemon pair [--json]
-  tunnel daemon pair pending [--json]
-  tunnel daemon pair confirm <invitation-id> <sas> [--json]
-  tunnel daemon devices [--json]
-  tunnel daemon revoke <fingerprint> [--json]
 `
 }
 
@@ -252,6 +233,84 @@ Flags:
       --base-url   Relay base URL (fallback: %s, default: %s)
       --json       Print daemon status as JSON
 `, tunnelBaseURLEnv, defaultTunnelBaseURL)
+}
+
+func pairHelpText() string {
+	return `Usage:
+  tunnel pair [--json]
+  tunnel pair devices [--json]
+  tunnel pair revoke <fingerprint> [--json]
+  tunnel pair --help
+
+Commands:
+  devices     List paired client devices
+  revoke      Revoke a paired client device
+
+Flags:
+  -h, --help       Show this help message and exit
+      --json       Print machine-readable JSON
+
+Examples:
+  tunnel pair
+  tunnel pair devices
+  tunnel pair revoke <fingerprint-from-devices>
+`
+}
+
+func pairDevicesHelpText() string {
+	return `Usage:
+  tunnel pair devices [--json]
+
+Flags:
+  -h, --help       Show this help message and exit
+      --json       Print trusted devices as JSON
+`
+}
+
+func pairRevokeHelpText() string {
+	return `Usage:
+  tunnel pair revoke <fingerprint> [--json]
+
+Flags:
+  -h, --help       Show this help message and exit
+      --json       Print revoked device as JSON
+`
+}
+
+func workspaceHelpText() string {
+	return `Usage:
+  tunnel workspace <command>
+  tunnel workspace --help
+
+Commands:
+  open       Open the Tunnel workspace view
+  close      Close one open workspace view
+
+Flags:
+  -h, --help       Show this help message and exit
+
+Examples:
+  tunnel workspace open
+  tunnel workspace close
+`
+}
+
+func workspaceOpenHelpText() string {
+	return `Usage:
+  tunnel workspace open
+
+Flags:
+  -h, --help       Show this help message and exit
+`
+}
+
+func workspaceCloseHelpText() string {
+	return `Usage:
+  tunnel workspace close
+
+Flags:
+  -h, --help       Show this help message and exit
+`
 }
 
 func authLoginHelpText() string {
@@ -286,12 +345,12 @@ func resolveBaseURL(explicit string, getenv func(string) string) (string, error)
 func validateBaseURL(raw string) (string, error) {
 	baseURL := strings.TrimSpace(raw)
 	if baseURL == "" {
-		return "", fmt.Errorf("base URL must be http://127.0.0.1:8586 or https://diaro.me")
+		return "", fmt.Errorf("base URL must be http://127.0.0.1:8586 or %s", defaultTunnelBaseURL)
 	}
 
 	parsed, err := url.Parse(baseURL)
 	if err != nil || !parsed.IsAbs() || parsed.Host == "" {
-		return "", fmt.Errorf("base URL must be http://127.0.0.1:8586 or https://diaro.me")
+		return "", fmt.Errorf("base URL must be http://127.0.0.1:8586 or %s", defaultTunnelBaseURL)
 	}
 	switch parsed.Scheme {
 	case "http", "https":

@@ -33,6 +33,7 @@ type fakeRelayConnector struct {
 	initialRows   int
 	connectTTL    time.Duration
 	launchContext protocol.LaunchContext
+	launchReady   protocol.LaunchContext
 	stopHandler   func()
 	stateCh       chan connector.State
 }
@@ -42,6 +43,8 @@ type fakeLocalRegistration struct {
 	runCalledOnce sync.Once
 	closeCalled   bool
 	output        [][]byte
+	waitErr       error
+	waitHook      func(context.Context)
 }
 
 func (f *fakeLocalRegistration) Run(context.Context) {
@@ -64,6 +67,13 @@ func (f *fakeLocalRegistration) WriteOutput(data []byte) error {
 
 func (f *fakeLocalRegistration) BindHub(*session.Hub) {}
 
+func (f *fakeLocalRegistration) WaitUntilRegistered(ctx context.Context) error {
+	if f.waitHook != nil {
+		f.waitHook(ctx)
+	}
+	return f.waitErr
+}
+
 func stubDetectGitBranch(t *testing.T, branch string) {
 	t.Helper()
 
@@ -85,6 +95,10 @@ func (f *fakeRelayConnector) SetInitialConnectTimeout(timeout time.Duration) {
 
 func (f *fakeRelayConnector) SetLaunchContext(launchContext protocol.LaunchContext) {
 	f.launchContext = launchContext
+}
+
+func (f *fakeRelayConnector) MarkLaunchReady(launchContext protocol.LaunchContext) {
+	f.launchReady = launchContext
 }
 
 func (f *fakeRelayConnector) SetStopHandler(handler func()) {
@@ -125,19 +139,24 @@ func (f *fakeRelayConnector) WriteOutput([]byte) error {
 func setTestEnv(t *testing.T) {
 	t.Helper()
 	oldReadSessionDeviceIdentity := readSessionDeviceIdentity
+	oldReadOrCreateSessionDeviceIdentity := readOrCreateSessionDeviceIdentity
 	oldEnsureTunnelRunDaemon := ensureTunnelRunDaemon
 	oldNewSessionRegistration := newSessionRegistration
 	readSessionDeviceIdentity = func(daemon.Paths) (daemon.DeviceIdentity, error) {
 		return daemon.DeviceIdentity{}, os.ErrNotExist
 	}
-	ensureTunnelRunDaemon = func(context.Context, string, string) (daemon.Paths, bool) {
-		return daemon.Paths{}, false
+	readOrCreateSessionDeviceIdentity = func(daemon.Paths) (daemon.DeviceIdentity, error) {
+		return daemon.DeviceIdentity{}, os.ErrNotExist
+	}
+	ensureTunnelRunDaemon = func(context.Context, string, string) (tunnelRunDaemonEnsureResult, error) {
+		return tunnelRunDaemonEnsureResult{}, nil
 	}
 	newSessionRegistration = func(daemon.Paths, string, string, protocol.SessionInfo) localSessionRegistration {
 		return &fakeLocalRegistration{}
 	}
 	t.Cleanup(func() {
 		readSessionDeviceIdentity = oldReadSessionDeviceIdentity
+		readOrCreateSessionDeviceIdentity = oldReadOrCreateSessionDeviceIdentity
 		ensureTunnelRunDaemon = oldEnsureTunnelRunDaemon
 		newSessionRegistration = oldNewSessionRegistration
 	})
@@ -163,11 +182,15 @@ func assertHelpText(t *testing.T, text string) {
 		"Usage:\n  tunnel run [options] <command> [args...]",
 		"tunnel auth <command>",
 		"tunnel daemon <command>",
+		"tunnel pair [command]",
+		"tunnel workspace <command>",
 		"tunnel update",
 		"tunnel rollback",
 		"Commands:\n  run",
 		"auth",
 		"daemon",
+		"pair",
+		"workspace",
 		"update",
 		"rollback",
 		"-h, --help",
@@ -179,11 +202,10 @@ func assertHelpText(t *testing.T, text string) {
 		"tunnel auth login",
 		"tunnel auth status",
 		"tunnel daemon start",
-		"tunnel daemon open",
-		"tunnel daemon close",
-		"tunnel daemon sessions",
-		"tunnel daemon pair",
-		"tunnel daemon devices",
+		"tunnel pair",
+		"tunnel pair devices",
+		"tunnel workspace open",
+		"tunnel workspace close",
 		"tunnel run claude",
 		"tunnel run -l api-fix codex --profile prod",
 	} {
@@ -483,6 +505,9 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
 	oldStartLocalTerminal := startLocalTerminal
 	oldWaitForExit := waitForExit
 	oldNewConnector := newConnector
+	oldEnsureTunnelRunDaemon := ensureTunnelRunDaemon
+	oldNewSessionRegistration := newSessionRegistration
+	oldDaemonStop := daemonStop
 	t.Cleanup(func() {
 		resolveLauncher = oldResolve
 		prepareLocalTerminal = oldPrepare
@@ -490,6 +515,9 @@ func TestRunWithArgsAddsRelayConnectorToInitialSinks(t *testing.T) {
 		startLocalTerminal = oldStartLocalTerminal
 		waitForExit = oldWaitForExit
 		newConnector = oldNewConnector
+		ensureTunnelRunDaemon = oldEnsureTunnelRunDaemon
+		newSessionRegistration = oldNewSessionRegistration
+		daemonStop = oldDaemonStop
 	})
 
 	resolveLauncher = func(name string, args []string) (launcher.Command, error) {
@@ -613,6 +641,9 @@ func TestRunWithArgsAddsDaemonBrokerRegistrationSinkWhenDaemonAvailable(t *testi
 	oldNewConnector := newConnector
 	oldEnsureTunnelRunDaemon := ensureTunnelRunDaemon
 	oldNewSessionRegistration := newSessionRegistration
+	oldReadSessionDeviceIdentity := readSessionDeviceIdentity
+	oldReadOrCreateSessionDeviceIdentity := readOrCreateSessionDeviceIdentity
+	oldDaemonStop := daemonStop
 	t.Cleanup(func() {
 		resolveLauncher = oldResolve
 		prepareLocalTerminal = oldPrepare
@@ -622,6 +653,9 @@ func TestRunWithArgsAddsDaemonBrokerRegistrationSinkWhenDaemonAvailable(t *testi
 		newConnector = oldNewConnector
 		ensureTunnelRunDaemon = oldEnsureTunnelRunDaemon
 		newSessionRegistration = oldNewSessionRegistration
+		readSessionDeviceIdentity = oldReadSessionDeviceIdentity
+		readOrCreateSessionDeviceIdentity = oldReadOrCreateSessionDeviceIdentity
+		daemonStop = oldDaemonStop
 	})
 
 	resolveLauncher = func(name string, args []string) (launcher.Command, error) {
@@ -631,15 +665,38 @@ func TestRunWithArgsAddsDaemonBrokerRegistrationSinkWhenDaemonAvailable(t *testi
 		return &session.LocalTerminal{}, nil
 	}
 	newConnector = func(url, token string, info protocol.SessionInfo) relayConnector {
+		if info.DeviceID != "dev-started" {
+			t.Fatalf("connector DeviceID = %q, want dev-started", info.DeviceID)
+		}
 		return &fakeRelayConnector{waitConnected: true, state: connector.StateConnected}
 	}
-	ensureTunnelRunDaemon = func(ctx context.Context, baseURL, authToken string) (daemon.Paths, bool) {
+	ensureTunnelRunDaemon = func(ctx context.Context, baseURL, authToken string) (tunnelRunDaemonEnsureResult, error) {
 		if baseURL != "http://127.0.0.1:8586" || authToken != "test-token" {
 			t.Fatalf("ensure daemon got baseURL=%q authToken=%q", baseURL, authToken)
 		}
-		return daemon.Paths{BrokerSocketPath: "/tmp/broker.sock"}, true
+		return tunnelRunDaemonEnsureResult{
+			Paths:   daemon.Paths{SocketPath: "/tmp/daemon.sock", BrokerSocketPath: "/tmp/broker.sock", DeviceFile: "/tmp/device.json"},
+			Started: true,
+		}, nil
+	}
+	readSessionDeviceIdentity = func(paths daemon.Paths) (daemon.DeviceIdentity, error) {
+		if paths.DeviceFile != "/tmp/device.json" {
+			t.Fatalf("DeviceFile = %q, want /tmp/device.json", paths.DeviceFile)
+		}
+		return daemon.DeviceIdentity{DeviceID: "dev-started"}, nil
+	}
+	readOrCreateSessionDeviceIdentity = func(daemon.Paths) (daemon.DeviceIdentity, error) {
+		return daemon.DeviceIdentity{DeviceID: "dev-started"}, nil
 	}
 	registration := &fakeLocalRegistration{runCalledCh: make(chan struct{})}
+	stopCalled := false
+	daemonStop = func(ctx context.Context, paths daemon.Paths) error {
+		stopCalled = true
+		if paths.SocketPath != "/tmp/daemon.sock" {
+			t.Fatalf("daemonStop paths = %#v, want auto-started daemon paths", paths)
+		}
+		return nil
+	}
 	newSessionRegistration = func(paths daemon.Paths, baseURL, authToken string, info protocol.SessionInfo) localSessionRegistration {
 		if paths.BrokerSocketPath != "/tmp/broker.sock" {
 			t.Fatalf("BrokerSocketPath = %q, want /tmp/broker.sock", paths.BrokerSocketPath)
@@ -652,6 +709,9 @@ func TestRunWithArgsAddsDaemonBrokerRegistrationSinkWhenDaemonAvailable(t *testi
 		}
 		if info.SessionID == "" || info.CommandPreview != "codex" {
 			t.Fatalf("session info = %#v, want generated metadata", info)
+		}
+		if info.DeviceID != "dev-started" {
+			t.Fatalf("registration DeviceID = %q, want dev-started", info.DeviceID)
 		}
 		return registration
 	}
@@ -675,6 +735,9 @@ func TestRunWithArgsAddsDaemonBrokerRegistrationSinkWhenDaemonAvailable(t *testi
 	if gotSinks["daemon-broker"] != registration {
 		t.Fatalf("initial sinks = %#v, want daemon-broker registration sink", gotSinks)
 	}
+	if !stopCalled {
+		t.Fatal("runWithArgs did not stop the daemon it auto-started after startSession failure")
+	}
 	select {
 	case <-registration.runCalledCh:
 	case <-time.After(500 * time.Millisecond):
@@ -685,7 +748,170 @@ func TestRunWithArgsAddsDaemonBrokerRegistrationSinkWhenDaemonAvailable(t *testi
 	}
 }
 
-func TestRunWithArgsDaemonOffSkipsLocalRegistration(t *testing.T) {
+func TestRunWithArgsStopsBeforeTerminalPrepWhenBrokerRegistrationFails(t *testing.T) {
+	setTestEnv(t)
+
+	oldResolve := resolveLauncher
+	oldPrepare := prepareLocalTerminal
+	oldStartSession := startSession
+	oldNewConnector := newConnector
+	oldEnsureTunnelRunDaemon := ensureTunnelRunDaemon
+	oldNewSessionRegistration := newSessionRegistration
+	oldDaemonStop := daemonStop
+	t.Cleanup(func() {
+		resolveLauncher = oldResolve
+		prepareLocalTerminal = oldPrepare
+		startSession = oldStartSession
+		newConnector = oldNewConnector
+		ensureTunnelRunDaemon = oldEnsureTunnelRunDaemon
+		newSessionRegistration = oldNewSessionRegistration
+		daemonStop = oldDaemonStop
+	})
+
+	resolveLauncher = func(name string, args []string) (launcher.Command, error) {
+		return launcher.Command{Name: name, Path: "/usr/bin/codex", Args: append([]string(nil), args...)}, nil
+	}
+	newConnector = func(url, token string, info protocol.SessionInfo) relayConnector {
+		t.Fatal("newConnector should not be called before broker registration succeeds")
+		return nil
+	}
+	ensureTunnelRunDaemon = func(context.Context, string, string) (tunnelRunDaemonEnsureResult, error) {
+		return tunnelRunDaemonEnsureResult{
+			Paths:   daemon.Paths{SocketPath: "/tmp/daemon.sock", BrokerSocketPath: "/tmp/broker.sock"},
+			Started: true,
+		}, nil
+	}
+	stopCalled := false
+	daemonStop = func(ctx context.Context, paths daemon.Paths) error {
+		stopCalled = true
+		if paths.SocketPath != "/tmp/daemon.sock" {
+			t.Fatalf("daemonStop paths = %#v, want auto-started daemon paths", paths)
+		}
+		return nil
+	}
+	newSessionRegistration = func(daemon.Paths, string, string, protocol.SessionInfo) localSessionRegistration {
+		return &fakeLocalRegistration{waitErr: errors.New("timed out waiting for daemon broker to accept the session")}
+	}
+	prepareLocalTerminal = func() (*session.LocalTerminal, error) {
+		t.Fatal("prepareLocalTerminal should not be called before broker registration succeeds")
+		return nil, nil
+	}
+	startSession = func(context.Context, string, []string, map[string]session.OutputSink) (*session.Running, error) {
+		t.Fatal("startSession should not be called before broker registration succeeds")
+		return nil, nil
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err := runWithArgs([]string{"tunnel", "run", "codex"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "daemon broker registration failed") {
+		t.Fatalf("runWithArgs error = %v, want broker registration failure", err)
+	}
+	if !stopCalled {
+		t.Fatal("runWithArgs did not stop the daemon it auto-started after broker registration failure")
+	}
+}
+
+func TestRunWithArgsTreatsBrokerRegistrationCancellationAsCleanExit(t *testing.T) {
+	setTestEnv(t)
+
+	oldResolve := resolveLauncher
+	oldPrepare := prepareLocalTerminal
+	oldStartSession := startSession
+	oldNewConnector := newConnector
+	oldEnsureTunnelRunDaemon := ensureTunnelRunDaemon
+	oldNewSessionRegistration := newSessionRegistration
+	t.Cleanup(func() {
+		resolveLauncher = oldResolve
+		prepareLocalTerminal = oldPrepare
+		startSession = oldStartSession
+		newConnector = oldNewConnector
+		ensureTunnelRunDaemon = oldEnsureTunnelRunDaemon
+		newSessionRegistration = oldNewSessionRegistration
+	})
+
+	resolveLauncher = func(name string, args []string) (launcher.Command, error) {
+		return launcher.Command{Name: name, Path: "/usr/bin/codex", Args: append([]string(nil), args...)}, nil
+	}
+	newConnector = func(url, token string, info protocol.SessionInfo) relayConnector {
+		return &fakeRelayConnector{waitConnected: true, state: connector.StateConnected}
+	}
+	ensureTunnelRunDaemon = func(context.Context, string, string) (tunnelRunDaemonEnsureResult, error) {
+		return tunnelRunDaemonEnsureResult{Paths: daemon.Paths{BrokerSocketPath: "/tmp/broker.sock"}}, nil
+	}
+	newSessionRegistration = func(daemon.Paths, string, string, protocol.SessionInfo) localSessionRegistration {
+		return &fakeLocalRegistration{waitErr: context.Canceled}
+	}
+	prepareLocalTerminal = func() (*session.LocalTerminal, error) {
+		t.Fatal("prepareLocalTerminal should not be called after broker registration cancellation")
+		return nil, nil
+	}
+	startSession = func(context.Context, string, []string, map[string]session.OutputSink) (*session.Running, error) {
+		t.Fatal("startSession should not be called after broker registration cancellation")
+		return nil, nil
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := runWithArgs([]string{"tunnel", "run", "codex"}, &stdout, &stderr); err != nil {
+		t.Fatalf("runWithArgs error = %v, want clean cancellation", err)
+	}
+}
+
+func TestRunWithArgsTreatsCancellationAfterBrokerRegistrationAsCleanExit(t *testing.T) {
+	setTestEnv(t)
+
+	oldResolve := resolveLauncher
+	oldPrepare := prepareLocalTerminal
+	oldStartSession := startSession
+	oldNewConnector := newConnector
+	oldEnsureTunnelRunDaemon := ensureTunnelRunDaemon
+	oldNewSessionRegistration := newSessionRegistration
+	t.Cleanup(func() {
+		resolveLauncher = oldResolve
+		prepareLocalTerminal = oldPrepare
+		startSession = oldStartSession
+		newConnector = oldNewConnector
+		ensureTunnelRunDaemon = oldEnsureTunnelRunDaemon
+		newSessionRegistration = oldNewSessionRegistration
+	})
+
+	resolveLauncher = func(name string, args []string) (launcher.Command, error) {
+		return launcher.Command{Name: name, Path: "/usr/bin/codex", Args: append([]string(nil), args...)}, nil
+	}
+	newConnector = func(url, token string, info protocol.SessionInfo) relayConnector {
+		return &fakeRelayConnector{waitConnected: true, state: connector.StateConnected}
+	}
+	ensureTunnelRunDaemon = func(context.Context, string, string) (tunnelRunDaemonEnsureResult, error) {
+		return tunnelRunDaemonEnsureResult{Paths: daemon.Paths{BrokerSocketPath: "/tmp/broker.sock"}}, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	newSessionRegistration = func(daemon.Paths, string, string, protocol.SessionInfo) localSessionRegistration {
+		return &fakeLocalRegistration{waitHook: func(context.Context) {
+			cancel()
+		}}
+	}
+	prepareLocalTerminal = func() (*session.LocalTerminal, error) {
+		t.Fatal("prepareLocalTerminal should not be called after cancellation")
+		return nil, nil
+	}
+	startSession = func(context.Context, string, []string, map[string]session.OutputSink) (*session.Running, error) {
+		t.Fatal("startSession should not be called after cancellation")
+		return nil, nil
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err := runTunnelSession(ctx, emptyReader{}, runArgs{
+		BaseURL:  "http://127.0.0.1:8586",
+		Launcher: "codex",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("runTunnelSession error = %v, want clean cancellation", err)
+	}
+}
+
+func TestRunWithArgsRejectsPublicDaemonFlag(t *testing.T) {
 	setTestEnv(t)
 
 	oldResolve := resolveLauncher
@@ -693,14 +919,12 @@ func TestRunWithArgsDaemonOffSkipsLocalRegistration(t *testing.T) {
 	oldStartSession := startSession
 	oldWaitForExit := waitForExit
 	oldNewConnector := newConnector
-	oldEnsureTunnelRunDaemon := ensureTunnelRunDaemon
 	t.Cleanup(func() {
 		resolveLauncher = oldResolve
 		prepareLocalTerminal = oldPrepare
 		startSession = oldStartSession
 		waitForExit = oldWaitForExit
 		newConnector = oldNewConnector
-		ensureTunnelRunDaemon = oldEnsureTunnelRunDaemon
 	})
 
 	resolveLauncher = func(name string, args []string) (launcher.Command, error) {
@@ -712,16 +936,10 @@ func TestRunWithArgsDaemonOffSkipsLocalRegistration(t *testing.T) {
 	newConnector = func(url, token string, info protocol.SessionInfo) relayConnector {
 		return &fakeRelayConnector{waitConnected: true, state: connector.StateConnected}
 	}
-	ensureTunnelRunDaemon = func(context.Context, string, string) (daemon.Paths, bool) {
-		t.Fatal("ensureTunnelRunDaemon should not be called with --daemon off")
-		return daemon.Paths{}, false
-	}
-
-	wantErr := errors.New("start session failed")
 	var gotSinks map[string]session.OutputSink
 	startSession = func(_ context.Context, path string, args []string, sinks map[string]session.OutputSink) (*session.Running, error) {
 		gotSinks = sinks
-		return nil, wantErr
+		return nil, errors.New("start session should not be called")
 	}
 	waitForExit = func(context.Context, <-chan struct{}, <-chan error) error {
 		return nil
@@ -730,15 +948,15 @@ func TestRunWithArgsDaemonOffSkipsLocalRegistration(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	err := runWithArgs([]string{"tunnel", "run", "--daemon", "off", "codex"}, &stdout, &stderr)
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("runWithArgs error = %v, want %v", err, wantErr)
+	if err == nil || !strings.Contains(err.Error(), "unknown flag: --daemon") {
+		t.Fatalf("runWithArgs error = %v, want unknown --daemon flag", err)
 	}
-	if _, ok := gotSinks["daemon-broker"]; ok {
-		t.Fatalf("initial sinks = %#v, want no daemon-broker sink", gotSinks)
+	if gotSinks != nil {
+		t.Fatalf("startSession received sinks = %#v, want not called", gotSinks)
 	}
 }
 
-func TestRunWithArgsDaemonRequiredFailsWhenUnavailable(t *testing.T) {
+func TestRunWithArgsFailsWhenRequiredDaemonUnavailable(t *testing.T) {
 	setTestEnv(t)
 
 	oldResolve := resolveLauncher
@@ -768,14 +986,14 @@ func TestRunWithArgsDaemonRequiredFailsWhenUnavailable(t *testing.T) {
 	newConnector = func(url, token string, info protocol.SessionInfo) relayConnector {
 		return &fakeRelayConnector{waitConnected: true, state: connector.StateConnected}
 	}
-	ensureTunnelRunDaemon = func(context.Context, string, string) (daemon.Paths, bool) {
-		return daemon.Paths{}, false
+	ensureTunnelRunDaemon = func(context.Context, string, string) (tunnelRunDaemonEnsureResult, error) {
+		return tunnelRunDaemonEnsureResult{}, errors.New("daemon is not running")
 	}
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	err := runWithArgs([]string{"tunnel", "run", "--daemon", "required", "codex"}, &stdout, &stderr)
-	if err == nil || !strings.Contains(err.Error(), "daemon broker registration required") {
+	err := runWithArgs([]string{"tunnel", "run", "codex"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "daemon is required for tunnel run") {
 		t.Fatalf("runWithArgs error = %v, want required daemon error", err)
 	}
 }
@@ -888,12 +1106,12 @@ func TestEnsureDaemonForTunnelRunRejectsDifferentAuthContext(t *testing.T) {
 		return daemon.StartResult{}, nil
 	}
 
-	gotPaths, ok := ensureDaemonForTunnelRun(context.Background(), "https://relay.example.com", "token-b")
-	if ok {
-		t.Fatal("ensureDaemonForTunnelRun ok = true, want auth-context mismatch skip")
+	got, err := ensureDaemonForTunnelRun(context.Background(), "https://relay.example.com", "token-b")
+	if err == nil {
+		t.Fatal("ensureDaemonForTunnelRun err = nil, want auth-context mismatch")
 	}
-	if gotPaths.BrokerSocketPath != paths.BrokerSocketPath {
-		t.Fatalf("paths = %#v, want resolved daemon paths", gotPaths)
+	if got.Paths.BrokerSocketPath != paths.BrokerSocketPath {
+		t.Fatalf("paths = %#v, want resolved daemon paths", got.Paths)
 	}
 }
 
@@ -923,16 +1141,20 @@ func TestEnsureDaemonForTunnelRunAcceptsMatchingAuthContext(t *testing.T) {
 		return daemon.StartResult{}, nil
 	}
 
-	gotPaths, ok := ensureDaemonForTunnelRun(context.Background(), "https://relay.example.com", "token-a")
-	if !ok {
-		t.Fatal("ensureDaemonForTunnelRun ok = false, want matching auth context")
+	got, err := ensureDaemonForTunnelRun(context.Background(), "https://relay.example.com", "token-a")
+	if err != nil {
+		t.Fatalf("ensureDaemonForTunnelRun error = %v, want matching auth context", err)
 	}
-	if gotPaths.BrokerSocketPath != paths.BrokerSocketPath {
-		t.Fatalf("paths = %#v, want resolved daemon paths", gotPaths)
+	if got.Paths.BrokerSocketPath != paths.BrokerSocketPath {
+		t.Fatalf("paths = %#v, want resolved daemon paths", got.Paths)
+	}
+	if got.Started {
+		t.Fatal("Started = true, want false for already-running daemon")
 	}
 }
 
-func TestRunDaemonStartReturnsExistingDaemonWithoutResolvingAuth(t *testing.T) {
+func TestRunDaemonStartReturnsExistingDaemonWhenAuthContextMatches(t *testing.T) {
+	t.Setenv(tunnelAuthTokenEnv, "token-a")
 	oldResolvePaths := resolveDaemonPaths
 	oldDaemonStatus := daemonStatus
 	oldNewStore := newAuthStore
@@ -948,7 +1170,12 @@ func TestRunDaemonStartReturnsExistingDaemonWithoutResolvingAuth(t *testing.T) {
 		return daemon.Paths{}, nil
 	}
 	daemonStatus = func(ctx context.Context, paths daemon.Paths) (daemon.StatusInfo, error) {
-		return daemon.StatusInfo{Running: true, PID: 42, DeviceID: "dev_existing"}, nil
+		return daemon.StatusInfo{
+			Running:                true,
+			PID:                    42,
+			DeviceID:               "dev_existing",
+			AuthContextFingerprint: daemon.AuthContextFingerprint("token-a"),
+		}, nil
 	}
 	newAuthStore = func() authStore {
 		return &fakeStore{loadErr: errStoredAuthNotFound}
@@ -964,6 +1191,118 @@ func TestRunDaemonStartReturnsExistingDaemonWithoutResolvingAuth(t *testing.T) {
 	}
 	if got := stdout.String(); got != "daemon already running (pid=42 device_id=dev_existing)\n" {
 		t.Fatalf("stdout = %q, want already-running message", got)
+	}
+}
+
+func TestRunDaemonStartReturnsExistingDaemonWhenLocalAuthUnavailable(t *testing.T) {
+	oldEnv, existed := os.LookupEnv(tunnelAuthTokenEnv)
+	os.Unsetenv(tunnelAuthTokenEnv)
+	t.Cleanup(func() {
+		if existed {
+			os.Setenv(tunnelAuthTokenEnv, oldEnv)
+		} else {
+			os.Unsetenv(tunnelAuthTokenEnv)
+		}
+	})
+
+	oldResolvePaths := resolveDaemonPaths
+	oldDaemonStatus := daemonStatus
+	oldNewStore := newAuthStore
+	oldStartDaemon := startDaemon
+	t.Cleanup(func() {
+		resolveDaemonPaths = oldResolvePaths
+		daemonStatus = oldDaemonStatus
+		newAuthStore = oldNewStore
+		startDaemon = oldStartDaemon
+	})
+
+	resolveDaemonPaths = func() (daemon.Paths, error) {
+		return daemon.Paths{}, nil
+	}
+	daemonStatus = func(ctx context.Context, paths daemon.Paths) (daemon.StatusInfo, error) {
+		return daemon.StatusInfo{
+			Running:                true,
+			PID:                    42,
+			DeviceID:               "dev_existing",
+			AuthContextFingerprint: daemon.AuthContextFingerprint("token-a"),
+		}, nil
+	}
+	newAuthStore = func() authStore {
+		return &fakeStore{loadErr: errStoredAuthNotFound}
+	}
+	startDaemon = func(ctx context.Context, options daemon.StartOptions) (daemon.StartResult, error) {
+		t.Fatal("startDaemon should not be called when daemon is already running")
+		return daemon.StartResult{}, nil
+	}
+
+	var stdout bytes.Buffer
+	if err := runDaemonStart(context.Background(), "http://127.0.0.1:8586", &stdout, io.Discard); err != nil {
+		t.Fatalf("runDaemonStart returned error: %v", err)
+	}
+	if got := stdout.String(); got != "daemon already running (pid=42 device_id=dev_existing)\n" {
+		t.Fatalf("stdout = %q, want already-running message", got)
+	}
+}
+
+func TestRunDaemonStartRejectsRunningDaemonWithDifferentAuthContext(t *testing.T) {
+	t.Setenv(tunnelAuthTokenEnv, "token-b")
+	oldResolvePaths := resolveDaemonPaths
+	oldDaemonStatus := daemonStatus
+	oldStartDaemon := startDaemon
+	t.Cleanup(func() {
+		resolveDaemonPaths = oldResolvePaths
+		daemonStatus = oldDaemonStatus
+		startDaemon = oldStartDaemon
+	})
+
+	resolveDaemonPaths = func() (daemon.Paths, error) {
+		return daemon.Paths{}, nil
+	}
+	daemonStatus = func(ctx context.Context, paths daemon.Paths) (daemon.StatusInfo, error) {
+		return daemon.StatusInfo{
+			Running:                true,
+			PID:                    42,
+			DeviceID:               "dev_existing",
+			BaseURL:                defaultTunnelBaseURL,
+			AuthContextFingerprint: daemon.AuthContextFingerprint("token-a"),
+		}, nil
+	}
+	startDaemon = func(ctx context.Context, options daemon.StartOptions) (daemon.StartResult, error) {
+		t.Fatal("startDaemon should not be called when daemon is already running")
+		return daemon.StartResult{}, nil
+	}
+
+	err := runDaemonStart(context.Background(), defaultTunnelBaseURL, io.Discard, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "different auth context") {
+		t.Fatalf("runDaemonStart error = %v, want auth-context mismatch", err)
+	}
+}
+
+func TestRunDaemonStartRejectsRunningDaemonWithoutAuthContextFingerprint(t *testing.T) {
+	t.Setenv(tunnelAuthTokenEnv, "token-a")
+	oldResolvePaths := resolveDaemonPaths
+	oldDaemonStatus := daemonStatus
+	oldStartDaemon := startDaemon
+	t.Cleanup(func() {
+		resolveDaemonPaths = oldResolvePaths
+		daemonStatus = oldDaemonStatus
+		startDaemon = oldStartDaemon
+	})
+
+	resolveDaemonPaths = func() (daemon.Paths, error) {
+		return daemon.Paths{}, nil
+	}
+	daemonStatus = func(ctx context.Context, paths daemon.Paths) (daemon.StatusInfo, error) {
+		return daemon.StatusInfo{Running: true, PID: 42, DeviceID: "dev_existing", BaseURL: defaultTunnelBaseURL}, nil
+	}
+	startDaemon = func(ctx context.Context, options daemon.StartOptions) (daemon.StartResult, error) {
+		t.Fatal("startDaemon should not be called when daemon is already running")
+		return daemon.StartResult{}, nil
+	}
+
+	err := runDaemonStart(context.Background(), defaultTunnelBaseURL, io.Discard, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "different auth context") {
+		t.Fatalf("runDaemonStart error = %v, want missing auth-context mismatch", err)
 	}
 }
 
@@ -987,7 +1326,7 @@ func TestRunDaemonStartRejectsChangingBaseURLWhileDaemonIsRunning(t *testing.T) 
 			Running:  true,
 			PID:      42,
 			DeviceID: "dev_existing",
-			BaseURL:  "https://diaro.me",
+			BaseURL:  defaultTunnelBaseURL,
 		}, nil
 	}
 	newAuthStore = func() authStore {
@@ -1003,7 +1342,7 @@ func TestRunDaemonStartRejectsChangingBaseURLWhileDaemonIsRunning(t *testing.T) 
 	if err == nil {
 		t.Fatal("runDaemonStart error = nil, want base-url mismatch error")
 	}
-	if got := err.Error(); got != "daemon already running against https://diaro.me; stop it before starting with http://1.12.249.160" {
+	if got := err.Error(); got != "daemon already running against "+defaultTunnelBaseURL+"; stop it before starting with http://1.12.249.160" {
 		t.Fatalf("error = %q, want mismatch guidance", got)
 	}
 }
@@ -1129,7 +1468,7 @@ func TestRunDaemonStopPrintsFriendlyMessageWhenDaemonNotRunning(t *testing.T) {
 	}
 }
 
-func TestRunDaemonOpenUsesWorkspaceHelper(t *testing.T) {
+func TestRunWorkspaceOpenUsesWorkspaceHelper(t *testing.T) {
 	oldResolvePaths := resolveDaemonPaths
 	oldOpenDaemonWorkspace := openDaemonWorkspace
 	t.Cleanup(func() {
@@ -1146,15 +1485,15 @@ func TestRunDaemonOpenUsesWorkspaceHelper(t *testing.T) {
 		return nil
 	}
 
-	if err := runDaemonOpen(context.Background(), strings.NewReader(""), io.Discard, io.Discard); err != nil {
-		t.Fatalf("runDaemonOpen returned error: %v", err)
+	if err := runWorkspaceOpen(context.Background(), strings.NewReader(""), io.Discard, io.Discard); err != nil {
+		t.Fatalf("runWorkspaceOpen returned error: %v", err)
 	}
 	if !called {
-		t.Fatal("runDaemonOpen did not call workspace helper")
+		t.Fatal("runWorkspaceOpen did not call workspace helper")
 	}
 }
 
-func TestRunDaemonOpenPrintsFriendlyMessageWhenWorkspaceIsEmpty(t *testing.T) {
+func TestRunWorkspaceOpenPrintsFriendlyMessageWhenWorkspaceIsEmpty(t *testing.T) {
 	oldResolvePaths := resolveDaemonPaths
 	oldOpenDaemonWorkspace := openDaemonWorkspace
 	t.Cleanup(func() {
@@ -1170,15 +1509,15 @@ func TestRunDaemonOpenPrintsFriendlyMessageWhenWorkspaceIsEmpty(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	if err := runDaemonOpen(context.Background(), strings.NewReader(""), &stdout, io.Discard); err != nil {
-		t.Fatalf("runDaemonOpen returned error: %v", err)
+	if err := runWorkspaceOpen(context.Background(), strings.NewReader(""), &stdout, io.Discard); err != nil {
+		t.Fatalf("runWorkspaceOpen returned error: %v", err)
 	}
-	if got := stdout.String(); got != "no daemon-managed sessions; start one from a remote launch first\n" {
+	if got := stdout.String(); got != "no workspace sessions yet; start one from the mobile app first\n" {
 		t.Fatalf("stdout = %q, want no-sessions message", got)
 	}
 }
 
-func TestRunDaemonCloseUsesWorkspaceHelper(t *testing.T) {
+func TestRunWorkspaceCloseUsesWorkspaceHelper(t *testing.T) {
 	oldResolvePaths := resolveDaemonPaths
 	oldCloseDaemonWorkspace := closeDaemonWorkspace
 	t.Cleanup(func() {
@@ -1196,18 +1535,18 @@ func TestRunDaemonCloseUsesWorkspaceHelper(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	if err := runDaemonClose(context.Background(), &stdout, io.Discard); err != nil {
-		t.Fatalf("runDaemonClose returned error: %v", err)
+	if err := runWorkspaceClose(context.Background(), &stdout, io.Discard); err != nil {
+		t.Fatalf("runWorkspaceClose returned error: %v", err)
 	}
 	if !called {
-		t.Fatal("runDaemonClose did not call workspace helper")
+		t.Fatal("runWorkspaceClose did not call workspace helper")
 	}
-	if got := stdout.String(); got != "daemon workspace view closed\n" {
+	if got := stdout.String(); got != "Tunnel workspace view closed\n" {
 		t.Fatalf("stdout = %q, want closed message", got)
 	}
 }
 
-func TestRunDaemonClosePrintsFriendlyMessageWhenWorkspaceIsNotOpen(t *testing.T) {
+func TestRunWorkspaceClosePrintsFriendlyMessageWhenWorkspaceIsNotOpen(t *testing.T) {
 	oldResolvePaths := resolveDaemonPaths
 	oldCloseDaemonWorkspace := closeDaemonWorkspace
 	t.Cleanup(func() {
@@ -1223,15 +1562,15 @@ func TestRunDaemonClosePrintsFriendlyMessageWhenWorkspaceIsNotOpen(t *testing.T)
 	}
 
 	var stdout bytes.Buffer
-	if err := runDaemonClose(context.Background(), &stdout, io.Discard); err != nil {
-		t.Fatalf("runDaemonClose returned error: %v", err)
+	if err := runWorkspaceClose(context.Background(), &stdout, io.Discard); err != nil {
+		t.Fatalf("runWorkspaceClose returned error: %v", err)
 	}
-	if got := stdout.String(); got != "no open daemon workspace to close\n" {
+	if got := stdout.String(); got != "no open Tunnel workspace view to close\n" {
 		t.Fatalf("stdout = %q, want no-open-workspace message", got)
 	}
 }
 
-func TestRunDaemonCloseReturnsTmuxInstallGuidanceWhenTmuxIsMissing(t *testing.T) {
+func TestRunWorkspaceCloseReturnsTmuxInstallGuidanceWhenTmuxIsMissing(t *testing.T) {
 	oldResolvePaths := resolveDaemonPaths
 	oldCloseDaemonWorkspace := closeDaemonWorkspace
 	t.Cleanup(func() {
@@ -1247,42 +1586,15 @@ func TestRunDaemonCloseReturnsTmuxInstallGuidanceWhenTmuxIsMissing(t *testing.T)
 	}
 
 	var stdout bytes.Buffer
-	err := runDaemonClose(context.Background(), &stdout, io.Discard)
+	err := runWorkspaceClose(context.Background(), &stdout, io.Discard)
 	if err == nil {
-		t.Fatal("runDaemonClose returned nil error, want tmux install guidance")
+		t.Fatal("runWorkspaceClose returned nil error, want tmux install guidance")
 	}
 	if !strings.Contains(err.Error(), "tmux is required") {
 		t.Fatalf("error = %q, want tmux install guidance", err.Error())
 	}
 	if got := stdout.String(); got != "" {
 		t.Fatalf("stdout = %q, want empty stdout", got)
-	}
-}
-
-func TestRunDaemonSessionsPrintsThinWorkspaceListing(t *testing.T) {
-	oldResolvePaths := resolveDaemonPaths
-	oldListDaemonWorkspace := listDaemonWorkspace
-	t.Cleanup(func() {
-		resolveDaemonPaths = oldResolvePaths
-		listDaemonWorkspace = oldListDaemonWorkspace
-	})
-
-	resolveDaemonPaths = func() (daemon.Paths, error) {
-		return daemon.Paths{}, nil
-	}
-	listDaemonWorkspace = func(context.Context, daemon.Paths) ([]daemon.WorkspaceSession, error) {
-		return []daemon.WorkspaceSession{{Name: "launch_abc", Windows: 1, Attached: 0}}, nil
-	}
-
-	var stdout bytes.Buffer
-	if err := runDaemonSessions(context.Background(), &stdout, io.Discard); err != nil {
-		t.Fatalf("runDaemonSessions returned error: %v", err)
-	}
-	got := stdout.String()
-	for _, want := range []string{"NAME", "WINDOWS", "ATTACHED", "launch_abc"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("stdout = %q, want fragment %q", got, want)
-		}
 	}
 }
 
@@ -1301,7 +1613,7 @@ func TestRunDaemonStatusPrintsFriendlyPanelWhenDaemonIsRunning(t *testing.T) {
 		return daemon.StatusInfo{
 			Running:          true,
 			PID:              98338,
-			BaseURL:          "https://diaro.me",
+			BaseURL:          defaultTunnelBaseURL,
 			DeviceID:         "dev_8c0bfb5ee7c954f71d6dd3e4",
 			DisplayName:      "yuanbo's MacBook Air",
 			Hostname:         "yuanbos-MacBook-Air.local",
@@ -1326,7 +1638,7 @@ func TestRunDaemonStatusPrintsFriendlyPanelWhenDaemonIsRunning(t *testing.T) {
 		"Device ID: dev_8c0bfb5ee7c954f71d6dd3e4\n",
 		"Host: yuanbos-MacBook-Air.local (macos)\n",
 		"PID: 98338\n",
-		"Relay URL: https://diaro.me\n",
+		"Relay URL: " + defaultTunnelBaseURL + "\n",
 		"Workspace: tmux\n",
 		"Last Launch Failure: none\n",
 	} {
@@ -1359,7 +1671,7 @@ func TestRunDaemonDoctorPrintsFriendlyReportAndReturnsExitError(t *testing.T) {
 		return &fakeStore{loadErr: errStoredAuthNotFound}
 	}
 	resolveDoctorRelayBaseURL = func(context.Context, daemon.Paths) string {
-		return "https://diaro.me"
+		return defaultTunnelBaseURL
 	}
 	doctorProbeRelayHealth = func(context.Context, string) error {
 		return errors.New("dial timeout")
@@ -1396,7 +1708,7 @@ func TestRunDaemonDoctorPrintsFriendlyReportAndReturnsExitError(t *testing.T) {
 		"Status: not ready for remote launch (2 fail, 1 warn, 1 ok)\n",
 		"❌ Auth Token\n",
 		"⚠️ Relay Server\n",
-		"relay_base_url: https://diaro.me; healthz: unavailable (dial timeout)\n",
+		"relay_base_url: " + defaultTunnelBaseURL + "; healthz: unavailable (dial timeout)\n",
 		"❌ Daemon\n",
 		"background daemon is not running, so remote launches cannot start on this machine\n",
 		"✅ Tmux\n",
@@ -1444,7 +1756,7 @@ func TestRunDaemonDoctorUsesDefaultRelayBaseURLWhenNothingIsRecorded(t *testing.
 	if err := runDaemonDoctor(context.Background(), &stdout, io.Discard); err != nil {
 		t.Fatalf("runDaemonDoctor returned error: %v", err)
 	}
-	if !strings.Contains(stdout.String(), "relay_base_url: https://diaro.me; healthz: ok") {
+	if !strings.Contains(stdout.String(), "relay_base_url: "+defaultTunnelBaseURL+"; healthz: ok") {
 		t.Fatalf("stdout = %q, want default relay base URL healthz line", stdout.String())
 	}
 }
@@ -1458,6 +1770,11 @@ func TestRunWithArgsPrintsDaemonHelp(t *testing.T) {
 	}
 	if got := stdout.String(); got != daemonHelpText() {
 		t.Fatalf("stdout = %q, want daemonHelpText()", got)
+	}
+	for _, removed := range []string{"broker", "open", "close", "sessions", "pair", "devices", "revoke"} {
+		if strings.Contains(stdout.String(), "  "+removed+" ") {
+			t.Fatalf("daemon help = %q, did not expect removed command %q", stdout.String(), removed)
+		}
 	}
 }
 
@@ -1473,15 +1790,70 @@ func TestRunWithArgsPrintsDaemonStartHelp(t *testing.T) {
 	}
 }
 
-func TestRunDaemonPairPrintsQRCodeAndSummary(t *testing.T) {
+func TestRunWithArgsPrintsPairAndWorkspaceHelp(t *testing.T) {
+	setTestEnv(t)
+
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "pair", args: []string{"tunnel", "pair", "--help"}, want: pairHelpText()},
+		{name: "pair devices", args: []string{"tunnel", "pair", "devices", "--help"}, want: pairDevicesHelpText()},
+		{name: "pair revoke", args: []string{"tunnel", "pair", "revoke", "--help"}, want: pairRevokeHelpText()},
+		{name: "workspace", args: []string{"tunnel", "workspace", "--help"}, want: workspaceHelpText()},
+		{name: "workspace open", args: []string{"tunnel", "workspace", "open", "--help"}, want: workspaceOpenHelpText()},
+		{name: "workspace close", args: []string{"tunnel", "workspace", "close", "--help"}, want: workspaceCloseHelpText()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout bytes.Buffer
+			if err := runWithArgs(tc.args, &stdout, io.Discard); err != nil {
+				t.Fatalf("runWithArgs error = %v", err)
+			}
+			if got := stdout.String(); got != tc.want {
+				t.Fatalf("stdout = %q, want help", got)
+			}
+		})
+	}
+}
+
+func TestRunWithArgsRejectsRemovedDaemonSubcommands(t *testing.T) {
+	setTestEnv(t)
+
+	for _, args := range [][]string{
+		{"tunnel", "daemon", "open"},
+		{"tunnel", "daemon", "close"},
+		{"tunnel", "daemon", "sessions"},
+		{"tunnel", "daemon", "pair"},
+		{"tunnel", "daemon", "devices"},
+		{"tunnel", "daemon", "revoke", strings.Repeat("a", 64)},
+		{"tunnel", "daemon", "broker", "sessions"},
+	} {
+		t.Run(strings.Join(args[2:], "_"), func(t *testing.T) {
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			err := runWithArgs(args, &stdout, &stderr)
+			if err == nil || !strings.Contains(err.Error(), "unknown command") {
+				t.Fatalf("runWithArgs(%v) error = %v, want unknown command", args, err)
+			}
+		})
+	}
+}
+
+func TestRunPairPrintsQRCodeAndCompletesInteractiveFlow(t *testing.T) {
 	setTestEnv(t)
 
 	oldResolvePaths := resolveDaemonPaths
 	oldPair := daemonPair
+	oldPending := daemonPendingPairing
+	oldConfirm := daemonConfirmPairing
 	t.Cleanup(func() {
 		resolveDaemonPaths = oldResolvePaths
 		daemonPair = oldPair
+		daemonPendingPairing = oldPending
+		daemonConfirmPairing = oldConfirm
 	})
+	fingerprint := strings.Repeat("b", 64)
 	resolveDaemonPaths = func() (daemon.Paths, error) { return daemon.Paths{}, nil }
 	daemonPair = func(context.Context, daemon.Paths) (daemon.PairInvitation, error) {
 		return daemon.PairInvitation{
@@ -1489,22 +1861,235 @@ func TestRunDaemonPairPrintsQRCodeAndSummary(t *testing.T) {
 			InvitationID:      "pair_123",
 			CorrelationID:     "corr_123",
 			DaemonFingerprint: strings.Repeat("a", 64),
+			ExpiresAt:         time.Now().Add(time.Minute).Unix(),
+		}, nil
+	}
+	daemonPendingPairing = func(context.Context, daemon.Paths) ([]daemon.PendingPairingResponse, error) {
+		return []daemon.PendingPairingResponse{{
+			InvitationID:       "pair_123",
+			AndroidFingerprint: fingerprint,
+			AndroidDisplayName: "Pixel",
+			SAS:                "123456",
+		}}, nil
+	}
+	daemonConfirmPairing = func(_ context.Context, _ daemon.Paths, invitationID, sas string) (daemon.PairingCompletion, error) {
+		if invitationID != "pair_123" || sas != "123456" {
+			t.Fatalf("confirm args = %q %q, want pair_123 123456", invitationID, sas)
+		}
+		return daemon.PairingCompletion{Device: daemon.TrustedAndroidDevice{Fingerprint: fingerprint, DisplayName: "Pixel"}}, nil
+	}
+
+	var stdout bytes.Buffer
+	if err := runPair(context.Background(), strings.NewReader("123456\n"), &stdout, io.Discard, false); err != nil {
+		t.Fatalf("runPair returned error: %v", err)
+	}
+	got := stdout.String()
+	if !strings.Contains(got, "Scan this QR in the mobile app to pair this computer.") {
+		t.Fatalf("stdout = %q, want QR scan guidance", got)
+	}
+	if !strings.Contains(got, "Client: Pixel") || !strings.Contains(got, "Paired Pixel ("+fingerprint+")") {
+		t.Fatalf("stdout = %q, want client and paired summary", got)
+	}
+	if !strings.Contains(got, qrDarkBackground) || !strings.Contains(got, qrLightBackground) {
+		t.Fatalf("stdout = %q, want rendered QR background colors", got)
+	}
+}
+
+func TestRunPairSanitizesDisplayNamesAndPrintsCompletionWarning(t *testing.T) {
+	setTestEnv(t)
+
+	oldResolvePaths := resolveDaemonPaths
+	oldPair := daemonPair
+	oldPending := daemonPendingPairing
+	oldConfirm := daemonConfirmPairing
+	t.Cleanup(func() {
+		resolveDaemonPaths = oldResolvePaths
+		daemonPair = oldPair
+		daemonPendingPairing = oldPending
+		daemonConfirmPairing = oldConfirm
+	})
+	fingerprint := strings.Repeat("c", 64)
+	longName := "Pixel " + strings.Repeat("A", 80) + "\u202Ehidden"
+	resolveDaemonPaths = func() (daemon.Paths, error) { return daemon.Paths{}, nil }
+	daemonPair = func(context.Context, daemon.Paths) (daemon.PairInvitation, error) {
+		return daemon.PairInvitation{
+			Version:           1,
+			InvitationID:      "pair_123",
+			CorrelationID:     "corr_123",
+			DaemonFingerprint: strings.Repeat("a", 64),
+			ExpiresAt:         time.Now().Add(time.Minute).Unix(),
+		}, nil
+	}
+	daemonPendingPairing = func(context.Context, daemon.Paths) ([]daemon.PendingPairingResponse, error) {
+		return []daemon.PendingPairingResponse{{
+			InvitationID:       "pair_123",
+			AndroidFingerprint: fingerprint,
+			AndroidDisplayName: longName,
+			SAS:                "123456",
+		}}, nil
+	}
+	daemonConfirmPairing = func(context.Context, daemon.Paths, string, string) (daemon.PairingCompletion, error) {
+		return daemon.PairingCompletion{
+			Device:  daemon.TrustedAndroidDevice{Fingerprint: fingerprint, DisplayName: longName},
+			Warning: "relay connectivity event queue unavailable",
 		}, nil
 	}
 
 	var stdout bytes.Buffer
-	if err := runDaemonPair(context.Background(), &stdout, io.Discard, false); err != nil {
-		t.Fatalf("runDaemonPair returned error: %v", err)
+	if err := runPair(context.Background(), strings.NewReader("123456\n"), &stdout, io.Discard, false); err != nil {
+		t.Fatalf("runPair returned error: %v", err)
 	}
 	got := stdout.String()
-	if !strings.Contains(got, "scan this QR in the mobile app to pair") {
-		t.Fatalf("stdout = %q, want QR scan guidance", got)
+	if strings.Contains(got, "\u202E") || strings.Contains(got, "hidden") {
+		t.Fatalf("stdout = %q, want bidi controls and hidden suffix stripped from display names", got)
 	}
-	if !strings.Contains(got, "invitation_id: pair_123") {
-		t.Fatalf("stdout = %q, want invitation id summary", got)
+	if !strings.Contains(got, "Client: Pixel ") || !strings.Contains(got, "...\nFingerprint:") {
+		t.Fatalf("stdout = %q, want capped client display name", got)
 	}
-	if !strings.Contains(got, qrDarkBackground) || !strings.Contains(got, qrLightBackground) {
-		t.Fatalf("stdout = %q, want rendered QR background colors", got)
+	if !strings.Contains(got, "Paired Pixel ") || !strings.Contains(got, "... ("+fingerprint+")") {
+		t.Fatalf("stdout = %q, want capped paired display name", got)
+	}
+	if strings.Contains(got, strings.Repeat("A", 80)) {
+		t.Fatalf("stdout = %q, want long display name truncated", got)
+	}
+	if !strings.Contains(got, "Warning: local trust changed, but relay visibility update is delayed") {
+		t.Fatalf("stdout = %q, want completion warning", got)
+	}
+}
+
+func TestRunPairCommandRejectsInteractiveModeWithoutTTY(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err := runWithIOArgs([]string{"tunnel", "pair"}, strings.NewReader(""), &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "interactive pairing requires a terminal") {
+		t.Fatalf("runWithIOArgs error = %v, want non-TTY pairing guidance", err)
+	}
+}
+
+func TestRunPairReturnsFriendlySASMismatch(t *testing.T) {
+	setTestEnv(t)
+
+	oldResolvePaths := resolveDaemonPaths
+	oldPair := daemonPair
+	oldPending := daemonPendingPairing
+	oldConfirm := daemonConfirmPairing
+	t.Cleanup(func() {
+		resolveDaemonPaths = oldResolvePaths
+		daemonPair = oldPair
+		daemonPendingPairing = oldPending
+		daemonConfirmPairing = oldConfirm
+	})
+	fingerprint := strings.Repeat("b", 64)
+	resolveDaemonPaths = func() (daemon.Paths, error) { return daemon.Paths{}, nil }
+	daemonPair = func(context.Context, daemon.Paths) (daemon.PairInvitation, error) {
+		return daemon.PairInvitation{
+			Version:           1,
+			InvitationID:      "pair_123",
+			CorrelationID:     "corr_123",
+			DaemonFingerprint: strings.Repeat("a", 64),
+			ExpiresAt:         time.Now().Add(time.Minute).Unix(),
+		}, nil
+	}
+	daemonPendingPairing = func(context.Context, daemon.Paths) ([]daemon.PendingPairingResponse, error) {
+		return []daemon.PendingPairingResponse{{
+			InvitationID:       "pair_123",
+			AndroidFingerprint: fingerprint,
+			AndroidDisplayName: "Pixel",
+			SAS:                "123456",
+		}}, nil
+	}
+	daemonConfirmPairing = func(context.Context, daemon.Paths, string, string) (daemon.PairingCompletion, error) {
+		return daemon.PairingCompletion{}, daemon.ErrPairingSASMismatch
+	}
+
+	var stdout bytes.Buffer
+	err := runPair(context.Background(), strings.NewReader("000000\n"), &stdout, io.Discard, false)
+	if err == nil || !strings.Contains(err.Error(), "pairing code did not match") {
+		t.Fatalf("runPair error = %v, want friendly pairing mismatch", err)
+	}
+}
+
+func TestRunPairCancelsWhenCodeIsEmpty(t *testing.T) {
+	setTestEnv(t)
+
+	oldResolvePaths := resolveDaemonPaths
+	oldPair := daemonPair
+	oldPending := daemonPendingPairing
+	oldConfirm := daemonConfirmPairing
+	t.Cleanup(func() {
+		resolveDaemonPaths = oldResolvePaths
+		daemonPair = oldPair
+		daemonPendingPairing = oldPending
+		daemonConfirmPairing = oldConfirm
+	})
+	fingerprint := strings.Repeat("b", 64)
+	resolveDaemonPaths = func() (daemon.Paths, error) { return daemon.Paths{}, nil }
+	daemonPair = func(context.Context, daemon.Paths) (daemon.PairInvitation, error) {
+		return daemon.PairInvitation{
+			Version:           1,
+			InvitationID:      "pair_123",
+			CorrelationID:     "corr_123",
+			DaemonFingerprint: strings.Repeat("a", 64),
+			ExpiresAt:         time.Now().Add(time.Minute).Unix(),
+		}, nil
+	}
+	daemonPendingPairing = func(context.Context, daemon.Paths) ([]daemon.PendingPairingResponse, error) {
+		return []daemon.PendingPairingResponse{{
+			InvitationID:       "pair_123",
+			AndroidFingerprint: fingerprint,
+			AndroidDisplayName: "Pixel",
+			SAS:                "123456",
+		}}, nil
+	}
+	daemonConfirmPairing = func(context.Context, daemon.Paths, string, string) (daemon.PairingCompletion, error) {
+		t.Fatal("daemonConfirmPairing should not be called when code is empty")
+		return daemon.PairingCompletion{}, nil
+	}
+
+	var stdout bytes.Buffer
+	if err := runPair(context.Background(), strings.NewReader("\n"), &stdout, io.Discard, false); err != nil {
+		t.Fatalf("runPair returned error: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "Pairing cancelled.") {
+		t.Fatalf("stdout = %q, want pairing cancellation message", stdout.String())
+	}
+}
+
+func TestRunPairReportsExpiredInvitation(t *testing.T) {
+	setTestEnv(t)
+
+	oldResolvePaths := resolveDaemonPaths
+	oldPair := daemonPair
+	oldPending := daemonPendingPairing
+	oldPairNow := pairNow
+	t.Cleanup(func() {
+		resolveDaemonPaths = oldResolvePaths
+		daemonPair = oldPair
+		daemonPendingPairing = oldPending
+		pairNow = oldPairNow
+	})
+	now := time.Unix(1_700_000_000, 0).UTC()
+	resolveDaemonPaths = func() (daemon.Paths, error) { return daemon.Paths{}, nil }
+	daemonPair = func(context.Context, daemon.Paths) (daemon.PairInvitation, error) {
+		return daemon.PairInvitation{
+			Version:           1,
+			InvitationID:      "pair_123",
+			CorrelationID:     "corr_123",
+			DaemonFingerprint: strings.Repeat("a", 64),
+			ExpiresAt:         now.Add(-time.Second).Unix(),
+		}, nil
+	}
+	daemonPendingPairing = func(context.Context, daemon.Paths) ([]daemon.PendingPairingResponse, error) {
+		return nil, nil
+	}
+	pairNow = func() time.Time { return now }
+
+	var stdout bytes.Buffer
+	if err := runPair(context.Background(), strings.NewReader("123456\n"), &stdout, io.Discard, false); err != nil {
+		t.Fatalf("runPair returned error: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "Pairing invitation expired.") {
+		t.Fatalf("stdout = %q, want expired invitation message", stdout.String())
 	}
 }
 
@@ -1528,7 +2113,7 @@ func TestRenderQRCodeDecodesOriginalPayload(t *testing.T) {
 	}
 }
 
-func TestRunDaemonPairPrintsInvitationJSONWithFlag(t *testing.T) {
+func TestRunPairPrintsInvitationJSONWithFlag(t *testing.T) {
 	setTestEnv(t)
 
 	oldResolvePaths := resolveDaemonPaths
@@ -1548,8 +2133,8 @@ func TestRunDaemonPairPrintsInvitationJSONWithFlag(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	if err := runDaemonPair(context.Background(), &stdout, io.Discard, true); err != nil {
-		t.Fatalf("runDaemonPair returned error: %v", err)
+	if err := runPair(context.Background(), emptyReader{}, &stdout, io.Discard, true); err != nil {
+		t.Fatalf("runPair returned error: %v", err)
 	}
 	if !strings.Contains(stdout.String(), `"invitation_id": "pair_123"`) {
 		t.Fatalf("stdout = %q, want invitation JSON", stdout.String())
@@ -1617,63 +2202,22 @@ func terminalQRCodeModules(t *testing.T, line string, row int) []bool {
 	return modules
 }
 
-func TestRunDaemonPairPendingPrintsPendingResponses(t *testing.T) {
+func TestRunWithArgsPairJSONCommandPrintsErrorEnvelope(t *testing.T) {
 	setTestEnv(t)
 
 	oldResolvePaths := resolveDaemonPaths
-	oldPending := daemonPendingPairing
+	oldDevices := daemonTrustedDevices
 	t.Cleanup(func() {
 		resolveDaemonPaths = oldResolvePaths
-		daemonPendingPairing = oldPending
+		daemonTrustedDevices = oldDevices
 	})
 	resolveDaemonPaths = func() (daemon.Paths, error) { return daemon.Paths{}, nil }
-	daemonPendingPairing = func(context.Context, daemon.Paths) ([]daemon.PendingPairingResponse, error) {
-		return []daemon.PendingPairingResponse{{
-			InvitationID:       "pair_123",
-			AndroidFingerprint: strings.Repeat("a", 64),
-			AndroidDisplayName: "Pixel",
-			SAS:                "123456",
-			ReceivedAt:         100,
-			ExpiresAt:          200,
-		}}, nil
-	}
-
-	var stdout bytes.Buffer
-	if err := runDaemonPairPending(context.Background(), &stdout, io.Discard, false); err != nil {
-		t.Fatalf("runDaemonPairPending returned error: %v", err)
-	}
-	if !strings.Contains(stdout.String(), "pair_123") || !strings.Contains(stdout.String(), "123456") {
-		t.Fatalf("stdout = %q, want pending pairing row", stdout.String())
-	}
-	stdout.Reset()
-	if err := runDaemonPairPending(context.Background(), &stdout, io.Discard, true); err != nil {
-		t.Fatalf("runDaemonPairPending JSON returned error: %v", err)
-	}
-	var pending []daemon.PendingPairingResponse
-	if err := json.Unmarshal(stdout.Bytes(), &pending); err != nil {
-		t.Fatalf("pending JSON unmarshal returned error: %v\n%s", err, stdout.String())
-	}
-	if len(pending) != 1 || pending[0].InvitationID != "pair_123" {
-		t.Fatalf("pending = %#v, want pair_123 JSON", pending)
-	}
-}
-
-func TestRunWithArgsDaemonJSONCommandPrintsErrorEnvelope(t *testing.T) {
-	setTestEnv(t)
-
-	oldResolvePaths := resolveDaemonPaths
-	oldPending := daemonPendingPairing
-	t.Cleanup(func() {
-		resolveDaemonPaths = oldResolvePaths
-		daemonPendingPairing = oldPending
-	})
-	resolveDaemonPaths = func() (daemon.Paths, error) { return daemon.Paths{}, nil }
-	daemonPendingPairing = func(context.Context, daemon.Paths) ([]daemon.PendingPairingResponse, error) {
+	daemonTrustedDevices = func(context.Context, daemon.Paths) ([]daemon.TrustedAndroidDevice, error) {
 		return nil, daemon.ErrNotRunning
 	}
 
 	var stdout bytes.Buffer
-	err := runWithArgs([]string{"tunnel", "daemon", "pair", "pending", "--json"}, &stdout, io.Discard)
+	err := runWithArgs([]string{"tunnel", "pair", "devices", "--json"}, &stdout, io.Discard)
 	if !errors.Is(err, daemon.ErrNotRunning) {
 		t.Fatalf("runWithArgs error = %v, want ErrNotRunning", err)
 	}
@@ -1700,7 +2244,7 @@ func TestRunWithArgsDaemonJSONCommandsWrapSetupErrors(t *testing.T) {
 		{"tunnel", "daemon", "start", "--json"},
 		{"tunnel", "daemon", "status", "--json"},
 		{"tunnel", "daemon", "doctor", "--json"},
-		{"tunnel", "daemon", "pair", "--json"},
+		{"tunnel", "pair", "--json"},
 	} {
 		t.Run(strings.Join(args[2:], "_"), func(t *testing.T) {
 			var stdout bytes.Buffer
@@ -1719,34 +2263,7 @@ func TestRunWithArgsDaemonJSONCommandsWrapSetupErrors(t *testing.T) {
 	}
 }
 
-func TestRunDaemonPairConfirmPrintsPairedFingerprint(t *testing.T) {
-	setTestEnv(t)
-
-	oldResolvePaths := resolveDaemonPaths
-	oldConfirm := daemonConfirmPairing
-	t.Cleanup(func() {
-		resolveDaemonPaths = oldResolvePaths
-		daemonConfirmPairing = oldConfirm
-	})
-	fingerprint := strings.Repeat("c", 64)
-	resolveDaemonPaths = func() (daemon.Paths, error) { return daemon.Paths{}, nil }
-	daemonConfirmPairing = func(_ context.Context, _ daemon.Paths, invitationID, sas string) (daemon.PairingCompletion, error) {
-		if invitationID != "pair_123" || sas != "123456" {
-			t.Fatalf("confirm args = %q %q, want pair_123 123456", invitationID, sas)
-		}
-		return daemon.PairingCompletion{Device: daemon.TrustedAndroidDevice{Fingerprint: fingerprint}}, nil
-	}
-
-	var stdout bytes.Buffer
-	if err := runDaemonPairConfirm(context.Background(), "pair_123", "123456", &stdout, io.Discard, false); err != nil {
-		t.Fatalf("runDaemonPairConfirm returned error: %v", err)
-	}
-	if got := stdout.String(); got != "paired "+fingerprint+"\n" {
-		t.Fatalf("stdout = %q, want paired fingerprint", got)
-	}
-}
-
-func TestRunDaemonDevicesPrintsTrustedDevices(t *testing.T) {
+func TestRunPairDevicesPrintsTrustedDevices(t *testing.T) {
 	setTestEnv(t)
 
 	oldResolvePaths := resolveDaemonPaths
@@ -1765,15 +2282,15 @@ func TestRunDaemonDevicesPrintsTrustedDevices(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	if err := runDaemonDevices(context.Background(), &stdout, io.Discard, false); err != nil {
-		t.Fatalf("runDaemonDevices returned error: %v", err)
+	if err := runPairDevices(context.Background(), &stdout, io.Discard, false); err != nil {
+		t.Fatalf("runPairDevices returned error: %v", err)
 	}
 	if !strings.Contains(stdout.String(), "Pixel") || !strings.Contains(stdout.String(), strings.Repeat("a", 64)) {
 		t.Fatalf("stdout = %q, want trusted device row", stdout.String())
 	}
 	stdout.Reset()
-	if err := runDaemonDevices(context.Background(), &stdout, io.Discard, true); err != nil {
-		t.Fatalf("runDaemonDevices JSON returned error: %v", err)
+	if err := runPairDevices(context.Background(), &stdout, io.Discard, true); err != nil {
+		t.Fatalf("runPairDevices JSON returned error: %v", err)
 	}
 	var devices []daemon.TrustedAndroidDevice
 	if err := json.Unmarshal(stdout.Bytes(), &devices); err != nil {
@@ -1784,42 +2301,7 @@ func TestRunDaemonDevicesPrintsTrustedDevices(t *testing.T) {
 	}
 }
 
-func TestRunDaemonBrokerSessionsJSON(t *testing.T) {
-	setTestEnv(t)
-
-	oldResolvePaths := resolveDaemonPaths
-	oldBrokerSessions := daemonBrokerSessions
-	t.Cleanup(func() {
-		resolveDaemonPaths = oldResolvePaths
-		daemonBrokerSessions = oldBrokerSessions
-	})
-	resolveDaemonPaths = func() (daemon.Paths, error) { return daemon.Paths{}, nil }
-	daemonBrokerSessions = func(context.Context, daemon.Paths) ([]daemon.BrokerSessionSnapshot, error) {
-		return []daemon.BrokerSessionSnapshot{{
-			BrokerSession: daemon.BrokerSession{
-				SessionID: "sess-1",
-				Label:     "api-fix",
-				CWD:       "/repo",
-				UpdatedAt: 123,
-			},
-			LatestPreview: "ready",
-		}}, nil
-	}
-
-	var stdout bytes.Buffer
-	if err := runDaemonBrokerSessions(context.Background(), &stdout, io.Discard, true); err != nil {
-		t.Fatalf("runDaemonBrokerSessions returned error: %v", err)
-	}
-	var sessions []daemon.BrokerSessionSnapshot
-	if err := json.Unmarshal(stdout.Bytes(), &sessions); err != nil {
-		t.Fatalf("broker sessions JSON unmarshal returned error: %v\n%s", err, stdout.String())
-	}
-	if len(sessions) != 1 || sessions[0].SessionID != "sess-1" || sessions[0].LatestPreview != "ready" {
-		t.Fatalf("sessions = %#v, want broker session JSON", sessions)
-	}
-}
-
-func TestRunDaemonRevokePrintsRevokedFingerprint(t *testing.T) {
+func TestRunPairRevokePrintsRevokedFingerprint(t *testing.T) {
 	setTestEnv(t)
 
 	oldResolvePaths := resolveDaemonPaths
@@ -1838,10 +2320,10 @@ func TestRunDaemonRevokePrintsRevokedFingerprint(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	if err := runDaemonRevoke(context.Background(), fingerprint, &stdout, io.Discard, false); err != nil {
-		t.Fatalf("runDaemonRevoke returned error: %v", err)
+	if err := runPairRevoke(context.Background(), fingerprint, &stdout, io.Discard, false); err != nil {
+		t.Fatalf("runPairRevoke returned error: %v", err)
 	}
-	if got := stdout.String(); got != "revoked "+fingerprint+"\n" {
+	if got := stdout.String(); got != "Revoked "+fingerprint+"\n" {
 		t.Fatalf("stdout = %q, want revoked fingerprint", got)
 	}
 }
@@ -2140,6 +2622,9 @@ func TestRunWithArgsForwardsLaunchContextFromInternalFlags(t *testing.T) {
 	if fakeConnector.launchContext.RequestID != "req-123" {
 		t.Fatalf("launchContext.RequestID = %q, want req-123", fakeConnector.launchContext.RequestID)
 	}
+	if fakeConnector.launchReady != (protocol.LaunchContext{}) {
+		t.Fatalf("launchReady = %#v, want no ready signal when session start fails", fakeConnector.launchReady)
+	}
 }
 
 func TestStartupBannerUsesRelayState(t *testing.T) {
@@ -2258,6 +2743,7 @@ func TestRunWithArgsFailsStartupWhenRelayCannotConnect(t *testing.T) {
 	oldStartLocalTerminal := startLocalTerminal
 	oldWaitForExit := waitForExit
 	oldNewConnector := newConnector
+	oldEnsureTunnelRunDaemon := ensureTunnelRunDaemon
 	t.Cleanup(func() {
 		resolveLauncher = oldResolve
 		prepareLocalTerminal = oldPrepare
@@ -2265,6 +2751,7 @@ func TestRunWithArgsFailsStartupWhenRelayCannotConnect(t *testing.T) {
 		startLocalTerminal = oldStartLocalTerminal
 		waitForExit = oldWaitForExit
 		newConnector = oldNewConnector
+		ensureTunnelRunDaemon = oldEnsureTunnelRunDaemon
 	})
 	stubDetectGitBranch(t, "")
 
@@ -2293,6 +2780,24 @@ func TestRunWithArgsFailsStartupWhenRelayCannotConnect(t *testing.T) {
 	newConnector = func(url, token string, info protocol.SessionInfo) relayConnector {
 		return &fakeRelayConnector{waitConnected: false, state: connector.StateReconnecting}
 	}
+	registration := &fakeLocalRegistration{}
+	ensureTunnelRunDaemon = func(context.Context, string, string) (tunnelRunDaemonEnsureResult, error) {
+		return tunnelRunDaemonEnsureResult{
+			Paths:   daemon.Paths{SocketPath: "/tmp/daemon.sock", BrokerSocketPath: "/tmp/broker.sock"},
+			Started: true,
+		}, nil
+	}
+	newSessionRegistration = func(daemon.Paths, string, string, protocol.SessionInfo) localSessionRegistration {
+		return registration
+	}
+	stopCalled := false
+	daemonStop = func(ctx context.Context, paths daemon.Paths) error {
+		stopCalled = true
+		if paths.SocketPath != "/tmp/daemon.sock" {
+			t.Fatalf("daemonStop paths = %#v, want auto-started daemon paths", paths)
+		}
+		return nil
+	}
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -2309,7 +2814,12 @@ func TestRunWithArgsFailsStartupWhenRelayCannotConnect(t *testing.T) {
 	if startCalled {
 		t.Fatal("runWithArgs started child despite startup relay failure")
 	}
-
+	if !registration.closeCalled {
+		t.Fatal("runWithArgs did not close daemon broker registration after relay failure")
+	}
+	if !stopCalled {
+		t.Fatal("runWithArgs did not stop the daemon it auto-started after relay failure")
+	}
 	if got := stderr.String(); got != "" {
 		t.Fatalf("stderr = %q", got)
 	}

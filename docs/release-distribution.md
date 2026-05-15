@@ -78,6 +78,8 @@ Published outputs:
 - refreshed `install.sh`
 - refreshed `latest.json`
 
+The published installer and native `tunnel update` path may print non-blocking tmux readiness guidance after a successful Tunnel install/update. They must not invoke package managers or auto-install tmux.
+
 Those same public assets are the only source used by native `tunnel update` and `tunnel rollback`. The CLI does not shell out to `install.sh`; it consumes the published `latest.json`, release archives, and `checksums.txt` directly.
 
 ### Relay Image

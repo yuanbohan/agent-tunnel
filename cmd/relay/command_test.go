@@ -25,8 +25,8 @@ func TestRunWithHandlersDispatchesServeCommand(t *testing.T) {
 			if cfg.ListenAddr != "127.0.0.1:9999" {
 				t.Fatalf("ListenAddr = %q, want 127.0.0.1:9999", cfg.ListenAddr)
 			}
-			if cfg.STUNListenAddr != defaultRelaySTUNListenAddr {
-				t.Fatalf("STUNListenAddr = %q, want %q", cfg.STUNListenAddr, defaultRelaySTUNListenAddr)
+			if cfg.STUNListenAddr != "" {
+				t.Fatalf("STUNListenAddr = %q, want disabled empty value by default", cfg.STUNListenAddr)
 			}
 			if cfg.LogFile != "/tmp/relay.log" {
 				t.Fatalf("LogFile = %q, want /tmp/relay.log", cfg.LogFile)

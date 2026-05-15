@@ -20,6 +20,7 @@ Supported targets:
 - Linux ARM64 (`linux/arm64`)
 
 The installer writes `tunnel` to `~/.local/bin/tunnel`.
+After a successful install, it prints non-blocking guidance when `tmux` is missing. Tunnel never auto-installs `tmux`; install it manually if you want mobile-created workspace sessions on this computer.
 Official releases also publish `checksums.txt` used by native `tunnel update` and `tunnel rollback`.
 The public `yuanbohan/tunnel` repository is distribution-only; official releases are prepared from the private repo `Release` workflow and then published here as plain `vX.Y.Z` releases.
 

@@ -40,17 +40,14 @@ func TestStatusReadsLiveDaemonResponse(t *testing.T) {
 	}
 }
 
-func TestBrokerSessionsReadsLiveDaemonResponse(t *testing.T) {
+func TestConfirmPendingPairingPreservesSASMismatchSentinel(t *testing.T) {
 	paths := testPaths(t)
 	if err := EnsureRuntimeDirs(paths); err != nil {
 		t.Fatalf("EnsureRuntimeDirs returned error: %v", err)
 	}
 
 	server, err := NewServer(paths.SocketPath, func(context.Context, Request) Response {
-		return Response{BrokerSessions: []BrokerSessionSnapshot{{
-			BrokerSession: BrokerSession{SessionID: "sess-1", Label: "api-fix", CWD: "/repo"},
-			LatestPreview: "ready",
-		}}}
+		return Response{Error: ErrPairingSASMismatch.Error()}
 	})
 	if err != nil {
 		t.Fatalf("NewServer returned error: %v", err)
@@ -63,12 +60,9 @@ func TestBrokerSessionsReadsLiveDaemonResponse(t *testing.T) {
 	}()
 	time.Sleep(50 * time.Millisecond)
 
-	sessions, err := BrokerSessions(context.Background(), paths)
-	if err != nil {
-		t.Fatalf("BrokerSessions returned error: %v", err)
-	}
-	if len(sessions) != 1 || sessions[0].SessionID != "sess-1" || sessions[0].LatestPreview != "ready" {
-		t.Fatalf("sessions = %#v, want live broker session", sessions)
+	_, err = ConfirmPendingPairing(context.Background(), paths, "pair_123", "000000")
+	if !errors.Is(err, ErrPairingSASMismatch) {
+		t.Fatalf("ConfirmPendingPairing error = %v, want ErrPairingSASMismatch", err)
 	}
 }
 

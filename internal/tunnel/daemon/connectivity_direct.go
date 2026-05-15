@@ -124,7 +124,7 @@ func (c *connectivityConnector) handleRendezvousHint(ctx context.Context, hint p
 		AttemptID:          hint.AttemptID,
 	}
 	c.state.setConnectivityPath("direct", "")
-	serveCtx, cancelServe := context.WithCancel(c.state.rootContext(ctx))
+	serveCtx, cancelServe := context.WithCancel(ctx)
 	unregisterTransport := c.state.registerActiveDirectTransport(hint.AttemptID, android.Fingerprint, cancelServe)
 	defer unregisterTransport()
 	defer cancelServe()

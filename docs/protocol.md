@@ -428,8 +428,36 @@ Notes:
 - `request_id` is relay-scoped and correlates one launch request with one result
 - `status: "accepted"` means the daemon validated the request and successfully created the local tmux-backed launch session
 - accepted launch results may include `workspace_session` as daemon-local metadata, but session stop is routed to the owning agent through `/agent/ws`
-- `status: "accepted"` still does not complete the client-visible launch flow; the relay waits for a later `/agent/ws` registration carrying a matching launch context
+- `status: "accepted"` still does not complete the client-visible launch flow; the relay waits for the launched agent to register and later send `launch_ready` with a matching launch context
 - the relay keeps only transient online-device routing state; device health, last failure, and tmux workspace details remain local to the daemon
+
+Terminate request relay-to-device:
+
+```json
+{
+  "type": "terminate_request",
+  "request_id": "dev_abcd1234-terminate-150405.000000000",
+  "session_id": "sess-1",
+  "workspace_session": "launch_abcd1234"
+}
+```
+
+Terminate result device-to-relay:
+
+```json
+{
+  "type": "terminate_result",
+  "request_id": "dev_abcd1234-terminate-150405.000000000",
+  "status": "terminated"
+}
+```
+
+Notes:
+
+- the relay sends `terminate_request` only when it has a daemon workspace target that must be cleaned up
+- after an accepted launch times out before `session_ready`, the relay may send a best-effort cleanup `terminate_request` with an empty `session_id` and a populated `workspace_session`
+- daemon implementations must route cleanup by `workspace_session` and reply with `status: "terminated"` or `status: "failed"` plus a `reason`
+- `terminate_result` is correlated by `request_id`; cleanup terminate results may arrive after the launch request already returned `launch_timeout`
 
 ## Agent WebSocket
 
@@ -475,9 +503,28 @@ Notes:
 - `launch_context.source` describes the launch source claimed by the registering `tunnel run`; currently the only non-local value is `mobile`
 - `launch_context.request_id` is the relay-issued launch correlation id, not user-visible source metadata
 - the relay stores `session.device_id` from the registration payload without launch-request validation; agents send an empty string when local daemon identity is unavailable
-- the relay marks a live session with `launch_source: "mobile"` only when `launch_context.source` is `mobile` and `launch_context.request_id` matches a pending launch request owned by the same user and agent token
+- the relay does not complete a mobile launch from `register` alone; it waits for a later `launch_ready` frame after the local broker and process startup have succeeded
+- the relay marks a live session with `launch_source: "mobile"` only when `launch_ready.launch_context.source` is `mobile` and `launch_ready.launch_context.request_id` matches a pending launch request owned by the same user and agent token
 - missing, empty, unknown, or unmatched launch context values are treated as local launch source
 - session metadata is self-contained on registration; clients should not infer session platform identity by correlating later launch state or online device listings
+
+### `launch_ready`
+
+```json
+{
+  "type": "launch_ready",
+  "launch_context": {
+    "source": "mobile",
+    "request_id": "dev_abcd1234-150405.000000000"
+  }
+}
+```
+
+Notes:
+
+- `launch_ready` is sent only after the local daemon broker has accepted the session and the local PTY process has started
+- `launch_ready` is the signal that allows the relay to complete `POST /api/computers/:computerID/sessions` with `status: "session_ready"`
+- unmatched, unknown, or duplicate `launch_ready` frames are ignored
 
 ### `resize`
 

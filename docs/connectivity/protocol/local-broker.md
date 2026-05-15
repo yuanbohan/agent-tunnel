@@ -4,7 +4,7 @@
 
 This document defines the phase-1 local protocol between the daemon and each local `tunnel run` process.
 
-Step 3 implements the local registration and preview subset. Interactive request, snapshot, live-byte, input, resize, and mobile fanout frames are reserved for Step 4.
+Step 3 implemented the local registration and preview subset. The current broker also carries snapshot, live-byte, input, and resize frames for trusted connectivity transports.
 
 Its purpose is narrow:
 
@@ -12,7 +12,7 @@ Its purpose is narrow:
 - let daemon expose those sessions to mobile clients
 - avoid making daemon the session owner
 
-This is a local-machine protocol only. It is not exposed to Relay or to mobile clients.
+This is a local-machine protocol only. It is not exposed to Relay.
 
 ## Core Rule
 
@@ -72,7 +72,10 @@ When `tunnel run` starts:
 
 1. it opens the local daemon socket
 2. it sends `register_session`
-3. it keeps the connection open for the lifetime of the session
+3. it waits for the broker to acknowledge that the session id was accepted
+4. it keeps the connection open for the lifetime of the session
+
+Startup must fail before terminal prep and child process launch if the daemon or broker cannot accept the registration. After startup, broker reconnect remains best-effort with backoff so local terminal work can continue through daemon restarts.
 
 ### Daemon Restart
 
@@ -115,6 +118,7 @@ The phase-1 local protocol should stay minimal.
 
 ### daemon -> `tunnel run`
 
+- `register_ack` (implemented in Step 3 and required during startup)
 - `interactive_request`
 - `interactive_release`
 - `input_text`
@@ -137,6 +141,15 @@ Minimum fields:
 - `online`
 
 This is the message that makes a session visible to the daemon's mobile-facing roster.
+
+### `register_ack`
+
+Minimum fields:
+
+- `type: "register_ack"`
+- `session_id`
+
+The daemon sends this after it accepts a `register_session` frame and records that `session_id` in the live broker roster. `tunnel run` waits for this acknowledgement during startup before terminal prep and child process launch.
 
 ### `session_update`
 
@@ -273,6 +286,7 @@ This matches the intended UX:
 - unknown local `session_id` messages must be ignored and logged
 - daemon must remove a session from its roster on local connection loss
 - `tunnel run` should retry reconnect with backoff if daemon is temporarily unavailable
+- first startup registration is required; reconnect after a successful startup is best-effort
 - daemon should treat duplicate `register_session` for the same `session_id` as replacement of the old local connection
 - daemon must remove a previous session if one local connection re-registers with a different `session_id`
 - broker writes are best-effort and bounded so preview/session-gone delivery cannot block local `tunnel run` shutdown indefinitely

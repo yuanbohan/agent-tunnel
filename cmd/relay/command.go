@@ -102,8 +102,8 @@ or Relay secrets and listens on RELAY_STUN_LISTEN_ADDR (default 0.0.0.0:3478).
 The operator commands under "relay invite" and "relay user" are intentionally
 local-only. Run them on the relay host after "relay serve" is already running.
 They use RELAY_OPERATOR_TOKEN and connect to RELAY_LISTEN_ADDR (default
-127.0.0.1:8586). The server also listens for Binding-only STUN on
-RELAY_STUN_LISTEN_ADDR (default 0.0.0.0:3478) unless disabled with "off".`,
+127.0.0.1:8586). "relay serve" does not start embedded STUN unless
+RELAY_STUN_LISTEN_ADDR or --stun-listen-addr is set to a UDP address.`,
 		Example: `  relay serve --listen-addr 127.0.0.1:8586
   relay stun serve --listen-addr 0.0.0.0:3478
   relay invite create --count 3 --expires-in 7d
@@ -164,7 +164,7 @@ Required environment variables:
 
 Optional environment variables:
   - RELAY_LISTEN_ADDR (default 127.0.0.1:8586)
-  - RELAY_STUN_LISTEN_ADDR (default 0.0.0.0:3478, set to "off" to disable)
+  - RELAY_STUN_LISTEN_ADDR (default off; set to a UDP address to enable embedded STUN)
   - RELAY_LOG_FILE`,
 		Example: `  relay serve
   relay serve --listen-addr 127.0.0.1:8586

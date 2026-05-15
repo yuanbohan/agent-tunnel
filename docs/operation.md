@@ -159,21 +159,29 @@ Example `psql` session:
 
 ```bash
 cd /opt/agentunnel/compose
-sudo docker compose --env-file .env exec postgres sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+sudo docker compose --env-file .env exec postgres sh -lc 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 ```
+
+Wrap multi-statement schema changes in one transaction so partial changes do
+not remain after an error.
 
 The legacy `relay-migrate` binary may still exist on older hosts for local compatibility work, but it is not part of the Docker Compose deployment path.
 
 Step 2 connectivity auth/pairing requires this manual SQL on existing databases before deploying a Relay binary that reads the new columns:
 
 ```sql
+begin;
+
 alter table users
   add column if not exists subscription_tier text not null default 'free';
 
 do $$
 begin
   if not exists (
-    select 1 from pg_constraint where conname = 'users_subscription_tier_check'
+    select 1
+    from pg_constraint
+    where conname = 'users_subscription_tier_check'
+      and conrelid = 'users'::regclass
   ) then
     alter table users
       add constraint users_subscription_tier_check
@@ -187,6 +195,8 @@ alter table app_sessions
 create index if not exists app_sessions_user_device_fingerprint_idx
   on app_sessions (user_id, device_fingerprint)
   where device_fingerprint <> '';
+
+commit;
 ```
 
 ## Troubleshooting

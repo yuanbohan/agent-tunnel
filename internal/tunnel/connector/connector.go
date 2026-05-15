@@ -175,6 +175,13 @@ func (c *Connector) SetLaunchContext(launchContext protocol.LaunchContext) {
 	c.launchContext = launchContext
 }
 
+func (c *Connector) MarkLaunchReady(launchContext protocol.LaunchContext) {
+	if launchContext.Source != protocol.SessionLaunchSourceMobile || launchContext.RequestID == "" {
+		return
+	}
+	c.enqueuePersistentJSON(protocol.LaunchReadyFrame(launchContext))
+}
+
 func (c *Connector) SetInitialSize(cols, rows int) {
 	c.initialCols = cols
 	c.initialRows = rows

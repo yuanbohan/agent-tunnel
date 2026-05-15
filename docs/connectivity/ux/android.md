@@ -102,7 +102,7 @@ Do not auto-connect multiple computers before resolution.
 
 ## Daemon Lifecycle Expectation
 
-`tunnel run` on the user's computer auto-starts the daemon if it is not already running (`../contract.md` D2). From Android:
+`tunnel run` on the user's computer starts the required daemon if it is not already running (`../contract.md` D2). From Android:
 
 - a computer that has run `tunnel run` at least once should have a daemon listening
 - computer presence in `computer_snapshot` is the source of truth for online status
@@ -111,7 +111,7 @@ Do not auto-connect multiple computers before resolution.
 ## Pairing Flow
 
 1. User is logged in on Android.
-2. User runs `tunnel daemon pair` on the computer; daemon mints a signed JSON invitation.
+2. User runs `tunnel pair` on the computer; daemon mints a signed JSON invitation and prints a QR code.
 3. User imports the invitation with the Android app.
 4. App validates the daemon-signed invitation locally.
 5. App signs the invitation challenge with its persistent device key, including the Relay-authenticated `account_id`.

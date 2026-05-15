@@ -37,10 +37,12 @@ func StaticBearerAuth(r *http.Request, wantToken string) bool {
 
 func RequestRemoteIP(r *http.Request) string {
 	if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); forwarded != "" {
-		if comma := strings.IndexByte(forwarded, ','); comma >= 0 {
-			forwarded = forwarded[:comma]
+		parts := strings.Split(forwarded, ",")
+		for i := len(parts) - 1; i >= 0; i-- {
+			if candidate := strings.TrimSpace(parts[i]); candidate != "" {
+				return candidate
+			}
 		}
-		return strings.TrimSpace(forwarded)
 	}
 	return DirectRequestRemoteIP(r)
 }
