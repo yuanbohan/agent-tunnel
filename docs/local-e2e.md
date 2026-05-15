@@ -10,7 +10,7 @@ This document explains the local end-to-end regression path for the real relay s
 - real agent token issuance
 - real `tunnel auth login`
 - real `tunnel` startup
-- real attach over HTTP discovery plus WebSocket attach
+- real local PTY input/output while removed Relay session routes stay absent
 
 Everything here is intentionally local-only. Do not point this flow at `agentunnel.cn` or any other remote relay.
 
@@ -25,16 +25,15 @@ The recommended local database for this workflow is a Dockerized `postgres:16.11
 3. user logs in and gets an app session
 4. user creates an agent token, either directly over HTTP or through `tunnel auth login`
 5. a real `tunnel` process connects to the local relay
-6. the app discovers the session over HTTP
-7. the app attaches over WebSocket
-8. the app receives snapshot bytes and live bytes
-9. the app sends real attach input back into the tunnel
-10. password change revokes app sessions and closes attaches
-11. the same tunnel session remains online
-12. the user logs back in and re-attaches
-13. PostgreSQL durable state matches the expected auth and token changes
+6. the removed Relay session discovery route returns the standard endpoint-not-found envelope
+7. the local PTY emits deterministic output
+8. the harness sends real local terminal input back into the tunnel
+9. password change revokes app sessions without stopping the tunnel
+10. the old app token is rejected
+11. the user logs back in with the new password
+12. PostgreSQL durable state matches the expected auth and token changes
 
-It is designed to catch regressions across the seams between auth, HTTP handlers, WebSocket transport, tunnel registration, attach routing, and durable auth state.
+It is designed to catch regressions across the seams between auth, HTTP handlers, Relay agent registration, local PTY behavior, removed Relay session routes, and durable auth state.
 
 ## Scope Boundary
 
@@ -42,10 +41,10 @@ This flow does verify:
 
 - local relay startup and schema migration
 - public HTTP auth flows
-- public HTTP session discovery
-- public WebSocket attach behavior
+- removed Relay session discovery behavior
+- local PTY input/output through `tunnel run`
 - tunnel registration and reconnect-sensitive session identity
-- password-change side effects on app sessions and attaches
+- password-change side effects on app sessions while the tunnel stays online
 - durable PostgreSQL mutations for invites, users, app sessions, and agent tokens
 
 This flow does not verify:
@@ -71,15 +70,13 @@ flowchart LR
     A --> I[Start real tunnel]
     I --> E
     I --> J[Deterministic e2e-launcher]
-    A --> K[List sessions over HTTP]
+    A --> K[Verify removed Relay session route]
     K --> E
-    A --> L[Attach over WebSocket]
-    L --> E
-    E --> I
+    A --> L[Write local PTY input]
     L --> I
     A --> M[Change password over HTTP]
     M --> E
-    A --> N[Re-login and re-attach]
+    A --> N[Re-login with new password]
     N --> E
     A --> O[Assert durable DB rows]
     O --> D
@@ -215,69 +212,45 @@ The test implementation lives in `internal/e2e/`. At a high level it runs these 
 
    In both cases the tunnel launches a deterministic helper program named `e2e-launcher`.
 
-9. Wait for session discovery over HTTP
+9. Verify removed Relay session discovery
 
-   The test polls:
+   The test calls the removed Relay session list route and expects the standard endpoint-not-found envelope. This prevents the local regression harness from accidentally depending on the deleted Relay session data plane.
 
-   - `GET /api/sessions`
-
-   until exactly one live session is visible.
-
-10. Attach over WebSocket
-
-    The test connects to:
-
-    - `GET /api/sessions/:id/attach/ws`
-
-    and validates the attach lifecycle:
-
-    - receives `attached`
-    - receives snapshot bytes
-    - receives `snapshot_done`
-
-11. Verify real terminal output
+10. Verify real terminal output
 
     The helper launcher prints a deterministic banner:
 
     - `READY e2e-launcher`
 
-    The test asserts that this banner appears in the initial snapshot.
+    The test asserts that this banner appears in the local tunnel PTY output.
 
-12. Send real attach input
+11. Send real local terminal input
 
-    The test sends `input_text("ping", true)` through the attach WebSocket and waits for live bytes containing:
+    The test writes `ping` to the local tunnel PTY and waits for output containing:
 
     - `REPLY ping`
 
-13. Change password over HTTP
+12. Change password over HTTP
 
     The test calls:
 
     - `POST /api/auth/password/change`
 
-    and verifies that the current attach receives:
+    and verifies that the running tunnel session is not stopped by app-session revocation.
 
-    - `closing` with reason `password_changed`
-
-14. Verify old app session is revoked
+13. Verify old app session is revoked
 
     The test reuses the old access token against:
 
-    - `GET /api/sessions`
+    - `GET /api/account/policy`
 
     and expects `401`.
 
-15. Log in again with the new password
+14. Log in again with the new password
 
     The test creates a fresh app session through `POST /api/auth/login`.
 
-16. Re-discover the same tunnel session and re-attach
-
-    The session ID must stay the same because the owning `tunnel` process never stopped. The second snapshot must still contain:
-
-    - `REPLY ping`
-
-17. Verify PostgreSQL durable state
+15. Verify PostgreSQL durable state
 
     The test checks:
 
@@ -299,9 +272,9 @@ The test implementation lives in `internal/e2e/`. At a high level it runs these 
 
 That gives the test a stable way to verify:
 
-- snapshot recovery
-- live byte forwarding
-- attach input translation through the tunnel
+- local terminal startup
+- local PTY input/output
+- app auth revocation without stopping the running tunnel
 
 ## Sequence Diagram
 
@@ -323,20 +296,12 @@ sequenceDiagram
     T->>U: start tunnel with local base URL
     U->>R: /agent/ws register session
     U->>L: launch PTY command
-    C->>R: GET /api/sessions
-    C->>R: GET /api/sessions/:id/attach/ws
-    R->>U: open attach
-    U-->>R: attached + snapshot bytes + live bytes
-    C->>R: input_text("ping", true)
-    R->>U: attach input
+    C->>R: removed Relay session route returns endpoint-not-found
+    T->>U: write "ping" to local PTY
     L-->>U: REPLY ping
-    U-->>R: live bytes
     C->>R: POST /api/auth/password/change
     R-->>C: revoke old app session
-    R-->>C: closing(password_changed)
     C->>R: POST /api/auth/login with new password
-    C->>R: GET /api/sessions/:id/attach/ws
-    U-->>R: snapshot still includes REPLY ping
     T->>PG: assert durable rows
 ```
 
@@ -398,7 +363,7 @@ make test-local-e2e-docker
 Run this after changes in:
 
 - auth
-- session discovery or attach handlers
+- removed Relay session route behavior
 - WebSocket transport
 - tunnel registration or input handling
 - password-change revocation logic
@@ -434,13 +399,11 @@ Then validate this checklist:
 1. Register a fresh user or log in with an existing user stored in that same local database.
 2. Create or reuse an agent token owned by that same user.
 3. Start `tunnel` against `http://127.0.0.1:8586`.
-4. Confirm the session appears through the local app flow or `GET /api/sessions`.
-5. Attach to `GET /api/sessions/:id/attach/ws`.
-6. Confirm snapshot recovery works.
-7. Confirm new terminal output streams live.
-8. Change the password.
-9. Confirm the current attach closes.
-10. Log in with the new password and attach again while the original tunnel stays online.
+4. Confirm removed Relay session routes return endpoint-not-found.
+5. Confirm local terminal input/output works through the tunnel PTY.
+6. Change the password.
+7. Confirm the old app token is unauthorized.
+8. Log in with the new password while the original tunnel stays online.
 
 ### 5. Inspect the database when you need to debug state
 
@@ -476,12 +439,12 @@ When the test fails, split the failure by layer:
   check PostgreSQL availability, `AGENTUNNEL_TEST_DATABASE_URL`, and `make local-e2e-db-status`
 - invite/register/login failure:
   inspect relay logs and auth handler behavior
-- session discovery failure:
-  check tunnel startup logs and `/agent/ws` registration
-- attach snapshot failure:
-  inspect attach control messages and tunnel mirror behavior
+- removed session route failure:
+  check router `NoRoute` behavior and the local E2E client assertion
+- local PTY input/output failure:
+  check tunnel startup logs, `/agent/ws` registration, and the e2e launcher process
 - password-change failure:
-  inspect app-session revocation and attach-close handling
+  inspect app-session revocation and tunnel liveness handling
 - DB assertion failure:
   inspect auth persistence and migration shape
 

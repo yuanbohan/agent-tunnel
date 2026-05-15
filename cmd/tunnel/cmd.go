@@ -157,8 +157,6 @@ func newAuthCmd(handlers commandHandlers) *cobra.Command {
 }
 
 func newSessionCmd(handlers commandHandlers) *cobra.Command {
-	var baseURL string
-
 	cmd := &cobra.Command{
 		Use:           "session",
 		Short:         "List and stop live tunnel sessions",
@@ -169,7 +167,6 @@ func newSessionCmd(handlers commandHandlers) *cobra.Command {
 			return cmd.Help()
 		},
 	}
-	cmd.PersistentFlags().StringVar(&baseURL, "base-url", "", "relay base URL")
 	cmd.SetHelpFunc(func(cmd *cobra.Command, _ []string) {
 		_, _ = io.WriteString(cmd.OutOrStdout(), sessionHelpText())
 	})
@@ -186,11 +183,7 @@ func newSessionCmd(handlers commandHandlers) *cobra.Command {
 		Args:          cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			runList := func() error {
-				resolved, err := resolveBaseURL(baseURL, osEnv)
-				if err != nil {
-					return err
-				}
-				return handlers.sessionList(cmd.Context(), sessionCommandArgs{BaseURL: resolved, JSON: listJSON}, cmd.OutOrStdout(), cmd.ErrOrStderr())
+				return handlers.sessionList(cmd.Context(), sessionCommandArgs{JSON: listJSON}, cmd.OutOrStdout(), cmd.ErrOrStderr())
 			}
 			if listJSON {
 				return runSessionJSONCommand(cmd.OutOrStdout(), runList)
@@ -218,11 +211,7 @@ func newSessionCmd(handlers commandHandlers) *cobra.Command {
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			resolved, err := resolveBaseURL(baseURL, osEnv)
-			if err != nil {
-				return err
-			}
-			return handlers.sessionStop(cmd.Context(), sessionCommandArgs{BaseURL: resolved}, args[0], cmd.OutOrStdout(), cmd.ErrOrStderr())
+			return handlers.sessionStop(cmd.Context(), sessionCommandArgs{}, args[0], cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
 	stopCmd.SetHelpFunc(func(cmd *cobra.Command, _ []string) {

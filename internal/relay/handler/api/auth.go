@@ -11,7 +11,6 @@ import (
 	"yuanbohan/tunnel/internal/relay/handler/httpx"
 	"yuanbohan/tunnel/internal/relay/handler/middleware"
 	"yuanbohan/tunnel/internal/relay/handler/types"
-	"yuanbohan/tunnel/internal/relay/session"
 )
 
 func Register(appAuth *auth.AppAuthService, throttle *RegisterThrottle) gin.HandlerFunc {
@@ -138,7 +137,7 @@ func authRequestFingerprint(clientFingerprint, legacyDeviceFingerprint string) s
 	return legacyDeviceFingerprint
 }
 
-func Logout(appAuth *auth.AppAuthService, registry *session.Registry, attachSessions *session.AttachSessionIndex, connectivityRegistry *relayconnectivity.Registry) gin.HandlerFunc {
+func Logout(appAuth *auth.AppAuthService, connectivityRegistry *relayconnectivity.Registry) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if appAuth == nil {
 			WriteJSONError(c.Writer, http.StatusServiceUnavailable, "service_unavailable")
@@ -154,7 +153,6 @@ func Logout(appAuth *auth.AppAuthService, registry *session.Registry, attachSess
 			WriteJSONError(c.Writer, http.StatusInternalServerError, "internal_error")
 			return
 		}
-		attachSessions.DisconnectAppSession(registry, app.Session.ID, "logged_out")
 		if connectivityRegistry != nil {
 			connectivityRegistry.DisconnectAppSession(app.Session.ID)
 		}
@@ -162,7 +160,7 @@ func Logout(appAuth *auth.AppAuthService, registry *session.Registry, attachSess
 	}
 }
 
-func ChangePassword(appAuth *auth.AppAuthService, registry *session.Registry, attachSessions *session.AttachSessionIndex, connectivityRegistry *relayconnectivity.Registry) gin.HandlerFunc {
+func ChangePassword(appAuth *auth.AppAuthService, connectivityRegistry *relayconnectivity.Registry) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		app := middleware.AuthenticatedApp(c)
 
@@ -183,7 +181,6 @@ func ChangePassword(appAuth *auth.AppAuthService, registry *session.Registry, at
 			}
 			return
 		}
-		attachSessions.DisconnectUser(registry, app.User.ID, "password_changed")
 		if connectivityRegistry != nil {
 			connectivityRegistry.DisconnectUser(app.User.ID)
 		}

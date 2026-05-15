@@ -23,7 +23,7 @@ The origin requirements define the long-term need to separate Relay control-plan
 
 The later `docs/connectivity/` documents refine that into a concrete phase-1 contract: QUIC/TLS 1.3 with device-key pinning, `quic-go` on daemon, Cloudflare `quiche` on Android, WSS-tunneled QUIC fallback before direct STUN, daemon-owned session discovery, a trusted-computer-count tier rule in the official app, and Relay reduced to auth, daemon presence, pairing transport, rendezvous, account tier exposure, and opaque fallback packet relay.
 
-The current repository still implements a Relay-centered model: `/agent/ws`, `/device/ws`, `/api/sessions`, and `/api/sessions/:id/attach/ws` carry session discovery, attach control, terminal bytes, input, launch, and stop. This program focuses on the new daemon-mediated connectivity stack; preserving, retiring, or redesigning the old attach surface is not a planning dimension for this feature split.
+The repository has moved to the daemon-mediated connectivity stack: Relay remains the auth, computer presence, rendezvous, fallback, and launch-correlation control plane, while daemon transport owns session roster, preview, terminal bytes, input, resize, and detail. The old Relay session list/stop/attach surface has been removed as part of issue #135.
 
 ---
 
@@ -52,7 +52,7 @@ The current repository still implements a Relay-centered model: `/agent/ws`, `/d
 ## Scope Boundaries
 
 - This plan is a program plan for the current Go repository. It includes Android acceptance gates, but the production Android codebase is not present in this workspace. Before Android production implementation begins, create or update a companion Android plan with concrete repo-relative Android file paths.
-- Do not make existing Relay attach compatibility or retirement part of this program's high-level scope. Implementation PRs should avoid unrelated changes to that surface unless a step explicitly requires a route or protocol change.
+- Do not reintroduce Relay session list/stop/attach compatibility as part of this program's high-level scope. Implementation PRs should keep session data-plane work on daemon transport unless a later plan explicitly changes the product boundary.
 - Do not implement UDP relay in phase 1.
 - Do not implement daemon-side per-session ACLs or tier enforcement in phase 1.
 - Do not implement payment or upgrade purchase flow in phase 1. Relay operators may temporarily set a user to `free` or `pro`; this is a FIXME to replace with a real payment-backed subscription flow later.
@@ -72,12 +72,12 @@ The current repository still implements a Relay-centered model: `/agent/ws`, `/d
 
 ### Relevant Code and Patterns
 
-- `internal/protocol/message.go` owns current Relay attach/session JSON envelopes and is the natural place to add shared connectivity control-plane event types while the protocol is still Go-only.
-- `internal/protocol/attach_packet.go` already demonstrates a compact binary frame with tests; the new length-framed connectivity frame codec should live separately so the existing attach packet format stays stable.
-- `internal/tunnel/connector/connector.go` is the current session-to-Relay adapter and already maintains a `session.TerminalMirror`, attach snapshots, live output fanout, submit serialization, resize forwarding, and reconnect backoff.
+- `internal/protocol/message.go` owns current Relay registration and launch-readiness envelopes. Connectivity transport frame types live separately from the reduced `/agent/ws` control-plane surface.
+- The removed Relay attach packet format is no longer a compatibility constraint. The length-framed connectivity frame codec should stay separate from Relay registration helpers.
+- `internal/tunnel/connector/connector.go` is the current session-to-Relay registration adapter. Terminal snapshots, live output fanout, input, resize, and previews are daemon-broker/transport responsibilities.
 - `internal/tunnel/session/hub.go` and `internal/tunnel/session/terminal_mirror.go` already provide PTY fanout, input serialization, resize tracking, snapshot serialization, and viewport text.
 - `internal/tunnel/daemon/runtime.go`, `control.go`, `paths.go`, `recipe.go`, and `connector.go` own daemon lifecycle, local control socket, persisted device identity, status, tmux launch, and current `/device/ws` connection.
-- `internal/relay/handler/new.go` wires the current REST/WebSocket surface; new connectivity endpoints must be added in parallel with `/agent/ws`, `/device/ws`, and `/api/sessions/:id/attach/ws`.
+- `internal/relay/handler/new.go` wires the current REST/WebSocket surface; connectivity endpoints sit alongside `/agent/ws` and `/device/ws`, without Relay session attach routes.
 - `internal/relay/auth/app_service.go`, `internal/relay/auth/types.go`, `internal/relay/store/postgres/auth_repository.go`, and `deploy/postgres/latest.sql` must change together for `device_fingerprint`, JWT/session storage, and account tier.
 - `internal/relay/device/registry.go` and `internal/relay/session/registry.go` are live in-memory registries. New pairing-derived daemon visibility and relay-tunnel attempt state should follow that live-only style unless a schema-backed state is explicitly required.
 - `docs/daemon.md` currently says daemon start fails early when tmux is unavailable. Connectivity auto-start creates a conflict: the daemon's connectivity core should run even when launch health is degraded, or `tunnel run` auto-start will regress local launch.

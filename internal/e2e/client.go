@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"yuanbohan/tunnel/internal/protocol"
 	"yuanbohan/tunnel/internal/relay/handler/response"
 	handlertypes "yuanbohan/tunnel/internal/relay/handler/types"
@@ -17,9 +16,7 @@ import (
 
 type AppClient struct {
 	baseURL string
-	wsURL   string
 	http    *http.Client
-	dialer  *websocket.Dialer
 }
 
 type RegisterResponse struct {
@@ -36,9 +33,7 @@ type APIEnvelope struct {
 func newAppClient(baseURL string) *AppClient {
 	return &AppClient{
 		baseURL: strings.TrimRight(baseURL, "/"),
-		wsURL:   "ws" + strings.TrimPrefix(strings.TrimRight(baseURL, "/"), "http"),
 		http:    &http.Client{Timeout: 5 * time.Second},
-		dialer:  websocket.DefaultDialer,
 	}
 }
 
@@ -114,14 +109,8 @@ func (c *AppClient) SubmitPairingResponse(accessToken string, response protocol.
 	return nil
 }
 
-func (c *AppClient) ListSessions(accessToken string) ([]protocol.SessionInfo, error) {
-	var out []protocol.SessionInfo
-	err := c.doJSON(http.MethodGet, "/api/sessions", accessToken, nil, http.StatusOK, &out)
-	return out, err
-}
-
-func (c *AppClient) GetSessionsStatus(accessToken string) (int, APIEnvelope, error) {
-	req, err := http.NewRequest(http.MethodGet, c.baseURL+"/api/sessions", nil)
+func (c *AppClient) GetAPIStatus(path, accessToken string) (int, APIEnvelope, error) {
+	req, err := http.NewRequest(http.MethodGet, c.baseURL+path, nil)
 	if err != nil {
 		return 0, APIEnvelope{}, err
 	}
@@ -140,7 +129,7 @@ func (c *AppClient) GetSessionsStatus(accessToken string) (int, APIEnvelope, err
 	}
 	var envelope APIEnvelope
 	if err := json.Unmarshal(payload, &envelope); err != nil {
-		return 0, APIEnvelope{}, fmt.Errorf("GET /api/sessions returned status %d and invalid envelope response: %w", resp.StatusCode, err)
+		return 0, APIEnvelope{}, fmt.Errorf("GET %s returned status %d and invalid envelope response: %w", path, resp.StatusCode, err)
 	}
 	return resp.StatusCode, envelope, nil
 }
@@ -150,19 +139,6 @@ func (c *AppClient) ChangePassword(accessToken, currentPassword, newPassword str
 		"current_password": currentPassword,
 		"new_password":     newPassword,
 	}, http.StatusOK, nil)
-}
-
-func (c *AppClient) Attach(accessToken, sessionID string) (*websocket.Conn, error) {
-	headers := http.Header{}
-	headers.Set("Authorization", "Bearer "+accessToken)
-	conn, resp, err := c.dialer.Dial(c.wsURL+"/api/sessions/"+sessionID+"/attach/ws", headers)
-	if err != nil {
-		if resp == nil {
-			return nil, err
-		}
-		return nil, fmt.Errorf("attach websocket status %d: %w", resp.StatusCode, err)
-	}
-	return conn, nil
 }
 
 func (c *AppClient) doJSON(method, path, accessToken string, requestBody any, wantStatus int, responseBody any) error {

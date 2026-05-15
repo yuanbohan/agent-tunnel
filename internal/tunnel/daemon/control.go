@@ -19,9 +19,12 @@ const (
 	actionConfirmPendingPairing = "confirm_pending_pairing"
 	actionDevices               = "devices"
 	actionRevokeDevice          = "revoke_device"
+	actionSessionList           = "session_list"
+	actionSessionStop           = "session_stop"
 )
 
 var ErrNotRunning = errors.New("daemon is not running")
+var ErrSessionNotFound = errors.New("local session not found")
 
 type StatusInfo struct {
 	Running                 bool   `json:"running"`
@@ -48,11 +51,13 @@ type Request struct {
 	DeviceFingerprint string `json:"device_fingerprint,omitempty"`
 	InvitationID      string `json:"invitation_id,omitempty"`
 	SAS               string `json:"sas,omitempty"`
+	SessionID         string `json:"session_id,omitempty"`
 }
 
 type Response struct {
 	Status         *StatusInfo              `json:"status,omitempty"`
 	Doctor         *DoctorReport            `json:"doctor,omitempty"`
+	Sessions       []BrokerSessionSnapshot  `json:"sessions,omitempty"`
 	PairInvitation *PairInvitation          `json:"pair_invitation,omitempty"`
 	PendingPairing []PendingPairingResponse `json:"pending_pairing,omitempty"`
 	PairCompletion *PairingCompletion       `json:"pair_completion,omitempty"`
@@ -265,6 +270,34 @@ func RevokeTrustedDevice(ctx context.Context, paths Paths, fingerprint string) (
 		return TrustedAndroidDevice{}, errors.New("daemon returned empty trusted device response")
 	}
 	return *response.TrustedDevice, nil
+}
+
+func ListSessions(ctx context.Context, paths Paths) ([]BrokerSessionSnapshot, error) {
+	response, err := request(ctx, paths.SocketPath, Request{Action: actionSessionList})
+	if err != nil {
+		return nil, fmt.Errorf("%w; start it with `tunnel daemon start`", ErrNotRunning)
+	}
+	if response.Error != "" {
+		return nil, errors.New(response.Error)
+	}
+	return response.Sessions, nil
+}
+
+func StopSession(ctx context.Context, paths Paths, sessionID string) error {
+	response, err := request(ctx, paths.SocketPath, Request{
+		Action:    actionSessionStop,
+		SessionID: sessionID,
+	})
+	if err != nil {
+		return fmt.Errorf("%w; start it with `tunnel daemon start`", ErrNotRunning)
+	}
+	if response.Error != "" {
+		if response.Error == ErrSessionNotFound.Error() {
+			return ErrSessionNotFound
+		}
+		return errors.New(response.Error)
+	}
+	return nil
 }
 
 func request(ctx context.Context, socketPath string, payload Request) (Response, error) {

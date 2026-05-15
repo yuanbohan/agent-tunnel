@@ -117,11 +117,7 @@ func Handle(registry *session.Registry, deviceRegistry *relaydevice.Registry) gi
 
 			switch messageType {
 			case websocket.BinaryMessage:
-				packet, err := protocol.DecodeAttachPacket(payload)
-				if err != nil {
-					continue
-				}
-				registry.RouteTerminalBytesIfOwner(register.Session.SessionID, peer, packet)
+				continue
 			case websocket.TextMessage:
 				var frame protocol.AgentFrame
 				if err := json.Unmarshal(payload, &frame); err != nil {
@@ -140,26 +136,6 @@ func Handle(registry *session.Registry, deviceRegistry *relaydevice.Registry) gi
 								registry.SetLaunchSourceForUser(register.Session.SessionID, authenticated.User.ID, protocol.SessionLaunchSourceMobile)
 							}
 						}
-					}
-				case "resize":
-					if frame.Cols > 0 && frame.Rows > 0 {
-						registry.RouteResizeIfOwner(register.Session.SessionID, peer, frame.Cols, frame.Rows)
-					}
-				case "attach_ready":
-					if frame.ClientID != "" && frame.Cols > 0 && frame.Rows > 0 {
-						registry.RouteAttachReadyIfOwner(register.Session.SessionID, peer, frame.ClientID, frame.Cols, frame.Rows)
-					}
-				case "snapshot_done":
-					if frame.ClientID != "" {
-						registry.RouteSnapshotDoneIfOwner(register.Session.SessionID, peer, frame.ClientID, frame.SubmitAnchors...)
-					}
-				case "submit_anchor":
-					if frame.ClientID != "" && frame.SubmitAnchor != nil {
-						registry.RouteSubmitAnchorIfOwner(register.Session.SessionID, peer, frame.ClientID, *frame.SubmitAnchor)
-					}
-				case "attach_close":
-					if frame.ClientID != "" {
-						registry.RouteAttachCloseIfOwner(register.Session.SessionID, peer, frame.ClientID, frame.Reason)
 					}
 				}
 			}

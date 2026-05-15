@@ -2,15 +2,14 @@
 
 This document is the repo-local implementation reference for the relay server's current public app-facing API surface. Cross-repository protocol decisions live in [yuanbohan/agent-tunnel-protocols](https://github.com/yuanbohan/agent-tunnel-protocols); keep this file aligned with that protocol source of truth.
 
-If any public relay route, app-facing auth requirement, request body, success response, error status or reason, or client attach WebSocket message changes, update this file in the same change.
+If any public relay route, app-facing auth requirement, request body, success response, error status or reason, or app/daemon connectivity WebSocket message changes, update this file in the same change.
 
 This file covers:
 
 - public app-facing HTTP endpoints under `/api/...`
-- the client attach WebSocket
 - the connectivity app/daemon WebSockets and fallback tunnel endpoint
 
-For lower-level wire details such as the binary attach packet format, also see [docs/protocol.md](./protocol.md).
+For lower-level relay-facing wire details, also see [docs/protocol.md](./protocol.md).
 
 This document intentionally does not cover operator-only routes or the legacy `tunnel`-owned agent sockets at `/agent/ws` and `/device/ws`.
 
@@ -18,7 +17,7 @@ This document intentionally does not cover operator-only routes or the legacy `t
 
 The official mobile companion uses Relay for auth, account policy, pairing, computer presence, rendezvous, fallback tunnel setup, and computer launch. After a launch returns `session_ready`, the companion treats `session_id` as a correlation key and waits for the daemon connectivity transport to report that session through `session_index` or `session_upsert`.
 
-The retained Relay session APIs (`GET /api/sessions`, `DELETE /api/sessions/:sessionID`, and `GET /api/sessions/:sessionID/attach/ws`) remain documented below for classic Relay attach clients and account-level live-session operations. They are not the official mobile companion authority for session roster, previews, terminal snapshots/live bytes, input, resize, or mobile session detail after launch.
+Relay no longer exposes app-facing session list, session stop, or session attach endpoints. Session roster, previews, terminal snapshots/live bytes, input, resize, and mobile session detail are daemon-transport-owned after pairing. Local CLI `tunnel session list` and `tunnel session stop <session-id>` use this computer's daemon control socket and broker state, not Relay account-wide APIs.
 
 ## Conventions
 
@@ -36,9 +35,9 @@ The relay currently uses three token classes:
 
 | Token | Used By | Where It Goes |
 |-------|---------|---------------|
-| App access token | mobile/web/native app clients, including retained classic attach clients | `Authorization: Bearer <access-token>` on app-facing `/api/...` routes, retained `GET /api/sessions/:sessionID/attach/ws`, and `GET /api/connectivity/ws` |
+| App access token | mobile/web/native app clients | `Authorization: Bearer <access-token>` on app-facing `/api/...` routes and `GET /api/connectivity/ws` |
 | App refresh token | app clients | JSON body for `POST /api/auth/refresh` |
-| Agent token | created by app clients, used later by `tunnel` | returned by `POST /api/agent-tokens`; used by `/agent/ws`, `/device/ws`, `/connectivity/computer/ws`, `GET /api/sessions`, and `DELETE /api/sessions/:sessionID` |
+| Agent token | created by app clients, used later by `tunnel` and `tunnel daemon` | returned by `POST /api/agent-tokens`; used by `/agent/ws`, `/device/ws`, and `/connectivity/computer/ws` |
 | Fallback tunnel token | app and daemon connectivity peers | one-time `Authorization: Bearer <single-use-token>` on `GET /connectivity/tunnel/ws`; issued through `relay_tunnel_ready` and bound to one actor and attempt |
 
 ### JSON Request Rules
@@ -104,30 +103,22 @@ Code map (excerpt):
 
 ### Session Model
 
-This section describes the retained Relay session API model for classic attach clients and account-level live-session operations. The official mobile companion uses daemon connectivity transport session metadata after launch.
+Relay only sees live session ownership and launch-correlation metadata on `/agent/ws`. It does not expose that state through app-facing session discovery, stop, detail, or attach APIs.
 
-- `GET /api/sessions` returns only live sessions whose owning agent socket is currently connected
-- session discovery is user-scoped
-- user-scoped discovery and attach authorization are a hard multi-tenant guarantee for hosted relay deployments
-- a missing session can mean "offline now", not just "never existed"
-- a session can disappear and later reappear with the same `session_id` if the same running `tunnel` process reconnects
-- session metadata now includes best-effort Git branch for the startup `cwd`, optional daemon identity through `device_id`, relay-controlled `launch_source`, and best-effort machine identity fields for UI display: `platform_family`, `platform_id`, and `computer_name`
-- `launch_source` is `local` for direct local `tunnel run` sessions and `mobile` for sessions whose registration is correlated with a mobile/device launch request
-- clients should treat missing, empty, or unknown `launch_source` values as `local`
-- `git_branch` is the Git branch for the registered startup `cwd` when that directory is on a symbolic branch; otherwise it is an empty string
-- `device_id` is copied from the registering session when that local `tunnel run` can read an existing daemon identity; otherwise it is an empty string
-- `computer_name` is already normalized by the agent before registration: prefer local display name when available, otherwise fall back to hostname
-- `platform_id` is a raw best-effort identifier intended for client-side icon mapping; clients should keep their own whitelist and fall back gracefully for unknown values
+- `session_id` identifies one running `tunnel` process.
+- Relay uses `/agent/ws` registration plus `launch_ready` to complete `POST /api/computers/:computerID/sessions`.
+- The official mobile companion receives visible session state from daemon connectivity transport messages such as `session_index`, `session_upsert`, and `session_gone`.
+- The local CLI receives visible local session state from the daemon control socket and broker.
+- Computers do not share session rows through Relay.
 
 ### Computer Model
 
 - `GET /api/computers` returns only currently connected computers whose owning daemon socket is online now
-- computer discovery is user-scoped, just like session discovery
+- computer discovery is user-scoped
 - computer identity is stable through `computer_id`; display metadata such as `display_name`, `platform_family`, and `platform_id` are refreshed when the daemon re-registers
 - computer presence is live-only; there is no offline or historical computer list in this API revision
 - `POST /api/computers/:computerID/sessions` reports `session_ready` or a structured launch failure and does not auto-attach to the later session
 - for the official mobile companion, `session_ready.session_id` is followed by daemon connectivity transport convergence; Relay does not become the mobile session roster/detail/interactive authority
-- `DELETE /api/sessions/:sessionID` can stop any live session owned by the authenticated user as a retained Relay/account-level operation
 
 ## Public HTTP API
 
@@ -186,7 +177,7 @@ Response:
 
 Notes:
 
-- `computer_id` is the stable daemon identity; sessions whose `device_id` reports the same value in `GET /api/sessions` are associated with that computer
+- `computer_id` is the stable daemon identity used by Relay launch requests and daemon connectivity transport correlation
 - `platform_family` is the stable UI fallback field for device-class icons, currently `macos` or `linux`
 - `platform_id` is the best-effort specific platform identifier for more exact icon selection, for example `macos`, `ubuntu`, `arch`, `debian`, `fedora`, or `unknown`
 - `launch_health` is the daemon-reported live readiness for remote launch, currently `healthy` or `degraded`
@@ -265,9 +256,8 @@ Notes:
 
 - the relay may hold this request open for roughly 20-30 seconds while waiting for the launched session to become ready
 - `status: "session_ready"` is the only success state in this contract
-- a successful daemon-launched session still registers with Relay for retained classic/account-level live-session APIs; its `device_id` is whatever the launched `tunnel run` reports from local daemon state
+- a successful daemon-launched session still registers with Relay for live launch correlation; its `device_id` is whatever the launched `tunnel run` reports from local daemon state
 - official mobile companion clients should treat `session_id` from the launch response as a launch correlation key and wait for the daemon connectivity transport to report the matching broker-known session through `session_index` or `session_upsert`
-- retained classic Relay attach clients may use `session_id` with the Relay session discovery and attach flow
 - the launch flow still does not auto-attach to the new session
 
 ### `POST /api/auth/register`
@@ -478,8 +468,8 @@ Success:
 Notes:
 
 - only the current app session is revoked
-- attaches opened by that app session are closed with `closing { "reason": "logged_out" }`
-- the owning agent session stays online
+- app connectivity peers authenticated by that app session are disconnected
+- the owning agent session stays online; the legacy attach socket no longer exists
 
 Error responses:
 
@@ -528,8 +518,8 @@ Notes:
 
 - `new_password` must be at least 6 characters
 - all app sessions for that user are revoked
-- active attaches for that user are closed with `closing { "reason": "password_changed" }`
-- the owning agent session stays online
+- app connectivity peers authenticated by revoked app sessions are disconnected
+- owning agent sessions stay online; the legacy attach socket no longer exists
 
 Error responses:
 
@@ -677,7 +667,7 @@ Success:
 Notes:
 
 - the relay disconnects live sessions authenticated by that token immediately
-- affected attaches are closed with `closing { "reason": "agent_token_revoked" }`
+- any daemon/device connectivity owned by that token is disconnected through the remaining live registries
 
 Error responses:
 
@@ -965,294 +955,9 @@ text, or session metadata. Tokens expire quickly, may be redeemed once, and are
 invalidated when the owning app session, daemon connection, agent token, user, or
 paired-device trust is revoked.
 
-### `GET /api/sessions`
-
-List the authenticated user's live sessions for retained Relay/classic attach clients and account-level live-session operations.
-
-Official mobile companion note: this endpoint is not the companion's post-launch session roster or detail authority. The companion waits for daemon connectivity transport `session_index` or `session_upsert`.
-
-Auth: app access token
-
-Headers:
-
-```text
-Authorization: Bearer <access-token>
-```
-
-Request body: none
-
-Success:
-
-- `200 OK`
-- body (envelope):
-
-Response:
-
-```json
-{
-  "code": 0,
-  "message": "success",
-  "body": [
-    {
-      "session_id": "sess-1",
-      "device_id": "dev_abcd1234",
-      "launcher": "codex",
-      "label": "api-fix",
-      "cwd": "/repo",
-      "command_preview": "codex --profile prod",
-      "git_branch": "main",
-      "started_at": 1775376000,
-      "platform_family": "linux",
-      "platform_id": "ubuntu",
-      "computer_name": "Office Linux",
-      "launch_source": "mobile"
-    }
-  ]
-}
-```
-
-Notes:
-
-- the list is sorted newest-first by `started_at`
-- only sessions owned by the authenticated user are returned
-- another user's live sessions must remain invisible even when both users have active `tunnel` connections
-- the list is live-only, not history
-- `git_branch` is the best-effort Git branch for `cwd`; when the startup directory is not on a symbolic branch it is returned as an empty string
-- `device_id` is copied from the registering session when the local `tunnel run` can read an existing daemon identity; otherwise it is an empty string
-- when `device_id` is non-empty and the daemon is currently online, clients can use it to correlate with `GET /api/computers[].computer_id`; the relay does not validate that relationship during session registration
-- `launch_source` is controlled by relay launch correlation; clients should not infer mobile launch from `device_id` alone
-- missing, empty, or unknown `launch_source` values should be treated as `local` for display
-- `platform_family`, `platform_id`, and `computer_name` are stable keys in the session payload; when metadata is unavailable they are returned as empty strings rather than omitted
-- `platform_family` is the coarse fallback field for session device identity, currently `macos` or `linux`
-- `platform_id` is the best-effort specific platform identifier for client icon mapping, for example `macos`, `ubuntu`, `debian`, `arch`, or `fedora`
-- `computer_name` is the user-facing machine name chosen by the agent: display name first, hostname as fallback
-
-Error responses:
-
-| Status | Body | Meaning |
-|--------|------|---------|
-| `401` | `{"code":1016,"message":"The request is unauthorized.","body":null}` | missing or invalid app or agent bearer token |
-| `500` | `{"code":2002,"message":"An unexpected internal error occurred.","body":null}` | unexpected server failure |
-
-### `DELETE /api/sessions/:sessionID`
-
-Ask the owning online `tunnel run` process to stop one live session.
-
-Auth: app access token or agent token
-
-Compatibility note: `POST /api/sessions/:sessionID/stop` remains available as a legacy alias in this revision. This retained Relay stop path is account-level/classic behavior, not the official mobile companion session authority.
-
-Headers:
-
-```text
-Authorization: Bearer <access-token-or-agent-token>
-```
-
-Request body: none
-
-Success response:
-
-```json
-{
-  "code": 0,
-  "message": "success",
-  "body": {
-    "session_id": "sess-1",
-    "status": "stopped"
-  }
-}
-```
-
-Notes:
-
-- this is destructive session shutdown, not the local `tunnel workspace close` workspace-view action
-- local-launched and mobile-launched sessions use the same stop path
-- the relay sends `stop_session` to the owning `/agent/ws` connection, removes the live session from discovery, and closes active attaches with `session_stopped`
-- the owning `tunnel run` process exits after receiving `stop_session`
-
-Error responses:
-
-| Status | Body | Meaning |
-|--------|------|---------|
-| `401` | `{"code":1016,"message":"The request is unauthorized.","body":null}` | missing or invalid app or agent bearer token |
-| `404` | `{"code":1015,"message":"The session was not found or is offline.","body":null}` | session is unknown, belongs to another user, or is currently offline |
-| `500` | `{"code":2002,"message":"An unexpected internal error occurred.","body":null}` | unexpected server failure |
-| `503` | `{"code":2001,"message":"The service is temporarily unavailable.","body":null}` | session registry unavailable |
-
-## Client Attach WebSocket
-
-### `GET /api/sessions/:sessionID/attach/ws`
-
-Attach to one live session owned by the authenticated user for retained Relay/classic clients.
-
-Official mobile companion note: mobile session detail, terminal snapshots/live bytes, input, and resize use daemon connectivity transport instead of this Relay attach websocket after launch.
-
-Auth: app access token
-
-Headers:
-
-```text
-Authorization: Bearer <access-token>
-```
-
-Browser attach requirement:
-
-- browser clients must present a same-origin `Origin` header for the relay host
-- native clients that omit `Origin` are supported
-
-Pre-upgrade error responses:
-
-| Status | Body | Meaning |
-|--------|------|---------|
-| `401` | `{"code":1016,"message":"The request is unauthorized.","body":null}` | missing or invalid app bearer token |
-| `403` | `{"code":1017,"message":"The request is forbidden.","body":null}` | browser cross-origin attach attempt |
-| `404` | `{"code":1015,"message":"The session was not found or is offline.","body":null}` | session is unknown, belongs to another user, or is currently offline |
-
-Multi-tenant rule:
-
-- cross-user attach attempts must fail as `404` with `code=1015` and must not leak whether another user's session is online
-
-Success:
-
-- HTTP upgrades to WebSocket
-- relay sends `attached`, then snapshot bytes, then `snapshot_done`, then live PTY bytes
-- `snapshot_done` may include bounded submit anchors that map into the just-restored snapshot buffer
-- after `snapshot_done`, relay may send live `submit_anchor` controls for new submit Enter events while the client remains attached
-
-Relay -> client control message examples:
-
-`attached`
-
-```json
-{
-  "type": "attached",
-  "session_id": "sess-1",
-  "cols": 120,
-  "rows": 40
-}
-```
-
-`snapshot_done`
-
-```json
-{
-  "type": "snapshot_done",
-  "submit_anchors": [
-    {
-      "id": "submit-1",
-      "line": 42,
-      "submitted_at": 1775131200
-    }
-  ]
-}
-```
-
-`submit_anchors` is optional and omitted when no valid anchors are available. Each anchor is a content-free navigation hint for a local or remote input event that sent an `ENTER` carriage return to the PTY outside a bracketed-paste region. `id` is an opaque session-local identifier that is stable only while the running agent retains that anchor; clients must not treat it as durable across process exit, a new `session_id`, or anchor expiry. `line` is a 0-based row in the terminal buffer after applying the preceding snapshot bytes, and `submitted_at` is a Unix timestamp in integer seconds. Anchors are bounded agent-local metadata; at most 256 valid anchors are forwarded, invalid anchors are omitted, and anchors are not durable transcript history or exact Codex-rendered message-block positions.
-
-`submit_anchor`
-
-```json
-{
-  "type": "submit_anchor",
-  "submit_anchor": {
-    "id": "submit-2",
-    "line": 45,
-    "submitted_at": 1775131300
-  }
-}
-```
-
-`submit_anchor` is a live incremental control message for clients that are already attached. It uses the same content-free anchor shape and same Tunnel-owned retention/id model as `snapshot_done.submit_anchors`, but `line` is interpreted against the client's current terminal buffer when the live event is received. Fresh `snapshot_done.submit_anchors` remains the reconciliation point after reconnect, missed live events, or local provisional dots.
-
-`resize`
-
-```json
-{
-  "type": "resize",
-  "cols": 100,
-  "rows": 30
-}
-```
-
-`closing`
-
-```json
-{
-  "type": "closing",
-  "reason": "session_offline"
-}
-```
-
-Current relay-emitted `closing.reason` values:
-
-- `client_closed`
-- `session_offline`
-- `slow_client`
-- `logged_out`
-- `password_changed`
-- `agent_token_revoked`
-- `account_deleted`
-
-Relay -> client binary frames:
-
-- every binary frame carries raw terminal bytes
-- bytes before `snapshot_done` are the fresh terminal-state snapshot and may include up to 10,000 lines of bounded agent-local normal-buffer scrollback ahead of the current viewport
-- bytes after `snapshot_done` are live PTY output
-- frame boundaries are not semantic terminal boundaries
-- clients should keep local terminal scrollback enabled if they want those replayed snapshot lines to remain available after restore
-- clients should interpret `snapshot_done.submit_anchors` only after applying the preceding snapshot bytes, and should ignore unknown control fields for forward compatibility
-- clients should interpret live `submit_anchor.line` against the current attached terminal state when the control is received, and reconcile from the next fresh `snapshot_done.submit_anchors` after reconnect
-
-Client -> relay input messages:
-
-`input_text`
-
-```json
-{
-  "type": "input_text",
-  "text": "hello",
-  "submit": false
-}
-```
-
-`input_key`
-
-```json
-{
-  "type": "input_key",
-  "key": "TAB"
-}
-```
-
-Notes:
-
-- input messages do not include `session_id`; the websocket path already scopes the session
-- `input_text { "submit": true }` means "text, then one trailing carriage return" as one serialized PTY-owner operation; the trailing carriage return may create a bounded agent-local submit anchor for future fresh attaches and currently attached clients
-- `input_text` with `submit: false` does not append Enter, but any carriage return already present in `text` outside a bracketed-paste region is still Enter-bearing PTY input and may create an anchor
-- `input_key { "key": "ENTER" }` sends the same carriage return and may also create a bounded agent-local submit anchor for snapshots and live attached clients
-- `input_key` is only for non-text special keys
-
-Currently supported `input_key` values:
-
-- `ENTER`
-- `BACKSPACE`
-- `TAB`
-- `ESCAPE`
-- `UP`
-- `DOWN`
-- `LEFT`
-- `RIGHT`
-- `HOME`
-- `END`
-- `PAGE_UP`
-- `PAGE_DOWN`
-- `DELETE`
-
-For the full attach message contract, see [docs/protocol.md](./protocol.md) and [docs/tui-attach-flow.md](./tui-attach-flow.md).
-
 ## Removed Endpoints
 
 These older relay surfaces are not part of the current product contract:
 
-- `GET /api/updates/ws`
-- `GET /api/sessions/:id/frames`
+- the older global update websocket
+- the older Relay session list, stop, attach, and frame routes

@@ -25,8 +25,7 @@ type runArgs struct {
 }
 
 type sessionCommandArgs struct {
-	BaseURL string
-	JSON    bool
+	JSON bool
 }
 
 type usageError struct {
@@ -113,44 +112,41 @@ Examples:
 }
 
 func sessionHelpText() string {
-	return fmt.Sprintf(`Usage:
-  tunnel session list [--base-url url] [--json]
-  tunnel session stop [--base-url url] <session-id>
+	return `Usage:
+  tunnel session list [--json]
+  tunnel session stop <session-id>
   tunnel session --help
 
 Commands:
-  list       List live sessions for the current account
-  stop       Stop one live session
+  list       List live sessions on this computer
+  stop       Stop one live session on this computer
 
 Flags:
   -h, --help       Show this help message and exit
-      --base-url   Relay base URL (fallback: %s, default: %s)
 
 Examples:
   tunnel session list
   tunnel session stop 1700000000000000000
-`, tunnelBaseURLEnv, defaultTunnelBaseURL)
+`
 }
 
 func sessionListHelpText() string {
-	return fmt.Sprintf(`Usage:
-  tunnel session list [--base-url url] [--json]
+	return `Usage:
+  tunnel session list [--json]
 
 Flags:
   -h, --help       Show this help message and exit
-      --base-url   Relay base URL (fallback: %s, default: %s)
       --json       Print live sessions as JSON
-`, tunnelBaseURLEnv, defaultTunnelBaseURL)
+`
 }
 
 func sessionStopHelpText() string {
-	return fmt.Sprintf(`Usage:
-  tunnel session stop [--base-url url] <session-id>
+	return `Usage:
+  tunnel session stop <session-id>
 
 Flags:
   -h, --help       Show this help message and exit
-      --base-url   Relay base URL (fallback: %s, default: %s)
-`, tunnelBaseURLEnv, defaultTunnelBaseURL)
+`
 }
 
 func runHelpText() string {

@@ -17,24 +17,35 @@ import (
 	relaydevice "yuanbohan/tunnel/internal/relay/device"
 	handlerresponse "yuanbohan/tunnel/internal/relay/handler/response"
 	handlertypes "yuanbohan/tunnel/internal/relay/handler/types"
-	relaysession "yuanbohan/tunnel/internal/relay/session"
 )
 
-func TestHandlerRejectsSessionsWithoutBearerAuth(t *testing.T) {
+func TestHandlerSessionEndpointsAreRemoved(t *testing.T) {
 	env := newHandlerTestEnv(t)
+	env.addInvite(t, "AB2C3D")
+	env.registerUser(t, "alice", "password123", "AB2C3D")
+	issued := env.login(t, "alice", "password123")
 	handler := env.handler(nil)
 
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
-	handler.ServeHTTP(rec, req)
+	for _, tc := range []struct {
+		method string
+		path   string
+		status int
+		code   int
+		msg    string
+	}{
+		{method: http.MethodGet, path: "/api/sessions", status: http.StatusNotFound, code: handlerresponse.CodeNotFound, msg: "The requested endpoint was not found."},
+		{method: http.MethodPost, path: "/api/sessions/sess-1/stop", status: http.StatusNotFound, code: handlerresponse.CodeNotFound, msg: "The requested endpoint was not found."},
+		{method: http.MethodDelete, path: "/api/sessions/sess-1", status: http.StatusNotFound, code: handlerresponse.CodeNotFound, msg: "The requested endpoint was not found."},
+	} {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(tc.method, tc.path, nil)
+			req.Header.Set("Authorization", bearerAuth(issued.AccessToken))
+			handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", rec.Code)
+			decodeAPIErrorEnvelopeFromRecorder(t, rec, tc.status, tc.code, tc.msg)
+		})
 	}
-	if got := rec.Header().Get("WWW-Authenticate"); got != `Bearer realm="tunnel relay"` {
-		t.Fatalf("WWW-Authenticate = %q, want bearer challenge", got)
-	}
-	decodeAPIErrorEnvelopeFromRecorder(t, rec, http.StatusUnauthorized, handlerresponse.CodeUnauthorized, "The request is unauthorized.")
 }
 
 func TestHandlerListsDevicesForAuthenticatedUser(t *testing.T) {
@@ -192,83 +203,17 @@ func TestHandlerLaunchComputerAliasWaitsForSessionReady(t *testing.T) {
 	<-done
 }
 
-func TestHandlerStopsSessionWithAppToken(t *testing.T) {
+func TestHandlerRemovedSessionStopDoesNotSendStopToAgent(t *testing.T) {
 	env := newHandlerTestEnv(t)
 	env.addInvite(t, "AB2C3D")
 	user := env.registerUser(t, "alice", "password123", "AB2C3D")
 	issued := env.login(t, "alice", "password123")
 	peer := &recordingAgentPeer{}
-	attachPeer := &recordingAttachPeer{}
 	env.registry.RegisterOwned(protocol.SessionInfo{
 		SessionID: "sess-1",
 		DeviceID:  "dev-1",
 		Launcher:  "codex",
-	}, relaysession.SessionOwner{UserID: user.ID}, peer)
-	if _, err := env.registry.StartAttachForUser("sess-1", "client-1", user.ID, attachPeer); err != nil {
-		t.Fatalf("StartAttachForUser returned error: %v", err)
-	}
-
-	handler := env.handler(nil)
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-1/stop", nil)
-	req.Header.Set("Authorization", bearerAuth(issued.AccessToken))
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	var response handlertypes.StopSessionResponse
-	decodeAPIEnvelopeFromRecorder(t, rec, http.StatusOK, &response)
-	if response.Status != "stopped" || response.SessionID != "sess-1" {
-		t.Fatalf("response = %#v, want stopped sess-1", response)
-	}
-	if _, ok := env.registry.SessionForUser("sess-1", user.ID); ok {
-		t.Fatal("session still exists after stop")
-	}
-	frames := peer.Frames()
-	if len(frames) != 1 || frames[0].Type != "stop_session" {
-		t.Fatalf("frames = %#v, want stop_session", frames)
-	}
-	if reasons := attachPeer.CloseReasons(); len(reasons) != 1 || reasons[0] != "session_stopped" {
-		t.Fatalf("close reasons = %#v, want [session_stopped]", reasons)
-	}
-}
-
-func TestHandlerStopsSessionWithAgentToken(t *testing.T) {
-	env := newHandlerTestEnv(t)
-	env.addInvite(t, "AB2C3D")
-	user := env.registerUser(t, "alice", "password123", "AB2C3D")
-	created := env.createAgentToken(t, user.ID, "Laptop")
-	peer := &recordingAgentPeer{}
-	env.registry.RegisterOwned(protocol.SessionInfo{
-		SessionID: "sess-1",
-		Launcher:  "codex",
-	}, relaysession.SessionOwner{UserID: user.ID, AgentTokenID: created.Record.ID}, peer)
-
-	handler := env.handler(nil)
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-1/stop", nil)
-	req.Header.Set("Authorization", bearerAuth(created.Plaintext))
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	if _, ok := env.registry.SessionForUser("sess-1", user.ID); ok {
-		t.Fatal("session still exists after stop")
-	}
-}
-
-func TestHandlerStopsSessionWithDeleteAlias(t *testing.T) {
-	env := newHandlerTestEnv(t)
-	env.addInvite(t, "AB2C3D")
-	user := env.registerUser(t, "alice", "password123", "AB2C3D")
-	issued := env.login(t, "alice", "password123")
-	peer := &recordingAgentPeer{}
-	env.registry.RegisterOwned(protocol.SessionInfo{
-		SessionID: "sess-1",
-		Launcher:  "codex",
-	}, relaysession.SessionOwner{UserID: user.ID}, peer)
+	}, SessionOwner{UserID: user.ID}, peer)
 
 	handler := env.handler(nil)
 	rec := httptest.NewRecorder()
@@ -276,11 +221,13 @@ func TestHandlerStopsSessionWithDeleteAlias(t *testing.T) {
 	req.Header.Set("Authorization", bearerAuth(issued.AccessToken))
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
+	decodeAPIErrorEnvelopeFromRecorder(t, rec, http.StatusNotFound, handlerresponse.CodeNotFound, "The requested endpoint was not found.")
+	if !env.registry.HasSession("sess-1") {
+		t.Fatal("session missing after removed stop endpoint")
 	}
-	if _, ok := env.registry.SessionForUser("sess-1", user.ID); ok {
-		t.Fatal("session still exists after stop")
+	frames := peer.Frames()
+	if len(frames) != 0 {
+		t.Fatalf("frames = %#v, want no stop frame", frames)
 	}
 }
 
@@ -883,12 +830,12 @@ func TestHandlerRefreshClampsExpiresInAtAbsoluteSessionBoundary(t *testing.T) {
 
 	env.now = env.now.Add(time.Hour)
 
-	sessionsAtBoundaryRec := httptest.NewRecorder()
-	sessionsAtBoundaryReq := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
-	sessionsAtBoundaryReq.Header.Set("Authorization", bearerAuth(refreshResp.AccessToken))
-	handler.ServeHTTP(sessionsAtBoundaryRec, sessionsAtBoundaryReq)
-	if sessionsAtBoundaryRec.Code != http.StatusUnauthorized {
-		t.Fatalf("sessions at absolute expiry status = %d, want 401", sessionsAtBoundaryRec.Code)
+	policyAtBoundaryRec := httptest.NewRecorder()
+	policyAtBoundaryReq := httptest.NewRequest(http.MethodGet, "/api/account/policy", nil)
+	policyAtBoundaryReq.Header.Set("Authorization", bearerAuth(refreshResp.AccessToken))
+	handler.ServeHTTP(policyAtBoundaryRec, policyAtBoundaryReq)
+	if policyAtBoundaryRec.Code != http.StatusUnauthorized {
+		t.Fatalf("account policy at absolute expiry status = %d, want 401", policyAtBoundaryRec.Code)
 	}
 
 	refreshAtBoundaryRec := httptest.NewRecorder()
@@ -900,12 +847,12 @@ func TestHandlerRefreshClampsExpiresInAtAbsoluteSessionBoundary(t *testing.T) {
 
 	env.now = env.now.Add(time.Minute)
 
-	sessionsRec := httptest.NewRecorder()
-	sessionsReq := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
-	sessionsReq.Header.Set("Authorization", bearerAuth(refreshResp.AccessToken))
-	handler.ServeHTTP(sessionsRec, sessionsReq)
-	if sessionsRec.Code != http.StatusUnauthorized {
-		t.Fatalf("sessions after absolute expiry status = %d, want 401", sessionsRec.Code)
+	policyRec := httptest.NewRecorder()
+	policyReq := httptest.NewRequest(http.MethodGet, "/api/account/policy", nil)
+	policyReq.Header.Set("Authorization", bearerAuth(refreshResp.AccessToken))
+	handler.ServeHTTP(policyRec, policyReq)
+	if policyRec.Code != http.StatusUnauthorized {
+		t.Fatalf("account policy after absolute expiry status = %d, want 401", policyRec.Code)
 	}
 
 	refreshExpiredRec := httptest.NewRecorder()
@@ -933,11 +880,11 @@ func TestHandlerPasswordChangeRevokesCurrentSession(t *testing.T) {
 	decodeAPIEnvelopeFromRecorder(t, changeRec, http.StatusOK, nil)
 
 	authorizedRec := httptest.NewRecorder()
-	authorizedReq := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+	authorizedReq := httptest.NewRequest(http.MethodGet, "/api/account/policy", nil)
 	authorizedReq.Header.Set("Authorization", bearerAuth(issued.AccessToken))
 	handler.ServeHTTP(authorizedRec, authorizedReq)
 	if authorizedRec.Code != http.StatusUnauthorized {
-		t.Fatalf("sessions with old access token status = %d, want 401", authorizedRec.Code)
+		t.Fatalf("account policy with old access token status = %d, want 401", authorizedRec.Code)
 	}
 
 	oldLoginRec := httptest.NewRecorder()
@@ -991,12 +938,10 @@ func TestHandlerRegisterThrottleByIP(t *testing.T) {
 	}
 }
 
-func TestHandlerReturnsUserScopedLiveSessions(t *testing.T) {
+func TestHandlerRemovedSessionListDoesNotExposeLiveRegistry(t *testing.T) {
 	env := newHandlerTestEnv(t)
 	env.addInvite(t, "AB2C3D")
-	env.addInvite(t, "EF4G5H")
 	alice := env.registerUser(t, "alice", "password123", "AB2C3D")
-	bob := env.registerUser(t, "bob1", "password123", "EF4G5H")
 	aliceSession := env.login(t, "alice", "password123")
 
 	env.registry.RegisterOwned(protocol.SessionInfo{
@@ -1010,14 +955,6 @@ func TestHandlerReturnsUserScopedLiveSessions(t *testing.T) {
 		PlatformID:     "ubuntu",
 		ComputerName:   "Office Linux",
 	}, SessionOwner{UserID: alice.ID, AgentTokenID: "agt-a"}, fakeAgentPeer{})
-	env.registry.RegisterOwned(protocol.SessionInfo{
-		SessionID:      "sess-b",
-		Launcher:       "codex",
-		StartedAt:      10,
-		PlatformFamily: "macos",
-		PlatformID:     "macos",
-		ComputerName:   "Bob Mac",
-	}, SessionOwner{UserID: bob.ID, AgentTokenID: "agt-b"}, fakeAgentPeer{})
 
 	handler := env.handler(nil)
 	rec := httptest.NewRecorder()
@@ -1025,30 +962,7 @@ func TestHandlerReturnsUserScopedLiveSessions(t *testing.T) {
 	req.Header.Set("Authorization", bearerAuth(aliceSession.AccessToken))
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-
-	var sessions []protocol.SessionInfo
-	decodeAPIEnvelopeFromRecorder(t, rec, http.StatusOK, &sessions)
-	if len(sessions) != 1 || sessions[0].SessionID != "sess-a" {
-		t.Fatalf("sessions = %#v, want only sess-a", sessions)
-	}
-	if sessions[0].PlatformFamily != "linux" {
-		t.Fatalf("PlatformFamily = %q, want linux", sessions[0].PlatformFamily)
-	}
-	if sessions[0].PlatformID != "ubuntu" {
-		t.Fatalf("PlatformID = %q, want ubuntu", sessions[0].PlatformID)
-	}
-	if sessions[0].ComputerName != "Office Linux" {
-		t.Fatalf("ComputerName = %q, want Office Linux", sessions[0].ComputerName)
-	}
-	if sessions[0].GitBranch != "main" {
-		t.Fatalf("GitBranch = %q, want main", sessions[0].GitBranch)
-	}
-	if sessions[0].DeviceID != "dev-a" {
-		t.Fatalf("DeviceID = %q, want dev-a", sessions[0].DeviceID)
-	}
+	decodeAPIErrorEnvelopeFromRecorder(t, rec, http.StatusNotFound, handlerresponse.CodeNotFound, "The requested endpoint was not found.")
 }
 
 func TestHandlerAgentTokenEndpoints(t *testing.T) {
@@ -1118,10 +1032,6 @@ func TestHandlerAgentTokenDeleteDisconnectsLiveSessionImmediately(t *testing.T) 
 		SessionID: "sess-1",
 		Launcher:  "codex",
 	}, SessionOwner{UserID: user.ID, AgentTokenID: created.Record.ID}, fakeAgentPeer{})
-	attachPeer := &recordingAttachPeer{}
-	if _, err := env.registry.StartAttachForUser("sess-1", "client-1", user.ID, attachPeer); err != nil {
-		t.Fatalf("StartAttachForUser returned error: %v", err)
-	}
 
 	handler := env.handler(nil)
 	rec := httptest.NewRecorder()
@@ -1133,11 +1043,8 @@ func TestHandlerAgentTokenDeleteDisconnectsLiveSessionImmediately(t *testing.T) 
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	decodeAPIEnvelopeFromRecorder(t, rec, http.StatusOK, nil)
-	if sessions := env.registry.ListForUser(user.ID); len(sessions) != 0 {
-		t.Fatalf("sessions = %#v, want empty after token revoke", sessions)
-	}
-	if reasons := attachPeer.CloseReasons(); len(reasons) != 1 || reasons[0] != "agent_token_revoked" {
-		t.Fatalf("close reasons = %#v, want [agent_token_revoked]", reasons)
+	if env.registry.HasSession("sess-1") {
+		t.Fatal("session still exists after token revoke")
 	}
 }
 
@@ -1179,10 +1086,6 @@ func TestHandlerOperatorDeleteUserDisconnectsLiveSessionImmediately(t *testing.T
 		SessionID: "sess-1",
 		Launcher:  "codex",
 	}, SessionOwner{UserID: user.ID, AgentTokenID: "agt-1"}, fakeAgentPeer{})
-	attachPeer := &recordingAttachPeer{}
-	if _, err := env.registry.StartAttachForUser("sess-1", "client-1", user.ID, attachPeer); err != nil {
-		t.Fatalf("StartAttachForUser returned error: %v", err)
-	}
 
 	handler := env.handler(nil)
 	rec := httptest.NewRecorder()
@@ -1195,11 +1098,8 @@ func TestHandlerOperatorDeleteUserDisconnectsLiveSessionImmediately(t *testing.T
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	decodeAPIEnvelopeFromRecorder(t, rec, http.StatusOK, nil)
-	if sessions := env.registry.ListForUser(user.ID); len(sessions) != 0 {
-		t.Fatalf("sessions = %#v, want empty after user delete", sessions)
-	}
-	if reasons := attachPeer.CloseReasons(); len(reasons) != 1 || reasons[0] != "account_deleted" {
-		t.Fatalf("close reasons = %#v, want [account_deleted]", reasons)
+	if env.registry.HasSession("sess-1") {
+		t.Fatal("session still exists after user delete")
 	}
 }
 

@@ -33,14 +33,14 @@ The implementer needs a plan that preserves the new cross-repository ownership m
 - R5. Preserve forward compatibility expectations: receivers tolerate unknown JSON fields and unknown frame types where the SSOT says they must.
 - R6. Audit `SessionMetadata` for launch convergence and keep it content-light; add fields only if the SSOT requires them, with docs and tests in the same change.
 - R7. Gate Relay connectivity realtime protocol mirror work behind an explicit SSOT decision so issue #134 stays focused on daemon transport unless the protocols PR deliberately includes the Relay surface.
-- R8. Keep Android implementation work, broad protocol redesign, and classic Relay endpoint retirement out of this issue.
+- R8. Keep Android implementation work and broad protocol redesign out of this issue; the Relay session endpoint retirement is handled by issue #135 and must not be reversed here.
 
 ---
 
 ## Scope Boundaries
 
 - Do not implement Android changes in this repository.
-- Do not remove retained Relay/classic session endpoints as part of this issue.
+- Do not reintroduce Relay session list/stop/attach endpoints as part of this issue.
 - Do not introduce automatic generated-code infrastructure unless the protocols PR first chooses a machine-readable fixture format.
 - Do not migrate daemon transport payloads away from JSON or change `ProtocolVersion` as incidental cleanup.
 - Do not move repo-local operational docs wholesale into `agent-tunnel-protocols`.
@@ -52,8 +52,8 @@ The implementer needs a plan that preserves the new cross-repository ownership m
 - Machine-readable fixtures: add generated or imported fixtures in a later iteration if the first protocols PR stays Markdown-only.
 - Pairing protocol SSOT: add `agent-tunnel-protocols:docs/connectivity/pairing.md` and map local pairing docs/tests in a separate security-focused slice.
 - Relay realtime mirror implementation: keep as gated follow-up unless the issue #134 protocols PR explicitly includes Relay connectivity realtime.
-- Full classic Relay session endpoint retirement: decide later from the protocol SSOT and compatibility-line policy.
-- Android deletion work: consume the resulting upstream contract in the Android repository after both PRs are reviewable.
+- Relay session endpoint retirement: consume the issue #135 outcome and keep the SSOT mirror aligned with the deleted endpoint boundary.
+- Android deletion work: consume the resulting upstream contract and issue #135 endpoint deletion in the Android repository after both PRs are reviewable.
 
 ---
 

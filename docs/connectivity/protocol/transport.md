@@ -318,7 +318,7 @@ Sent by the daemon after `hello`.
 Purpose:
 
 - bootstrap the current session list for that daemon
-- replace `GET /api/sessions` in the target design
+- provide daemon-owned session discovery without a Relay session list API
 
 The initial `session_index` MUST contain the full current session set known to the daemon's local broker. This includes sessions launched through Relay control-plane requests when the resulting `tunnel run` has already registered with the local broker before the mobile transport connects.
 
@@ -330,7 +330,7 @@ Each `session_upsert` carries the full current metadata object for that session 
 
 ### Session Metadata Contract
 
-This is the daemon transport session payload shape used by `session_index`, `session_upsert`, and (where applicable) `session_gone`. In the official mobile companion design, Relay session list/detail/attach APIs are not the mobile session authority; the daemon is authoritative.
+This is the daemon transport session payload shape used by `session_index`, `session_upsert`, and (where applicable) `session_gone`. Relay session list/detail/attach APIs are not part of the current product contract; the daemon is authoritative for mobile-visible session state.
 
 Phase-1 daemon-to-Android session metadata fields:
 

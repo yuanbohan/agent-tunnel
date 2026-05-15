@@ -55,7 +55,7 @@ terminal owner.
 - Daemon startup uses a daemon-local startup lock so concurrent cold `tunnel run` processes do not race to create competing daemon children.
 - The daemon broker enforces owner-only broker socket permissions, closes idle unregistered broker connections, removes stale same-connection re-registrations, and re-applies the preview size/normalization limit before caching previews.
 - `internal/tunnel/daemon/runtime.go` now starts the daemon connectivity core without tmux. Missing tmux initializes `launch_health: degraded` with `last_failure: tmux_not_found`, but control, pairing, connectivity realtime, and broker sockets still run.
-- The existing Relay `/agent/ws` attach path, PTY owner, local terminal behavior, startup Relay registration gate, and tmux-backed remote launch failure reasons remain unchanged.
+- The existing Relay `/agent/ws` registration path, PTY owner, local terminal behavior, startup Relay registration gate, and tmux-backed remote launch failure reasons remain unchanged. The later cleanup removed Relay app-facing session list/stop/attach routes; daemon-local session state is the current session authority.
 
 ## Verification Performed
 
@@ -68,7 +68,7 @@ terminal owner.
 
 ## Known Gaps
 
-- The broker roster/cache is daemon-local. Public CLI session discovery is account-level and Relay-backed through `tunnel session list`; mobile visibility uses the daemon transport session index rather than a public broker-sessions command.
+- The broker roster/cache is daemon-local. Public CLI session discovery now reads this computer's daemon-local broker state through `tunnel session list`; mobile visibility uses the daemon transport session index rather than Relay session APIs.
 - Peer credential enforcement is limited to owner-only socket path permissions plus same-owner socket checks on Linux/macOS before `tunnel run` sends metadata. Stronger per-platform credential checks remain future hardening.
 - Broker preview is latest-only in daemon memory. There is no preview history, durable preview storage, or Relay-visible preview.
 - Existing daemon/account mismatch protection verifies both Relay base URL and a non-secret auth-context fingerprint before `tunnel run` starts broker registration and before each broker reconnect. Step 4 transport fanout still must enforce paired-device visibility and authorization before exposing previews to paired devices.

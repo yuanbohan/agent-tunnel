@@ -47,7 +47,7 @@ Additional public command areas:
 - `tunnel workspace open`: attach to an existing daemon-managed tmux session from the current terminal. If no daemon-managed sessions exist, do not open tmux; tell the user there are no sessions to open.
 - `tunnel workspace close`: detach one currently open client from the daemon tmux workspace. If no workspace view is open, report that there is no open workspace to close and exit successfully.
 
-Do not add daemon or workspace commands that create a custom tmux dashboard, picker, alias system, per-session close/open workflow, workspace session listing, or terminal-recipe workflow unless the product scope is explicitly changed first. Use account-level `tunnel session stop` for destructive session shutdown; keep `workspace close` reserved for the local workspace view lifecycle.
+Do not add daemon or workspace commands that create a custom tmux dashboard, picker, alias system, per-session close/open workflow, workspace session listing, or terminal-recipe workflow unless the product scope is explicitly changed first. Use local-computer `tunnel session stop` for destructive session shutdown; keep `workspace close` reserved for the local workspace view lifecycle.
 
 `tunnel daemon start`, `tunnel daemon status`, `tunnel daemon doctor`, `tunnel pair --json`, `tunnel pair devices --json`, and `tunnel pair revoke <fingerprint> --json` support JSON output for automation. JSON-capable commands emit a single JSON error envelope on command failures while preserving a non-zero exit status:
 
@@ -140,20 +140,20 @@ If the relay wait times out after the daemon has already returned `accepted` wit
 
 Launch source metadata must not be passed through environment variables. It is carried as internal `tunnel run` flags and then as the agent `launch_context`; the relay validates the context before exposing `launch_source: "mobile"` to clients.
 
-The mobile/API launch flow must not auto-attach to the new session. Clients may use normal session discovery and attach APIs after launch completes.
+The mobile/API launch flow must not auto-attach to the new session. Clients wait for daemon connectivity transport `session_index` or `session_upsert` carrying the returned `session_id`.
 
 ## Session Stop Flow
 
-Mobile and CLI session stop is a separate destructive operation from local workspace close.
+CLI session stop is a separate destructive operation from local workspace close.
 
-1. The launched `tunnel run` process registers on `/agent/ws` with the launch correlation.
-2. The relay marks the registered session with `launch_source: "mobile"` when the launch correlation matches.
-3. `GET /api/sessions` exposes mobile launch source separately from local launch source.
-4. `DELETE /api/sessions/:sessionID` routes one `stop_session` control frame to the owning `/agent/ws` connection.
+1. The running `tunnel run` process registers with the local daemon broker.
+2. `tunnel session list` reads this computer's daemon control socket and broker snapshot.
+3. `tunnel session stop <session-id>` sends a local daemon control request.
+4. The daemon broker routes one stop request to the owning local `tunnel run` registration.
 5. The owning `tunnel run` process stops itself. For daemon-launched sessions, this stops the process inside the tmux workspace session.
-6. The relay removes the live session from discovery immediately after accepting stop and closes active attaches with `session_stopped`.
+6. The broker removes the session when the owning local connection closes.
 
-Local-launched and mobile-launched `tunnel run` sessions use the same stop path. `device_id` identifies the machine daemon identity, not proof that the session was mobile-launched.
+Local-launched and mobile-launched `tunnel run` sessions on this computer use the same local stop path. Sessions on other computers are not stopped through Relay.
 
 ## Failure Reasons
 

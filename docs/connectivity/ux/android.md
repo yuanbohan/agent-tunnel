@@ -27,8 +27,7 @@ When this doc and `../contract.md` disagree, `../contract.md` wins.
 - rendezvous hint exchange
 - fallback relay tunnel setup
 
-Relay never sends session lists or per-session policy.
-Relay session list/detail/attach endpoints are retained classic APIs, not official Android companion session authority.
+Relay never sends session lists or per-session policy. Relay session list/detail/attach endpoints are not part of the current product contract.
 
 ### 2. Daemon Transport Plane
 

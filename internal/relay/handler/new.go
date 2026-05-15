@@ -10,7 +10,6 @@ import (
 	"yuanbohan/tunnel/internal/relay/device"
 	"yuanbohan/tunnel/internal/relay/handler/agent"
 	"yuanbohan/tunnel/internal/relay/handler/api"
-	"yuanbohan/tunnel/internal/relay/handler/attach"
 	connectivityhandler "yuanbohan/tunnel/internal/relay/handler/connectivity"
 	devicehandler "yuanbohan/tunnel/internal/relay/handler/device"
 	"yuanbohan/tunnel/internal/relay/handler/middleware"
@@ -51,7 +50,6 @@ func newRouter(
 	}
 	pairingThrottle := api.NewRegisterThrottle(10, time.Minute)
 
-	attachSessions := session.NewAttachSessionIndex()
 	connectivityRegistry := relayconnectivity.NewRegistry()
 	connectivityTunnelHub := connectivityhandler.NewTunnelHub()
 
@@ -84,8 +82,8 @@ func newRouter(
 
 	appRoutes := router.Group("/")
 	appRoutes.Use(middleware.AppAuth(appAuth))
-	appRoutes.POST("/api/auth/logout", api.Logout(appAuth, registry, attachSessions, connectivityRegistry))
-	appRoutes.POST("/api/auth/password/change", api.ChangePassword(appAuth, registry, attachSessions, connectivityRegistry))
+	appRoutes.POST("/api/auth/logout", api.Logout(appAuth, connectivityRegistry))
+	appRoutes.POST("/api/auth/password/change", api.ChangePassword(appAuth, connectivityRegistry))
 	appRoutes.GET("/api/account/policy", api.AccountPolicy())
 	appRoutes.GET("/api/connectivity/app/ws", connectivityhandler.AppLegacy(connectivityRegistry, appAuth))
 	appRoutes.GET("/api/connectivity/ws", connectivityhandler.App(connectivityRegistry, appAuth))
@@ -97,13 +95,6 @@ func newRouter(
 	appRoutes.POST("/api/devices/:deviceID/launch", api.LaunchDevice(deviceRegistry))
 	appRoutes.POST("/api/computers/:computerID/sessions", api.LaunchDevice(deviceRegistry))
 	appRoutes.POST("/api/pairing/responses", api.SubmitPairingResponse(connectivityRegistry, pairingThrottle))
-	appRoutes.GET("/api/sessions/:sessionID/attach/ws", attach.Handle(registry, attachSessions))
-
-	sessionRoutes := router.Group("/")
-	sessionRoutes.Use(middleware.SessionAuth(appAuth, agentTokens))
-	sessionRoutes.GET("/api/sessions", api.ListSessions(registry))
-	sessionRoutes.POST("/api/sessions/:sessionID/stop", api.StopSession(registry))
-	sessionRoutes.DELETE("/api/sessions/:sessionID", api.StopSession(registry))
 
 	router.GET("/agent/ws", middleware.AgentAuth(agentTokens), agent.Handle(registry, deviceRegistry))
 	router.GET("/device/ws", middleware.AgentAuth(agentTokens), devicehandler.Handle(deviceRegistry, registry, agentTokens))

@@ -50,13 +50,9 @@ const pairDisplayNameWidth = 48
 const startupBannerClear = "\r\x1b[2K"
 
 type relayConnector interface {
-	session.OutputSink
-	SetInitialSize(cols, rows int)
 	SetInitialConnectTimeout(timeout time.Duration)
 	SetLaunchContext(protocol.LaunchContext)
 	MarkLaunchReady(protocol.LaunchContext)
-	SetStopHandler(func())
-	BindHub(hub *session.Hub)
 	Run(ctx context.Context)
 	WaitUntilConnected(ctx context.Context, timeout time.Duration) bool
 	SubscribeStateChanges() (<-chan connector.State, func())
@@ -65,6 +61,7 @@ type relayConnector interface {
 
 type localSessionRegistration interface {
 	session.OutputSink
+	SetStopHandler(func())
 	BindHub(hub *session.Hub)
 	Run(context.Context)
 	WaitUntilRegistered(context.Context) error
@@ -249,7 +246,23 @@ func runTunnelSession(ctx context.Context, stdin io.Reader, parsed runArgs, stdo
 		brokerInfo.DeviceID = sessionDeviceIDFromPaths(paths)
 	}
 
+	var (
+		runningMu     sync.Mutex
+		running       *session.Running
+		stopRequested bool
+	)
 	localRegistration := newSessionRegistration(paths, parsed.BaseURL, resolvedAuth.Token, brokerInfo)
+	localRegistration.SetStopHandler(func() {
+		runningMu.Lock()
+		current := running
+		if current == nil {
+			stopRequested = true
+		}
+		runningMu.Unlock()
+		if current != nil {
+			_ = current.Close()
+		}
+	})
 	go localRegistration.Run(ctx)
 	registrationCtx, cancelRegistration := context.WithTimeout(ctx, tunnelRunBrokerRegistrationTimeout)
 	if err := localRegistration.WaitUntilRegistered(registrationCtx); err != nil {
@@ -273,22 +286,6 @@ func runTunnelSession(ctx context.Context, stdin io.Reader, parsed runArgs, stdo
 	relay := newConnector(relayURL, resolvedAuth.Token, relayInfo)
 	relay.SetLaunchContext(launchContext)
 	relay.SetInitialConnectTimeout(startupRelayWait)
-	var (
-		runningMu     sync.Mutex
-		running       *session.Running
-		stopRequested bool
-	)
-	relay.SetStopHandler(func() {
-		runningMu.Lock()
-		current := running
-		if current == nil {
-			stopRequested = true
-		}
-		runningMu.Unlock()
-		if current != nil {
-			_ = current.Close()
-		}
-	})
 	relayCtx, cancelRelay := context.WithCancel(ctx)
 	defer cancelRelay()
 	go relay.Run(relayCtx)
@@ -315,14 +312,10 @@ func runTunnelSession(ctx context.Context, stdin io.Reader, parsed runArgs, stdo
 	defer local.Restore()
 
 	sinkID, sink := local.SinkRegistration()
-	if cols, rows, sizeErr := local.CurrentSize(); sizeErr == nil {
-		relay.SetInitialSize(cols, rows)
-	}
 	initialSinks := map[string]session.OutputSink{
-		sinkID:  sink,
-		"relay": relay,
+		sinkID:          sink,
+		"daemon-broker": localRegistration,
 	}
-	initialSinks["daemon-broker"] = localRegistration
 
 	started, err := startSession(ctx, command.Path, command.Args, initialSinks)
 	if err != nil {
@@ -339,7 +332,6 @@ func runTunnelSession(ctx context.Context, stdin io.Reader, parsed runArgs, stdo
 	}
 	defer started.Close()
 
-	relay.BindHub(started.Hub)
 	localRegistration.BindHub(started.Hub)
 	if !shouldStop {
 		relay.MarkLaunchReady(launchContext)
@@ -720,10 +712,10 @@ func runSessionJSONCommand(stdout io.Writer, run func() error) error {
 func sessionCommandErrorCode(err error) string {
 	message := strings.TrimSpace(err.Error())
 	switch {
-	case strings.Contains(message, "no auth token available"):
-		return "auth_token_unavailable"
-	case strings.Contains(message, "/api/sessions"):
-		return "session_request_failed"
+	case errors.Is(err, daemon.ErrNotRunning) || strings.Contains(message, daemon.ErrNotRunning.Error()):
+		return "daemon_not_running"
+	case errors.Is(err, daemon.ErrSessionNotFound) || strings.Contains(message, daemon.ErrSessionNotFound.Error()):
+		return "session_not_found"
 	default:
 		return "session_command_failed"
 	}
