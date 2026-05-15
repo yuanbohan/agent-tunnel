@@ -23,7 +23,7 @@ This plan makes `https://github.com/yuanbohan/agent-tunnel-protocols` the cross-
 
 - **#132:** U1 + U2. Point important protocol entry docs to the protocol SSOT, narrow repo-local source-of-truth/canonical wording, and split the official mobile companion contract from retained classic Relay session APIs.
 - **#133:** U3. Verify and document launch-to-daemon session convergence so `session_ready.session_id` is a control-plane correlation result, not a reason for Android to poll Relay sessions.
-- **#134:** U4 + U5. Align protocol mirrors/compatibility markers and fence retained classic Relay session implementation from the official mobile companion path.
+- **#134:** U4 + U5. Align protocol mirrors/compatibility markers and fence retained classic Relay session implementation from the official mobile companion path. Dedicated slice: `docs/plans/2026-05-15-003-refactor-connectivity-protocol-ssot-plan.md`, including the required `agent-tunnel-protocols` PR and local `docs/protocols/connectivity.md` provenance map.
 - **#135:** U6. Clean active handoff docs and issue references after the protocol and mobile companion split is clear.
 
 ---
@@ -70,7 +70,7 @@ Issue #131 captures the immediate upstream need: make launch through Relay conve
 
 ### Deferred to Follow-Up Work
 
-- Protocol repository population: seed `agent-tunnel-protocols` with the canonical cross-repo protocol set and agreement records if it is still empty when implementation starts.
+- Protocol repository population: seed `agent-tunnel-protocols` with the canonical cross-repo protocol set and agreement records before claiming SSOT-backed local mirror alignment; issue #134 tracks this as a required separate protocols-repo PR.
 - Android implementation: complete Android issues #171, #172, and #173 in `agent-tunnel-android` after this upstream contract is clear enough to cite.
 - Full classic Relay endpoint retirement: decide later, from the protocol SSOT, whether non-companion Relay session APIs should remain indefinitely or be removed in a compatibility-line break.
 
@@ -462,6 +462,7 @@ flowchart LR
 - Protocol SSOT: https://github.com/yuanbohan/agent-tunnel-protocols
 - Upstream issue: https://github.com/yuanbohan/agent-tunnel/issues/131
 - Issue #132 slice: https://github.com/yuanbohan/agent-tunnel/issues/132
+- Issue #134 slice plan: `docs/plans/2026-05-15-003-refactor-connectivity-protocol-ssot-plan.md`
 - Android retirement plan: `agent-tunnel-android:docs/plans/2026-05-15-002-refactor-retire-legacy-relay-sessions-plan.md`
 - Android contract alignment plan: `agent-tunnel-android:docs/plans/2026-05-15-001-feat-updated-tunnel-contract-alignment-plan.md`
 - Current API mirror: `docs/api.md`

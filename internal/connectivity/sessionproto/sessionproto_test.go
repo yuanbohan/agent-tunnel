@@ -4,8 +4,22 @@ import (
 	"bytes"
 	"encoding/json"
 	"reflect"
+	"slices"
 	"testing"
 )
+
+func TestProtocolVersionMatchesProtocolSSOTJSONTransport(t *testing.T) {
+	// Mirrors agent-tunnel-protocols:docs/protocol.md "Protocol Version".
+	if ProtocolVersion != ssotProtocolCompatibility {
+		t.Fatalf("ProtocolVersion = %d, want SSOT compatibility constant %d", ProtocolVersion, ssotProtocolCompatibility)
+	}
+	if ProtocolVersion != 2 {
+		t.Fatalf("ProtocolVersion = %d, want SSOT JSON transport version 2", ProtocolVersion)
+	}
+	if ssotProtocolSource == "" {
+		t.Fatal("ssotProtocolSource is empty")
+	}
+}
 
 func TestPayloadsRoundTripAndIgnoreFutureFields(t *testing.T) {
 	tests := []struct {
@@ -61,6 +75,36 @@ func TestPayloadsRoundTripAndIgnoreFutureFields(t *testing.T) {
 	}
 }
 
+func TestSessionMetadataHasSSOTFieldSet(t *testing.T) {
+	raw, err := json.Marshal(sessionMetadata())
+	if err != nil {
+		t.Fatalf("Marshal returned error: %v", err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+
+	want := map[string]struct{}{
+		"session_id":      {},
+		"label":           {},
+		"command_preview": {},
+		"cwd":             {},
+		"git_branch":      {},
+		"started_at":      {},
+		"updated_at":      {},
+		"online":          {},
+	}
+	if got := len(fields); got != len(want) {
+		t.Fatalf("SessionMetadata JSON field count = %d, want %d", got, len(want))
+	}
+	for key := range fields {
+		if _, ok := want[key]; !ok {
+			t.Fatalf("SessionMetadata JSON contains unexpected key %q", key)
+		}
+	}
+}
+
 func TestSessionMetadataDoesNotCarryPreviewText(t *testing.T) {
 	raw, err := json.Marshal(sessionMetadata())
 	if err != nil {
@@ -76,6 +120,38 @@ func TestSessionMetadataDoesNotCarryPreviewText(t *testing.T) {
 	if _, ok := fields["latest_preview"]; ok {
 		t.Fatal("SessionMetadata JSON contains latest_preview field")
 	}
+	if _, ok := fields["device_id"]; ok {
+		t.Fatal("SessionMetadata JSON contains device_id field")
+	}
+}
+
+func TestSessionMetadataFieldSetMatchesProtocolSSOT(t *testing.T) {
+	raw, err := json.Marshal(sessionMetadata())
+	if err != nil {
+		t.Fatalf("Marshal returned error: %v", err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	got := make([]string, 0, len(fields))
+	for key := range fields {
+		got = append(got, key)
+	}
+	slices.Sort(got)
+	want := []string{
+		"command_preview",
+		"cwd",
+		"git_branch",
+		"label",
+		"online",
+		"session_id",
+		"started_at",
+		"updated_at",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("SessionMetadata fields = %v, want SSOT fields %v", got, want)
+	}
 }
 
 func TestSessionProtocolPayloadsDoNotCarryTierPolicyFields(t *testing.T) {
@@ -87,11 +163,21 @@ func TestSessionProtocolPayloadsDoNotCarryTierPolicyFields(t *testing.T) {
 		"policy":              {},
 		"subscription":        {},
 		"entitlement":         {},
+		"terminal_bytes":      {},
+		"snapshot_bytes":      {},
+		"live_bytes":          {},
+		"launch_request_id":   {},
+		"launch_context":      {},
+		"path_authority":      {},
+		"path_badge":          {},
+		"device_id":           {},
 	}
 	forbiddenTokens := [][]byte{
 		[]byte("policy_locked_session"),
 		[]byte("policy_determining_available_session"),
 		[]byte("unlocked_session_id"),
+		[]byte("SNAPSHOT_SECRET_"),
+		[]byte("LIVE_SECRET_"),
 	}
 
 	tests := []struct {
@@ -124,6 +210,52 @@ func TestSessionProtocolPayloadsDoNotCarryTierPolicyFields(t *testing.T) {
 				t.Fatalf("Unmarshal returned error: %v", err)
 			}
 			assertNoForbiddenJSONKeys(t, decoded, forbiddenKeys)
+		})
+	}
+}
+
+func TestSessionProtocolPayloadsMatchSSOTFixtureShape(t *testing.T) {
+	t.Helper()
+	tests := []struct {
+		name         string
+		payload      any
+		expectedKeys []string
+	}{
+		{name: "hello", payload: Hello{ProtocolVersion: ProtocolVersion, ActorType: ActorMobile, ClientFingerprint: "abc123", PathKind: PathRelay}, expectedKeys: []string{"protocol_version", "actor_type", "client_fingerprint", "path_kind"}},
+		{name: "interactive_request", payload: InteractiveRequest{SessionID: "session-1", Cols: 120, Rows: 40}, expectedKeys: []string{"session_id", "cols", "rows"}},
+		{name: "input_text", payload: InputText{SessionID: "session-1", Text: "echo hi"}, expectedKeys: []string{"session_id", "text"}},
+		{name: "path_state", payload: PathState{AttemptID: "attempt-1", PathKind: PathRelay, FallbackReason: "direct_timeout", DirectSetupLatencyMS: 3000, RelaySetupLatencyMS: 120}, expectedKeys: []string{"attempt_id", "path_kind", "fallback_reason", "direct_setup_latency_ms", "relay_setup_latency_ms"}},
+		{name: "snapshot_end", payload: SnapshotEnd{SessionID: "session-1", ChunkCount: 2}, expectedKeys: []string{"session_id", "chunk_count"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw, err := json.Marshal(tt.payload)
+			if err != nil {
+				t.Fatalf("Marshal returned error: %v", err)
+			}
+			decoded := map[string]any{}
+			if err := json.Unmarshal(raw, &decoded); err != nil {
+				t.Fatalf("Unmarshal returned error: %v", err)
+			}
+			got := make(map[string]struct{}, len(decoded))
+			want := make(map[string]struct{}, len(tt.expectedKeys))
+			for _, key := range tt.expectedKeys {
+				want[key] = struct{}{}
+			}
+			for k := range decoded {
+				got[k] = struct{}{}
+			}
+			for key := range decoded {
+				if _, ok := want[key]; !ok {
+					t.Fatalf("%s: unexpected payload key %q in marshaled JSON: %s", tt.name, key, raw)
+				}
+			}
+			for key := range want {
+				if _, ok := got[key]; !ok {
+					t.Fatalf("%s: missing payload key %q in marshaled JSON: %s", tt.name, key, raw)
+				}
+			}
 		})
 	}
 }

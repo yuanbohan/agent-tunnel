@@ -8,6 +8,10 @@ import (
 )
 
 const (
+	// Frame type values mirror agent-tunnel-protocols:docs/protocol.md.
+	ssotProtocolSource          = "https://github.com/yuanbohan/agent-tunnel-protocols"
+	ssotProtocolCompatibilityV2 = 2
+
 	TypeHello              byte = 0x01
 	TypeSessionIndex       byte = 0x02
 	TypePreviewSubscribe   byte = 0x03

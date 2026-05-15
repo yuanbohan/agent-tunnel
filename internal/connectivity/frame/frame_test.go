@@ -6,6 +6,13 @@ import (
 	"fmt"
 	"io"
 	"testing"
+
+	"yuanbohan/tunnel/internal/connectivity/sessionproto"
+)
+
+const (
+	ssotFrameTypesSource = "https://github.com/yuanbohan/agent-tunnel-protocols"
+	ssotProtocolVersion  = 2
 )
 
 func TestEncodeDecodeRoundTrip(t *testing.T) {
@@ -44,39 +51,117 @@ func TestDecodeToleratesUnknownFrameType(t *testing.T) {
 	}
 }
 
-func TestStep4FrameTypeRegistry(t *testing.T) {
+func TestFrameTypeRegistryMatchesProtocolSSOT(t *testing.T) {
+	// Mirrors agent-tunnel-protocols:docs/protocol.md "Frame Type Registry".
 	tests := []struct {
 		name string
 		typ  byte
+		want byte
 	}{
-		{name: "hello", typ: TypeHello},
-		{name: "session_index", typ: TypeSessionIndex},
-		{name: "preview_subscribe", typ: TypePreviewSubscribe},
-		{name: "session_upsert", typ: TypeSessionUpsert},
-		{name: "session_gone", typ: TypeSessionGone},
-		{name: "preview_unsubscribe", typ: TypePreviewUnsubscribe},
-		{name: "preview_snapshot", typ: TypePreviewSnapshot},
-		{name: "interactive_request", typ: TypeInteractiveRequest},
-		{name: "interactive_granted", typ: TypeInteractiveGranted},
-		{name: "interactive_denied", typ: TypeInteractiveDenied},
-		{name: "interactive_release", typ: TypeInteractiveRelease},
-		{name: "input_text", typ: TypeInputText},
-		{name: "input_key", typ: TypeInputKey},
-		{name: "resize", typ: TypeResize},
-		{name: "path_state", typ: TypePathState},
-		{name: "snapshot_begin", typ: TypeSnapshotBegin},
-		{name: "snapshot_chunk", typ: TypeSnapshotChunk},
-		{name: "live_bytes", typ: TypeLiveBytes},
-		{name: "snapshot_end", typ: TypeSnapshotEnd},
-		{name: "error", typ: TypeError},
+		{name: "hello", typ: TypeHello, want: 0x01},
+		{name: "session_index", typ: TypeSessionIndex, want: 0x02},
+		{name: "preview_subscribe", typ: TypePreviewSubscribe, want: 0x03},
+		{name: "session_upsert", typ: TypeSessionUpsert, want: 0x04},
+		{name: "session_gone", typ: TypeSessionGone, want: 0x05},
+		{name: "preview_unsubscribe", typ: TypePreviewUnsubscribe, want: 0x06},
+		{name: "preview_snapshot", typ: TypePreviewSnapshot, want: 0x07},
+		{name: "interactive_request", typ: TypeInteractiveRequest, want: 0x08},
+		{name: "interactive_granted", typ: TypeInteractiveGranted, want: 0x09},
+		{name: "interactive_denied", typ: TypeInteractiveDenied, want: 0x0a},
+		{name: "interactive_release", typ: TypeInteractiveRelease, want: 0x0b},
+		{name: "input_text", typ: TypeInputText, want: 0x0c},
+		{name: "input_key", typ: TypeInputKey, want: 0x0d},
+		{name: "resize", typ: TypeResize, want: 0x0e},
+		{name: "path_state", typ: TypePathState, want: 0x0f},
+		{name: "snapshot_begin", typ: TypeSnapshotBegin, want: 0x10},
+		{name: "snapshot_chunk", typ: TypeSnapshotChunk, want: 0x11},
+		{name: "live_bytes", typ: TypeLiveBytes, want: 0x12},
+		{name: "snapshot_end", typ: TypeSnapshotEnd, want: 0x13},
+		{name: "error", typ: TypeError, want: 0x7f},
 	}
 
 	seen := make(map[byte]string)
 	for _, tt := range tests {
+		if tt.typ != tt.want {
+			t.Fatalf("%s frame type = 0x%02x, want SSOT value 0x%02x", tt.name, tt.typ, tt.want)
+		}
 		if previous, ok := seen[tt.typ]; ok {
 			t.Fatalf("frame type 0x%02x reused by %s and %s", tt.typ, previous, tt.name)
 		}
 		seen[tt.typ] = tt.name
+	}
+}
+
+func TestSSOTFrameTypeRegistryMatchesLocalMirrorForProtocolV2(t *testing.T) {
+	if ssotProtocolVersion == 0 || ssotFrameTypesSource == "" {
+		t.Fatal("SSOT frame mirror provenance is missing")
+	}
+	if ssotFrameTypesSource != ssotProtocolSource {
+		t.Fatalf("ssotFrameTypesSource=%q, want %q", ssotFrameTypesSource, ssotProtocolSource)
+	}
+	if ssotProtocolVersion != ssotProtocolCompatibilityV2 {
+		t.Fatalf("ssotProtocolVersion=%d, want %d", ssotProtocolVersion, ssotProtocolCompatibilityV2)
+	}
+	if ssotProtocolVersion != sessionproto.ProtocolVersion {
+		t.Fatalf("ssotProtocolVersion=%d, want %d", ssotProtocolVersion, sessionproto.ProtocolVersion)
+	}
+	if ssotProtocolVersion != 2 {
+		t.Fatalf("ssotProtocolVersion=%d, want 2", ssotProtocolVersion)
+	}
+
+	expected := map[string]byte{
+		"hello":              0x01,
+		"session_index":       0x02,
+		"preview_subscribe":   0x03,
+		"session_upsert":      0x04,
+		"session_gone":        0x05,
+		"preview_unsubscribe": 0x06,
+		"preview_snapshot":    0x07,
+		"interactive_request": 0x08,
+		"interactive_granted": 0x09,
+		"interactive_denied":  0x0a,
+		"interactive_release": 0x0b,
+		"input_text":          0x0c,
+		"input_key":           0x0d,
+		"resize":              0x0e,
+		"path_state":          0x0f,
+		"snapshot_begin":      0x10,
+		"snapshot_chunk":      0x11,
+		"live_bytes":          0x12,
+		"snapshot_end":        0x13,
+		"error":               0x7f,
+	}
+
+	got := map[string]byte{
+		"hello":              TypeHello,
+		"session_index":      TypeSessionIndex,
+		"preview_subscribe":  TypePreviewSubscribe,
+		"session_upsert":     TypeSessionUpsert,
+		"session_gone":       TypeSessionGone,
+		"preview_unsubscribe": TypePreviewUnsubscribe,
+		"preview_snapshot":    TypePreviewSnapshot,
+		"interactive_request": TypeInteractiveRequest,
+		"interactive_granted": TypeInteractiveGranted,
+		"interactive_denied":  TypeInteractiveDenied,
+		"interactive_release": TypeInteractiveRelease,
+		"input_text":          TypeInputText,
+		"input_key":           TypeInputKey,
+		"resize":              TypeResize,
+		"path_state":          TypePathState,
+		"snapshot_begin":      TypeSnapshotBegin,
+		"snapshot_chunk":      TypeSnapshotChunk,
+		"live_bytes":          TypeLiveBytes,
+		"snapshot_end":        TypeSnapshotEnd,
+		"error":               TypeError,
+	}
+
+	if len(got) != len(expected) {
+		t.Fatalf("mirror registry size = %d, want %d", len(got), len(expected))
+	}
+	for name, expectedType := range expected {
+		if got[name] != expectedType {
+			t.Fatalf("SSOT frame type mismatch for %s: got 0x%02x, want 0x%02x", name, got[name], expectedType)
+		}
 	}
 }
 
