@@ -112,14 +112,14 @@ func TestPairingStatePersistsTrustedRosterAndRevocation(t *testing.T) {
 	}
 }
 
-func TestLoadPairingStateMigratesLegacyClientKeys(t *testing.T) {
+func TestLoadPairingStateLoadsCanonicalClientKeys(t *testing.T) {
 	paths := testPaths(t)
 	if err := EnsureRuntimeDirs(paths); err != nil {
 		t.Fatalf("EnsureRuntimeDirs returned error: %v", err)
 	}
-	legacyFingerprint := strings.Repeat("a", 64)
-	legacyPayload := `{
-  "version": 1,
+	clientFingerprint := strings.Repeat("a", 64)
+	payload := `{
+  "version": 2,
   "invitations": [
     {
       "invitation_id": "pair-1",
@@ -128,7 +128,7 @@ func TestLoadPairingStateMigratesLegacyClientKeys(t *testing.T) {
       "account_id": "123",
       "relay_base_url": "https://relay.example.com",
       "device_id": "dev-1",
-      "daemon_fingerprint": "` + strings.Repeat("b", 64) + `",
+      "computer_fingerprint": "` + strings.Repeat("b", 64) + `",
       "expires_at": 1775376000,
       "created_at": 1775375700
     }
@@ -138,18 +138,18 @@ func TestLoadPairingStateMigratesLegacyClientKeys(t *testing.T) {
       "invitation_id": "pair-1",
       "correlation_id": "corr-1",
       "account_id": "123",
-      "android_pubkey": "` + strings.Repeat("c", 64) + `",
-      "android_fingerprint": "` + legacyFingerprint + `",
-      "android_display_name": "Pixel",
+      "client_public_key": "` + strings.Repeat("c", 64) + `",
+      "client_fingerprint": "` + clientFingerprint + `",
+      "client_display_name": "Pixel",
       "signature": "` + strings.Repeat("d", 128) + `",
       "sas": "123456",
       "received_at": 1775375710,
       "expires_at": 1775376000
     }
   ],
-  "trusted_devices": [
+  "trusted_clients": [
     {
-      "fingerprint": "` + legacyFingerprint + `",
+      "fingerprint": "` + clientFingerprint + `",
       "public_key": "` + strings.Repeat("e", 64) + `",
       "display_name": "Pixel",
       "account_id": "123",
@@ -158,7 +158,7 @@ func TestLoadPairingStateMigratesLegacyClientKeys(t *testing.T) {
     }
   ]
 }`
-	if err := os.WriteFile(paths.PairingStateFile, []byte(legacyPayload), 0o600); err != nil {
+	if err := os.WriteFile(paths.PairingStateFile, []byte(payload), 0o600); err != nil {
 		t.Fatalf("WriteFile returned error: %v", err)
 	}
 
@@ -169,28 +169,51 @@ func TestLoadPairingStateMigratesLegacyClientKeys(t *testing.T) {
 	if state.Version != PairingStateVersion {
 		t.Fatalf("Version = %d, want %d", state.Version, PairingStateVersion)
 	}
-	if len(state.TrustedDevices) != 1 || state.TrustedDevices[0].Fingerprint != legacyFingerprint {
-		t.Fatalf("TrustedDevices = %#v, want migrated trusted client", state.TrustedDevices)
+	if len(state.TrustedDevices) != 1 || state.TrustedDevices[0].Fingerprint != clientFingerprint {
+		t.Fatalf("TrustedDevices = %#v, want trusted client", state.TrustedDevices)
 	}
 	if len(state.Invitations) != 1 || state.Invitations[0].DaemonFingerprint != strings.Repeat("b", 64) {
-		t.Fatalf("Invitations = %#v, want migrated daemon fingerprint", state.Invitations)
+		t.Fatalf("Invitations = %#v, want computer fingerprint", state.Invitations)
 	}
 	if len(state.PendingResponses) != 1 ||
 		state.PendingResponses[0].AndroidPublicKey != strings.Repeat("c", 64) ||
-		state.PendingResponses[0].AndroidFingerprint != legacyFingerprint ||
+		state.PendingResponses[0].AndroidFingerprint != clientFingerprint ||
 		state.PendingResponses[0].AndroidDisplayName != "Pixel" {
-		t.Fatalf("PendingResponses = %#v, want migrated pending response", state.PendingResponses)
+		t.Fatalf("PendingResponses = %#v, want pending response", state.PendingResponses)
 	}
 
 	if err := SavePairingState(paths, state); err != nil {
 		t.Fatalf("SavePairingState returned error: %v", err)
 	}
-	payload, err := os.ReadFile(paths.PairingStateFile)
+	savedPayload, err := os.ReadFile(paths.PairingStateFile)
 	if err != nil {
 		t.Fatalf("ReadFile returned error: %v", err)
 	}
-	if !strings.Contains(string(payload), `"trusted_clients"`) || strings.Contains(string(payload), `"trusted_devices"`) {
-		t.Fatalf("saved payload = %s, want rewritten client-neutral keys", string(payload))
+	saved := string(savedPayload)
+	for _, want := range []string{`"trusted_clients"`, `"computer_fingerprint"`, `"client_public_key"`, `"client_fingerprint"`, `"client_display_name"`} {
+		if !strings.Contains(saved, want) {
+			t.Fatalf("saved payload = %s, want %s", saved, want)
+		}
+	}
+	for _, old := range []string{`"trusted_devices"`, `"daemon_fingerprint"`, `"android_pubkey"`, `"android_fingerprint"`, `"android_display_name"`} {
+		if strings.Contains(saved, old) {
+			t.Fatalf("saved payload = %s, did not expect old key %s", saved, old)
+		}
+	}
+}
+
+func TestLoadPairingStateRejectsOldVersion(t *testing.T) {
+	paths := testPaths(t)
+	if err := EnsureRuntimeDirs(paths); err != nil {
+		t.Fatalf("EnsureRuntimeDirs returned error: %v", err)
+	}
+	if err := os.WriteFile(paths.PairingStateFile, []byte(`{"version":1}`), 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	_, err := LoadPairingState(paths)
+	if err == nil || !strings.Contains(err.Error(), "unsupported pairing state version 1") {
+		t.Fatalf("LoadPairingState error = %v, want unsupported version", err)
 	}
 }
 

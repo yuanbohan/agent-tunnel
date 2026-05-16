@@ -14,17 +14,6 @@ import (
 
 const deviceLaunchTimeout = 25 * time.Second
 
-func ListDevices(registry *device.Registry) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if registry == nil {
-			WriteJSONError(c.Writer, http.StatusServiceUnavailable, "service_unavailable")
-			return
-		}
-		app := middleware.AuthenticatedApp(c)
-		WriteJSON(c.Writer, http.StatusOK, registry.ListForUser(app.User.ID))
-	}
-}
-
 func ListComputers(registry *device.Registry) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if registry == nil {

@@ -48,84 +48,36 @@ func TestHandlerSessionEndpointsAreRemoved(t *testing.T) {
 	}
 }
 
-func TestHandlerListsDevicesForAuthenticatedUser(t *testing.T) {
+func TestHandlerCompatibilityAliasEndpointsAreRemoved(t *testing.T) {
 	env := newHandlerTestEnv(t)
 	env.addInvite(t, "AB2C3D")
-	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	env.registerUser(t, "alice", "password123", "AB2C3D")
 	issued := env.login(t, "alice", "password123")
-
-	env.deviceRegistry.RegisterOwned(protocol.DeviceInfo{
-		DeviceID:       "dev-1",
-		DisplayName:    "Yuanbo's MacBook Pro",
-		PlatformFamily: "macos",
-		PlatformID:     "macos",
-	}, relaydevice.DeviceOwner{UserID: user.ID}, &fakeDevicePeerForHandler{})
-	env.deviceRegistry.RegisterOwned(protocol.DeviceInfo{
-		DeviceID:       "dev-2",
-		DisplayName:    "Ubuntu Box",
-		PlatformFamily: "linux",
-		PlatformID:     "ubuntu",
-	}, relaydevice.DeviceOwner{UserID: user.ID + 1}, &fakeDevicePeerForHandler{})
-
 	handler := env.handler(nil)
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/devices", nil)
-	req.Header.Set("Authorization", bearerAuth(issued.AccessToken))
-	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	var devices []protocol.DeviceInfo
-	decodeAPIEnvelopeFromRecorder(t, rec, http.StatusOK, &devices)
-	if len(devices) != 1 || devices[0].DeviceID != "dev-1" {
-		t.Fatalf("devices = %#v, want only dev-1", devices)
+	for _, tc := range []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{method: http.MethodGet, path: "/api/devices"},
+		{method: http.MethodPost, path: "/api/devices/dev-1/launch", body: `{"command":"claude","cwd":"/repo"}`},
+	} {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+			req.Header.Set("Authorization", bearerAuth(issued.AccessToken))
+			if tc.body != "" {
+				req.Header.Set("Content-Type", "application/json")
+			}
+			handler.ServeHTTP(rec, req)
+
+			decodeAPIErrorEnvelopeFromRecorder(t, rec, http.StatusNotFound, handlerresponse.CodeNotFound, "The requested endpoint was not found.")
+		})
 	}
 }
 
-func TestHandlerLaunchDeviceWaitsForSessionReady(t *testing.T) {
-	env := newHandlerTestEnv(t)
-	env.addInvite(t, "AB2C3D")
-	user := env.registerUser(t, "alice", "password123", "AB2C3D")
-	issued := env.login(t, "alice", "password123")
-	peer := &blockingDevicePeer{sent: make(chan protocol.DeviceFrame, 1)}
-	env.deviceRegistry.RegisterOwned(protocol.DeviceInfo{
-		DeviceID:       "dev-1",
-		DisplayName:    "Test Mac",
-		PlatformFamily: "macos",
-		PlatformID:     "macos",
-	}, relaydevice.DeviceOwner{UserID: user.ID}, peer)
-
-	handler := env.handler(nil)
-	rec := httptest.NewRecorder()
-	done := make(chan struct{})
-	requestIDCh := make(chan string, 1)
-	go func() {
-		frame := <-peer.sent
-		requestIDCh <- frame.RequestID
-		env.deviceRegistry.ResolveLaunchIfOwner("dev-1", peer, frame.RequestID, relaydevice.LaunchStatusAccepted, "", "launch_fixed")
-		env.deviceRegistry.CompleteLaunchIfOwner(frame.RequestID, relaydevice.DeviceOwner{UserID: user.ID}, "sess-1")
-		close(done)
-	}()
-
-	req := httptest.NewRequest(http.MethodPost, "/api/devices/dev-1/launch", strings.NewReader(`{"command":"claude","cwd":"/repo","label":"api-fix"}`))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", bearerAuth(issued.AccessToken))
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	var response handlertypes.DeviceLaunchResponse
-	decodeAPIEnvelopeFromRecorder(t, rec, http.StatusOK, &response)
-	requestID := <-requestIDCh
-	if response.Status != relaydevice.LaunchStatusSessionReady || response.SessionID != "sess-1" || response.RequestID != requestID || response.Reason != "" {
-		t.Fatalf("response = %#v, want session_ready sess-1", response)
-	}
-	<-done
-}
-
-func TestHandlerListsComputersAliasForAuthenticatedUser(t *testing.T) {
+func TestHandlerListsComputersForAuthenticatedUser(t *testing.T) {
 	env := newHandlerTestEnv(t)
 	env.addInvite(t, "AB2C3D")
 	user := env.registerUser(t, "alice", "password123", "AB2C3D")
@@ -161,7 +113,7 @@ func TestHandlerListsComputersAliasForAuthenticatedUser(t *testing.T) {
 	assertNoBodyField(t, rec, "device_id")
 }
 
-func TestHandlerLaunchComputerAliasWaitsForSessionReady(t *testing.T) {
+func TestHandlerLaunchComputerWaitsForSessionReady(t *testing.T) {
 	env := newHandlerTestEnv(t)
 	env.addInvite(t, "AB2C3D")
 	user := env.registerUser(t, "alice", "password123", "AB2C3D")
@@ -499,7 +451,7 @@ func TestHandlerRevokingAgentTokenCompletesInFlightLaunch(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		req := httptest.NewRequest(http.MethodPost, "/api/devices/dev-1/launch", strings.NewReader(`{"command":"claude","cwd":"/repo"}`))
+		req := httptest.NewRequest(http.MethodPost, "/api/computers/dev-1/sessions", strings.NewReader(`{"command":"claude","cwd":"/repo"}`))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", bearerAuth(issued.AccessToken))
 		handler.ServeHTTP(launchRec, req)

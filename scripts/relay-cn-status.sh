@@ -213,13 +213,15 @@ check_remote_nginx_routes() {
 		"/agent/ws" \
 		"/device/ws" \
 		"/healthz" \
-		"/connectivity/daemon/ws" \
 		"/connectivity/computer/ws" \
 		"/connectivity/tunnel/ws"; do
 		if ! grep -Fq "location = ${route}" "$site_file"; then
 			missing+=("${route}")
 		fi
 	done
+	if ! grep -Fq "location /connectivity/" "$site_file"; then
+		missing+=("/connectivity/")
+	fi
 
 	if [ "${#missing[@]}" -ne 0 ]; then
 		grep -n 'location = /' "$site_file" >"$summary_file" || true
@@ -377,11 +379,11 @@ http_check_remote "website-root" "200" "/" "<!doctype html\\|<html"
 http_check_remote "healthz" "200" "/healthz" '"status":"ok"'
 http_check_remote "account-policy" "401" "/api/account/policy" '"code":1016'
 http_check_websocket_auth "connectivity-app-ws" "401" "/api/connectivity/ws"
-http_check_websocket_auth "connectivity-app-ws-legacy" "401" "/api/connectivity/app/ws"
+http_check_websocket_auth "connectivity-app-ws-removed" "404" "/api/connectivity/app/ws"
 http_check_websocket_auth "agent-ws" "401" "/agent/ws"
 http_check_websocket_auth "device-ws" "401" "/device/ws"
 http_check_websocket_auth "connectivity-computer-ws" "401" "/connectivity/computer/ws"
-http_check_websocket_auth "connectivity-daemon-ws-legacy" "401" "/connectivity/daemon/ws"
+http_check_websocket_auth "connectivity-daemon-ws-removed" "404" "/connectivity/daemon/ws"
 http_check_websocket_auth "connectivity-tunnel-ws" "403" "/connectivity/tunnel/ws" "invalid"
 
 stun_check_out="$tmpdir/stun-check.out"

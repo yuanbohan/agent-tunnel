@@ -13,7 +13,7 @@ import (
 	handlertypes "yuanbohan/tunnel/internal/relay/handler/types"
 )
 
-func TestDeviceWebSocketRegistersAndListsDeviceForOwner(t *testing.T) {
+func TestDeviceWebSocketRegistersAndListsComputerForOwner(t *testing.T) {
 	env := newHandlerTestEnv(t)
 	env.addInvite(t, "AB2C3D")
 	user := env.registerUser(t, "alice", "password123", "AB2C3D")
@@ -34,25 +34,25 @@ func TestDeviceWebSocketRegistersAndListsDeviceForOwner(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		resp := doBearerGET(t, server.URL+"/api/devices", issued.AccessToken)
+		resp := doBearerGET(t, server.URL+"/api/computers", issued.AccessToken)
 		if resp.StatusCode != http.StatusOK {
 			resp.Body.Close()
 			t.Fatalf("status = %d, want 200", resp.StatusCode)
 		}
-		var devices []protocol.DeviceInfo
-		decodeAPIEnvelopeFromResponse(t, resp, http.StatusOK, &devices)
+		var computers []handlertypes.ComputerInfo
+		decodeAPIEnvelopeFromResponse(t, resp, http.StatusOK, &computers)
 		resp.Body.Close()
-		if len(devices) == 1 && devices[0].DeviceID == "dev-1" && devices[0].LaunchHealth == "healthy" {
+		if len(computers) == 1 && computers[0].ComputerID == "dev-1" && computers[0].LaunchHealth == "healthy" {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("devices = %#v, want registered device", devices)
+			t.Fatalf("computers = %#v, want registered computer", computers)
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
 }
 
-func TestDeviceWebSocketUpdateChangesListedLaunchHealthForOwner(t *testing.T) {
+func TestDeviceWebSocketUpdateChangesListedComputerLaunchHealthForOwner(t *testing.T) {
 	env := newHandlerTestEnv(t)
 	env.addInvite(t, "AB2C3D")
 	user := env.registerUser(t, "alice", "password123", "AB2C3D")
@@ -83,15 +83,15 @@ func TestDeviceWebSocketUpdateChangesListedLaunchHealthForOwner(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		resp := doBearerGET(t, server.URL+"/api/devices", issued.AccessToken)
-		var devices []protocol.DeviceInfo
-		decodeAPIEnvelopeFromResponse(t, resp, http.StatusOK, &devices)
+		resp := doBearerGET(t, server.URL+"/api/computers", issued.AccessToken)
+		var computers []handlertypes.ComputerInfo
+		decodeAPIEnvelopeFromResponse(t, resp, http.StatusOK, &computers)
 		resp.Body.Close()
-		if len(devices) == 1 && devices[0].DeviceID == "dev-1" && devices[0].LaunchHealth == "degraded" {
+		if len(computers) == 1 && computers[0].ComputerID == "dev-1" && computers[0].LaunchHealth == "degraded" {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("devices = %#v, want updated degraded launch health", devices)
+			t.Fatalf("computers = %#v, want updated degraded launch health", computers)
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
@@ -143,7 +143,7 @@ func TestDeviceWebSocketLaunchRequestRoundTripEndsAtSessionReady(t *testing.T) {
 		agentConnCh <- agentConn
 	}()
 
-	resp := doBearerPOST(t, server.URL+"/api/devices/dev-1/launch", issued.AccessToken, `{"command":"codex","cwd":"/repo","label":"api-fix"}`)
+	resp := doBearerPOST(t, server.URL+"/api/computers/dev-1/sessions", issued.AccessToken, `{"command":"codex","cwd":"/repo","label":"api-fix"}`)
 	defer resp.Body.Close()
 	var launch handlertypes.DeviceLaunchResponse
 	decodeAPIEnvelopeFromResponse(t, resp, http.StatusOK, &launch)
@@ -180,7 +180,7 @@ func TestDeviceWebSocketLaunchWaitsForAgentLaunchReady(t *testing.T) {
 
 	launchRespCh := make(chan handlertypes.DeviceLaunchResponse, 1)
 	go func() {
-		resp := doBearerPOST(t, server.URL+"/api/devices/dev-1/launch", issued.AccessToken, `{"command":"codex","cwd":"/repo"}`)
+		resp := doBearerPOST(t, server.URL+"/api/computers/dev-1/sessions", issued.AccessToken, `{"command":"codex","cwd":"/repo"}`)
 		defer resp.Body.Close()
 		var launch handlertypes.DeviceLaunchResponse
 		decodeAPIEnvelopeFromResponse(t, resp, http.StatusOK, &launch)
@@ -239,7 +239,7 @@ func TestDeviceWebSocketLateAcceptedLaunchBackfillsMobileSourceInRegistry(t *tes
 
 	launchRespCh := make(chan handlertypes.DeviceLaunchResponse, 1)
 	go func() {
-		resp := doBearerPOST(t, server.URL+"/api/devices/dev-1/launch", issued.AccessToken, `{"command":"codex","cwd":"/repo"}`)
+		resp := doBearerPOST(t, server.URL+"/api/computers/dev-1/sessions", issued.AccessToken, `{"command":"codex","cwd":"/repo"}`)
 		defer resp.Body.Close()
 		var launch handlertypes.DeviceLaunchResponse
 		decodeAPIEnvelopeFromResponse(t, resp, http.StatusOK, &launch)
@@ -417,12 +417,12 @@ func TestDeviceWebSocketPendingPeerCannotRegisterAfterTokenRevoke(t *testing.T) 
 		t.Fatal("device websocket stayed usable after token revoke")
 	}
 
-	resp := doBearerGET(t, server.URL+"/api/devices", issued.AccessToken)
+	resp := doBearerGET(t, server.URL+"/api/computers", issued.AccessToken)
 	defer resp.Body.Close()
-	var devices []protocol.DeviceInfo
-	decodeAPIEnvelopeFromResponse(t, resp, http.StatusOK, &devices)
-	if len(devices) != 0 {
-		t.Fatalf("devices = %#v, want no devices after revoke", devices)
+	var computers []handlertypes.ComputerInfo
+	decodeAPIEnvelopeFromResponse(t, resp, http.StatusOK, &computers)
+	if len(computers) != 0 {
+		t.Fatalf("computers = %#v, want no computers after revoke", computers)
 	}
 }
 

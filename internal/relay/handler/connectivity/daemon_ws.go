@@ -36,7 +36,7 @@ func Daemon(registry *relayconnectivity.Registry, agentTokens *relayauth.AgentTo
 		if _, err := handlerws.ReadJSON(conn, &register); err != nil {
 			return
 		}
-		if !isComputerRegisterFrame(register.Type) || register.ProtocolVersion != protocol.ConnectivityProtocolVersion || register.Daemon == nil {
+		if register.Type != "computer_register" || register.ProtocolVersion != protocol.ConnectivityProtocolVersion || register.Daemon == nil {
 			_ = peer.SendJSON(protocol.ConnectivityErrorFrame(register.RequestID, "invalid_register"))
 			return
 		}
@@ -112,10 +112,6 @@ func Daemon(registry *relayconnectivity.Registry, agentTokens *relayauth.AgentTo
 			}
 		}
 	}
-}
-
-func isComputerRegisterFrame(frameType string) bool {
-	return frameType == "computer_register" || frameType == "daemon_register"
 }
 
 func agentAuthStillValid(c *gin.Context, agentTokens *relayauth.AgentTokenService, authenticated relayauth.AuthenticatedAgentToken) bool {

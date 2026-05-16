@@ -57,7 +57,7 @@ traffic.
 - Users now have `subscription_tier` (`free`/`pro`) with `GET /api/account/policy`, local-only `POST /operator/users/tier`, and `relay user tier <username> <free|pro>`.
 - Daemon state now includes a separate Ed25519 connectivity identity, signed pairing invitations, persisted invitation state, pending pairing responses, and the trusted Android roster. The public CLI surface is now `tunnel pair`, `tunnel pair devices`, and `tunnel pair revoke <fingerprint>`; invitation, pending-response, and confirm operations remain daemon-local implementation details behind the one-step pairing command.
 - Pairing transcript helpers sign and verify daemon invitations and Android responses and compute the documented SAS.
-- Relay has live-only connectivity app/daemon WebSockets at `/api/connectivity/app/ws` and `/connectivity/daemon/ws`; visibility is derived from daemon-reported trusted Android rosters, `pair_completed`, and app-session fingerprints.
+- Relay has live-only connectivity app/computer WebSockets at `/api/connectivity/ws` and `/connectivity/computer/ws`; visibility is derived from computer-reported trusted Android rosters, `pair_completed`, and app-session fingerprints.
 - A Go-only Android pairing helper exists under `internal/connectivity/pairtest`.
 - `internal/e2e/connectivity_pairing_test.go` exercises the Go Step 2 core flow against a real Relay process and PostgreSQL when local e2e is enabled.
 
