@@ -25,6 +25,8 @@ const (
 	compactSignatureBytes = 64
 )
 
+const terminalQuietZoneModules = 2
+
 const (
 	qrDarkForeground  = "\x1b[30m"
 	qrLightForeground = "\x1b[37m"
@@ -111,7 +113,8 @@ func RenderTerminal(payload string) (TerminalQRCode, error) {
 	if err != nil {
 		return TerminalQRCode{}, err
 	}
-	bitmap := code.Bitmap()
+	code.DisableBorder = true
+	bitmap := withQuietZone(code.Bitmap(), terminalQuietZoneModules)
 	if len(bitmap) == 0 {
 		return TerminalQRCode{}, errors.New("qr bitmap is empty")
 	}
@@ -149,6 +152,35 @@ func RenderTerminal(payload string) (TerminalQRCode, error) {
 		Columns: columns,
 		Rows:    (len(bitmap) + 1) / 2,
 	}, nil
+}
+
+func withQuietZone(bitmap [][]bool, quietZone int) [][]bool {
+	if quietZone <= 0 || len(bitmap) == 0 {
+		return bitmap
+	}
+	width := 0
+	for _, row := range bitmap {
+		if len(row) > width {
+			width = len(row)
+		}
+	}
+	if width == 0 {
+		return bitmap
+	}
+	paddedWidth := width + quietZone*2
+	out := make([][]bool, 0, len(bitmap)+quietZone*2)
+	for range quietZone {
+		out = append(out, make([]bool, paddedWidth))
+	}
+	for _, row := range bitmap {
+		padded := make([]bool, paddedWidth)
+		copy(padded[quietZone:], row)
+		out = append(out, padded)
+	}
+	for range quietZone {
+		out = append(out, make([]bool, paddedWidth))
+	}
+	return out
 }
 
 func SizeWarning(qr TerminalQRCode, size TerminalSize, promptRows int) string {

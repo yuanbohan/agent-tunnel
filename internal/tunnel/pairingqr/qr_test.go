@@ -69,9 +69,10 @@ func TestRenderTerminalUsesCompactHalfBlockCells(t *testing.T) {
 	if len(lines)*2 != len(moduleRows) {
 		t.Fatalf("rendered lines = %d, module rows = %d, want two module rows per terminal line", len(lines), len(moduleRows))
 	}
-	if rendered.Columns > 60 || rendered.Rows > 30 {
+	if rendered.Columns > 56 || rendered.Rows > 28 {
 		t.Fatalf("QR dimensions = %dx%d, want short pairing token bounds", rendered.Columns, rendered.Rows)
 	}
+	assertQuietZone(t, moduleRows, terminalQuietZoneModules)
 }
 
 func TestCompactPayloadRejectsUnexpectedOpaqueID(t *testing.T) {
@@ -189,4 +190,32 @@ func terminalQRCodeModulePair(t *testing.T, line string, row int) ([]bool, []boo
 		}
 	}
 	return top, bottom
+}
+
+func assertQuietZone(t *testing.T, rows [][]bool, quietZone int) {
+	t.Helper()
+	if len(rows) < quietZone*2 {
+		t.Fatalf("QR rows = %d, want at least %d quiet rows", len(rows), quietZone*2)
+	}
+	width := len(rows[0])
+	for rowIndex, row := range rows {
+		if len(row) != width {
+			t.Fatalf("row %d width = %d, want %d", rowIndex, len(row), width)
+		}
+		if rowIndex < quietZone || rowIndex >= len(rows)-quietZone {
+			assertLightModules(t, row, rowIndex)
+			continue
+		}
+		assertLightModules(t, row[:quietZone], rowIndex)
+		assertLightModules(t, row[width-quietZone:], rowIndex)
+	}
+}
+
+func assertLightModules(t *testing.T, modules []bool, row int) {
+	t.Helper()
+	for column, dark := range modules {
+		if dark {
+			t.Fatalf("quiet zone row %d column %d is dark", row, column)
+		}
+	}
 }

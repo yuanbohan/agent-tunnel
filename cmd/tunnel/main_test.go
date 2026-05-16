@@ -1963,16 +1963,19 @@ func TestRunPairPrintsQRCodeAndCompletesInteractiveFlow(t *testing.T) {
 	oldPair := daemonPair
 	oldPending := daemonPendingPairing
 	oldConfirm := daemonConfirmPairing
+	oldPairNow := pairNow
 	t.Cleanup(func() {
 		resolveDaemonPaths = oldResolvePaths
 		daemonPair = oldPair
 		daemonPendingPairing = oldPending
 		daemonConfirmPairing = oldConfirm
+		pairNow = oldPairNow
 	})
 	fingerprint := strings.Repeat("b", 64)
+	now := time.Unix(1_765_376_720, 0).UTC()
 	resolveDaemonPaths = func() (daemon.Paths, error) { return daemon.Paths{}, nil }
 	daemonPair = func(context.Context, daemon.Paths) (daemon.PairInvitation, error) {
-		return testPairInvitation(time.Now().Add(time.Minute).Unix()), nil
+		return testPairInvitation(now.Add(5 * time.Minute).Unix()), nil
 	}
 	daemonPendingPairing = func(context.Context, daemon.Paths) ([]daemon.PendingPairingResponse, error) {
 		return []daemon.PendingPairingResponse{{
@@ -1988,6 +1991,7 @@ func TestRunPairPrintsQRCodeAndCompletesInteractiveFlow(t *testing.T) {
 		}
 		return daemon.PairingCompletion{Device: daemon.TrustedAndroidDevice{Fingerprint: fingerprint, DisplayName: "Pixel"}}, nil
 	}
+	pairNow = func() time.Time { return now }
 
 	var stdout bytes.Buffer
 	if err := runPair(context.Background(), strings.NewReader("123456\n"), &stdout, io.Discard, false); err != nil {
@@ -1996,6 +2000,9 @@ func TestRunPairPrintsQRCodeAndCompletesInteractiveFlow(t *testing.T) {
 	got := stdout.String()
 	if !strings.Contains(got, "Scan this QR in the mobile app to pair this computer.") {
 		t.Fatalf("stdout = %q, want QR scan guidance", got)
+	}
+	if !strings.Contains(got, "Waiting for a client response. This invitation expires in 300 seconds.") {
+		t.Fatalf("stdout = %q, want seconds countdown", got)
 	}
 	if !strings.Contains(got, "Client: Pixel") || !strings.Contains(got, "Paired Pixel ("+fingerprint+")") {
 		t.Fatalf("stdout = %q, want client and paired summary", got)

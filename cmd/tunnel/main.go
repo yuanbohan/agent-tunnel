@@ -995,7 +995,11 @@ func runPair(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, jso
 		_, _ = io.WriteString(stdout, "\n")
 	}
 	_, _ = io.WriteString(stdout, qr.Output)
-	_, _ = fmt.Fprintf(stdout, "\nWaiting for a client response. This invitation expires at %s.\n", time.Unix(invitation.ExpiresAt, 0).Format(time.RFC3339))
+	secondsRemaining := invitation.ExpiresAt - pairNow().Unix()
+	if secondsRemaining < 0 {
+		secondsRemaining = 0
+	}
+	_, _ = fmt.Fprintf(stdout, "\nWaiting for a client response. This invitation expires in %d seconds.\n", secondsRemaining)
 	response, err := waitForPairingResponse(ctx, paths, invitation)
 	if err != nil {
 		if errors.Is(err, daemon.ErrPairingInvitationExpired) {
