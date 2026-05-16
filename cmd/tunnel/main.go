@@ -19,13 +19,13 @@ import (
 	"syscall"
 	"time"
 
-	qrcode "github.com/skip2/go-qrcode"
 	"golang.org/x/term"
 
 	"yuanbohan/tunnel/internal/protocol"
 	"yuanbohan/tunnel/internal/tunnel/connector"
 	"yuanbohan/tunnel/internal/tunnel/daemon"
 	"yuanbohan/tunnel/internal/tunnel/launcher"
+	"yuanbohan/tunnel/internal/tunnel/pairingqr"
 	"yuanbohan/tunnel/internal/tunnel/session"
 )
 
@@ -39,13 +39,8 @@ const (
 	startupBannerReset = "\x1b[0m"
 )
 
-const (
-	qrDarkBackground  = "\x1b[40m"
-	qrLightBackground = "\x1b[47m"
-	qrBackgroundReset = "\x1b[0m"
-)
-
 const pairDisplayNameWidth = 48
+const pairPromptRows = 2
 
 const startupBannerClear = "\r\x1b[2K"
 
@@ -130,6 +125,7 @@ var (
 			return true
 		}
 	}
+	pairTerminalSize = pairingqr.TerminalSizeForWriter
 )
 
 func main() {
@@ -975,19 +971,36 @@ func runPair(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, jso
 	if jsonOutput {
 		return writeIndentedJSON(stdout, invitation)
 	}
-	payload, err := json.Marshal(invitation)
+	qrPayload, err := pairingqr.CompactPayload(pairingqr.CompactInvitation{
+		Version:         invitation.Version,
+		InvitationID:    invitation.InvitationID,
+		CorrelationID:   invitation.CorrelationID,
+		Nonce:           invitation.Nonce,
+		DeviceID:        invitation.DeviceID,
+		DisplayName:     invitation.DisplayName,
+		DaemonPublicKey: invitation.DaemonPublicKey,
+		ExpiresAt:       invitation.ExpiresAt,
+		Signature:       invitation.Signature,
+	})
 	if err != nil {
 		return err
 	}
-	qr, err := renderQRCode(string(payload))
+	qr, err := pairingqr.RenderTerminal(qrPayload)
 	if err != nil {
 		return err
 	}
 	_, _ = io.WriteString(stdout, "Scan this QR in the mobile app to pair this computer.\n\n")
-	_, _ = io.WriteString(stdout, qr)
-	_, _ = fmt.Fprintf(stdout, "\nWaiting for a client response. This invitation expires at %s.\n", time.Unix(invitation.ExpiresAt, 0).Format(time.RFC3339))
-	response, err := waitForPairingResponse(ctx, paths, invitation)
+	if warning := pairQRSizeWarning(qr, stdout); warning != "" {
+		_, _ = io.WriteString(stdout, warning)
+		_, _ = io.WriteString(stdout, "\n")
+	}
+	_, _ = io.WriteString(stdout, qr.Output)
+	_, _ = io.WriteString(stdout, "\n")
+	response, err := waitForPairingResponse(ctx, paths, invitation, func(secondsRemaining int64) {
+		writePairCountdown(stdout, secondsRemaining)
+	})
 	if err != nil {
+		_, _ = io.WriteString(stdout, "\n")
 		if errors.Is(err, daemon.ErrPairingInvitationExpired) {
 			_, _ = io.WriteString(stdout, "Pairing invitation expired. Run `tunnel pair` again to create a new QR code.\n")
 			return nil
@@ -1047,9 +1060,27 @@ func pairingWarningText(warning string) string {
 	return terminalDisplayValue(warning, "pairing completed with a warning")
 }
 
-func waitForPairingResponse(ctx context.Context, paths daemon.Paths, invitation daemon.PairInvitation) (daemon.PendingPairingResponse, error) {
+func writePairCountdown(stdout io.Writer, secondsRemaining int64) {
+	_, _ = fmt.Fprintf(stdout, "\r\x1b[2KWaiting for a client response. This invitation expires in %d seconds.", secondsRemaining)
+}
+
+func pairSecondsRemaining(expiresAt int64) int64 {
+	secondsRemaining := expiresAt - pairNow().Unix()
+	if secondsRemaining < 0 {
+		return 0
+	}
+	return secondsRemaining
+}
+
+func waitForPairingResponse(ctx context.Context, paths daemon.Paths, invitation daemon.PairInvitation, onCountdown func(int64)) (daemon.PendingPairingResponse, error) {
 	invitationID := strings.TrimSpace(invitation.InvitationID)
+	lastCountdown := int64(-1)
 	for {
+		secondsRemaining := pairSecondsRemaining(invitation.ExpiresAt)
+		if onCountdown != nil && secondsRemaining != lastCountdown {
+			onCountdown(secondsRemaining)
+			lastCountdown = secondsRemaining
+		}
 		pending, err := daemonPendingPairing(ctx, paths)
 		if err != nil {
 			return daemon.PendingPairingResponse{}, err
@@ -1099,35 +1130,12 @@ func readPairingSAS(stdin io.Reader) (string, error) {
 	return value, nil
 }
 
-func renderQRCode(payload string) (string, error) {
-	code, err := qrcode.New(payload, qrcode.Medium)
-	if err != nil {
-		return "", err
+func pairQRSizeWarning(qr pairingqr.TerminalQRCode, stdout io.Writer) string {
+	size, ok := pairTerminalSize(stdout)
+	if !ok {
+		return ""
 	}
-	bitmap := code.Bitmap()
-	if len(bitmap) == 0 {
-		return "", errors.New("qr bitmap is empty")
-	}
-	var out strings.Builder
-	for _, row := range bitmap {
-		currentBackground := ""
-		for _, dark := range row {
-			background := qrLightBackground
-			if dark {
-				background = qrDarkBackground
-			}
-			if background != currentBackground {
-				out.WriteString(background)
-				currentBackground = background
-			}
-			out.WriteString("  ")
-		}
-		if currentBackground != "" {
-			out.WriteString(qrBackgroundReset)
-		}
-		out.WriteByte('\n')
-	}
-	return out.String(), nil
+	return pairingqr.SizeWarning(qr, size, pairPromptRows)
 }
 
 func runPairDevices(ctx context.Context, stdout, stderr io.Writer, jsonOutput bool) error {

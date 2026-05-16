@@ -5,8 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"image"
-	"image/color"
 	"io"
 	"os"
 	"strings"
@@ -14,8 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/makiuchi-d/gozxing"
-	gozxingqrcode "github.com/makiuchi-d/gozxing/qrcode"
 	"yuanbohan/tunnel/internal/protocol"
 	"yuanbohan/tunnel/internal/tunnel/connector"
 	"yuanbohan/tunnel/internal/tunnel/daemon"
@@ -1938,6 +1934,28 @@ func TestRunWithArgsRejectsRemovedDaemonSubcommands(t *testing.T) {
 	}
 }
 
+const (
+	testPairDeviceID      = "dev_333333333333333333333333"
+	testPairInvitationID  = "pair_111111111111111111111111"
+	testPairCorrelationID = "corr_222222222222222222222222"
+)
+
+func testPairInvitation(expiresAt int64) daemon.PairInvitation {
+	return daemon.PairInvitation{
+		Version:           2,
+		InvitationID:      testPairInvitationID,
+		CorrelationID:     testPairCorrelationID,
+		Nonce:             "000102030405060708090a0b0c0d0e0f",
+		RelayBaseURL:      "https://agentunnel.cn",
+		DeviceID:          testPairDeviceID,
+		DisplayName:       "Test Mac",
+		DaemonPublicKey:   strings.Repeat("4", 64),
+		DaemonFingerprint: strings.Repeat("a", 64),
+		ExpiresAt:         expiresAt,
+		Signature:         strings.Repeat("6", 128),
+	}
+}
+
 func TestRunPairPrintsQRCodeAndCompletesInteractiveFlow(t *testing.T) {
 	setTestEnv(t)
 
@@ -1945,37 +1963,35 @@ func TestRunPairPrintsQRCodeAndCompletesInteractiveFlow(t *testing.T) {
 	oldPair := daemonPair
 	oldPending := daemonPendingPairing
 	oldConfirm := daemonConfirmPairing
+	oldPairNow := pairNow
 	t.Cleanup(func() {
 		resolveDaemonPaths = oldResolvePaths
 		daemonPair = oldPair
 		daemonPendingPairing = oldPending
 		daemonConfirmPairing = oldConfirm
+		pairNow = oldPairNow
 	})
 	fingerprint := strings.Repeat("b", 64)
+	now := time.Unix(1_765_376_720, 0).UTC()
 	resolveDaemonPaths = func() (daemon.Paths, error) { return daemon.Paths{}, nil }
 	daemonPair = func(context.Context, daemon.Paths) (daemon.PairInvitation, error) {
-		return daemon.PairInvitation{
-			Version:           1,
-			InvitationID:      "pair_123",
-			CorrelationID:     "corr_123",
-			DaemonFingerprint: strings.Repeat("a", 64),
-			ExpiresAt:         time.Now().Add(time.Minute).Unix(),
-		}, nil
+		return testPairInvitation(now.Add(5 * time.Minute).Unix()), nil
 	}
 	daemonPendingPairing = func(context.Context, daemon.Paths) ([]daemon.PendingPairingResponse, error) {
 		return []daemon.PendingPairingResponse{{
-			InvitationID:       "pair_123",
+			InvitationID:       testPairInvitationID,
 			AndroidFingerprint: fingerprint,
 			AndroidDisplayName: "Pixel",
 			SAS:                "123456",
 		}}, nil
 	}
 	daemonConfirmPairing = func(_ context.Context, _ daemon.Paths, invitationID, sas string) (daemon.PairingCompletion, error) {
-		if invitationID != "pair_123" || sas != "123456" {
-			t.Fatalf("confirm args = %q %q, want pair_123 123456", invitationID, sas)
+		if invitationID != testPairInvitationID || sas != "123456" {
+			t.Fatalf("confirm args = %q %q, want %s 123456", invitationID, sas, testPairInvitationID)
 		}
 		return daemon.PairingCompletion{Device: daemon.TrustedAndroidDevice{Fingerprint: fingerprint, DisplayName: "Pixel"}}, nil
 	}
+	pairNow = func() time.Time { return now }
 
 	var stdout bytes.Buffer
 	if err := runPair(context.Background(), strings.NewReader("123456\n"), &stdout, io.Discard, false); err != nil {
@@ -1985,11 +2001,75 @@ func TestRunPairPrintsQRCodeAndCompletesInteractiveFlow(t *testing.T) {
 	if !strings.Contains(got, "Scan this QR in the mobile app to pair this computer.") {
 		t.Fatalf("stdout = %q, want QR scan guidance", got)
 	}
+	if !strings.Contains(got, "Waiting for a client response. This invitation expires in 300 seconds.") {
+		t.Fatalf("stdout = %q, want seconds countdown", got)
+	}
 	if !strings.Contains(got, "Client: Pixel") || !strings.Contains(got, "Paired Pixel ("+fingerprint+")") {
 		t.Fatalf("stdout = %q, want client and paired summary", got)
 	}
-	if !strings.Contains(got, qrDarkBackground) || !strings.Contains(got, qrLightBackground) {
-		t.Fatalf("stdout = %q, want rendered QR background colors", got)
+	if !strings.Contains(got, "▀") {
+		t.Fatalf("stdout = %q, want rendered QR half-block cells", got)
+	}
+}
+
+func TestRunPairRefreshesCountdownWhileWaitingForResponse(t *testing.T) {
+	setTestEnv(t)
+
+	oldResolvePaths := resolveDaemonPaths
+	oldPair := daemonPair
+	oldPending := daemonPendingPairing
+	oldConfirm := daemonConfirmPairing
+	oldPairNow := pairNow
+	oldPairSleep := pairSleep
+	t.Cleanup(func() {
+		resolveDaemonPaths = oldResolvePaths
+		daemonPair = oldPair
+		daemonPendingPairing = oldPending
+		daemonConfirmPairing = oldConfirm
+		pairNow = oldPairNow
+		pairSleep = oldPairSleep
+	})
+	fingerprint := strings.Repeat("b", 64)
+	now := time.Unix(1_765_376_720, 0).UTC()
+	pendingCalls := 0
+	resolveDaemonPaths = func() (daemon.Paths, error) { return daemon.Paths{}, nil }
+	daemonPair = func(context.Context, daemon.Paths) (daemon.PairInvitation, error) {
+		return testPairInvitation(now.Add(5 * time.Minute).Unix()), nil
+	}
+	daemonPendingPairing = func(context.Context, daemon.Paths) ([]daemon.PendingPairingResponse, error) {
+		pendingCalls++
+		if pendingCalls < 3 {
+			return nil, nil
+		}
+		return []daemon.PendingPairingResponse{{
+			InvitationID:       testPairInvitationID,
+			AndroidFingerprint: fingerprint,
+			AndroidDisplayName: "Pixel",
+			SAS:                "123456",
+		}}, nil
+	}
+	daemonConfirmPairing = func(context.Context, daemon.Paths, string, string) (daemon.PairingCompletion, error) {
+		return daemon.PairingCompletion{Device: daemon.TrustedAndroidDevice{Fingerprint: fingerprint, DisplayName: "Pixel"}}, nil
+	}
+	pairNow = func() time.Time { return now }
+	pairSleep = func(context.Context, time.Duration) bool {
+		now = now.Add(time.Second)
+		return true
+	}
+
+	var stdout bytes.Buffer
+	if err := runPair(context.Background(), strings.NewReader("123456\n"), &stdout, io.Discard, false); err != nil {
+		t.Fatalf("runPair returned error: %v", err)
+	}
+	got := stdout.String()
+	for _, want := range []string{
+		"\r\x1b[2KWaiting for a client response. This invitation expires in 300 seconds.",
+		"\r\x1b[2KWaiting for a client response. This invitation expires in 299 seconds.",
+		"\r\x1b[2KWaiting for a client response. This invitation expires in 298 seconds.",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("stdout = %q, want countdown refresh %q", got, want)
+		}
 	}
 }
 
@@ -2010,17 +2090,11 @@ func TestRunPairSanitizesDisplayNamesAndPrintsCompletionWarning(t *testing.T) {
 	longName := "Pixel " + strings.Repeat("A", 80) + "\u202Ehidden"
 	resolveDaemonPaths = func() (daemon.Paths, error) { return daemon.Paths{}, nil }
 	daemonPair = func(context.Context, daemon.Paths) (daemon.PairInvitation, error) {
-		return daemon.PairInvitation{
-			Version:           1,
-			InvitationID:      "pair_123",
-			CorrelationID:     "corr_123",
-			DaemonFingerprint: strings.Repeat("a", 64),
-			ExpiresAt:         time.Now().Add(time.Minute).Unix(),
-		}, nil
+		return testPairInvitation(time.Now().Add(time.Minute).Unix()), nil
 	}
 	daemonPendingPairing = func(context.Context, daemon.Paths) ([]daemon.PendingPairingResponse, error) {
 		return []daemon.PendingPairingResponse{{
-			InvitationID:       "pair_123",
+			InvitationID:       testPairInvitationID,
 			AndroidFingerprint: fingerprint,
 			AndroidDisplayName: longName,
 			SAS:                "123456",
@@ -2080,17 +2154,11 @@ func TestRunPairReturnsFriendlySASMismatch(t *testing.T) {
 	fingerprint := strings.Repeat("b", 64)
 	resolveDaemonPaths = func() (daemon.Paths, error) { return daemon.Paths{}, nil }
 	daemonPair = func(context.Context, daemon.Paths) (daemon.PairInvitation, error) {
-		return daemon.PairInvitation{
-			Version:           1,
-			InvitationID:      "pair_123",
-			CorrelationID:     "corr_123",
-			DaemonFingerprint: strings.Repeat("a", 64),
-			ExpiresAt:         time.Now().Add(time.Minute).Unix(),
-		}, nil
+		return testPairInvitation(time.Now().Add(time.Minute).Unix()), nil
 	}
 	daemonPendingPairing = func(context.Context, daemon.Paths) ([]daemon.PendingPairingResponse, error) {
 		return []daemon.PendingPairingResponse{{
-			InvitationID:       "pair_123",
+			InvitationID:       testPairInvitationID,
 			AndroidFingerprint: fingerprint,
 			AndroidDisplayName: "Pixel",
 			SAS:                "123456",
@@ -2123,17 +2191,11 @@ func TestRunPairCancelsWhenCodeIsEmpty(t *testing.T) {
 	fingerprint := strings.Repeat("b", 64)
 	resolveDaemonPaths = func() (daemon.Paths, error) { return daemon.Paths{}, nil }
 	daemonPair = func(context.Context, daemon.Paths) (daemon.PairInvitation, error) {
-		return daemon.PairInvitation{
-			Version:           1,
-			InvitationID:      "pair_123",
-			CorrelationID:     "corr_123",
-			DaemonFingerprint: strings.Repeat("a", 64),
-			ExpiresAt:         time.Now().Add(time.Minute).Unix(),
-		}, nil
+		return testPairInvitation(time.Now().Add(time.Minute).Unix()), nil
 	}
 	daemonPendingPairing = func(context.Context, daemon.Paths) ([]daemon.PendingPairingResponse, error) {
 		return []daemon.PendingPairingResponse{{
-			InvitationID:       "pair_123",
+			InvitationID:       testPairInvitationID,
 			AndroidFingerprint: fingerprint,
 			AndroidDisplayName: "Pixel",
 			SAS:                "123456",
@@ -2169,13 +2231,7 @@ func TestRunPairReportsExpiredInvitation(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	resolveDaemonPaths = func() (daemon.Paths, error) { return daemon.Paths{}, nil }
 	daemonPair = func(context.Context, daemon.Paths) (daemon.PairInvitation, error) {
-		return daemon.PairInvitation{
-			Version:           1,
-			InvitationID:      "pair_123",
-			CorrelationID:     "corr_123",
-			DaemonFingerprint: strings.Repeat("a", 64),
-			ExpiresAt:         now.Add(-time.Second).Unix(),
-		}, nil
+		return testPairInvitation(now.Add(-time.Second).Unix()), nil
 	}
 	daemonPendingPairing = func(context.Context, daemon.Paths) ([]daemon.PendingPairingResponse, error) {
 		return nil, nil
@@ -2188,26 +2244,6 @@ func TestRunPairReportsExpiredInvitation(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "Pairing invitation expired.") {
 		t.Fatalf("stdout = %q, want expired invitation message", stdout.String())
-	}
-}
-
-func TestRenderQRCodeDecodesOriginalPayload(t *testing.T) {
-	payload := `{"version":1,"invitation_id":"pair_123","correlation_id":"corr_123","client_fingerprint":"` + strings.Repeat("a", 64) + `"}`
-	rendered, err := renderQRCode(payload)
-	if err != nil {
-		t.Fatalf("renderQRCode returned error: %v", err)
-	}
-	image := terminalQRCodeImage(t, rendered, 8)
-	bitmap, err := gozxing.NewBinaryBitmapFromImage(image)
-	if err != nil {
-		t.Fatalf("NewBinaryBitmapFromImage returned error: %v", err)
-	}
-	result, err := gozxingqrcode.NewQRCodeReader().Decode(bitmap, nil)
-	if err != nil {
-		t.Fatalf("Decode returned error: %v", err)
-	}
-	if result.GetText() != payload {
-		t.Fatalf("decoded payload = %q, want original payload", result.GetText())
 	}
 }
 
@@ -2237,67 +2273,6 @@ func TestRunPairPrintsInvitationJSONWithFlag(t *testing.T) {
 	if !strings.Contains(stdout.String(), `"invitation_id": "pair_123"`) {
 		t.Fatalf("stdout = %q, want invitation JSON", stdout.String())
 	}
-}
-
-func terminalQRCodeImage(t *testing.T, rendered string, scale int) image.Image {
-	t.Helper()
-	lines := strings.Split(strings.TrimRight(rendered, "\n"), "\n")
-	if len(lines) == 0 {
-		t.Fatal("rendered QR has no rows")
-	}
-	firstRow := terminalQRCodeModules(t, lines[0], 0)
-	modules := len(firstRow)
-	img := image.NewGray(image.Rect(0, 0, modules*scale, len(lines)*scale))
-	for y := 0; y < img.Rect.Dy(); y++ {
-		for x := 0; x < img.Rect.Dx(); x++ {
-			img.SetGray(x, y, color.Gray{Y: 0xff})
-		}
-	}
-	for row, line := range lines {
-		rowModules := firstRow
-		if row != 0 {
-			rowModules = terminalQRCodeModules(t, line, row)
-		}
-		if len(rowModules) != modules {
-			t.Fatalf("line %d width = %d, want %d", row, len(rowModules), modules)
-		}
-		for col, dark := range rowModules {
-			if !dark {
-				continue
-			}
-			for dy := 0; dy < scale; dy++ {
-				for dx := 0; dx < scale; dx++ {
-					img.SetGray(col*scale+dx, row*scale+dy, color.Gray{Y: 0x00})
-				}
-			}
-		}
-	}
-	return img
-}
-
-func terminalQRCodeModules(t *testing.T, line string, row int) []bool {
-	t.Helper()
-	var modules []bool
-	dark := false
-	for i := 0; i < len(line); {
-		switch {
-		case strings.HasPrefix(line[i:], qrDarkBackground):
-			dark = true
-			i += len(qrDarkBackground)
-		case strings.HasPrefix(line[i:], qrLightBackground):
-			dark = false
-			i += len(qrLightBackground)
-		case strings.HasPrefix(line[i:], qrBackgroundReset):
-			dark = false
-			i += len(qrBackgroundReset)
-		case strings.HasPrefix(line[i:], "  "):
-			modules = append(modules, dark)
-			i += 2
-		default:
-			t.Fatalf("line %d has unexpected QR token at byte %d: %q", row, i, line[i:])
-		}
-	}
-	return modules
 }
 
 func TestRunWithArgsPairJSONCommandPrintsErrorEnvelope(t *testing.T) {
