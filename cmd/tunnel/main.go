@@ -40,12 +40,15 @@ const (
 )
 
 const (
+	qrDarkForeground  = "\x1b[30m"
+	qrLightForeground = "\x1b[37m"
 	qrDarkBackground  = "\x1b[40m"
 	qrLightBackground = "\x1b[47m"
 	qrBackgroundReset = "\x1b[0m"
 )
 
 const pairDisplayNameWidth = 48
+const pairPromptRows = 2
 
 const startupBannerClear = "\r\x1b[2K"
 
@@ -130,6 +133,7 @@ var (
 			return true
 		}
 	}
+	pairTerminalSize = terminalSizeForWriter
 )
 
 func main() {
@@ -979,12 +983,16 @@ func runPair(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, jso
 	if err != nil {
 		return err
 	}
-	qr, err := renderQRCode(string(payload))
+	qr, err := renderTerminalQRCode(string(payload))
 	if err != nil {
 		return err
 	}
 	_, _ = io.WriteString(stdout, "Scan this QR in the mobile app to pair this computer.\n\n")
-	_, _ = io.WriteString(stdout, qr)
+	if warning := pairQRSizeWarning(qr, stdout); warning != "" {
+		_, _ = io.WriteString(stdout, warning)
+		_, _ = io.WriteString(stdout, "\n")
+	}
+	_, _ = io.WriteString(stdout, qr.Output)
 	_, _ = fmt.Fprintf(stdout, "\nWaiting for a client response. This invitation expires at %s.\n", time.Unix(invitation.ExpiresAt, 0).Format(time.RFC3339))
 	response, err := waitForPairingResponse(ctx, paths, invitation)
 	if err != nil {
@@ -1100,34 +1108,111 @@ func readPairingSAS(stdin io.Reader) (string, error) {
 }
 
 func renderQRCode(payload string) (string, error) {
-	code, err := qrcode.New(payload, qrcode.Medium)
+	qr, err := renderTerminalQRCode(payload)
 	if err != nil {
 		return "", err
 	}
+	return qr.Output, nil
+}
+
+type terminalQRCode struct {
+	Output  string
+	Columns int
+	Rows    int
+}
+
+type terminalSize struct {
+	Columns int
+	Rows    int
+}
+
+func renderTerminalQRCode(payload string) (terminalQRCode, error) {
+	code, err := qrcode.New(payload, qrcode.Low)
+	if err != nil {
+		return terminalQRCode{}, err
+	}
 	bitmap := code.Bitmap()
 	if len(bitmap) == 0 {
-		return "", errors.New("qr bitmap is empty")
+		return terminalQRCode{}, errors.New("qr bitmap is empty")
 	}
 	var out strings.Builder
-	for _, row := range bitmap {
-		currentBackground := ""
-		for _, dark := range row {
-			background := qrLightBackground
-			if dark {
-				background = qrDarkBackground
-			}
-			if background != currentBackground {
-				out.WriteString(background)
-				currentBackground = background
-			}
-			out.WriteString("  ")
+	columns := 0
+	for y := 0; y < len(bitmap); y += 2 {
+		top := bitmap[y]
+		if len(top) > columns {
+			columns = len(top)
 		}
-		if currentBackground != "" {
+		var bottom []bool
+		if y+1 < len(bitmap) {
+			bottom = bitmap[y+1]
+		}
+		currentStyle := ""
+		for x, topDark := range top {
+			bottomDark := false
+			if bottom != nil && x < len(bottom) {
+				bottomDark = bottom[x]
+			}
+			style := qrModuleForeground(topDark) + qrModuleBackground(bottomDark)
+			if style != currentStyle {
+				out.WriteString(style)
+				currentStyle = style
+			}
+			out.WriteString("▀")
+		}
+		if currentStyle != "" {
 			out.WriteString(qrBackgroundReset)
 		}
 		out.WriteByte('\n')
 	}
-	return out.String(), nil
+	return terminalQRCode{
+		Output:  out.String(),
+		Columns: columns,
+		Rows:    (len(bitmap) + 1) / 2,
+	}, nil
+}
+
+func qrModuleForeground(dark bool) string {
+	if dark {
+		return qrDarkForeground
+	}
+	return qrLightForeground
+}
+
+func qrModuleBackground(dark bool) string {
+	if dark {
+		return qrDarkBackground
+	}
+	return qrLightBackground
+}
+
+func pairQRSizeWarning(qr terminalQRCode, stdout io.Writer) string {
+	size, ok := pairTerminalSize(stdout)
+	if !ok {
+		return ""
+	}
+	requiredRows := qr.Rows + pairPromptRows
+	if qr.Columns <= size.Columns && requiredRows <= size.Rows {
+		return ""
+	}
+	return fmt.Sprintf(
+		"QR size: %dx%d terminal cells. Current terminal: %dx%d. Enlarge the window or run `tunnel pair --json` and paste it in the app.\n",
+		qr.Columns,
+		qr.Rows,
+		size.Columns,
+		size.Rows,
+	)
+}
+
+func terminalSizeForWriter(stdout io.Writer) (terminalSize, bool) {
+	outFile, ok := stdout.(*os.File)
+	if !ok {
+		return terminalSize{}, false
+	}
+	columns, rows, err := term.GetSize(int(outFile.Fd()))
+	if err != nil || columns <= 0 || rows <= 0 {
+		return terminalSize{}, false
+	}
+	return terminalSize{Columns: columns, Rows: rows}, true
 }
 
 func runPairDevices(ctx context.Context, stdout, stderr io.Writer, jsonOutput bool) error {

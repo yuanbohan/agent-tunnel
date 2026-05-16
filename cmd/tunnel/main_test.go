@@ -2211,6 +2211,70 @@ func TestRenderQRCodeDecodesOriginalPayload(t *testing.T) {
 	}
 }
 
+func TestRenderQRCodeUsesCompactHalfBlockCells(t *testing.T) {
+	payload := `{"version":1,"invitation_id":"pair_123","correlation_id":"corr_123","client_fingerprint":"` + strings.Repeat("a", 64) + `"}`
+	rendered, err := renderQRCode(payload)
+	if err != nil {
+		t.Fatalf("renderQRCode returned error: %v", err)
+	}
+	lines := strings.Split(strings.TrimRight(rendered, "\n"), "\n")
+	moduleRows := terminalQRCodeRows(t, rendered)
+	if !strings.Contains(rendered, "▀") {
+		t.Fatalf("rendered QR = %q, want half-block cells", rendered)
+	}
+	if len(lines)*2 != len(moduleRows) {
+		t.Fatalf("rendered lines = %d, module rows = %d, want two module rows per terminal line", len(lines), len(moduleRows))
+	}
+}
+
+func TestRenderTerminalQRCodeKeepsRealisticInvitationWithinLaptopTerminalBounds(t *testing.T) {
+	payload, err := json.Marshal(daemon.PairInvitation{
+		Version:           1,
+		InvitationID:      "pair_" + strings.Repeat("1", 24),
+		CorrelationID:     "corr_" + strings.Repeat("2", 24),
+		Nonce:             strings.Repeat("0", 32),
+		AccountID:         "1234567890",
+		RelayBaseURL:      "https://agentunnel.cn",
+		DeviceID:          "dev_" + strings.Repeat("3", 24),
+		DisplayName:       "yuanbo's MacBook Air",
+		DaemonPublicKey:   strings.Repeat("4", 64),
+		DaemonFingerprint: strings.Repeat("5", 64),
+		ExpiresAt:         1_765_376_720,
+		Signature:         strings.Repeat("6", 128),
+	})
+	if err != nil {
+		t.Fatalf("Marshal returned error: %v", err)
+	}
+	qr, err := renderTerminalQRCode(string(payload))
+	if err != nil {
+		t.Fatalf("renderTerminalQRCode returned error: %v", err)
+	}
+	if qr.Columns > 100 || qr.Rows > 50 {
+		t.Fatalf("QR dimensions = %dx%d, want within 100x50 terminal cells", qr.Columns, qr.Rows)
+	}
+}
+
+func TestPairQRSizeWarningUsesTerminalDimensions(t *testing.T) {
+	oldPairTerminalSize := pairTerminalSize
+	t.Cleanup(func() {
+		pairTerminalSize = oldPairTerminalSize
+	})
+	pairTerminalSize = func(io.Writer) (terminalSize, bool) {
+		return terminalSize{Columns: 80, Rows: 24}, true
+	}
+	warning := pairQRSizeWarning(terminalQRCode{Columns: 93, Rows: 47}, io.Discard)
+	if !strings.Contains(warning, "QR size: 93x47") || !strings.Contains(warning, "Current terminal: 80x24") {
+		t.Fatalf("warning = %q, want QR and terminal dimensions", warning)
+	}
+
+	pairTerminalSize = func(io.Writer) (terminalSize, bool) {
+		return terminalSize{Columns: 120, Rows: 60}, true
+	}
+	if warning := pairQRSizeWarning(terminalQRCode{Columns: 93, Rows: 47}, io.Discard); warning != "" {
+		t.Fatalf("warning = %q, want no warning when QR fits", warning)
+	}
+}
+
 func TestRunPairPrintsInvitationJSONWithFlag(t *testing.T) {
 	setTestEnv(t)
 
@@ -2241,23 +2305,18 @@ func TestRunPairPrintsInvitationJSONWithFlag(t *testing.T) {
 
 func terminalQRCodeImage(t *testing.T, rendered string, scale int) image.Image {
 	t.Helper()
-	lines := strings.Split(strings.TrimRight(rendered, "\n"), "\n")
-	if len(lines) == 0 {
+	rows := terminalQRCodeRows(t, rendered)
+	if len(rows) == 0 {
 		t.Fatal("rendered QR has no rows")
 	}
-	firstRow := terminalQRCodeModules(t, lines[0], 0)
-	modules := len(firstRow)
-	img := image.NewGray(image.Rect(0, 0, modules*scale, len(lines)*scale))
+	modules := len(rows[0])
+	img := image.NewGray(image.Rect(0, 0, modules*scale, len(rows)*scale))
 	for y := 0; y < img.Rect.Dy(); y++ {
 		for x := 0; x < img.Rect.Dx(); x++ {
 			img.SetGray(x, y, color.Gray{Y: 0xff})
 		}
 	}
-	for row, line := range lines {
-		rowModules := firstRow
-		if row != 0 {
-			rowModules = terminalQRCodeModules(t, line, row)
-		}
+	for row, rowModules := range rows {
 		if len(rowModules) != modules {
 			t.Fatalf("line %d width = %d, want %d", row, len(rowModules), modules)
 		}
@@ -2275,29 +2334,50 @@ func terminalQRCodeImage(t *testing.T, rendered string, scale int) image.Image {
 	return img
 }
 
-func terminalQRCodeModules(t *testing.T, line string, row int) []bool {
+func terminalQRCodeRows(t *testing.T, rendered string) [][]bool {
 	t.Helper()
-	var modules []bool
-	dark := false
+	lines := strings.Split(strings.TrimRight(rendered, "\n"), "\n")
+	var rows [][]bool
+	for row, line := range lines {
+		top, bottom := terminalQRCodeModulePair(t, line, row)
+		rows = append(rows, top, bottom)
+	}
+	return rows
+}
+
+func terminalQRCodeModulePair(t *testing.T, line string, row int) ([]bool, []bool) {
+	t.Helper()
+	var top []bool
+	var bottom []bool
+	topDark := false
+	bottomDark := false
 	for i := 0; i < len(line); {
 		switch {
+		case strings.HasPrefix(line[i:], qrDarkForeground):
+			topDark = true
+			i += len(qrDarkForeground)
+		case strings.HasPrefix(line[i:], qrLightForeground):
+			topDark = false
+			i += len(qrLightForeground)
 		case strings.HasPrefix(line[i:], qrDarkBackground):
-			dark = true
+			bottomDark = true
 			i += len(qrDarkBackground)
 		case strings.HasPrefix(line[i:], qrLightBackground):
-			dark = false
+			bottomDark = false
 			i += len(qrLightBackground)
 		case strings.HasPrefix(line[i:], qrBackgroundReset):
-			dark = false
+			topDark = false
+			bottomDark = false
 			i += len(qrBackgroundReset)
-		case strings.HasPrefix(line[i:], "  "):
-			modules = append(modules, dark)
-			i += 2
+		case strings.HasPrefix(line[i:], "▀"):
+			top = append(top, topDark)
+			bottom = append(bottom, bottomDark)
+			i += len("▀")
 		default:
 			t.Fatalf("line %d has unexpected QR token at byte %d: %q", row, i, line[i:])
 		}
 	}
-	return modules
+	return top, bottom
 }
 
 func TestRunWithArgsPairJSONCommandPrintsErrorEnvelope(t *testing.T) {
