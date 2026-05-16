@@ -72,12 +72,7 @@ After install, Tunnel has three binary lifecycle paths:
 
 The startup prompt is only shown for interactive `tunnel run` sessions. Non-interactive usage stays silent and never blocks on update interaction.
 
-Tunnel and Relay are guaranteed compatible within the same compatibility line:
-
-- for `v1+`, the compatibility line is the major version
-- for pre-`v1`, the compatibility line is `0.minor`, so `v0.1.x` and `v0.2.x` are different lines
-
-The `Release` workflow enforces that a published `tunnel` version stays within the current repo relay compatibility line when `tunnel` is selected. It records source tag `tunnel-vX.Y.Z` but publishes the public Tunnel version as plain `vX.Y.Z`. It does not publish `relay` binaries.
+The `Release` workflow records source tag `tunnel-vX.Y.Z` but publishes the public Tunnel version as plain `vX.Y.Z`. It does not publish `relay` binaries.
 
 Verify the installed version with `tunnel --version`.
 For CLI usage, flags, and examples, run `tunnel --help`. Local command launch now lives under `tunnel run <command>`. `tunnel run` supports `-v` and `-l` as short forms for `--verbose` and `--label`. `--base-url` remains long-form only.

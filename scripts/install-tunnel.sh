@@ -26,21 +26,6 @@ release_asset_name() {
 	printf 'tunnel_%s_%s_%s.tar.gz\n' "$version" "$os" "$arch"
 }
 
-release_compatibility_line() {
-	version="${1#v}"
-	version="${version%%-*}"
-	major="${version%%.*}"
-	if [ "$major" = "0" ]; then
-		rest="${version#*.}"
-		minor="${rest%%.*}"
-		if [ -n "$minor" ]; then
-			printf '%s.%s\n' "$major" "$minor"
-			return 0
-		fi
-	fi
-	printf '%s\n' "$major"
-}
-
 release_hash_file() {
 	if command -v shasum >/dev/null 2>&1; then
 		shasum -a 256 "$1" | awk '{print $1}'
@@ -180,16 +165,6 @@ if [ -z "$version" ]; then
 	version=$(printf '%s' "$manifest_json" | read_manifest_field version)
 	if [ -z "$version" ]; then
 		printf 'error: latest.json did not contain a version\n' >&2
-		exit 1
-	fi
-
-	manifest_line=$(printf '%s' "$manifest_json" | read_manifest_field compatibility_line)
-	if [ -z "$manifest_line" ]; then
-		printf 'error: latest.json did not contain compatibility_line\n' >&2
-		exit 1
-	fi
-	if [ "$manifest_line" != "$(release_compatibility_line "$version")" ]; then
-		printf 'error: latest.json compatibility_line does not match version %s\n' "$version" >&2
 		exit 1
 	fi
 fi

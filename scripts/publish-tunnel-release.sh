@@ -161,17 +161,13 @@ GH_TOKEN="$token" gh release view "$version" --repo "$dist_repo" >/dev/null 2>&1
 }
 
 printf 'creating draft release %s in %s...\n' "$version" "$dist_repo"
-compatibility_line=$(release_compatibility_line "$version")
 GH_TOKEN="$token" gh release create "$version" \
 	"$artifact_dir/"tunnel_*.tar.gz \
 	"$artifact_dir/checksums.txt" \
 	--repo "$dist_repo" \
 	--target "$dist_branch" \
 	--title "tunnel $version" \
-	--notes "Public tunnel release $version.
-
-Compatibility line: $compatibility_line
-Tunnel and Relay are guaranteed compatible within the same compatibility line." \
+	--notes "Public tunnel release $version." \
 	--draft
 
 printf 'publishing release %s...\n' "$version"
