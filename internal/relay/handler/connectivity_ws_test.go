@@ -52,13 +52,7 @@ func TestConnectivityWebSocketsExposeTrustedDaemonSnapshot(t *testing.T) {
 	if err := appConn.WriteJSON(protocol.ConnectivityAppRegisterFrame()); err != nil {
 		t.Fatalf("app WriteJSON returned error: %v", err)
 	}
-	var snapshot protocol.ConnectivityFrame
-	if err := appConn.ReadJSON(&snapshot); err != nil {
-		t.Fatalf("app ReadJSON returned error: %v", err)
-	}
-	if snapshot.Type != "computer_snapshot" || len(snapshot.Daemons) != 1 || snapshot.Daemons[0].DeviceID != "dev-1" {
-		t.Fatalf("snapshot = %#v, want dev-1", snapshot)
-	}
+	readConnectivityVisibleDaemon(t, appConn, "dev-1")
 
 	if err := daemonConn.WriteJSON(protocol.ConnectivityFrame{
 		Type:               "client_revoked",
@@ -205,11 +199,7 @@ func TestConnectivityWebSocketsExchangeRendezvousHints(t *testing.T) {
 	if err := appConn.WriteJSON(protocol.ConnectivityAppRegisterFrame()); err != nil {
 		t.Fatalf("app register WriteJSON returned error: %v", err)
 	}
-	var snapshot protocol.ConnectivityFrame
-	readConnectivityFrame(t, appConn, &snapshot)
-	if snapshot.Type != "computer_snapshot" || len(snapshot.Daemons) != 1 {
-		t.Fatalf("snapshot = %#v, want one visible daemon", snapshot)
-	}
+	readConnectivityVisibleDaemon(t, appConn, "dev-1")
 
 	if err := appConn.WriteJSON(protocol.ConnectivityFrame{
 		Type:            "rendezvous_open",
@@ -536,11 +526,7 @@ func TestConnectivityRelayTunnelForwardsOpaqueBinaryPackets(t *testing.T) {
 	if err := appConn.WriteJSON(protocol.ConnectivityAppRegisterFrame()); err != nil {
 		t.Fatalf("app register WriteJSON returned error: %v", err)
 	}
-	var snapshot protocol.ConnectivityFrame
-	readConnectivityFrame(t, appConn, &snapshot)
-	if snapshot.Type != "computer_snapshot" || len(snapshot.Daemons) != 1 {
-		t.Fatalf("snapshot = %#v, want one visible daemon", snapshot)
-	}
+	readConnectivityVisibleDaemon(t, appConn, "dev-1")
 
 	if err := appConn.WriteJSON(protocol.ConnectivityFrame{
 		Type:      "relay_tunnel_request",
@@ -614,8 +600,7 @@ func TestConnectivityRelayTunnelRejectsReusedToken(t *testing.T) {
 	if err := appConn.WriteJSON(protocol.ConnectivityAppRegisterFrame()); err != nil {
 		t.Fatalf("app register WriteJSON returned error: %v", err)
 	}
-	var snapshot protocol.ConnectivityFrame
-	readConnectivityFrame(t, appConn, &snapshot)
+	readConnectivityVisibleDaemon(t, appConn, "dev-1")
 	if err := appConn.WriteJSON(protocol.ConnectivityFrame{Type: "relay_tunnel_request", RequestID: "request-1", AttemptID: "attempt-1", DaemonID: "dev-1"}); err != nil {
 		t.Fatalf("relay_tunnel_request WriteJSON returned error: %v", err)
 	}
@@ -902,6 +887,28 @@ func readConnectivityFrame(t *testing.T, conn *websocket.Conn, out *protocol.Con
 		t.Fatalf("ReadJSON returned error: %v", err)
 	}
 	_ = conn.SetReadDeadline(time.Time{})
+}
+
+func readConnectivityVisibleDaemon(t *testing.T, conn *websocket.Conn, deviceID string) protocol.ConnectivityFrame {
+	t.Helper()
+	for i := 0; i < 2; i++ {
+		var frame protocol.ConnectivityFrame
+		readConnectivityFrame(t, conn, &frame)
+		switch frame.Type {
+		case "computer_snapshot":
+			for _, daemon := range frame.Daemons {
+				if daemon.DeviceID == deviceID {
+					return frame
+				}
+			}
+		case "computer_visible":
+			if frame.Daemon != nil && frame.Daemon.DeviceID == deviceID {
+				return frame
+			}
+		}
+	}
+	t.Fatalf("did not receive visibility for %s", deviceID)
+	return protocol.ConnectivityFrame{}
 }
 
 func assertConnectivityClosed(t *testing.T, conn *websocket.Conn) {

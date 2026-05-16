@@ -53,7 +53,20 @@ func TestBrokerServerRegistersSessionAndCachesLatestPreview(t *testing.T) {
 		t.Fatalf("snapshot Encode returned error: %v", err)
 	}
 
-	snapshot := waitForBrokerSnapshot(t, broker, 1)
+	snapshot := waitForBrokerSnapshotMatching(t, broker, 1, func(snapshot []BrokerSessionSnapshot) bool {
+		got := snapshot[0]
+		return got.SessionID == "sess-1" &&
+			got.Label == "api-fix" &&
+			got.CommandPreview == "codex --profile prod" &&
+			got.CWD == "/repo" &&
+			got.GitBranch == "main" &&
+			got.StartedAt == 1_700_000_000 &&
+			got.UpdatedAt == 1_700_000_002 &&
+			got.Online &&
+			got.LatestPreview == "latest output" &&
+			got.SnapshotCols == 80 &&
+			got.SnapshotRows == 24
+	}, "registered session metadata and cached terminal state")
 	got := snapshot[0]
 	if got.SessionID != "sess-1" || got.Label != "api-fix" || got.CommandPreview != "codex --profile prod" || got.CWD != "/repo" || got.GitBranch != "main" || got.StartedAt != 1_700_000_000 || got.UpdatedAt != 1_700_000_002 || !got.Online {
 		t.Fatalf("snapshot = %#v, want registered session metadata", got)
@@ -632,16 +645,21 @@ func dialBrokerForTest(t *testing.T, socketPath string) net.Conn {
 
 func waitForBrokerSnapshot(t *testing.T, broker *Broker, want int) []BrokerSessionSnapshot {
 	t.Helper()
+	return waitForBrokerSnapshotMatching(t, broker, want, nil, "entry count")
+}
+
+func waitForBrokerSnapshotMatching(t *testing.T, broker *Broker, want int, matches func([]BrokerSessionSnapshot) bool, description string) []BrokerSessionSnapshot {
+	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	var snapshot []BrokerSessionSnapshot
 	for time.Now().Before(deadline) {
 		snapshot = broker.Snapshot()
-		if len(snapshot) == want {
+		if len(snapshot) == want && (matches == nil || matches(snapshot)) {
 			return snapshot
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("snapshot = %#v, want %d entries", snapshot, want)
+	t.Fatalf("snapshot = %#v, want %d entries matching %s", snapshot, want, description)
 	return nil
 }
 

@@ -48,7 +48,9 @@ type StartResult struct {
 
 type runtimeState struct {
 	mu                  sync.RWMutex
+	persistMu           sync.Mutex
 	status              StatusInfo
+	stopped             bool
 	stopCh              chan struct{}
 	stopOnce            sync.Once
 	paths               Paths
@@ -214,6 +216,9 @@ func Run(ctx context.Context, options RuntimeOptions, readyWriter io.Writer) err
 		launchHealth = LaunchHealthDegraded
 		lastFailure = "tmux_not_found"
 	}
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+
 	state := &runtimeState{
 		status: StatusInfo{
 			Running:                true,
@@ -237,7 +242,7 @@ func Run(ctx context.Context, options RuntimeOptions, readyWriter io.Writer) err
 		broker:              NewBroker(),
 		connectivityEvents:  make(chan protocol.ConnectivityFrame, 16),
 		connectivityReplies: make(map[string]chan protocol.ConnectivityFrame),
-		rootCtx:             ctx,
+		rootCtx:             runCtx,
 	}
 	if err := state.persist(); err != nil {
 		return err
@@ -337,14 +342,14 @@ func Run(ctx context.Context, options RuntimeOptions, readyWriter io.Writer) err
 
 	serverErrCh := make(chan error, 1)
 	go func() {
-		serverErrCh <- server.Serve(ctx)
+		serverErrCh <- server.Serve(runCtx)
 	}()
 	brokerErrCh := make(chan error, 1)
 	go func() {
-		brokerErrCh <- brokerServer.Serve(ctx)
+		brokerErrCh <- brokerServer.Serve(runCtx)
 	}()
-	go newDeviceConnector(options.BaseURL, options.AuthToken, state).Run(ctx, newLaunchHandler(options.BaseURL, options.AuthToken, options.Paths, state))
-	go newConnectivityConnector(options.BaseURL, options.AuthToken, options.Paths, state).Run(ctx)
+	go newDeviceConnector(options.BaseURL, options.AuthToken, state).Run(runCtx, newLaunchHandler(options.BaseURL, options.AuthToken, options.Paths, state))
+	go newConnectivityConnector(options.BaseURL, options.AuthToken, options.Paths, state).Run(runCtx)
 
 	if readyWriter != nil {
 		if _, err := io.WriteString(readyWriter, "ready\n"); err != nil {
@@ -357,12 +362,16 @@ func Run(ctx context.Context, options RuntimeOptions, readyWriter io.Writer) err
 
 	select {
 	case <-ctx.Done():
+		cancelRun()
 		return nil
 	case <-state.stopCh:
+		cancelRun()
 		return nil
 	case err := <-serverErrCh:
+		cancelRun()
 		return err
 	case err := <-brokerErrCh:
+		cancelRun()
 		return err
 	}
 }
@@ -453,11 +462,15 @@ func (s *runtimeState) markStopped() {
 	s.mu.Lock()
 	s.status.Running = false
 	s.status.RelayConnected = false
+	s.stopped = true
 	s.mu.Unlock()
 	_ = s.persist()
 }
 
 func (s *runtimeState) persist() error {
+	s.persistMu.Lock()
+	defer s.persistMu.Unlock()
+
 	s.mu.RLock()
 	status := s.status
 	s.mu.RUnlock()
@@ -466,6 +479,10 @@ func (s *runtimeState) persist() error {
 
 func (s *runtimeState) setRelayConnected(connected bool) {
 	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return
+	}
 	s.status.RelayConnected = connected
 	s.mu.Unlock()
 	_ = s.persist()
@@ -473,6 +490,10 @@ func (s *runtimeState) setRelayConnected(connected bool) {
 
 func (s *runtimeState) setLastFailure(reason string, degrade bool) {
 	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return
+	}
 	s.status.LastFailure = reason
 	if degrade {
 		s.status.LaunchHealth = LaunchHealthDegraded
@@ -483,6 +504,10 @@ func (s *runtimeState) setLastFailure(reason string, degrade bool) {
 
 func (s *runtimeState) clearLastFailure() {
 	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return
+	}
 	s.status.LastFailure = ""
 	s.status.LaunchHealth = LaunchHealthHealthy
 	s.mu.Unlock()
@@ -491,6 +516,10 @@ func (s *runtimeState) clearLastFailure() {
 
 func (s *runtimeState) setConnectivityPath(pathKind, failure string) {
 	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return
+	}
 	s.status.LastConnectivityPath = strings.TrimSpace(pathKind)
 	s.status.LastConnectivityFailure = strings.TrimSpace(failure)
 	s.mu.Unlock()
