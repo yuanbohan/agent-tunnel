@@ -196,6 +196,7 @@ flowchart TB
 - **Remove tmux as a first-phase dependency:** The new lifecycle target is daemon-and-worker-alive attach/reconnect, not tmux-level recovery after daemon restart.
 - **Local attach is part of v1 scope:** Returning from phone to computer is essential to the SSH-like flow, so `tunnel session attach <id>` is required for local mobile-created background Sessions.
 - **Local attach and stop do not require relay:** A user sitting at the computer should be able to recover and clean up local background Sessions even when relay connectivity is unavailable.
+- **Mobile stop targets tunnel daemon:** Paired mobile clients stop Sessions on the computer by reaching **tunnel daemon** (prefer **direct** transport). If traffic goes through **relay**, relay **forwards** the stop to that daemon rather than exposing restored account-wide session list/stop APIs.
 - **Creation is serialized, runtime is parallel:** One in-flight create per computer reduces startup races, while multiple live background Sessions preserves terminal-like usage.
 - **Titles are user-submitted task hints:** The recent command title improves scanning without pretending to be a process monitor.
 
@@ -203,41 +204,17 @@ flowchart TB
 
 ## GitHub Tracking
 
-Umbrella issue: [#129 Session/Terminal unification umbrella](https://github.com/yuanbohan/agent-tunnel/issues/129)
+Umbrella issue: [#147 Session/Terminal unification umbrella (2026)](https://github.com/yuanbohan/agent-tunnel/issues/147)
 
-The work is split into staged GitHub milestones so the old tmux-backed remote-launch path can remain available until the headless-worker path, local attach, and mobile cutover are proven.
+The 2026 replan uses **seven feature-focused milestones** (one primary issue each). A separate observability milestone was deferred. Issues **#106–#129** and milestones **#1–#8** were closed as superseded.
 
-- [Milestone 1: M0 Baseline & Safety Net](https://github.com/yuanbohan/agent-tunnel/milestone/1)
-  - [#106 Characterize existing run, tmux launch, broker, and stop behavior](https://github.com/yuanbohan/agent-tunnel/issues/106)
-  - [#107 Add lifecycle observability for launch, registration, timeout, and exit](https://github.com/yuanbohan/agent-tunnel/issues/107)
-- [Milestone 2: M1 Session Metadata & Display](https://github.com/yuanbohan/agent-tunnel/milestone/2)
-  - [#108 Add Session metadata for foreground command vs background shell Sessions](https://github.com/yuanbohan/agent-tunnel/issues/108)
-  - [#109 Surface Terminal N and recent-command title fields in session discovery](https://github.com/yuanbohan/agent-tunnel/issues/109)
-  - [#110 Update protocol and API docs for unified Session metadata](https://github.com/yuanbohan/agent-tunnel/issues/110)
-- [Milestone 3: M2 Headless Session Worker](https://github.com/yuanbohan/agent-tunnel/milestone/3)
-  - [#111 Add internal headless tunnel run mode without local terminal binding](https://github.com/yuanbohan/agent-tunnel/issues/111)
-  - [#112 Preserve relay and daemon broker registration for headless workers](https://github.com/yuanbohan/agent-tunnel/issues/112)
-  - [#113 Verify shell exit and worker failure isolation](https://github.com/yuanbohan/agent-tunnel/issues/113)
-- [Milestone 4: M3 Daemon Background Launch](https://github.com/yuanbohan/agent-tunnel/milestone/4)
-  - [#114 Add daemon New Session launch path without tmux](https://github.com/yuanbohan/agent-tunnel/issues/114)
-  - [#115 Implement shell selection, home cwd, and daemon environment inheritance](https://github.com/yuanbohan/agent-tunnel/issues/115)
-  - [#116 Enforce launch in-flight, timeout, live-session cap, and cleanup](https://github.com/yuanbohan/agent-tunnel/issues/116)
-- [Milestone 5: M4 Local Attach & Stop](https://github.com/yuanbohan/agent-tunnel/milestone/5)
-  - [#117 Add relay-independent local discovery for attachable background Sessions](https://github.com/yuanbohan/agent-tunnel/issues/117)
-  - [#118 Implement tunnel session attach via local daemon socket](https://github.com/yuanbohan/agent-tunnel/issues/118)
-  - [#119 Implement local stop for background Sessions without relay](https://github.com/yuanbohan/agent-tunnel/issues/119)
-- [Milestone 6: M5 Shared PTY & Titles](https://github.com/yuanbohan/agent-tunnel/milestone/6)
-  - [#120 Implement last-active attach resize ownership](https://github.com/yuanbohan/agent-tunnel/issues/120)
-  - [#121 Record recent non-empty submitted command titles from attach input](https://github.com/yuanbohan/agent-tunnel/issues/121)
-  - [#122 Cover multi-client shared input and detach behavior](https://github.com/yuanbohan/agent-tunnel/issues/122)
-- [Milestone 7: M6 Mobile New Session Cutover](https://github.com/yuanbohan/agent-tunnel/milestone/7)
-  - [#123 Route mobile New Session to background shell launch](https://github.com/yuanbohan/agent-tunnel/issues/123)
-  - [#124 Auto-attach after session_ready and surface creation failures](https://github.com/yuanbohan/agent-tunnel/issues/124)
-  - [#125 Retire the primary mobile cwd/label/command creation form](https://github.com/yuanbohan/agent-tunnel/issues/125)
-- [Milestone 8: M7 Docs & Tmux Model Cleanup](https://github.com/yuanbohan/agent-tunnel/milestone/8)
-  - [#126 Align README, daemon, protocol, architecture, API, AGENTS, and CLAUDE docs](https://github.com/yuanbohan/agent-tunnel/issues/126)
-  - [#127 Demote tmux workspace guidance to optional or legacy enhancement](https://github.com/yuanbohan/agent-tunnel/issues/127)
-  - [#128 Define final end-to-end verification for mobile-to-local handoff](https://github.com/yuanbohan/agent-tunnel/issues/128)
+- [Milestone 9: Session model & local list](https://github.com/yuanbohan/agent-tunnel/milestone/9) — [#140 Session metadata, full local list, and local attach eligibility](https://github.com/yuanbohan/agent-tunnel/issues/140)
+- [Milestone 10: Headless session worker](https://github.com/yuanbohan/agent-tunnel/milestone/10) — [#141 Headless tunnel run worker](https://github.com/yuanbohan/agent-tunnel/issues/141)
+- [Milestone 11: Daemon background launch](https://github.com/yuanbohan/agent-tunnel/milestone/11) — [#142 Daemon background shell sessions without tmux](https://github.com/yuanbohan/agent-tunnel/issues/142)
+- [Milestone 12: Local attach & stop](https://github.com/yuanbohan/agent-tunnel/milestone/12) — [#143 Local attach, local stop, mobile stop (direct + relay forward)](https://github.com/yuanbohan/agent-tunnel/issues/143)
+- [Milestone 13: Shared PTY & titles](https://github.com/yuanbohan/agent-tunnel/milestone/13) — [#144 Shared PTY, resize ownership, and session titles](https://github.com/yuanbohan/agent-tunnel/issues/144)
+- [Milestone 14: Mobile New Session cutover](https://github.com/yuanbohan/agent-tunnel/milestone/14) — [#145 Mobile New Session product cutover](https://github.com/yuanbohan/agent-tunnel/issues/145)
+- [Milestone 15: Docs & tmux positioning](https://github.com/yuanbohan/agent-tunnel/milestone/15) — [#146 Documentation and tmux model cleanup](https://github.com/yuanbohan/agent-tunnel/issues/146)
 
 ---
 
@@ -266,6 +243,6 @@ The work is split into staged GitHub milestones so the old tmux-backed remote-la
 - [Affects R16, R18][Technical] Which input boundary should record the submitted command for title updates so mobile and local attach behave identically?
 - [Affects R22][Product/Technical] What default live background Session limit should ship first, and should it be configurable in this phase?
 - [Affects R23, R24, R25][Technical] What worker cleanup guarantee is realistic after a registration timeout?
-- [Affects R27][Product/Technical] Should relay-independent local discovery extend `tunnel session list`, add a local-only option, or use a separate narrow command?
+- ~~[Affects R27][Product/Technical] Should relay-independent local discovery extend `tunnel session list`, add a local-only option, or use a separate narrow command?~~ **Resolved:** `tunnel session list` is the single local-computer roster (all live broker sessions). Local `attach` is allowed only for eligible mobile-created background shells; ineligible rows remain visible with clear errors. Mobile **stop** targets **tunnel daemon** (direct preferred); **relay forwards** stop to the daemon when the path is not direct. Tracking: [#140](https://github.com/yuanbohan/agent-tunnel/issues/140), [#143](https://github.com/yuanbohan/agent-tunnel/issues/143).
 - [Affects R28-R35][Technical] What local daemon attach protocol provides terminal bytes, input, resize, and detach semantics without depending on relay?
 - [Affects R33][Technical] How should "last active attach" be ordered when attach, input, and resize events arrive close together from different clients?
