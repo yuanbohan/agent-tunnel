@@ -995,13 +995,12 @@ func runPair(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, jso
 		_, _ = io.WriteString(stdout, "\n")
 	}
 	_, _ = io.WriteString(stdout, qr.Output)
-	secondsRemaining := invitation.ExpiresAt - pairNow().Unix()
-	if secondsRemaining < 0 {
-		secondsRemaining = 0
-	}
-	_, _ = fmt.Fprintf(stdout, "\nWaiting for a client response. This invitation expires in %d seconds.\n", secondsRemaining)
-	response, err := waitForPairingResponse(ctx, paths, invitation)
+	_, _ = io.WriteString(stdout, "\n")
+	response, err := waitForPairingResponse(ctx, paths, invitation, func(secondsRemaining int64) {
+		writePairCountdown(stdout, secondsRemaining)
+	})
 	if err != nil {
+		_, _ = io.WriteString(stdout, "\n")
 		if errors.Is(err, daemon.ErrPairingInvitationExpired) {
 			_, _ = io.WriteString(stdout, "Pairing invitation expired. Run `tunnel pair` again to create a new QR code.\n")
 			return nil
@@ -1061,9 +1060,27 @@ func pairingWarningText(warning string) string {
 	return terminalDisplayValue(warning, "pairing completed with a warning")
 }
 
-func waitForPairingResponse(ctx context.Context, paths daemon.Paths, invitation daemon.PairInvitation) (daemon.PendingPairingResponse, error) {
+func writePairCountdown(stdout io.Writer, secondsRemaining int64) {
+	_, _ = fmt.Fprintf(stdout, "\r\x1b[2KWaiting for a client response. This invitation expires in %d seconds.", secondsRemaining)
+}
+
+func pairSecondsRemaining(expiresAt int64) int64 {
+	secondsRemaining := expiresAt - pairNow().Unix()
+	if secondsRemaining < 0 {
+		return 0
+	}
+	return secondsRemaining
+}
+
+func waitForPairingResponse(ctx context.Context, paths daemon.Paths, invitation daemon.PairInvitation, onCountdown func(int64)) (daemon.PendingPairingResponse, error) {
 	invitationID := strings.TrimSpace(invitation.InvitationID)
+	lastCountdown := int64(-1)
 	for {
+		secondsRemaining := pairSecondsRemaining(invitation.ExpiresAt)
+		if onCountdown != nil && secondsRemaining != lastCountdown {
+			onCountdown(secondsRemaining)
+			lastCountdown = secondsRemaining
+		}
 		pending, err := daemonPendingPairing(ctx, paths)
 		if err != nil {
 			return daemon.PendingPairingResponse{}, err

@@ -2012,6 +2012,67 @@ func TestRunPairPrintsQRCodeAndCompletesInteractiveFlow(t *testing.T) {
 	}
 }
 
+func TestRunPairRefreshesCountdownWhileWaitingForResponse(t *testing.T) {
+	setTestEnv(t)
+
+	oldResolvePaths := resolveDaemonPaths
+	oldPair := daemonPair
+	oldPending := daemonPendingPairing
+	oldConfirm := daemonConfirmPairing
+	oldPairNow := pairNow
+	oldPairSleep := pairSleep
+	t.Cleanup(func() {
+		resolveDaemonPaths = oldResolvePaths
+		daemonPair = oldPair
+		daemonPendingPairing = oldPending
+		daemonConfirmPairing = oldConfirm
+		pairNow = oldPairNow
+		pairSleep = oldPairSleep
+	})
+	fingerprint := strings.Repeat("b", 64)
+	now := time.Unix(1_765_376_720, 0).UTC()
+	pendingCalls := 0
+	resolveDaemonPaths = func() (daemon.Paths, error) { return daemon.Paths{}, nil }
+	daemonPair = func(context.Context, daemon.Paths) (daemon.PairInvitation, error) {
+		return testPairInvitation(now.Add(5 * time.Minute).Unix()), nil
+	}
+	daemonPendingPairing = func(context.Context, daemon.Paths) ([]daemon.PendingPairingResponse, error) {
+		pendingCalls++
+		if pendingCalls < 3 {
+			return nil, nil
+		}
+		return []daemon.PendingPairingResponse{{
+			InvitationID:       testPairInvitationID,
+			AndroidFingerprint: fingerprint,
+			AndroidDisplayName: "Pixel",
+			SAS:                "123456",
+		}}, nil
+	}
+	daemonConfirmPairing = func(context.Context, daemon.Paths, string, string) (daemon.PairingCompletion, error) {
+		return daemon.PairingCompletion{Device: daemon.TrustedAndroidDevice{Fingerprint: fingerprint, DisplayName: "Pixel"}}, nil
+	}
+	pairNow = func() time.Time { return now }
+	pairSleep = func(context.Context, time.Duration) bool {
+		now = now.Add(time.Second)
+		return true
+	}
+
+	var stdout bytes.Buffer
+	if err := runPair(context.Background(), strings.NewReader("123456\n"), &stdout, io.Discard, false); err != nil {
+		t.Fatalf("runPair returned error: %v", err)
+	}
+	got := stdout.String()
+	for _, want := range []string{
+		"\r\x1b[2KWaiting for a client response. This invitation expires in 300 seconds.",
+		"\r\x1b[2KWaiting for a client response. This invitation expires in 299 seconds.",
+		"\r\x1b[2KWaiting for a client response. This invitation expires in 298 seconds.",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("stdout = %q, want countdown refresh %q", got, want)
+		}
+	}
+}
+
 func TestRunPairSanitizesDisplayNamesAndPrintsCompletionWarning(t *testing.T) {
 	setTestEnv(t)
 
