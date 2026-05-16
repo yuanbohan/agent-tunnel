@@ -355,6 +355,46 @@ func TestSessionRegistrationClientDoesNotAttachSnapshotToEachOutputEvent(t *test
 	}
 }
 
+func TestSessionRegistrationClientPublishesSnapshotAfterThrottle(t *testing.T) {
+	paths := testPaths(t)
+	broker, server, cancel := startBrokerForTest(t, paths)
+	defer cancel()
+	defer server.Close()
+
+	client := NewSessionRegistrationClient(paths, protocol.SessionInfo{
+		SessionID:      "sess-1",
+		CWD:            "/repo",
+		CommandPreview: "codex",
+		StartedAt:      1,
+	})
+	client.throttle = 30 * time.Millisecond
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	go client.Run(ctx)
+	defer client.Close()
+	waitForBrokerSnapshot(t, broker, 1)
+
+	if err := client.WriteOutput([]byte("fresh output")); err != nil {
+		t.Fatalf("WriteOutput returned error: %v", err)
+	}
+
+	deadline := time.After(2 * time.Second)
+	tick := time.NewTicker(5 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case <-tick.C:
+			snapshot, ok := broker.SnapshotBySession("sess-1")
+			if ok && strings.Contains(string(snapshot.LatestSnapshot), "fresh output") {
+				return
+			}
+		case <-deadline:
+			snapshot, _ := broker.SnapshotBySession("sess-1")
+			t.Fatalf("snapshot = %q, want throttled snapshot containing fresh output", string(snapshot.LatestSnapshot))
+		}
+	}
+}
+
 func TestSessionRegistrationClientResizeUpdatesBrokerSnapshotDimensions(t *testing.T) {
 	paths := testPaths(t)
 	broker, server, cancel := startBrokerForTest(t, paths)
