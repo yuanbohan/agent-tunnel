@@ -95,6 +95,42 @@ func TestRunWritesStatusAndAnswersControlRequests(t *testing.T) {
 	}
 }
 
+func TestRuntimeStateIgnoresStatusMutationsAfterStop(t *testing.T) {
+	paths := testPaths(t)
+	if err := EnsureRuntimeDirs(paths); err != nil {
+		t.Fatalf("EnsureRuntimeDirs returned error: %v", err)
+	}
+	state := &runtimeState{
+		status: StatusInfo{
+			Running:                 true,
+			RelayConnected:          true,
+			LaunchHealth:            LaunchHealthHealthy,
+			LastFailure:             "before_stop",
+			LastConnectivityPath:    "relay",
+			LastConnectivityFailure: "before_stop",
+		},
+		paths:  paths,
+		stopCh: make(chan struct{}),
+	}
+
+	state.markStopped()
+	state.setRelayConnected(true)
+	state.setLastFailure("after_stop", true)
+	state.clearLastFailure()
+	state.setConnectivityPath("direct", "after_stop")
+
+	persisted, err := LoadStatus(paths)
+	if err != nil {
+		t.Fatalf("LoadStatus returned error: %v", err)
+	}
+	if persisted.Running || persisted.RelayConnected {
+		t.Fatalf("persisted status = %#v, want stopped status after late mutations", persisted)
+	}
+	if persisted.LastFailure != "before_stop" || persisted.LastConnectivityPath != "relay" || persisted.LastConnectivityFailure != "before_stop" {
+		t.Fatalf("persisted status = %#v, want late mutations ignored after stop", persisted)
+	}
+}
+
 func TestRunStartsWithoutTmuxAndReportsDegradedLaunchHealth(t *testing.T) {
 	paths := testPaths(t)
 	oldTmuxLookPath := tmuxLookPathFn
