@@ -318,6 +318,18 @@ func (c *SessionRegistrationClient) runOnce(ctx context.Context) error {
 	var pending string
 	var pendingSnapshot bool
 	var lastSentAt time.Time
+	flushBrokerWrites := func() error {
+		for {
+			select {
+			case frame := <-brokerWrites:
+				if err := c.writeFrame(frame); err != nil {
+					return err
+				}
+			default:
+				return nil
+			}
+		}
+	}
 	sendNow := func(preview string, snapshot bool) (bool, error) {
 		changed := false
 		c.mu.Lock()
@@ -413,6 +425,11 @@ func (c *SessionRegistrationClient) runOnce(ctx context.Context) error {
 			}
 			c.mu.Unlock()
 			if c.throttle <= 0 {
+				if snapshot {
+					if err := flushBrokerWrites(); err != nil {
+						return err
+					}
+				}
 				if _, err := sendNow(preview, snapshot); err != nil {
 					return err
 				}
@@ -423,8 +440,13 @@ func (c *SessionRegistrationClient) runOnce(ctx context.Context) error {
 				stopTimer()
 				pending = ""
 				pendingSnapshot = false
-				if _, err := sendNow(preview, snapshot); err != nil {
+				if _, err := sendNow(preview, false); err != nil {
 					return err
+				}
+				if snapshot {
+					pending = preview
+					pendingSnapshot = true
+					schedulePending(now)
 				}
 				continue
 			}
@@ -433,6 +455,11 @@ func (c *SessionRegistrationClient) runOnce(ctx context.Context) error {
 			schedulePending(now)
 		case <-timerC:
 			timerC = nil
+			if pendingSnapshot {
+				if err := flushBrokerWrites(); err != nil {
+					return err
+				}
+			}
 			if _, err := sendNow(pending, pendingSnapshot); err != nil {
 				return err
 			}
