@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"runtime"
 	"strings"
-
-	"yuanbohan/tunnel/internal/buildinfo"
 )
 
 const (
@@ -15,8 +13,7 @@ const (
 )
 
 type LatestManifest struct {
-	Version           string `json:"version"`
-	CompatibilityLine string `json:"compatibility_line"`
+	Version string `json:"version"`
 }
 
 type semver struct {
@@ -34,19 +31,6 @@ func parseLatestManifest(payload []byte) (LatestManifest, error) {
 	manifest.Version = strings.TrimSpace(manifest.Version)
 	if manifest.Version == "" {
 		return LatestManifest{}, fmt.Errorf("latest manifest did not contain version")
-	}
-	manifest.CompatibilityLine = strings.TrimSpace(manifest.CompatibilityLine)
-	if manifest.CompatibilityLine == "" {
-		return LatestManifest{}, fmt.Errorf("latest manifest did not contain compatibility_line")
-	}
-
-	expectedLine := buildinfo.CompatibilityLineOf(manifest.Version)
-	if manifest.CompatibilityLine != expectedLine {
-		return LatestManifest{}, fmt.Errorf(
-			"latest manifest compatibility_line %q does not match version %s",
-			manifest.CompatibilityLine,
-			manifest.Version,
-		)
 	}
 
 	return manifest, nil

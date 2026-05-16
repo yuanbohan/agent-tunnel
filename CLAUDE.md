@@ -27,7 +27,7 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 - `internal/migration/` owns the relay schema migration runner and migration tracking logic for legacy/local workflows.
 - `internal/relay/store/postgres/` owns PostgreSQL persistence for relay auth and operator state.
 - `internal/tunnel/launcher/` is the thin PATH resolution layer for the user-provided launcher command.
-- `internal/buildinfo/` owns shared tunnel/relay version metadata and compatibility-line helpers used by release builds, public manifests, and version reporting.
+- `internal/buildinfo/` owns shared tunnel/relay version metadata used by release builds and version reporting.
 - `docs/api.md` is this repository's current public app-facing relay API implementation reference, including auth, request and response shapes, and error contracts.
 - `docs/daemon.md` is the daemon-specific implementation contract for lifecycle, tmux workspace ownership, workspace close behavior, launch validation, launch health, and failure reasons.
 - `docs/architecture.md` describes how all Go packages and relay-facing protocols interact.
@@ -73,7 +73,6 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 - Production Relay operations are Docker Compose only. Runtime Relay/PostgreSQL secrets live in remote `/opt/agentunnel/compose/.env`; local Ansible secret files are for deploy-only secrets such as GHCR login and certbot email, not duplicate runtime env values.
 - `deploy/postgres/latest.sql` is the complete current PostgreSQL schema snapshot. Every PostgreSQL schema change must update this file so a fresh database can be fully recreated from it.
 - Existing deployed PostgreSQL databases are changed manually by an operator running the required SQL on the server. Do not document or implement automatic production schema migration in the Docker Compose deployment path unless the product boundary changes explicitly.
-- Tunnel and relay compatibility is guaranteed only within the same compatibility line. For `v1+`, that line is the semver major version. For pre-`v1`, that line is `0.minor`, so `v0.1.x` and `v0.2.x` are different compatibility lines.
 - Stronger delivery guarantees may be explored later, but do not document or imply them before they exist in code and protocol.
 
 ## Docs Expectations
@@ -86,7 +85,7 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 - If you change session-state semantics, daemon transport session messages, `/agent/ws` registration/readiness, or local daemon session management, update `README.md`, `docs/protocol.md`, `docs/architecture.md`, `docs/daemon.md`, `CLAUDE.md`, and `AGENTS.md`.
 - If you change daemon snapshot generation, live-byte delivery, resize ownership, or structured input semantics, update `README.md`, `docs/protocol.md`, `docs/architecture.md`, `docs/daemon.md`, `CLAUDE.md`, and `AGENTS.md`.
 - If you change operator-facing startup flow or environment variables, update `README.md`.
-- If you change the public `tunnel` release flow, installer contract, compatibility-line contract, or distribution repo surface, update `README.md`, `docs/release-distribution.md`, `docs/public-distribution-readme.md`, `CLAUDE.md`, and `AGENTS.md`.
+- If you change the public `tunnel` release flow, installer contract, or distribution repo surface, update `README.md`, `docs/release-distribution.md`, `docs/public-distribution-readme.md`, `CLAUDE.md`, and `AGENTS.md`.
 
 ## Verification
 

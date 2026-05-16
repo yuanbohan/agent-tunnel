@@ -12,27 +12,9 @@ Recommended setup:
 - Do not add outside collaborators unless you want them to push.
 - If you enable branch protection on `main`, make sure the release workflow still has a path to update `install.sh` and `latest.json`. A strict "pull requests only" rule on `main` will block this publish flow.
 
-## Compatibility Contract
-
-Tunnel and Relay share one compatibility contract:
-
-- Same compatibility line means guaranteed compatibility.
-- A compatibility-line change means compatibility is no longer guaranteed.
-- For `v1+`, the compatibility line is the semver major version.
-- For pre-`v1`, the compatibility line is `0.minor`, so `v0.1.x` and `v0.2.x` are different lines.
-
-Examples:
-
-- `tunnel v0.1.7` is compatible with `relay v0.1.3`
-- `tunnel v1.2.0` is compatible with `relay v1.9.4`
-- `tunnel v0.2.0` is not promised compatible with `relay v0.1.9`
-- `tunnel v2.0.0` is not promised compatible with `relay v1.8.0`
-
-The public `latest.json` manifest publishes this contract as `compatibility_line`.
-
 Published `tunnel` binaries also embed their own release identity. Official release packaging sets both the requested version and an internal `official-release` distribution marker. Native self-update uses that embedded marker to decide whether the current binary is on the official release channel. Rollback target metadata is still stored locally in `~/.tunnel/updater.json`.
 
-The private-repo `Release` workflow is manually dispatched and requires the maintainer to choose the product being released. For Tunnel, it enforces that the requested `tunnel` release version stays within the current repo relay compatibility line. It does not publish a `relay` binary; it prevents a `tunnel` release from crossing into a new line until the repo's shared build metadata is updated first.
+The private-repo `Release` workflow is manually dispatched and requires the maintainer to choose the product being released. For Tunnel, it packages the explicitly requested plain version and publishes that version in `latest.json`. It does not publish a `relay` binary.
 
 Relay is distributed separately as Docker images through GitHub Container Registry. The same `Release` workflow builds `cmd/relay` once when the maintainer selects Relay, then publishes that build artifact as both `ghcr.io/yuanbohan/agent-tunnel-relay:<version>` and `ghcr.io/yuanbohan/agent-tunnel-stun:<version>`.
 

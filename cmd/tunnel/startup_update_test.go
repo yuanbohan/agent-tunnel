@@ -117,7 +117,7 @@ func TestMaybeHandleStartupUpdateSkipsWhenDisabledViaSettings(t *testing.T) {
 func TestMaybeHandleStartupUpdateRecordsCheckAndSkipsWhenNoUpdateAvailable(t *testing.T) {
 	withTempHome(t)
 	engine := &fakeStartupUpdater{
-		manifest:  tunnelupdate.LatestManifest{Version: "v0.1.9", CompatibilityLine: "0.1"},
+		manifest:  tunnelupdate.LatestManifest{Version: "v0.1.9"},
 		available: false,
 	}
 
@@ -160,7 +160,7 @@ func TestMaybeHandleStartupUpdateRecordsCheckAndSkipsWhenNoUpdateAvailable(t *te
 func TestMaybeHandleStartupUpdateSkipChoiceContinues(t *testing.T) {
 	withTempHome(t)
 	engine := &fakeStartupUpdater{
-		manifest:  tunnelupdate.LatestManifest{Version: "v0.1.9", CompatibilityLine: "0.1"},
+		manifest:  tunnelupdate.LatestManifest{Version: "v0.1.9"},
 		available: true,
 	}
 
@@ -203,7 +203,7 @@ func TestMaybeHandleStartupUpdateSkipChoiceContinues(t *testing.T) {
 func TestMaybeHandleStartupUpdateInstallFailureContinuesCurrentRun(t *testing.T) {
 	withTempHome(t)
 	engine := &fakeStartupUpdater{
-		manifest:      tunnelupdate.LatestManifest{Version: "v0.1.9", CompatibilityLine: "0.1"},
+		manifest:      tunnelupdate.LatestManifest{Version: "v0.1.9"},
 		available:     true,
 		installErr:    errors.New("network exploded"),
 		installResult: tunnelupdate.InstallResult{InstalledVersion: "v0.1.9"},
@@ -241,7 +241,7 @@ func TestMaybeHandleStartupUpdateInstallFailureContinuesCurrentRun(t *testing.T)
 func TestMaybeHandleStartupUpdateReexecFailureReturnsRecoveryError(t *testing.T) {
 	withTempHome(t)
 	engine := &fakeStartupUpdater{
-		manifest:  tunnelupdate.LatestManifest{Version: "v0.1.9", CompatibilityLine: "0.1"},
+		manifest:  tunnelupdate.LatestManifest{Version: "v0.1.9"},
 		available: true,
 		installResult: tunnelupdate.InstallResult{
 			Updated:           true,
@@ -363,7 +363,7 @@ func TestMaybeHandleStartupUpdateWarnsAndContinuesWithBrokenSettings(t *testing.
 		t.Fatalf("WriteFile returned error: %v", err)
 	}
 	engine := &fakeStartupUpdater{
-		manifest:  tunnelupdate.LatestManifest{Version: "v0.1.9", CompatibilityLine: "0.1"},
+		manifest:  tunnelupdate.LatestManifest{Version: "v0.1.9"},
 		available: false,
 	}
 
@@ -403,7 +403,7 @@ func TestMaybeHandleStartupUpdateRecoversBrokenUpdaterStateDuringInstall(t *test
 		t.Fatalf("WriteFile returned error: %v", err)
 	}
 	engine := &fakeStartupUpdater{
-		manifest:  tunnelupdate.LatestManifest{Version: "v0.1.9", CompatibilityLine: "0.1"},
+		manifest:  tunnelupdate.LatestManifest{Version: "v0.1.9"},
 		available: true,
 		installResult: tunnelupdate.InstallResult{
 			Updated:           true,
