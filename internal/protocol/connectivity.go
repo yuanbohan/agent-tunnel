@@ -29,12 +29,6 @@ type ConnectivityFrame struct {
 	PairingResponse      *ConnectivityPairingResponse `json:"pairing_response,omitempty"`
 }
 
-// Deprecated aliases retained for protocol compatibility.
-type ConnectivityComputerInfo = ConnectivityDaemonInfo
-type ConnectivityClientInfo = ConnectivityTrustedAndroid
-type ConnectivityTrustedClient = ConnectivityTrustedAndroid
-type ConnectivityPairingSubmission = ConnectivityPairingResponse
-
 func ConnectivityRendezvousHintFrame(requestID, attemptID, actor, daemonID, androidFingerprint, publicUDPAddr string, privateUDPAddrs []string, expiresAt int64) ConnectivityFrame {
 	return ConnectivityFrame{
 		Type:               "rendezvous_hint",
@@ -83,21 +77,11 @@ func (f ConnectivityFrame) MarshalJSON() ([]byte, error) {
 
 func (f *ConnectivityFrame) UnmarshalJSON(data []byte) error {
 	type connectivityFrame ConnectivityFrame
-	var aux struct {
-		connectivityFrame
-		LegacyDaemon  *ConnectivityDaemonInfo  `json:"daemon,omitempty"`
-		LegacyDaemons []ConnectivityDaemonInfo `json:"daemons,omitempty"`
-	}
+	var aux connectivityFrame
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
 	}
-	*f = ConnectivityFrame(aux.connectivityFrame)
-	if f.Daemon == nil {
-		f.Daemon = aux.LegacyDaemon
-	}
-	if f.Daemons == nil && aux.LegacyDaemons != nil {
-		f.Daemons = aux.LegacyDaemons
-	}
+	*f = ConnectivityFrame(aux)
 	return nil
 }
 

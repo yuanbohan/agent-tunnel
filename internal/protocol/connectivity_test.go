@@ -26,14 +26,14 @@ func TestConnectivityEmptySnapshotIncludesDaemonList(t *testing.T) {
 	}
 }
 
-func TestConnectivityFrameAcceptsLegacyDaemonRegisterJSON(t *testing.T) {
-	raw := []byte(`{"type":"daemon_register","protocol_version":2,"daemon":{"computer_id":"dev-1","computer_public_key":"key","computer_fingerprint":"fp"},"daemons":[{"computer_id":"dev-2","computer_public_key":"key2","computer_fingerprint":"fp2"}]}`)
+func TestConnectivityFrameUsesCanonicalComputerJSONOnly(t *testing.T) {
+	raw := []byte(`{"type":"computer_register","protocol_version":2,"computer":{"computer_id":"dev-1","computer_public_key":"key","computer_fingerprint":"fp"},"computers":[{"computer_id":"dev-2","computer_public_key":"key2","computer_fingerprint":"fp2"}]}`)
 	var frame ConnectivityFrame
 	if err := json.Unmarshal(raw, &frame); err != nil {
 		t.Fatalf("Unmarshal returned error: %v", err)
 	}
-	if frame.Type != "daemon_register" || frame.Daemon == nil || frame.Daemon.DeviceID != "dev-1" || len(frame.Daemons) != 1 || frame.Daemons[0].DeviceID != "dev-2" {
-		t.Fatalf("frame = %#v, want legacy daemon fields decoded into computer fields", frame)
+	if frame.Type != "computer_register" || frame.Daemon == nil || frame.Daemon.DeviceID != "dev-1" || len(frame.Daemons) != 1 || frame.Daemons[0].DeviceID != "dev-2" {
+		t.Fatalf("frame = %#v, want canonical computer fields decoded", frame)
 	}
 }
 

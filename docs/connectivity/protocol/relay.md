@@ -38,7 +38,7 @@ Separately, Relay exposes:
 - fallback relay endpoint: `GET /connectivity/tunnel/ws` with `Authorization: Bearer <single-use-token>`
 - authenticated app APIs that expose the current account tier
 
-Compatibility aliases remain available in this revision: `GET /api/connectivity/app/ws` for app realtime and `GET /connectivity/daemon/ws` for computer realtime.
+The old realtime aliases `GET /api/connectivity/app/ws` and `GET /connectivity/daemon/ws` are removed. Clients must use the canonical app/computer routes above.
 
 ## App Authentication Model
 
@@ -131,7 +131,7 @@ Implemented fields:
 - `protocol_version`
 - `trusted_clients`
 
-Relay uses these fields to populate `computer_snapshot` for app-side consumers and to detect compatibility mismatches before the computer is announced as visible. The legacy `/connectivity/daemon/ws` alias may still accept `daemon_register` during this compatibility revision.
+Relay uses these fields to populate `computer_snapshot` for app-side consumers and to detect compatibility mismatches before the computer is announced as visible. The first frame must use `computer_register`; the old `daemon_register` frame type is rejected.
 
 ## Event Families
 

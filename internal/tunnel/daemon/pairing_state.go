@@ -41,36 +41,6 @@ type PairingState struct {
 	TrustedDevices   []TrustedAndroidDevice         `json:"trusted_clients"`
 }
 
-func (s *PairingState) UnmarshalJSON(payload []byte) error {
-	var raw pairingStateJSON
-	if err := json.Unmarshal(payload, &raw); err != nil {
-		return err
-	}
-	s.Version = raw.Version
-	s.Invitations = make([]PairingInvitationRecord, 0, len(raw.Invitations))
-	for _, invitation := range raw.Invitations {
-		s.Invitations = append(s.Invitations, invitation.record())
-	}
-	s.PendingResponses = make([]PendingPairingResponseRecord, 0, len(raw.PendingResponses))
-	for _, pending := range raw.PendingResponses {
-		s.PendingResponses = append(s.PendingResponses, pending.record())
-	}
-	if raw.TrustedClients != nil {
-		s.TrustedDevices = raw.TrustedClients
-	} else {
-		s.TrustedDevices = raw.TrustedDevices
-	}
-	return nil
-}
-
-type pairingStateJSON struct {
-	Version          int                                `json:"version"`
-	Invitations      []pairingInvitationRecordJSON      `json:"invitations"`
-	PendingResponses []pendingPairingResponseRecordJSON `json:"pending_responses,omitempty"`
-	TrustedClients   []TrustedAndroidDevice             `json:"trusted_clients"`
-	TrustedDevices   []TrustedAndroidDevice             `json:"trusted_devices"`
-}
-
 type PairingInvitationRecord struct {
 	InvitationID      string `json:"invitation_id"`
 	CorrelationID     string `json:"correlation_id"`
@@ -82,39 +52,6 @@ type PairingInvitationRecord struct {
 	ExpiresAt         int64  `json:"expires_at"`
 	CreatedAt         int64  `json:"created_at"`
 	ConsumedAt        *int64 `json:"consumed_at,omitempty"`
-}
-
-type pairingInvitationRecordJSON struct {
-	InvitationID            string `json:"invitation_id"`
-	CorrelationID           string `json:"correlation_id"`
-	Nonce                   string `json:"nonce"`
-	AccountID               string `json:"account_id,omitempty"`
-	RelayBaseURL            string `json:"relay_base_url"`
-	DeviceID                string `json:"device_id"`
-	ComputerFingerprint     string `json:"computer_fingerprint"`
-	LegacyDaemonFingerprint string `json:"daemon_fingerprint"`
-	ExpiresAt               int64  `json:"expires_at"`
-	CreatedAt               int64  `json:"created_at"`
-	ConsumedAt              *int64 `json:"consumed_at,omitempty"`
-}
-
-func (r pairingInvitationRecordJSON) record() PairingInvitationRecord {
-	fingerprint := r.ComputerFingerprint
-	if fingerprint == "" {
-		fingerprint = r.LegacyDaemonFingerprint
-	}
-	return PairingInvitationRecord{
-		InvitationID:      r.InvitationID,
-		CorrelationID:     r.CorrelationID,
-		Nonce:             r.Nonce,
-		AccountID:         r.AccountID,
-		RelayBaseURL:      r.RelayBaseURL,
-		DeviceID:          r.DeviceID,
-		DaemonFingerprint: fingerprint,
-		ExpiresAt:         r.ExpiresAt,
-		CreatedAt:         r.CreatedAt,
-		ConsumedAt:        r.ConsumedAt,
-	}
 }
 
 type TrustedAndroidDevice struct {
@@ -139,49 +76,6 @@ type PendingPairingResponseRecord struct {
 	SAS                string `json:"sas"`
 	ReceivedAt         int64  `json:"received_at"`
 	ExpiresAt          int64  `json:"expires_at"`
-}
-
-type pendingPairingResponseRecordJSON struct {
-	InvitationID         string `json:"invitation_id"`
-	CorrelationID        string `json:"correlation_id"`
-	AccountID            string `json:"account_id"`
-	ClientPublicKey      string `json:"client_public_key"`
-	LegacyAndroidPubKey  string `json:"android_pubkey"`
-	ClientFingerprint    string `json:"client_fingerprint"`
-	LegacyAndroidFP      string `json:"android_fingerprint"`
-	ClientDisplayName    string `json:"client_display_name,omitempty"`
-	LegacyAndroidDisplay string `json:"android_display_name,omitempty"`
-	Signature            string `json:"signature"`
-	SAS                  string `json:"sas"`
-	ReceivedAt           int64  `json:"received_at"`
-	ExpiresAt            int64  `json:"expires_at"`
-}
-
-func (r pendingPairingResponseRecordJSON) record() PendingPairingResponseRecord {
-	publicKey := r.ClientPublicKey
-	if publicKey == "" {
-		publicKey = r.LegacyAndroidPubKey
-	}
-	fingerprint := r.ClientFingerprint
-	if fingerprint == "" {
-		fingerprint = r.LegacyAndroidFP
-	}
-	displayName := r.ClientDisplayName
-	if displayName == "" {
-		displayName = r.LegacyAndroidDisplay
-	}
-	return PendingPairingResponseRecord{
-		InvitationID:       r.InvitationID,
-		CorrelationID:      r.CorrelationID,
-		AccountID:          r.AccountID,
-		AndroidPublicKey:   publicKey,
-		AndroidFingerprint: fingerprint,
-		AndroidDisplayName: displayName,
-		Signature:          r.Signature,
-		SAS:                r.SAS,
-		ReceivedAt:         r.ReceivedAt,
-		ExpiresAt:          r.ExpiresAt,
-	}
 }
 
 type PairInvitation struct {
@@ -237,12 +131,6 @@ func LoadPairingState(paths Paths) (PairingState, error) {
 	var state PairingState
 	if err := json.Unmarshal(payload, &state); err != nil {
 		return PairingState{}, err
-	}
-	if state.Version == 0 {
-		state.Version = PairingStateVersion
-	}
-	if state.Version == 1 {
-		state.Version = PairingStateVersion
 	}
 	if state.Version != PairingStateVersion {
 		return PairingState{}, fmt.Errorf("unsupported pairing state version %d", state.Version)

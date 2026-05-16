@@ -22,8 +22,8 @@ func TestConnectivityWebSocketRoutesStayProxiedInNginxTemplates(t *testing.T) {
 			got := string(raw)
 			for _, want := range []string{
 				"location /api/",
+				"location /connectivity/",
 				"location = /connectivity/computer/ws",
-				"location = /connectivity/daemon/ws",
 				"location = /connectivity/tunnel/ws",
 				"proxy_http_version 1.1",
 				"proxy_set_header Upgrade $http_upgrade",
@@ -32,6 +32,9 @@ func TestConnectivityWebSocketRoutesStayProxiedInNginxTemplates(t *testing.T) {
 				if !strings.Contains(got, want) {
 					t.Fatalf("%s missing %q", path, want)
 				}
+			}
+			if strings.Contains(got, "location = /connectivity/daemon/ws") {
+				t.Fatalf("%s still proxies removed daemon websocket alias", path)
 			}
 		})
 	}

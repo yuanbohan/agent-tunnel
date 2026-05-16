@@ -151,8 +151,6 @@ List currently online computers for the authenticated user.
 
 Auth: app bearer token
 
-Compatibility note: `GET /api/devices` remains available as a legacy alias in this revision and returns the same live computers using the legacy `device_id` response key.
-
 Success:
 
 - `200 OK`
@@ -188,8 +186,6 @@ Notes:
 Ask one currently online device to create a new session inside its daemon-managed tmux workspace and run `tunnel run <command>`.
 
 Auth: app bearer token
-
-Compatibility note: `POST /api/devices/:deviceID/launch` remains available as a legacy alias in this revision.
 
 Request:
 
@@ -759,8 +755,6 @@ Error responses:
 
 Auth: fingerprint-bound app access token. Legacy app sessions without a stored client fingerprint are rejected with `403`.
 
-Compatibility note: `GET /api/connectivity/app/ws` remains available as a legacy alias in this revision.
-
 Client first sends:
 
 ```json
@@ -779,7 +773,7 @@ Relay replies with:
 }
 ```
 
-Relay may later send `computer_visible`, `client_revoked`, or `computer_removed`. The primary realtime socket does not accept one-shot pairing response submissions; clients submit signed pairing responses through `POST /api/pairing/responses`. The legacy `/api/connectivity/app/ws` alias still accepts `pair_response_submit` during this compatibility revision. The response must include the authenticated app account id and the app session's client fingerprint; Relay forwards only through a live computer-owned reserved correlation.
+Relay may later send `computer_visible`, `client_revoked`, or `computer_removed`. The realtime socket does not accept one-shot pairing response submissions; clients submit signed pairing responses through `POST /api/pairing/responses`.
 
 After a paired daemon is visible, app peers may open a direct-attempt rendezvous:
 
@@ -891,8 +885,6 @@ App-side reasons are `invalid_register`, `invalid_pairing_response`,
 
 Auth: agent bearer token.
 
-Compatibility note: `GET /connectivity/daemon/ws` remains available as a legacy alias in this revision.
-
 Daemon first sends:
 
 ```json
@@ -917,9 +909,9 @@ Daemon first sends:
 }
 ```
 
-Relay derives app-visible computer presence from this live trusted roster and the authenticated app session fingerprint. Relay does not persist the roster durably; computer reconnect rebuilds visibility. The legacy `/connectivity/daemon/ws` alias may still send `daemon_register` with `daemon` during this compatibility revision.
+Relay derives app-visible computer presence from this live trusted roster and the authenticated app session fingerprint. Relay does not persist the roster durably; computer reconnect rebuilds visibility. The first frame must use the canonical `computer_register` type and `computer` payload.
 
-Computer peers reserve pairing invitations with `pair_invitation_reserve` using the desired `correlation_id` as `request_id`. Relay replies with `pair_invitation_reserved` and an `account_id`; the computer signs that account id into the invitation before returning it locally. Clients submit signed responses through `POST /api/pairing/responses`; Relay forwards accepted REST submissions as `pair_response_forward`. After local SAS confirmation stores client trust, the computer sends `pair_completed` with `client_fingerprint`, and Relay emits `computer_visible` to any matching online app peer. The legacy app websocket alias may still accept `pair_response_submit` during this compatibility revision.
+Computer peers reserve pairing invitations with `pair_invitation_reserve` using the desired `correlation_id` as `request_id`. Relay replies with `pair_invitation_reserved` and an `account_id`; the computer signs that account id into the invitation before returning it locally. Clients submit signed responses through `POST /api/pairing/responses`; Relay forwards accepted REST submissions as `pair_response_forward`. After local SAS confirmation stores client trust, the computer sends `pair_completed` with `client_fingerprint`, and Relay emits `computer_visible` to any matching online app peer.
 
 Daemon peers receive `rendezvous_hint` when a paired app opens a direct attempt.
 Daemon peers may respond with their own `rendezvous_hint` containing

@@ -3,7 +3,6 @@ package connectivity
 import (
 	"context"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -23,14 +22,6 @@ var upgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return
 const connectivityAuthRevalidationTimeout = 5 * time.Second
 
 func App(registry *relayconnectivity.Registry, appAuth *relayauth.AppAuthService) gin.HandlerFunc {
-	return app(registry, appAuth, false)
-}
-
-func AppLegacy(registry *relayconnectivity.Registry, appAuth *relayauth.AppAuthService) gin.HandlerFunc {
-	return app(registry, appAuth, true)
-}
-
-func app(registry *relayconnectivity.Registry, appAuth *relayauth.AppAuthService, allowPairResponseSubmit bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		app := middleware.AuthenticatedApp(c)
 		if app.Session.DeviceFingerprint == "" {
@@ -84,35 +75,6 @@ func app(registry *relayconnectivity.Registry, appAuth *relayauth.AppAuthService
 				return
 			}
 			switch frame.Type {
-			case "pair_response_submit":
-				if !allowPairResponseSubmit {
-					_ = peer.SendJSON(protocol.ConnectivityErrorFrame(frame.RequestID, "unsupported_event"))
-					continue
-				}
-				if !appAuthStillValid(c, appAuth, app) {
-					return
-				}
-				if frame.PairingResponse == nil {
-					_ = peer.SendJSON(protocol.ConnectivityErrorFrame(frame.RequestID, "invalid_pairing_response"))
-					continue
-				}
-				androidFingerprint, err := relayauth.NormalizeDeviceFingerprint(frame.PairingResponse.AndroidFingerprint)
-				if err != nil || androidFingerprint != app.Session.DeviceFingerprint {
-					_ = peer.SendJSON(protocol.ConnectivityErrorFrame(frame.RequestID, "client_fingerprint_mismatch"))
-					continue
-				}
-				if frame.PairingResponse.AccountID != strconv.FormatInt(app.User.ID, 10) {
-					_ = peer.SendJSON(protocol.ConnectivityErrorFrame(frame.RequestID, "pairing_account_mismatch"))
-					continue
-				}
-				if err := registry.ForwardPairingResponseFromApp(relayconnectivity.AppOwner{
-					UserID:            app.User.ID,
-					AppSessionID:      app.Session.ID,
-					DeviceFingerprint: app.Session.DeviceFingerprint,
-					SessionCreatedAt:  app.Session.CreatedAt,
-				}, peer, frame.PairingResponse.CorrelationID, *frame.PairingResponse); err != nil {
-					_ = peer.SendJSON(protocol.ConnectivityErrorFrame(frame.RequestID, "pairing_correlation_not_found"))
-				}
 			case "relay_tunnel_request":
 				if !appAuthStillValid(c, appAuth, app) {
 					return

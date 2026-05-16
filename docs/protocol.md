@@ -39,17 +39,12 @@ All protocol timestamps are Unix timestamps represented as JSON integers in seco
 | `GET /connectivity/computer/ws` | Daemon | Agent bearer | WebSocket | Trusted roster registration, pairing response forwarding, rendezvous, and fallback setup |
 | `GET /connectivity/tunnel/ws` | App/daemon | Fallback tunnel token | WebSocket | Opaque binary packet tunnel for Relay fallback QUIC transport |
 
-Compatibility aliases that remain in this revision:
-
-- `GET /api/devices` aliases `GET /api/computers`
-- `POST /api/devices/:deviceID/launch` aliases `POST /api/computers/:computerID/sessions`
-- `GET /api/connectivity/app/ws` aliases `GET /api/connectivity/ws`
-- `GET /connectivity/daemon/ws` aliases `GET /connectivity/computer/ws`
-
 Removed from the current product contract:
 
 - the older global update websocket
 - the older Relay session list, stop, attach, and frame routes
+- the old `/api/devices` and `/api/devices/:deviceID/launch` compatibility aliases
+- the old `/api/connectivity/app/ws` and `/connectivity/daemon/ws` realtime aliases
 
 ## Auth Headers
 

@@ -192,7 +192,7 @@ The relay only reflects the latest live device metadata. It must clear device pr
 
 Daemon start uses the same runtime auth precedence as `tunnel run`: `TUNNEL_AUTH_TOKEN` first, then saved local auth in `~/.tunnel/auth.json`. `tunnel run` may start the daemon when needed, and fails startup if the running daemon uses a different Relay base URL or auth context.
 
-The daemon authenticates to `/device/ws` and `/connectivity/computer/ws` with a user-owned agent token. The legacy alias `/connectivity/daemon/ws` remains accepted in this revision. If that token is revoked, the relay must close matching device sockets and remove those devices from discovery.
+The daemon authenticates to `/device/ws` and `/connectivity/computer/ws` with a user-owned agent token. If that token is revoked, the relay must close matching device sockets and remove those devices from discovery.
 
 Launch command authorization is intentionally narrow: only the first parsed command token is checked against the daemon allowlist. The rest of the command string is passed as launcher arguments after shell parsing. Any future expansion to command profiles, placeholders, per-command schemas, or interactive confirmation is outside this contract until separately specified.
 
