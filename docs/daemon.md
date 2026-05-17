@@ -168,7 +168,7 @@ Structured failure reasons are part of the client-visible contract. Keep them st
 - `session_start_failed`: tmux session creation failed after validation.
 - `launch_timeout`: the relay did not observe matching `session_ready` registration before the launch wait expired.
 
-Do not collapse these into generic errors. If a new failure mode becomes client-visible, update `docs/api.md`, `docs/protocol.md`, and this document together.
+Do not collapse these into generic errors. If a new failure mode becomes client-visible, update this document and the relevant `../agent-tunnel-protocols` SSOT document together.
 
 ## Health Model
 
@@ -202,15 +202,13 @@ When daemon behavior changes, keep these files aligned:
 
 - `docs/daemon.md`
 - `README.md`
-- `docs/api.md`
-- `docs/protocol.md`
-- `docs/architecture.md`
+- `docs/connectivity/local-broker.md` when local broker mechanics change
+- `../agent-tunnel-protocols/docs/api.md` when public API or app-visible errors change
+- `../agent-tunnel-protocols/docs/protocol.md` when daemon transport frame/payload behavior changes
+- `../agent-tunnel-protocols/docs/architecture.md` when ownership boundaries change
+- `../agent-tunnel-protocols/docs/security.md` when auth/trust/revocation behavior changes
 - `CLAUDE.md`
 - `AGENTS.md`
-
-Update `docs/api.md` and `docs/protocol.md` for any app-visible endpoint, request/response, websocket frame, `launch_health`, or failure-reason change.
-
-Update `docs/architecture.md` for ownership, lifecycle, relay boundary, tmux workspace, or auth changes.
 
 Update `README.md` for user-facing CLI behavior, prerequisites, and remote-launch workflow changes.
 

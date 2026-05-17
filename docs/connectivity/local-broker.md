@@ -4,7 +4,7 @@
 
 This document defines the phase-1 local protocol between the daemon and each local `tunnel run` process.
 
-Cross-repository SSOT scope is limited to the mobile-visible session metadata and convergence semantics that appear in `agent-tunnel-protocols:docs/protocol.md`; local socket lifecycle, broker ownership, and process mechanics remain implementation details of this repository. See `docs/protocols/connectivity.md` for the provenance map.
+Cross-repository SSOT scope is limited to the mobile-visible session metadata and convergence semantics that appear in `agent-tunnel-protocols:docs/protocol.md`; local socket lifecycle, broker ownership, and process mechanics remain implementation details of this repository. This file is a Go implementation note, not a protocol SSOT.
 
 Step 3 implemented the local registration and preview subset. The current broker also carries snapshot, live-byte, input, and resize frames for trusted connectivity transports.
 

@@ -1,7 +1,7 @@
 ---
 title: QUIC connectivity implementation handoffs
 type: handoff-index
-status: active
+status: historical
 date: 2026-04-28
 related_plan: docs/plans/2026-04-28-001-feat-quic-connectivity-program-plan.md
 related_guide: docs/plans/2026-04-28-002-feat-quic-connectivity-review-guide.md
@@ -10,8 +10,14 @@ issue_map: docs/plans/2026-04-28-003-feat-quic-connectivity-github-issues.md
 
 # QUIC connectivity implementation handoffs
 
-This directory records step-by-step delivery state for the QUIC connectivity
-program. Each step should update its own handoff before the PR is reviewed.
+This directory records point-in-time delivery state for the earlier QUIC
+connectivity program. It is implementation history, not current protocol
+authority. Current cross-repository protocol facts live in
+`../agent-tunnel-protocols/docs/`.
+
+Individual step files may retain historical `status` values such as
+`in_progress` or `not_started`; read those as the status at the time of that
+handoff, not as current project state.
 
 The handoff files are intentionally separate from the program plan:
 

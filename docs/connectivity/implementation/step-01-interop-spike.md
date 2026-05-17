@@ -73,7 +73,7 @@ claiming production Android compatibility.
 ## Implementation Summary
 
 - Added `internal/connectivity/identity` for Ed25519 self-signed X.509 certificate generation, SPKI extraction, and pinned peer-certificate verification.
-- Added `internal/connectivity/pairing` with the fixed 6-digit SAS algorithm from `docs/connectivity/protocol/pairing.md`, including length-prefixed canonical input helpers.
+- Added `internal/connectivity/pairing` with the fixed 6-digit SAS algorithm now owned by `../agent-tunnel-protocols/docs/pairing.md`, including length-prefixed canonical input helpers.
 - Added `internal/connectivity/frame` with `[type][QUIC varint payload_length][payload]` encoding, stream read/write helpers, unknown-frame tolerance, and truncation/oversize failures.
 - Added `internal/connectivity/transport` with pinned TLS 1.3 configs, raw Ed25519 peer-key inputs that derive SPKI pins internally, session-ticket resumption disabled, required ALPN `tunnel-conn/1`, 0-RTT rejection checks, and a `quic-go` harness covering bidirectional and daemon-initiated unidirectional streams.
 - Added `internal/connectivity/carrier` with an in-memory ordered packet relay exposed as `net.PacketConn`, proving `quic-go` can run over a WebSocket-like packet carrier abstraction.

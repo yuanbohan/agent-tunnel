@@ -2,7 +2,7 @@
 
 Launch a terminal agent locally and expose daemon-backed mobile connectivity without making Relay the terminal data plane.
 
-Cross-repository protocol decisions live in [yuanbohan/agent-tunnel-protocols](https://github.com/yuanbohan/agent-tunnel-protocols). This repository keeps the Go implementation, local pointers, daemon behavior, and operational docs aligned with that protocol source of truth.
+Cross-repository protocol decisions live in [yuanbohan/agent-tunnel-protocols](https://github.com/yuanbohan/agent-tunnel-protocols). This repository keeps the Go implementation, daemon behavior, tests, and operational docs aligned with that protocol source of truth.
 
 For local cross-repository work, keep these sibling checkouts together:
 
@@ -16,6 +16,19 @@ transport, daemon session frames, or mobile detail input, update
 `agent-tunnel-protocols` first or in the same PR set. This repository should
 link to SSOT docs instead of carrying a second detailed copy of shared protocol
 rules.
+
+Primary SSOT entry points:
+
+- `../agent-tunnel-protocols/docs/end-to-end-flows.md` - trusted computer list, pairing, session list/preview, direct/relay, detail input, key storage.
+- `../agent-tunnel-protocols/docs/draws/README.md` - Mermaid diagrams for the critical flows.
+- `../agent-tunnel-protocols/docs/api.md` - public Relay API, auth, WebSocket, fallback tunnel, removed endpoints.
+- `../agent-tunnel-protocols/docs/architecture.md` - cross-repository ownership boundaries.
+- `../agent-tunnel-protocols/docs/pairing.md` - Ed25519 transcripts, SAS, trust persistence, revocation.
+- `../agent-tunnel-protocols/docs/relay-control-plane.md` - Relay realtime, rendezvous, fallback token, opaque packet forwarding.
+- `../agent-tunnel-protocols/docs/protocol.md` - daemon-to-mobile QUIC transport, frame registry, stream model, payloads.
+- `../agent-tunnel-protocols/docs/security.md` - threat model and security gates.
+- `../agent-tunnel-protocols/docs/status/implementation-matrix.md` - implementation readiness and known gaps.
+- `../agent-tunnel-protocols/docs/legacy/README.md` - historical designs that are no longer current authority.
 
 The remote contract has separate live-only surfaces:
 
@@ -235,7 +248,7 @@ App clients authenticate with bearer tokens returned by `POST /api/auth/login`.
 
 The mobile companion uses Relay for auth, account policy, pairing, computer presence, rendezvous, fallback tunnel setup, and `POST /api/computers/:computerID/sessions`; after `session_ready`, it waits for the daemon connectivity transport to report the launched session through `session_index` or `session_upsert`.
 
-See `../agent-tunnel-protocols/docs/api.md` for the current public Relay API endpoint inventory, auth requirements, request/response examples, and error contracts. The local [docs/api.md](docs/api.md) file is only a pointer with Go implementation entry points.
+See `../agent-tunnel-protocols/docs/api.md` for the current public Relay API endpoint inventory, auth requirements, request/response examples, and error contracts.
 
 Device daemons connect separately on `/device/ws`. Reverse proxies for hosted relay deployments must forward that path alongside `/api/` and `/agent/ws`.
 ## Session Transport Model
@@ -409,11 +422,17 @@ See [docs/local-e2e.md](docs/local-e2e.md) for the Docker-backed local E2E workf
 ## Protocol
 
 See [yuanbohan/agent-tunnel-protocols](https://github.com/yuanbohan/agent-tunnel-protocols) (local checkout: `../agent-tunnel-protocols`) for the cross-repository protocol source of truth.
-See `../agent-tunnel-protocols/docs/api.md` for the current public Relay API reference.
-See `../agent-tunnel-protocols/docs/architecture.md` for the cross-repository system architecture.
-See [docs/protocol.md](docs/protocol.md) for this repository's Relay and connectivity implementation map.
-See [docs/connectivity/protocol/transport.md](docs/connectivity/protocol/transport.md) for the local daemon transport implementation pointer.
-See [docs/tui-attach-flow.md](docs/tui-attach-flow.md) for the tombstone of the removed Relay attach path.
+
+Go implementation entry points:
+
+- `internal/relay/handler/` - Gin router, auth middleware, public API handlers, WebSocket handlers.
+- `internal/relay/device/` - `/device/ws` online computer routing and launch request correlation.
+- `internal/relay/connectivity/` - app/daemon connectivity peers, pairing response correlation, visibility, rendezvous, fallback tunnel tokens.
+- `internal/connectivity/` - pairing, frame/session protocol helpers, transport, interop.
+- `internal/tunnel/daemon/` - local daemon lifecycle, broker, tmux workspace, pairing state, direct/fallback transport runtime.
+- `docs/daemon.md` - daemon-local behavior, launch health, failure reasons, and operational constraints.
+- `docs/connectivity/local-broker.md` - local machine broker protocol between daemon and `tunnel run`; not a cross-repository protocol spec.
+
 See [docs/deployment.md](docs/deployment.md) for VPS deployment, nginx/TLS setup, and operations guide.
 See [docs/operation.md](docs/operation.md) for day-to-day relay CLI usage and operator command examples.
 See [docs/release-distribution.md](docs/release-distribution.md) for public `tunnel` release publishing and distribution-repo operations.
