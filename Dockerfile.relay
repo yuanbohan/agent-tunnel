@@ -37,6 +37,7 @@ COPY --from=builder /out/relay /usr/local/bin/relay
 ENV RELAY_LISTEN_ADDR=0.0.0.0:8586
 
 EXPOSE 8586
+EXPOSE 3478/udp
 
 ENTRYPOINT ["/usr/local/bin/relay"]
 CMD ["serve"]

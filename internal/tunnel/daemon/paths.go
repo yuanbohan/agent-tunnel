@@ -9,26 +9,33 @@ import (
 )
 
 const (
-	appDirName            = "tunnel"
-	daemonDirName         = "daemon"
-	defaultConfigFileName = "daemon.json"
-	defaultSocketFileName = "daemon.sock"
-	defaultTmuxSocketName = "tmux.sock"
-	defaultPIDFileName    = "daemon.pid"
-	defaultStatusFileName = "status.json"
-	defaultDeviceFileName = "device.json"
+	appDirName                          = "tunnel"
+	daemonDirName                       = "daemon"
+	defaultConfigFileName               = "daemon.json"
+	defaultSocketFileName               = "daemon.sock"
+	defaultBrokerSocketFileName         = "broker.sock"
+	defaultTmuxSocketName               = "tmux.sock"
+	defaultStartupLockFileName          = "startup.lock"
+	defaultPIDFileName                  = "daemon.pid"
+	defaultStatusFileName               = "status.json"
+	defaultDeviceFileName               = "device.json"
+	defaultConnectivityIdentityFileName = "connectivity_identity.json"
+	defaultPairingStateFileName         = "pairing_state.json"
 )
 
 type Paths struct {
-	ConfigDir  string
-	ConfigFile string
-	StateDir   string
-	RuntimeDir string
-	SocketPath string
-	TmuxSocketPath string
-	PIDFile    string
-	StatusFile string
-	DeviceFile string
+	ConfigDir                string
+	ConfigFile               string
+	StateDir                 string
+	RuntimeDir               string
+	SocketPath               string
+	BrokerSocketPath         string
+	TmuxSocketPath           string
+	PIDFile                  string
+	StatusFile               string
+	DeviceFile               string
+	ConnectivityIdentityFile string
+	PairingStateFile         string
 }
 
 func ResolvePaths() (Paths, error) {
@@ -49,15 +56,18 @@ func ResolvePaths() (Paths, error) {
 	stateDir := filepath.Join(cacheBase, appDirName, daemonDirName)
 	runtimeDir := filepath.Join(runtimeBase, appDirName, daemonDirName)
 	return Paths{
-		ConfigDir:  configDir,
-		ConfigFile: filepath.Join(configDir, defaultConfigFileName),
-		StateDir:   stateDir,
-		RuntimeDir: runtimeDir,
-		SocketPath: filepath.Join(runtimeDir, defaultSocketFileName),
-		TmuxSocketPath: filepath.Join(runtimeDir, defaultTmuxSocketName),
-		PIDFile:    filepath.Join(stateDir, defaultPIDFileName),
-		StatusFile: filepath.Join(stateDir, defaultStatusFileName),
-		DeviceFile: filepath.Join(stateDir, defaultDeviceFileName),
+		ConfigDir:                configDir,
+		ConfigFile:               filepath.Join(configDir, defaultConfigFileName),
+		StateDir:                 stateDir,
+		RuntimeDir:               runtimeDir,
+		SocketPath:               filepath.Join(runtimeDir, defaultSocketFileName),
+		BrokerSocketPath:         filepath.Join(runtimeDir, defaultBrokerSocketFileName),
+		TmuxSocketPath:           filepath.Join(runtimeDir, defaultTmuxSocketName),
+		PIDFile:                  filepath.Join(stateDir, defaultPIDFileName),
+		StatusFile:               filepath.Join(stateDir, defaultStatusFileName),
+		DeviceFile:               filepath.Join(stateDir, defaultDeviceFileName),
+		ConnectivityIdentityFile: filepath.Join(stateDir, defaultConnectivityIdentityFileName),
+		PairingStateFile:         filepath.Join(stateDir, defaultPairingStateFileName),
 	}, nil
 }
 

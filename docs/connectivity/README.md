@@ -1,11 +1,11 @@
 # Connectivity Docs Index
 
-Phase-1 design for the QUIC session-connectivity stack. This is a design anchor; the repository does not yet implement it.
+Phase-1 design for the QUIC session-connectivity stack. This is this repository's implementation/design mirror; cross-repository protocol decisions live in [yuanbohan/agent-tunnel-protocols](https://github.com/yuanbohan/agent-tunnel-protocols).
 
 ## Read In This Order
 
 1. `architecture.md` — top-level system shape and security model.
-2. `contract.md` — the phase-1 must-ship contract (use this to scope implementation work).
+2. `contract.md` — the repo-local phase-1 implementation contract (use this to scope implementation work).
 3. The protocol set under `protocol/` — wire-level details.
 4. The UX set under `ux/` — Android product behavior.
 5. `reference/` — auxiliary references (state machines, error codes, sequence flows, decision history).
@@ -16,7 +16,7 @@ Phase-1 design for the QUIC session-connectivity stack. This is a design anchor;
 docs/connectivity/
 ├── README.md                    # this file
 ├── architecture.md              # system shape + threat model
-├── contract.md                  # phase-1 must-ship contract
+├── contract.md                  # repo-local phase-1 implementation contract
 ├── protocol/
 │   ├── pairing.md               # invitation, SAS, daemon trust
 │   ├── transport.md             # QUIC + TLS + frames + session sync
@@ -27,7 +27,7 @@ docs/connectivity/
 │   └── subscription.md          # free / pro product rule
 ├── reference/
 │   ├── state-machines.md        # transport / per-session / policy state
-│   ├── error-codes.md           # canonical error code catalog
+│   ├── error-codes.md           # structured error code catalog
 │   ├── sequence-flows.md        # end-to-end timing diagrams
 │   └── decision-record.md       # key architectural decisions
 └── _archive/
@@ -40,10 +40,10 @@ The full reasoning lives in `contract.md`. The headlines:
 
 - **Direct + WSS-tunneled QUIC fallback** (UDP relay deferred to phase 2 if perf gates trip).
 - **Daemon auto-starts** when the user runs `tunnel run`. The user does not manage daemon lifecycle directly.
-- **Free unlock = sticky first-attach** per daemon card. No auto-rollover.
-- **App-session JWT** carries `device_fingerprint`; client supplies it on login. Phase 1 does not require a per-WS device-key proof.
+- **Free / Pro = trusted-computer count only**: Free has one active trusted computer; Pro has up to ten trusted computers. Session behavior inside one active computer is identical.
+- **Opaque app session** is bound server-side to `client_fingerprint`; client supplies it on login. Phase 1 does not require a per-WS device-key proof.
 - **Control stream = bidirectional, JSON-typed frames.** Interactive stream = unidirectional (daemon → Android), raw PTY bytes.
-- **Cloudflare quiche on Android, quic-go on daemon.** Phase-0 interop spike is a hard gate.
+- **Cloudflare quiche on Android, quic-go on daemon.** Step 1 validates the protocol/data layer with a Go mobile simulator; real Android `quiche` validation remains a TODO before Android compatibility is claimed.
 
 ## Phase-1 Implementation Order
 

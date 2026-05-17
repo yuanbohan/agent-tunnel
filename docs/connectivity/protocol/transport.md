@@ -2,7 +2,18 @@
 
 ## Status
 
-This document captures the target daemon-to-Android transport for session connectivity. It replaces the old WebRTC/DataChannel direction with a simpler QUIC-based transport.
+This document captures this repository's daemon-to-Android transport protocol mirror for session connectivity. Cross-repository daemon transport decisions live in [agent-tunnel-protocols:docs/protocol.md](https://github.com/yuanbohan/agent-tunnel-protocols/blob/main/docs/protocol.md), and local mirror provenance is tracked in `docs/protocols/connectivity.md`. It replaces the old WebRTC/DataChannel direction with a simpler QUIC-based transport.
+
+This repository-level mirror is bound to the SSOT compatibility line for protocol
+version 2. Until machine-readable SSOT fixtures are added upstream, the runtime
+contract is tracked with local tests in `internal/connectivity/frame` and
+`internal/connectivity/sessionproto` that preserve:
+
+- explicit frame-type alignment
+- explicit payload field alignment
+- unknown-field and unknown-frame tolerance checks
+
+Those tests should be updated in the same change as any SSOT contract update.
 
 ## Transport Responsibilities
 
@@ -96,7 +107,9 @@ The current preferred conceptual split is:
 - used when direct setup fails or times out
 - Relay forwards opaque encrypted packets only
 
-The app should treat `direct` and `relay` as path badges over the same higher-level protocol.
+The app connection manager owns the current path badge. The daemon transport
+may report path diagnostics, but those reports are advisory and do not override
+app-side path selection.
 
 ### Direct Attempt Deadline
 
@@ -149,6 +162,16 @@ STUN Binding Requests are unreliable UDP datagrams. Implementations should retry
 
 If STUN cannot return a public address within that budget, the connection manager should skip direct UDP and move to relay fallback.
 
+The Go Step 5 direct helper performs STUN discovery on the same UDP socket that
+will later back the direct QUIC attempt. This avoids learning a NAT mapping for
+one local port and then dialing QUIC from a different port. Candidate hints are
+bounded before they enter Relay realtime messages:
+
+- `public_udp_addr` is the STUN-observed address for the direct socket.
+- `private_udp_addrs` includes only private, link-local IPv6, and explicitly
+  test-allowed loopback/documentation addresses.
+- duplicate private candidates are normalized, sorted, and capped.
+
 ### NAT Traversal Limitations
 
 The minimal STUN-based scheme works for cone NATs.
@@ -169,7 +192,7 @@ The app and daemon recover state by resynchronizing session metadata and, if nee
 
 Phase 1 uses one logical control stream plus zero or more interactive streams per daemon connection (`../contract.md` D5):
 
-- one long-lived `control` stream — **bidirectional**, opened by Android immediately after the QUIC connection is ready. Carries every typed control frame including `input_text`, `input_key`, and `resize`.
+- one long-lived `control` stream — **bidirectional**, opened by Android immediately after the QUIC connection is ready. Carries session metadata, preview, interactive control, `input_text`, `input_key`, `resize`, path diagnostics, and error frames.
 - one short-lived `interactive` stream per attached interactive session — **daemon-initiated unidirectional (UNI)**, daemon → Android only. Carries `snapshot_begin`, `snapshot_chunk`, `snapshot_end`, and `live_bytes`. Input never travels on an interactive stream.
 
 ### Why Two Streams (And This Direction Split)
@@ -195,6 +218,48 @@ The control stream is a typed frame stream.
 [1-byte type] [varint payload_length] [payload bytes]
 ```
 
+`payload_length` uses QUIC variable-length integer encoding: the two most
+significant bits of the first byte encode the total integer length (`00` = 1
+byte, `01` = 2 bytes, `10` = 4 bytes, `11` = 8 bytes), and the remaining bits
+encode an unsigned big-endian integer value.
+
+The maximum payload size is 1 MiB (`1 << 20`) per frame. Senders must split
+larger terminal snapshots or live output bursts across multiple
+`snapshot_chunk` or `live_bytes` frames. Receivers must reject frames whose
+declared payload length is larger than 1 MiB.
+
+### Frame Type Registry
+
+Step 1 pins the initial protocol/data frame type bytes for the Go
+mobile-simulator harness. Android should mirror these values unless a later
+compatibility-line change updates the registry.
+
+| Type | Name | Payload |
+|---|---|---|
+| `0x01` | `hello` | JSON |
+| `0x02` | `session_index` | JSON |
+| `0x03` | `preview_subscribe` | JSON |
+| `0x04` | `session_upsert` | JSON |
+| `0x05` | `session_gone` | JSON |
+| `0x06` | `preview_unsubscribe` | JSON |
+| `0x07` | `preview_snapshot` | JSON |
+| `0x08` | `interactive_request` | JSON |
+| `0x09` | `interactive_granted` | JSON |
+| `0x0a` | `interactive_denied` | JSON |
+| `0x0b` | `interactive_release` | JSON |
+| `0x0c` | `input_text` | JSON |
+| `0x0d` | `input_key` | JSON |
+| `0x0e` | `resize` | JSON |
+| `0x0f` | `path_state` | JSON |
+| `0x10` | `snapshot_begin` | JSON |
+| `0x11` | `snapshot_chunk` | raw bytes |
+| `0x12` | `live_bytes` | raw bytes |
+| `0x13` | `snapshot_end` | JSON |
+| `0x7f` | `error` | JSON |
+
+Frame families not listed here remain unassigned and should be pinned when their
+implementation lands.
+
 ### Payload Encoding (`../contract.md` D6)
 
 - typed control frames use **JSON** for `payload bytes`
@@ -203,17 +268,18 @@ The control stream is a typed frame stream.
 - receivers MUST tolerate unknown frame `type` values (silently drop, log at info level)
 - protocol-breaking changes bump `protocol_version` in `hello`
 
-JSON was chosen over CBOR / protobuf for phase 1 to keep tcpdump output and customer-support log dumps human-readable. Phase-2 may introduce a CBOR profile under `protocol_version = 2` if Android JSON-parse cost becomes load-bearing (see `../contract.md` open TODOs).
+JSON was chosen over CBOR / protobuf for phase 1 to keep tcpdump output and customer-support log dumps human-readable. `protocol_version = 2` is the JSON transport line described in SSOT `agent-tunnel-protocols`. The protocol contract is anchored there; unknown JSON fields are ignored and unknown frame types are tolerated. Receivers MUST tolerate future protocol deltas by ignoring unknown JSON object members and tolerating unknown frame type values. Phase 2 may introduce a CBOR profile only through a new protocol version or compatibility-line decision if Android JSON-parse cost becomes load-bearing (see `../contract.md` open TODOs).
 
 ### Control Stream Frame Ordering
 
 The control stream MUST follow this fixed ordering after the QUIC connection becomes ready:
 
 1. `hello` is the first frame on the control stream from each side
-2. the daemon sends `session_index` immediately after exchanging `hello`
-3. only after `session_index` may the daemon emit `session_upsert`, `session_gone`, `preview_snapshot`, `interactive_granted`, `interactive_denied`, or `path_state`
+2. the daemon sends `session_index` immediately after its `hello`
+3. the daemon may send advisory `path_state` immediately after `session_index`
+4. only after `session_index` may the daemon emit `session_upsert`, `session_gone`, `preview_snapshot`, `interactive_granted`, or `interactive_denied`
 
-Android MUST NOT process daemon session or preview frames until `session_index` has been received and applied.
+Clients MUST NOT process computer session or preview frames until `session_index` has been received and applied. `path_state` is advisory and must not be inserted before `session_index` in protocol version 2.
 
 Phase-1 frame families:
 
@@ -242,7 +308,7 @@ Recommended fields:
 
 - `protocol_version`
 - `actor_type`
-- `device_fingerprint`
+- `client_fingerprint`
 - `path_kind`
 
 ### `session_index`
@@ -252,19 +318,19 @@ Sent by the daemon after `hello`.
 Purpose:
 
 - bootstrap the current session list for that daemon
-- replace `GET /api/sessions` in the target design
+- provide daemon-owned session discovery without a Relay session list API
 
-The initial `session_index` MUST contain the full current session set known to the daemon's local broker.
+The initial `session_index` MUST contain the full current session set known to the daemon's local broker. This includes sessions launched through Relay control-plane requests when the resulting `tunnel run` has already registered with the local broker before the mobile transport connects.
 
 ### `session_upsert` / `session_gone`
 
-Sent by the daemon whenever session metadata changes or a session disappears.
+Sent by the daemon whenever session metadata changes or a session disappears. If a Relay-launched `tunnel run` registers with the local broker after the mobile transport is already connected, the daemon publishes that same `session_id` as a `session_upsert`.
 
 Each `session_upsert` carries the full current metadata object for that session — phase 1 prefers full replacement payloads over patch-style deltas.
 
 ### Session Metadata Contract
 
-This is the canonical session payload shape used by `session_index`, `session_upsert`, and (where applicable) `session_gone`. In the target design, Relay does not expose sessions; the daemon is the source of truth.
+This is the daemon transport session payload shape used by `session_index`, `session_upsert`, and (where applicable) `session_gone`. Relay session list/detail/attach APIs are not part of the current product contract; the daemon is authoritative for mobile-visible session state.
 
 Phase-1 daemon-to-Android session metadata fields:
 
@@ -279,6 +345,10 @@ Phase-1 daemon-to-Android session metadata fields:
 
 Preview text is **not** a session metadata field. It is delivered separately through `preview_snapshot` so the app can update list rows and preview content independently.
 
+This field set is intentionally compact and SSOT-aligned for launch convergence:
+- `session_id` is the canonical identity used by app/daemon matching.
+- No additional terminal-content or per-launch convergence fields are included in this contract unless SSOT adds an explicit requirement.
+
 #### Sanitization
 
 The daemon broker treats the following as display metadata and SHOULD apply lightweight cleanup before forwarding:
@@ -292,7 +362,7 @@ Daemon does not need to encrypt or hash these fields, but it should not be carel
 
 #### Subscription Boundary
 
-The daemon is subscription-unaware. It exposes the full session roster to every paired device that holds a valid QUIC connection. The app decides what to render as locked vs. unlocked under its free/pro rule (`ux/subscription.md`).
+The daemon is tier-unaware. It exposes the full session roster to every paired device that holds a valid QUIC connection. The app applies the Free / Pro computer-count rule before opening daemon transports; once connected, individual session rows have no tier gate (`ux/subscription.md`).
 
 ### `preview_subscribe`
 
@@ -346,6 +416,14 @@ Recommended fields:
 - `rows`
 
 The `interactive_stream_id` is the QUIC stream id of the daemon-initiated stream that will carry snapshot and live bytes for this attach lifetime.
+That stream begins with `snapshot_begin`, then zero or more `snapshot_chunk`
+frames, then `snapshot_end`; later `live_bytes` frames for the same interactive
+lifetime follow on the same stream.
+
+In the current Step 4 daemon implementation, a grant opens this stream and
+sends `snapshot_begin` followed by `snapshot_end`. Full snapshot chunks and live
+PTY bytes are reserved by this contract and are still pending the local broker
+bridge work.
 
 ### `interactive_denied`
 
@@ -363,11 +441,11 @@ Recommended `reason` enum values:
 - `daemon_busy`
 - `unknown`
 
-Android MUST be tolerant of unknown `reason` values.
+Clients MUST be tolerant of unknown `reason` values.
 
 ### `interactive_release`
 
-Sent by Android when leaving the interactive view or when the app intentionally releases ownership.
+Sent by the client when leaving the interactive view or when the app intentionally releases ownership.
 
 ### `input_text`, `input_key`, `resize`
 
@@ -376,7 +454,9 @@ Sent by Android for sessions that currently hold interactive ownership on this d
 Recommended fields:
 
 - `session_id`
-- input or resize payload
+- `input_text`: `text`, optional `submit`
+- `input_key`: `key`
+- `resize`: `cols`, `rows`
 
 The daemon MUST drop input or resize frames whose `session_id` does not currently hold an active `interactive_granted` session on this connection.
 
@@ -387,7 +467,16 @@ Optional daemon-to-app advisory frame used to confirm the current path:
 - `direct`
 - `relay`
 
-The authoritative source of the path badge is the Android connection manager.
+Current fields:
+
+- `attempt_id`
+- `path_kind`
+- `fallback_reason`
+- `direct_setup_latency_ms`
+- `relay_setup_latency_ms`
+
+`path_state` is advisory. The authoritative source of the path badge is the
+Android connection manager.
 
 ### `error`
 
@@ -402,13 +491,13 @@ Receivers MUST be tolerant of unknown `code` values.
 
 ## Protocol Versioning
 
-`hello` carries `protocol_version` as a single integer. Phase 1 is `protocol_version = 1`.
+`hello` carries `protocol_version` as a single integer. The current session transport is `protocol_version = 2`.
 
 Negotiation rules:
 
 - if the peer's `protocol_version` is the same, proceed normally
 - if it differs, the connection is closed with `protocol_version_mismatch`
-- there is no in-band negotiation or downgrade in phase 1
+- there is no in-band negotiation or downgrade in this revision
 
 ## Transport State
 
@@ -449,7 +538,14 @@ Payload encoding:
 
 This split keeps PTY byte throughput cheap while still letting the start / end markers carry structured fields like `cols` / `rows`.
 
+An implementation that has no snapshot bytes ready yet may send
+`snapshot_begin` followed immediately by `snapshot_end`, but it must not report
+`interactive_granted` unless the announced daemon-initiated stream exists.
+
 ### `snapshot_begin`
+
+Sent on the daemon-initiated interactive stream announced by
+`interactive_granted.interactive_stream_id`.
 
 JSON fields:
 
@@ -462,6 +558,9 @@ JSON fields:
 Raw PTY snapshot bytes. No JSON wrap.
 
 ### `snapshot_end`
+
+Sent on the same daemon-initiated interactive stream as the preceding
+`snapshot_begin` and `snapshot_chunk` frames.
 
 JSON; marks the end of the initial full snapshot. Optional fields may be added later for sanity check (e.g. total chunk count).
 
@@ -494,6 +593,7 @@ Once the QUIC/TLS connection is established:
 
 ## References
 
+- `../../protocols/connectivity.md`
 - `../architecture.md`
 - `../contract.md`
 - `local-broker.md`

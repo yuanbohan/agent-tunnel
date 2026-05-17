@@ -55,15 +55,8 @@ func TestTunnelAuthLoginThenRunFromStoredAuth(t *testing.T) {
 	h.tunnel = tunnel
 	waitForTunnelOutput(t, ctx, tunnel, "READY e2e-launcher")
 
-	issued, err := client.Login(username, password)
-	if err != nil {
-		t.Fatalf("login returned error: %v", err)
-	}
-
-	session := waitForSingleSession(t, ctx, client, issued.AccessToken, tunnel)
-	if session.Label != "auth-e2e" {
-		t.Fatalf("session label = %q, want auth-e2e", session.Label)
-	}
+	writeTunnelInput(t, tunnel, "stored-auth\r")
+	waitForTunnelOutput(t, ctx, tunnel, "REPLY stored-auth")
 }
 
 func runTunnelAuthLogin(ctx context.Context, h *Harness, homeDir, username, password string) (string, error) {

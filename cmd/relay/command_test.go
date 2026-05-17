@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -24,6 +25,9 @@ func TestRunWithHandlersDispatchesServeCommand(t *testing.T) {
 			if cfg.ListenAddr != "127.0.0.1:9999" {
 				t.Fatalf("ListenAddr = %q, want 127.0.0.1:9999", cfg.ListenAddr)
 			}
+			if cfg.STUNListenAddr != "" {
+				t.Fatalf("STUNListenAddr = %q, want disabled empty value by default", cfg.STUNListenAddr)
+			}
 			if cfg.LogFile != "/tmp/relay.log" {
 				t.Fatalf("LogFile = %q, want /tmp/relay.log", cfg.LogFile)
 			}
@@ -35,6 +39,50 @@ func TestRunWithHandlersDispatchesServeCommand(t *testing.T) {
 	}
 	if !called {
 		t.Fatal("serve handler was not called")
+	}
+}
+
+func TestRunWithHandlersDispatchesSTUNServeCommand(t *testing.T) {
+	env := runtimeEnv{
+		getenv: testEnv(map[string]string{
+			"RELAY_STUN_LISTEN_ADDR": "127.0.0.1:3479",
+			"RELAY_LOG_FILE":         "/tmp/stun.log",
+		}),
+	}
+
+	called := false
+	err := runWithHandlers([]string{"stun", "serve", "--listen-addr", "127.0.0.1:3480"}, env, commandHandlers{
+		stunServe: func(_ context.Context, cfg stunServeConfig) error {
+			called = true
+			if cfg.ListenAddr != "127.0.0.1:3480" {
+				t.Fatalf("ListenAddr = %q, want 127.0.0.1:3480", cfg.ListenAddr)
+			}
+			if cfg.LogFile != "/tmp/stun.log" {
+				t.Fatalf("LogFile = %q, want /tmp/stun.log", cfg.LogFile)
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runWithHandlers returned error: %v", err)
+	}
+	if !called {
+		t.Fatal("stun serve handler was not called")
+	}
+}
+
+func TestRunWithHandlersRejectsDisabledSTUNServeListener(t *testing.T) {
+	err := runWithHandlers([]string{"stun", "serve", "--listen-addr", "off"}, runtimeEnv{}, commandHandlers{
+		stunServe: func(context.Context, stunServeConfig) error {
+			t.Fatal("stun serve handler should not be called")
+			return nil
+		},
+	})
+	if err == nil {
+		t.Fatal("expected disabled listen address to fail")
+	}
+	if !strings.Contains(err.Error(), "relay stun serve requires a UDP listener") {
+		t.Fatalf("error = %q, want disabled-listener message", err.Error())
 	}
 }
 
@@ -80,12 +128,27 @@ func TestRunWithHandlersUserDeleteRequiresUsername(t *testing.T) {
 	}
 }
 
+func TestRunWithHandlersUserTierRequiresUsernameAndTier(t *testing.T) {
+	err := runWithHandlers([]string{"user", "tier", "alice"}, runtimeEnv{
+		getenv: testEnv(map[string]string{
+			"RELAY_OPERATOR_TOKEN": "operator-secret",
+		}),
+	}, commandHandlers{})
+	if err == nil {
+		t.Fatal("expected missing tier to fail")
+	}
+	if !strings.Contains(err.Error(), "accepts 2 arg(s), received 1") {
+		t.Fatalf("error = %q, want required tier message", err.Error())
+	}
+}
+
 func TestRunWithHandlersRejectsRelayAddrFlagOnOperatorSubcommands(t *testing.T) {
 	for _, args := range [][]string{
 		{"invite", "create", "--relay-addr", "127.0.0.1:9999"},
 		{"invite", "disable", "--relay-addr", "127.0.0.1:9999", "--code", "AB2C3D"},
 		{"invite", "list", "--relay-addr", "127.0.0.1:9999"},
 		{"user", "delete", "--relay-addr", "127.0.0.1:9999", "--username", "alice"},
+		{"user", "tier", "--relay-addr", "127.0.0.1:9999", "alice", "pro"},
 	} {
 		err := runWithHandlers(args, runtimeEnv{
 			getenv: testEnv(map[string]string{
@@ -120,13 +183,16 @@ func TestRunWithHandlersHelpExplainsServerAndLocalOperatorRequirements(t *testin
 		t.Fatalf("runWithHandlers returned error: %v", err)
 	}
 	for _, fragment := range []string{
-		`Run the relay server and local-only operator commands.`,
+		`Run the relay server, Binding-only STUN service, and local-only operator commands.`,
+		`relay stun serve`,
 		`RELAY_DATABASE_URL`,
 		`RELAY_APP_SECRET`,
 		`RELAY_OPERATOR_TOKEN`,
 		`local-only`,
 		`RELAY_LISTEN_ADDR`,
+		`RELAY_STUN_LISTEN_ADDR`,
 		`relay invite disable --code AB2C3D`,
+		`relay user tier alice pro`,
 	} {
 		if !strings.Contains(stdout.String(), fragment) {
 			t.Fatalf("help output = %q, want fragment %q", stdout.String(), fragment)
@@ -143,6 +209,7 @@ func TestRunWithHandlersHelpExplainsServerAndLocalOperatorRequirements(t *testin
 		{"invite", "list", "--help"},
 		{"user", "--help"},
 		{"user", "delete", "--help"},
+		{"user", "tier", "--help"},
 	} {
 		stdout.Reset()
 		err := runWithHandlers(args, runtimeEnv{stdout: &stdout}, commandHandlers{})
@@ -220,5 +287,59 @@ func TestRunWithHandlersDispatchesInviteListSubcommand(t *testing.T) {
 	}
 	if !listCalled {
 		t.Fatal("invite list handler not called")
+	}
+}
+
+func TestRunWithHandlersDispatchesUserTierSubcommand(t *testing.T) {
+	env := runtimeEnv{
+		getenv: testEnv(map[string]string{
+			"RELAY_OPERATOR_TOKEN": "operator-secret",
+		}),
+	}
+
+	tierCalled := false
+	err := runWithHandlers([]string{"user", "tier", "Alice", "pro"}, env, commandHandlers{
+		userTier: func(_ context.Context, cfg userTierConfig) error {
+			tierCalled = true
+			if cfg.Username != "Alice" {
+				t.Fatalf("Username = %q, want Alice", cfg.Username)
+			}
+			if cfg.Tier != "pro" {
+				t.Fatalf("Tier = %q, want pro", cfg.Tier)
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("user tier returned error: %v", err)
+	}
+	if !tierCalled {
+		t.Fatal("user tier handler not called")
+	}
+}
+
+func TestRunWithHandlersUserTierJSONWrapsErrors(t *testing.T) {
+	var stdout bytes.Buffer
+	env := runtimeEnv{
+		stdout: &stdout,
+		getenv: testEnv(map[string]string{
+			"RELAY_OPERATOR_TOKEN": "operator-secret",
+		}),
+	}
+
+	err := runWithHandlers([]string{"user", "tier", "Alice", "pro", "--json"}, env, commandHandlers{
+		userTier: func(context.Context, userTierConfig) error {
+			return operatorAPIError{StatusCode: 403, Code: 1007, Message: "forbidden"}
+		},
+	})
+	if err == nil {
+		t.Fatal("user tier --json error = nil, want operator error")
+	}
+	var envelope operatorCommandErrorEnvelope
+	if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
+		t.Fatalf("JSON unmarshal returned error: %v\n%s", err, stdout.String())
+	}
+	if envelope.Error.Code != "operator_api_error" || envelope.Error.StatusCode != 403 || envelope.Error.Reason != "1007" {
+		t.Fatalf("envelope = %#v, want operator API error details", envelope)
 	}
 }

@@ -4,7 +4,7 @@ This guide is for commands run on the VPS after SSH login. For deploys started f
 
 For the complete Docker Compose operating guide, including all remote paths and environment files, use [docker-operation.md](./docker-operation.md).
 
-The primary relay operations model is Docker Compose. Relay and PostgreSQL run as services in `deploy/compose/compose.yaml`, with runtime secrets stored only in the remote `.env`.
+The primary relay operations model is Docker Compose. Relay HTTP/WebSocket traffic, Binding-only STUN, and PostgreSQL run as separate services in `deploy/compose/compose.yaml`, with runtime secrets stored only in the remote `.env`. Relay and STUN use the same release build artifact, published under separate GHCR image names with separate tag pins.
 
 ## Environment File
 
@@ -19,6 +19,7 @@ It contains:
 | Variable | Purpose |
 | --- | --- |
 | `RELAY_IMAGE_TAG` | Immutable Relay image tag, for example `v0.1.0` |
+| `STUN_IMAGE_TAG` | Immutable STUN service image tag, often the same as Relay on first rollout |
 | `POSTGRES_PASSWORD` | PostgreSQL password; keep URL-safe unless the DSN is customized |
 | `RELAY_APP_SECRET` | HMAC secret used for token and agent-token digests |
 | `RELAY_OPERATOR_TOKEN` | Fixed bearer token for local-only operator commands |
@@ -29,9 +30,14 @@ The Compose file fixes these non-secret runtime defaults:
 
 - Relay listens in-container on `0.0.0.0:8586`
 - Docker publishes Relay to the host on `127.0.0.1:8586`
+- Relay disables embedded STUN in Compose
+- STUN runs as a separate `stun` service on UDP `0.0.0.0:3478`
+- Docker publishes STUN directly to the host on UDP `3478`; nginx does not proxy STUN
 - PostgreSQL uses database `agent_tunnel`
 - PostgreSQL uses role `relay_user`
 - PostgreSQL stores data in Docker volume `relay-postgres-data`
+
+For `relay-cn`, `agentunnel.cn` and `www.agentunnel.cn` serve HTTP/WebSocket traffic through nginx. `stun.agentunnel.cn` points at the same VPS for direct UDP `3478`, and the cloud security group plus any host firewall must allow inbound `3478/udp`.
 
 ## Service Lifecycle
 
@@ -42,6 +48,22 @@ cd /opt/agentunnel/compose
 sudo docker compose --env-file .env pull
 sudo docker compose --env-file .env up -d
 sudo docker compose --env-file .env ps
+```
+
+Routine Relay-only update:
+
+```bash
+sudoedit /opt/agentunnel/compose/.env  # update RELAY_IMAGE_TAG
+sudo docker compose --env-file .env pull relay
+sudo docker compose --env-file .env up -d relay
+```
+
+Rare STUN-only update:
+
+```bash
+sudoedit /opt/agentunnel/compose/.env  # update STUN_IMAGE_TAG
+sudo docker compose --env-file .env pull stun
+sudo docker compose --env-file .env up -d stun
 ```
 
 Stop or start services:
@@ -65,16 +87,24 @@ Relay also writes structured logs to the host at:
 /opt/agentunnel/logs/relay/relay.log
 ```
 
+STUN writes structured logs beside it at:
+
+```text
+/opt/agentunnel/logs/relay/stun.log
+```
+
 ## Health and Logs
 
 ```bash
 curl -fsS http://127.0.0.1:8586/healthz
 sudo docker compose --env-file .env logs --tail 100 relay
+sudo docker compose --env-file .env logs --tail 100 stun
 sudo docker compose --env-file .env logs --tail 100 postgres
 sudo tail -f /opt/agentunnel/logs/relay/relay.log
 ```
 
 Healthy `healthz` output should include `"status":"ok"`.
+From the repository checkout, `make relay-cn-status` also checks nginx route coverage, current relay websocket auth paths, connectivity compatibility websocket auth paths, and `stun.agentunnel.cn:3478` with a real STUN Binding request.
 
 ## Operator Commands
 
@@ -86,6 +116,8 @@ sudo docker compose --env-file .env exec relay relay invite create --count 3 --e
 sudo docker compose --env-file .env exec relay relay invite list
 sudo docker compose --env-file .env exec relay relay invite disable --code AB2C3D
 sudo docker compose --env-file .env exec relay relay user delete --username alice
+sudo docker compose --env-file .env exec relay relay user tier alice pro
+sudo docker compose --env-file .env exec relay relay user tier alice pro --json
 ```
 
 The operator routes remain outside the public `/api/` namespace and should not be exposed through nginx.
@@ -100,6 +132,8 @@ make relay-cn-invite-disable RELAY_CN_INVITE_CODE=AB2C3D
 make relay-cn-user-delete RELAY_CN_USERNAME=alice
 make relay-cn-psql
 ```
+
+For service lifecycle from the checkout, use `make compose-up-relay-cn` for routine Relay-only updates, `make compose-up-stun-relay-cn` for rare STUN-only updates, and `make compose-up-stack-relay-cn` for first rollout or intentional full-stack updates.
 
 Use these when the relay is Docker-managed and you want one remembered local entrypoint instead of retyping the `ssh` + `docker compose exec` form.
 
@@ -125,10 +159,45 @@ Example `psql` session:
 
 ```bash
 cd /opt/agentunnel/compose
-sudo docker compose --env-file .env exec postgres sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+sudo docker compose --env-file .env exec postgres sh -lc 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 ```
 
+Wrap multi-statement schema changes in one transaction so partial changes do
+not remain after an error.
+
 The legacy `relay-migrate` binary may still exist on older hosts for local compatibility work, but it is not part of the Docker Compose deployment path.
+
+Step 2 connectivity auth/pairing requires this manual SQL on existing databases before deploying a Relay binary that reads the new columns:
+
+```sql
+begin;
+
+alter table users
+  add column if not exists subscription_tier text not null default 'free';
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'users_subscription_tier_check'
+      and conrelid = 'users'::regclass
+  ) then
+    alter table users
+      add constraint users_subscription_tier_check
+      check (subscription_tier in ('free', 'pro'));
+  end if;
+end $$;
+
+alter table app_sessions
+  add column if not exists device_fingerprint text not null default '';
+
+create index if not exists app_sessions_user_device_fingerprint_idx
+  on app_sessions (user_id, device_fingerprint)
+  where device_fingerprint <> '';
+
+commit;
+```
 
 ## Troubleshooting
 
@@ -139,3 +208,11 @@ If Relay is unhealthy:
 3. Confirm Relay is listening on the host-local port: `curl http://127.0.0.1:8586/healthz`.
 4. Confirm nginx proxies `/api/`, `/agent/ws`, `/device/ws`, and `/healthz` to the same local port.
 5. Inspect Relay logs with `docker compose logs relay` or `/opt/agentunnel/logs/relay/relay.log`.
+
+If STUN is unreachable:
+
+1. Confirm `docker compose ps` lists the `stun` service.
+2. Confirm `stun.agentunnel.cn` resolves to the VPS.
+3. Confirm the cloud security group and host firewall allow inbound `3478/udp`.
+4. Confirm nginx is not configured as the STUN path; STUN is direct UDP to the Compose-published port.
+5. Run `scripts/stun-check.sh stun.agentunnel.cn:3478` from the checkout and inspect `docker compose logs stun` on failure.

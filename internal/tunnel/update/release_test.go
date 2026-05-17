@@ -6,36 +6,19 @@ import (
 )
 
 func TestParseLatestManifest(t *testing.T) {
-	manifest, err := parseLatestManifest([]byte(`{"version":"v0.1.9","compatibility_line":"0.1"}`))
+	manifest, err := parseLatestManifest([]byte(`{"version":"v0.1.9"}`))
 	if err != nil {
 		t.Fatalf("parseLatestManifest returned error: %v", err)
 	}
 	if manifest.Version != "v0.1.9" {
 		t.Fatalf("Version = %q, want v0.1.9", manifest.Version)
 	}
-	if manifest.CompatibilityLine != "0.1" {
-		t.Fatalf("CompatibilityLine = %q, want 0.1", manifest.CompatibilityLine)
-	}
 }
 
 func TestParseLatestManifestRejectsMissingVersion(t *testing.T) {
-	_, err := parseLatestManifest([]byte(`{"compatibility_line":"0.1"}`))
+	_, err := parseLatestManifest([]byte(`{}`))
 	if err == nil {
 		t.Fatal("parseLatestManifest error = nil, want version error")
-	}
-}
-
-func TestParseLatestManifestRejectsMissingCompatibilityLine(t *testing.T) {
-	_, err := parseLatestManifest([]byte(`{"version":"v0.1.9"}`))
-	if err == nil {
-		t.Fatal("parseLatestManifest error = nil, want compatibility_line error")
-	}
-}
-
-func TestParseLatestManifestRejectsMismatchedCompatibilityLine(t *testing.T) {
-	_, err := parseLatestManifest([]byte(`{"version":"v0.1.9","compatibility_line":"9"}`))
-	if err == nil {
-		t.Fatal("parseLatestManifest error = nil, want mismatch error")
 	}
 }
 

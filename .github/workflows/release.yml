@@ -25,6 +25,7 @@ env:
   RELEASE_VERSION: ${{ inputs.version }}
   TUNNEL_DIST_REPO: yuanbohan/tunnel
   RELAY_IMAGE_NAME: ghcr.io/yuanbohan/agent-tunnel-relay
+  STUN_IMAGE_NAME: ghcr.io/yuanbohan/agent-tunnel-stun
 
 jobs:
   release:
@@ -137,17 +138,19 @@ jobs:
         if: ${{ inputs.product == 'relay' }}
         uses: docker/setup-buildx-action@v3
 
-      - name: Build Relay image
+      - name: Build Relay/STUN image
         if: ${{ inputs.product == 'relay' }}
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile.relay
           load: true
-          tags: ${{ env.RELAY_IMAGE_NAME }}:${{ env.RELEASE_VERSION }}
+          tags: |
+            ${{ env.RELAY_IMAGE_NAME }}:${{ env.RELEASE_VERSION }}
+            ${{ env.STUN_IMAGE_NAME }}:${{ env.RELEASE_VERSION }}
           labels: |
-            org.opencontainers.image.title=agent-tunnel-relay
-            org.opencontainers.image.description=Agent Tunnel Relay service
+            org.opencontainers.image.title=agent-tunnel-relay-stun
+            org.opencontainers.image.description=Agent Tunnel Relay and STUN runtime image
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=${{ env.RELEASE_VERSION }}
@@ -158,21 +161,48 @@ jobs:
             GIT_BRANCH=${{ steps.source_tag.outputs.tag }}
             BUILD_TIME=${{ steps.build_time.outputs.value }}
 
-      - name: Verify Relay image version
+      - name: Verify Relay/STUN image tags
         if: ${{ inputs.product == 'relay' }}
         run: |
           version_line="$(docker run --rm "$RELAY_IMAGE_NAME:$RELEASE_VERSION" version | awk 'NR==1 {print $2}')"
           branch_line="$(docker run --rm "$RELAY_IMAGE_NAME:$RELEASE_VERSION" version | awk 'NR==2 {print $2}')"
+          stun_version_line="$(docker run --rm "$STUN_IMAGE_NAME:$RELEASE_VERSION" version | awk 'NR==1 {print $2}')"
+          stun_help="$(docker run --rm "$STUN_IMAGE_NAME:$RELEASE_VERSION" stun serve --help)"
+          image_cmd="$(docker image inspect "$RELAY_IMAGE_NAME:$RELEASE_VERSION" --format '{{json .Config.Cmd}}')"
+          exposed_ports="$(docker image inspect "$RELAY_IMAGE_NAME:$RELEASE_VERSION" --format '{{json .Config.ExposedPorts}}')"
           if [ "$version_line" != "$RELEASE_VERSION" ]; then
             printf 'error: relay image reports version %s, want %s\n' "$version_line" "$RELEASE_VERSION" >&2
+            exit 1
+          fi
+          if [ "$stun_version_line" != "$RELEASE_VERSION" ]; then
+            printf 'error: stun image reports version %s, want %s\n' "$stun_version_line" "$RELEASE_VERSION" >&2
             exit 1
           fi
           if [ "$branch_line" != "${{ steps.source_tag.outputs.tag }}" ]; then
             printf 'error: relay image reports branch %s, want %s\n' "$branch_line" "${{ steps.source_tag.outputs.tag }}" >&2
             exit 1
           fi
+          case "$stun_help" in
+            *"Start the Binding-only STUN UDP service"*) ;;
+            *)
+              printf 'error: stun image does not expose relay stun serve help\n' >&2
+              exit 1
+              ;;
+          esac
+          if [ "$image_cmd" != '["serve"]' ]; then
+            printf 'error: relay image default command is %s, want ["serve"]\n' "$image_cmd" >&2
+            exit 1
+          fi
+          case "$exposed_ports" in
+            *'"8586/tcp"'*'"3478/udp"'*|*'"3478/udp"'*'"8586/tcp"'*) ;;
+            *)
+              printf 'error: relay image exposes ports %s, want 8586/tcp and 3478/udp\n' "$exposed_ports" >&2
+              exit 1
+              ;;
+          esac
           printf 'verified relay image version: %s\n' "$version_line"
           printf 'verified relay image branch: %s\n' "$branch_line"
+          printf 'verified relay/stun image tags, STUN command, and exposed ports\n'
 
       - name: Log in to GitHub Container Registry
         if: ${{ inputs.product == 'relay' }}
@@ -186,6 +216,8 @@ jobs:
         if: ${{ inputs.product == 'relay' }}
         run: ./scripts/release-source-tag.sh --push "$RELEASE_PRODUCT" "$RELEASE_VERSION" >/dev/null
 
-      - name: Push Relay image
+      - name: Push Relay/STUN image tags
         if: ${{ inputs.product == 'relay' }}
-        run: docker push "$RELAY_IMAGE_NAME:$RELEASE_VERSION"
+        run: |
+          docker push "$RELAY_IMAGE_NAME:$RELEASE_VERSION"
+          docker push "$STUN_IMAGE_NAME:$RELEASE_VERSION"

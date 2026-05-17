@@ -10,13 +10,22 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"yuanbohan/tunnel/internal/protocol"
 )
 
 const readySignalEnv = "TUNNEL_DAEMON_READY_FD"
 const daemonAuthTokenEnv = "TUNNEL_AUTH_TOKEN"
+const connectivityEventEnqueueTimeout = 5 * time.Second
+const connectivityEventQueueWarning = "relay connectivity event queue unavailable"
+const sessionStopConfirmTimeout = 4 * time.Second
+
+var daemonStartupLockTimeout = 10 * time.Second
+var ErrSessionStopTimeout = errors.New("timed out waiting for local session to stop")
 
 type RuntimeOptions struct {
 	Paths     Paths
@@ -32,30 +41,60 @@ type StartOptions struct {
 }
 
 type StartResult struct {
-	AlreadyRunning bool
-	Status         StatusInfo
+	AlreadyRunning    bool
+	Status            StatusInfo
 	PreservedSessions int
 }
 
 type runtimeState struct {
-	mu       sync.RWMutex
-	status   StatusInfo
-	stopCh   chan struct{}
-	stopOnce sync.Once
-	paths    Paths
+	mu                  sync.RWMutex
+	persistMu           sync.Mutex
+	status              StatusInfo
+	stopped             bool
+	stopCh              chan struct{}
+	stopOnce            sync.Once
+	paths               Paths
+	broker              *Broker
+	connectivityEvents  chan protocol.ConnectivityFrame
+	connectivityReplies map[string]chan protocol.ConnectivityFrame
+	activeDirect        map[int64]activeDirectTransport
+	pendingDirect       map[int64]pendingDirectAttempt
+	nextDirectID        int64
+	rootCtx             context.Context
+}
+
+type activeDirectTransport struct {
+	attemptID          string
+	androidFingerprint string
+	cancel             context.CancelFunc
+}
+
+type pendingDirectAttempt struct {
+	attemptID          string
+	androidFingerprint string
+	cancel             context.CancelFunc
 }
 
 func StartBackground(ctx context.Context, options StartOptions) (StartResult, error) {
+	if err := EnsureRuntimeDirs(options.Paths); err != nil {
+		return StartResult{}, err
+	}
+	releaseLock, err := acquireStartupLock(ctx, options.Paths)
+	if err != nil {
+		return StartResult{}, err
+	}
+	defer releaseLock()
+
 	status, err := currentRunningStatus(ctx, options.Paths)
 	if err == nil && status.Running {
 		return StartResult{AlreadyRunning: true, Status: status}, nil
 	}
-	if err := EnsureTmuxAvailable(); err != nil {
-		return StartResult{}, err
-	}
-	preservedSessions, err := CountWorkspaceSessions(ctx, options.Paths)
-	if err != nil {
-		return StartResult{}, err
+	preservedSessions := 0
+	if err := EnsureTmuxAvailable(); err == nil {
+		preservedSessions, err = CountWorkspaceSessions(ctx, options.Paths)
+		if err != nil {
+			return StartResult{}, err
+		}
 	}
 
 	if err := cleanupStaleRuntime(options.Paths); err != nil {
@@ -80,6 +119,7 @@ func StartBackground(ctx context.Context, options StartOptions) (StartResult, er
 		fmt.Sprintf("%s=%s", daemonAuthTokenEnv, options.AuthToken),
 		fmt.Sprintf("%s=%d", readySignalEnv, 3),
 	)
+
 	cmd.ExtraFiles = []*os.File{writeReady}
 	devNull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	if err != nil {
@@ -153,39 +193,63 @@ func Run(ctx context.Context, options RuntimeOptions, readyWriter io.Writer) err
 	if strings.TrimSpace(options.AuthToken) == "" {
 		return errors.New("missing auth token")
 	}
-	if err := EnsureTmuxAvailable(); err != nil {
-		return err
-	}
 
 	identity, err := readOrCreateDeviceIdentityFn(options.Paths)
 	if err != nil {
 		return err
 	}
+	connectivityIdentity, err := readOrCreateConnectivityIdentityFn(options.Paths)
+	if err != nil {
+		return err
+	}
+	if _, err := LoadPairingState(options.Paths); err != nil {
+		return err
+	}
 
 	metadata := collectDeviceMetadataFn()
+	launchHealth := LaunchHealthHealthy
+	lastFailure := ""
+	if err := EnsureTmuxAvailable(); err != nil {
+		if !errors.Is(err, ErrTmuxNotFound) {
+			return err
+		}
+		launchHealth = LaunchHealthDegraded
+		lastFailure = "tmux_not_found"
+	}
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+
 	state := &runtimeState{
 		status: StatusInfo{
-			Running:          true,
-			PID:              os.Getpid(),
-			StartedAt:        time.Now().UTC().Unix(),
-			BaseURL:          options.BaseURL,
-			DeviceID:         identity.DeviceID,
-			DisplayName:      metadata.DisplayName,
-			Hostname:         metadata.Hostname,
-			PlatformFamily:   metadata.PlatformFamily,
-			PlatformID:       metadata.PlatformID,
-			RelayConnected:   false,
-			LaunchHealth:     LaunchHealthHealthy,
-			WorkspaceBackend: workspaceBackendTmux,
+			Running:                true,
+			PID:                    os.Getpid(),
+			StartedAt:              time.Now().UTC().Unix(),
+			BaseURL:                options.BaseURL,
+			AuthContextFingerprint: AuthContextFingerprint(options.AuthToken),
+			DeviceID:               identity.DeviceID,
+			DaemonFingerprint:      connectivityIdentity.Fingerprint,
+			DisplayName:            metadata.DisplayName,
+			Hostname:               metadata.Hostname,
+			PlatformFamily:         metadata.PlatformFamily,
+			PlatformID:             metadata.PlatformID,
+			RelayConnected:         false,
+			LaunchHealth:           launchHealth,
+			WorkspaceBackend:       workspaceBackendTmux,
+			LastFailure:            lastFailure,
 		},
-		stopCh: make(chan struct{}),
-		paths:  options.Paths,
+		stopCh:              make(chan struct{}),
+		paths:               options.Paths,
+		broker:              NewBroker(),
+		connectivityEvents:  make(chan protocol.ConnectivityFrame, 16),
+		connectivityReplies: make(map[string]chan protocol.ConnectivityFrame),
+		rootCtx:             runCtx,
 	}
 	if err := state.persist(); err != nil {
 		return err
 	}
 	defer func() {
 		_ = os.Remove(options.Paths.SocketPath)
+		_ = os.Remove(options.Paths.BrokerSocketPath)
 		_ = os.Remove(options.Paths.PIDFile)
 		state.markStopped()
 	}()
@@ -201,6 +265,58 @@ func Run(ctx context.Context, options RuntimeOptions, readyWriter io.Writer) err
 		case actionDoctor:
 			report := BuildDoctorReport(requestCtx, options.Paths, state.snapshot())
 			return Response{Doctor: &report}
+		case actionPair:
+			correlationID, err := newOpaqueID("corr", 12)
+			if err != nil {
+				return Response{Error: err.Error()}
+			}
+			reserveCtx, cancel := context.WithTimeout(requestCtx, 5*time.Second)
+			accountID, err := state.reservePairing(reserveCtx, correlationID)
+			cancel()
+			if err != nil {
+				return Response{Error: err.Error()}
+			}
+			invitation, err := CreatePairInvitation(options.Paths, PairInvitationOptions{
+				BaseURL:        options.BaseURL,
+				DeviceID:       identity.DeviceID,
+				DisplayName:    metadata.DisplayName,
+				AccountID:      accountID,
+				CorrelationID:  correlationID,
+				DaemonIdentity: connectivityIdentity,
+			})
+			if err != nil {
+				return Response{Error: err.Error()}
+			}
+			return Response{PairInvitation: &invitation}
+		case actionPendingPairing:
+			pending, err := ListPendingPairingResponses(options.Paths)
+			if err != nil {
+				return Response{Error: err.Error()}
+			}
+			return Response{PendingPairing: pending}
+		case actionConfirmPendingPairing:
+			return handleConfirmPendingPairing(requestCtx, options.Paths, state, request)
+		case actionDevices:
+			devices, err := ListTrustedAndroidDevices(options.Paths)
+			if err != nil {
+				return Response{Error: err.Error()}
+			}
+			return Response{TrustedDevices: devices}
+		case actionRevokeDevice:
+			return handleRevokeTrustedDevice(requestCtx, options.Paths, state, request)
+		case actionSessionList:
+			return Response{Sessions: state.broker.SessionList()}
+		case actionSessionStop:
+			if err := state.broker.StopSession(request.SessionID); err != nil {
+				if errors.Is(err, ErrBrokerSessionUnavailable) {
+					return Response{Error: ErrSessionNotFound.Error()}
+				}
+				return Response{Error: err.Error()}
+			}
+			if err := waitForBrokerSessionGone(requestCtx, state.broker, request.SessionID, sessionStopConfirmTimeout); err != nil {
+				return Response{Error: err.Error()}
+			}
+			return Response{}
 		case actionStop:
 			state.stop()
 			state.markStopped()
@@ -216,12 +332,24 @@ func Run(ctx context.Context, options RuntimeOptions, readyWriter io.Writer) err
 	defer func() {
 		_ = server.Close()
 	}()
+	brokerServer, err := NewBrokerServer(options.Paths.BrokerSocketPath, state.broker)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = brokerServer.Close()
+	}()
 
 	serverErrCh := make(chan error, 1)
 	go func() {
-		serverErrCh <- server.Serve(ctx)
+		serverErrCh <- server.Serve(runCtx)
 	}()
-	go newDeviceConnector(options.BaseURL, options.AuthToken, state).Run(ctx, newLaunchHandler(options.BaseURL, options.AuthToken, options.Paths, state))
+	brokerErrCh := make(chan error, 1)
+	go func() {
+		brokerErrCh <- brokerServer.Serve(runCtx)
+	}()
+	go newDeviceConnector(options.BaseURL, options.AuthToken, state).Run(runCtx, newLaunchHandler(options.BaseURL, options.AuthToken, options.Paths, state))
+	go newConnectivityConnector(options.BaseURL, options.AuthToken, options.Paths, state).Run(runCtx)
 
 	if readyWriter != nil {
 		if _, err := io.WriteString(readyWriter, "ready\n"); err != nil {
@@ -234,12 +362,76 @@ func Run(ctx context.Context, options RuntimeOptions, readyWriter io.Writer) err
 
 	select {
 	case <-ctx.Done():
+		cancelRun()
 		return nil
 	case <-state.stopCh:
+		cancelRun()
 		return nil
 	case err := <-serverErrCh:
+		cancelRun()
+		return err
+	case err := <-brokerErrCh:
+		cancelRun()
 		return err
 	}
+}
+
+func waitForBrokerSessionGone(ctx context.Context, broker *Broker, sessionID string, timeout time.Duration) error {
+	if broker == nil {
+		return ErrBrokerSessionUnavailable
+	}
+	if !broker.HasSession(sessionID) {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+			if !broker.HasSession(sessionID) {
+				return nil
+			}
+			return ErrSessionStopTimeout
+		case <-ticker.C:
+			if !broker.HasSession(sessionID) {
+				return nil
+			}
+		}
+	}
+}
+
+func handleConfirmPendingPairing(ctx context.Context, paths Paths, state *runtimeState, request Request) Response {
+	completion, err := ConfirmPendingPairingResponse(paths, request.InvitationID, request.SAS, time.Now().UTC())
+	if err != nil {
+		return Response{Error: err.Error()}
+	}
+	if !state.sendConnectivityEventBlocking(ctx, protocol.ConnectivityPairCompletedFrame(completion.Device.Fingerprint)) {
+		completion.Warning = connectivityEventQueueWarning
+	}
+	return Response{PairCompletion: &completion}
+}
+
+func handleRevokeTrustedDevice(ctx context.Context, paths Paths, state *runtimeState, request Request) Response {
+	revoked, err := RevokeTrustedAndroidDevice(paths, request.DeviceFingerprint)
+	if err != nil {
+		return Response{Error: err.Error()}
+	}
+	state.cancelPendingDirectAttempts("", revoked.Fingerprint)
+	state.cancelActiveDirectTransports("", revoked.Fingerprint)
+	if !state.sendConnectivityEventBlocking(ctx, protocol.ConnectivityFrame{
+		Type:               "client_revoked",
+		AndroidFingerprint: revoked.Fingerprint,
+	}) {
+		revoked.Warning = connectivityEventQueueWarning
+	}
+	return Response{TrustedDevice: &revoked}
 }
 
 func LoadStatus(paths Paths) (StatusInfo, error) {
@@ -270,11 +462,15 @@ func (s *runtimeState) markStopped() {
 	s.mu.Lock()
 	s.status.Running = false
 	s.status.RelayConnected = false
+	s.stopped = true
 	s.mu.Unlock()
 	_ = s.persist()
 }
 
 func (s *runtimeState) persist() error {
+	s.persistMu.Lock()
+	defer s.persistMu.Unlock()
+
 	s.mu.RLock()
 	status := s.status
 	s.mu.RUnlock()
@@ -283,6 +479,10 @@ func (s *runtimeState) persist() error {
 
 func (s *runtimeState) setRelayConnected(connected bool) {
 	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return
+	}
 	s.status.RelayConnected = connected
 	s.mu.Unlock()
 	_ = s.persist()
@@ -290,6 +490,10 @@ func (s *runtimeState) setRelayConnected(connected bool) {
 
 func (s *runtimeState) setLastFailure(reason string, degrade bool) {
 	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return
+	}
 	s.status.LastFailure = reason
 	if degrade {
 		s.status.LaunchHealth = LaunchHealthDegraded
@@ -300,10 +504,242 @@ func (s *runtimeState) setLastFailure(reason string, degrade bool) {
 
 func (s *runtimeState) clearLastFailure() {
 	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return
+	}
 	s.status.LastFailure = ""
 	s.status.LaunchHealth = LaunchHealthHealthy
 	s.mu.Unlock()
 	_ = s.persist()
+}
+
+func (s *runtimeState) setConnectivityPath(pathKind, failure string) {
+	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return
+	}
+	s.status.LastConnectivityPath = strings.TrimSpace(pathKind)
+	s.status.LastConnectivityFailure = strings.TrimSpace(failure)
+	s.mu.Unlock()
+	_ = s.persist()
+}
+
+func (s *runtimeState) rootContext(fallback context.Context) context.Context {
+	if s != nil && s.rootCtx != nil {
+		return s.rootCtx
+	}
+	if fallback != nil {
+		return fallback
+	}
+	return context.Background()
+}
+
+func (s *runtimeState) registerPendingDirectAttempt(attemptID, androidFingerprint string, cancel context.CancelFunc) func() {
+	if s == nil || cancel == nil {
+		return func() {}
+	}
+	attemptID = strings.TrimSpace(attemptID)
+	androidFingerprint = strings.ToLower(strings.TrimSpace(androidFingerprint))
+	if attemptID == "" || androidFingerprint == "" {
+		return func() {}
+	}
+	s.mu.Lock()
+	if s.pendingDirect == nil {
+		s.pendingDirect = make(map[int64]pendingDirectAttempt)
+	}
+	s.nextDirectID++
+	id := s.nextDirectID
+	s.pendingDirect[id] = pendingDirectAttempt{attemptID: attemptID, androidFingerprint: androidFingerprint, cancel: cancel}
+	s.mu.Unlock()
+	return func() {
+		s.mu.Lock()
+		delete(s.pendingDirect, id)
+		s.mu.Unlock()
+	}
+}
+
+func (s *runtimeState) cancelPendingDirectAttempts(attemptID, androidFingerprint string) {
+	if s == nil {
+		return
+	}
+	attemptID = strings.TrimSpace(attemptID)
+	androidFingerprint = strings.ToLower(strings.TrimSpace(androidFingerprint))
+	if androidFingerprint == "" {
+		return
+	}
+	var cancels []context.CancelFunc
+	s.mu.Lock()
+	for id, attempt := range s.pendingDirect {
+		if attempt.androidFingerprint == androidFingerprint && (attemptID == "" || attempt.attemptID == attemptID) {
+			cancels = append(cancels, attempt.cancel)
+			delete(s.pendingDirect, id)
+		}
+	}
+	s.mu.Unlock()
+	for _, cancel := range cancels {
+		if cancel != nil {
+			cancel()
+		}
+	}
+}
+
+func (s *runtimeState) registerActiveDirectTransport(attemptID, androidFingerprint string, cancel context.CancelFunc) func() {
+	if s == nil || cancel == nil {
+		return func() {}
+	}
+	attemptID = strings.TrimSpace(attemptID)
+	androidFingerprint = strings.ToLower(strings.TrimSpace(androidFingerprint))
+	if attemptID == "" || androidFingerprint == "" {
+		return func() {}
+	}
+	s.mu.Lock()
+	if s.activeDirect == nil {
+		s.activeDirect = make(map[int64]activeDirectTransport)
+	}
+	s.nextDirectID++
+	id := s.nextDirectID
+	s.activeDirect[id] = activeDirectTransport{attemptID: attemptID, androidFingerprint: androidFingerprint, cancel: cancel}
+	s.mu.Unlock()
+	return func() {
+		s.mu.Lock()
+		delete(s.activeDirect, id)
+		s.mu.Unlock()
+	}
+}
+
+func (s *runtimeState) cancelActiveDirectTransports(attemptID, androidFingerprint string) {
+	if s == nil {
+		return
+	}
+	attemptID = strings.TrimSpace(attemptID)
+	androidFingerprint = strings.ToLower(strings.TrimSpace(androidFingerprint))
+	if androidFingerprint == "" {
+		return
+	}
+	var cancels []context.CancelFunc
+	s.mu.Lock()
+	for id, transport := range s.activeDirect {
+		if transport.androidFingerprint == androidFingerprint && (attemptID == "" || transport.attemptID == attemptID) {
+			cancels = append(cancels, transport.cancel)
+			delete(s.activeDirect, id)
+		}
+	}
+	s.mu.Unlock()
+	for _, cancel := range cancels {
+		if cancel != nil {
+			cancel()
+		}
+	}
+}
+
+func (s *runtimeState) activeDirectSessions() []protocol.ConnectivityDirectSession {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	sessions := make([]protocol.ConnectivityDirectSession, 0, len(s.activeDirect))
+	for _, transport := range s.activeDirect {
+		sessions = append(sessions, protocol.ConnectivityDirectSession{
+			AttemptID:          transport.attemptID,
+			AndroidFingerprint: transport.androidFingerprint,
+		})
+	}
+	return sessions
+}
+
+func (s *runtimeState) sendConnectivityEvent(frame protocol.ConnectivityFrame) bool {
+	if s == nil || s.connectivityEvents == nil {
+		return false
+	}
+	select {
+	case s.connectivityEvents <- frame:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *runtimeState) sendConnectivityEventBlocking(ctx context.Context, frame protocol.ConnectivityFrame) bool {
+	if s == nil || s.connectivityEvents == nil {
+		return false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	timer := time.NewTimer(connectivityEventEnqueueTimeout)
+	defer timer.Stop()
+	select {
+	case s.connectivityEvents <- frame:
+		return true
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return false
+	}
+}
+
+func (s *runtimeState) reservePairing(ctx context.Context, correlationID string) (string, error) {
+	correlationID = strings.TrimSpace(correlationID)
+	if correlationID == "" {
+		return "", errors.New("missing pairing correlation id")
+	}
+	replyCh := s.registerConnectivityReply(correlationID)
+	defer s.unregisterConnectivityReply(correlationID)
+	if !s.sendConnectivityEvent(protocol.ConnectivityFrame{
+		Type:      "pair_invitation_reserve",
+		RequestID: correlationID,
+	}) {
+		return "", errors.New("relay pairing reservation unavailable")
+	}
+	select {
+	case <-ctx.Done():
+		return "", errors.New("relay pairing reservation timed out")
+	case frame := <-replyCh:
+		if frame.Type == "pair_invitation_reserved" && strings.TrimSpace(frame.AccountID) != "" {
+			return strings.TrimSpace(frame.AccountID), nil
+		}
+		if frame.Type == "error" && frame.Reason != "" {
+			return "", fmt.Errorf("relay pairing reservation failed: %s", frame.Reason)
+		}
+		return "", errors.New("relay pairing reservation failed")
+	}
+}
+
+func (s *runtimeState) registerConnectivityReply(requestID string) chan protocol.ConnectivityFrame {
+	ch := make(chan protocol.ConnectivityFrame, 1)
+	s.mu.Lock()
+	if s.connectivityReplies == nil {
+		s.connectivityReplies = make(map[string]chan protocol.ConnectivityFrame)
+	}
+	s.connectivityReplies[requestID] = ch
+	s.mu.Unlock()
+	return ch
+}
+
+func (s *runtimeState) unregisterConnectivityReply(requestID string) {
+	s.mu.Lock()
+	delete(s.connectivityReplies, requestID)
+	s.mu.Unlock()
+}
+
+func (s *runtimeState) deliverConnectivityReply(frame protocol.ConnectivityFrame) bool {
+	if frame.RequestID == "" {
+		return false
+	}
+	s.mu.RLock()
+	ch := s.connectivityReplies[frame.RequestID]
+	s.mu.RUnlock()
+	if ch == nil {
+		return false
+	}
+	select {
+	case ch <- frame:
+	default:
+	}
+	return true
 }
 
 func cleanupStaleRuntime(paths Paths) error {
@@ -312,7 +748,7 @@ func cleanupStaleRuntime(paths Paths) error {
 			return nil
 		}
 	}
-	for _, path := range []string{paths.SocketPath, paths.PIDFile} {
+	for _, path := range []string{paths.SocketPath, paths.BrokerSocketPath, paths.PIDFile} {
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
@@ -320,9 +756,77 @@ func cleanupStaleRuntime(paths Paths) error {
 	return nil
 }
 
+func acquireStartupLock(ctx context.Context, paths Paths) (func(), error) {
+	lockPath := filepath.Join(paths.RuntimeDir, defaultStartupLockFileName)
+	deadline := time.NewTimer(daemonStartupLockTimeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		release, err := tryAcquireStartupLock(lockPath)
+		if err == nil {
+			return release, nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return nil, err
+		}
+		cleanupStaleStartupLock(lockPath)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-deadline.C:
+			return nil, errors.New("timed out waiting for daemon startup lock")
+		case <-ticker.C:
+		}
+	}
+}
+
+func tryAcquireStartupLock(lockPath string) (func(), error) {
+	tmpFile, err := os.CreateTemp(filepath.Dir(lockPath), ".startup.lock.*")
+	if err != nil {
+		return nil, err
+	}
+	tmpPath := tmpFile.Name()
+	cleanupTmp := true
+	defer func() {
+		if cleanupTmp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err := fmt.Fprintf(tmpFile, "%d\n", os.Getpid()); err != nil {
+		_ = tmpFile.Close()
+		return nil, err
+	}
+	if err := tmpFile.Close(); err != nil {
+		return nil, err
+	}
+	if err := os.Link(tmpPath, lockPath); err != nil {
+		return nil, err
+	}
+	cleanupTmp = false
+	_ = os.Remove(tmpPath)
+
+	return func() {
+		_ = os.Remove(lockPath)
+	}, nil
+}
+
+func cleanupStaleStartupLock(lockPath string) {
+	payload, err := os.ReadFile(lockPath)
+	if err != nil {
+		return
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(payload)))
+	if err != nil || pid <= 0 || !processRunning(pid) {
+		_ = os.Remove(lockPath)
+	}
+}
+
 func currentRunningStatus(ctx context.Context, paths Paths) (StatusInfo, error) {
 	status, err := Status(ctx, paths)
-	if err == nil && status.Running {
+	if err == nil {
 		return status, nil
 	}
 
@@ -344,6 +848,14 @@ func currentRunningStatus(ctx context.Context, paths Paths) (StatusInfo, error) 
 }
 
 func writeJSONFile(path string, value any) error {
+	return writeJSONFileMode(path, value, 0o644)
+}
+
+func writePrivateJSONFile(path string, value any) error {
+	return writeJSONFileMode(path, value, 0o600)
+}
+
+func writeJSONFileMode(path string, value any, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -370,7 +882,7 @@ func writeJSONFile(path string, value any) error {
 		_ = os.Remove(tmpPath)
 		return err
 	}
-	if err := os.Chmod(tmpPath, 0o644); err != nil {
+	if err := os.Chmod(tmpPath, mode); err != nil {
 		_ = os.Remove(tmpPath)
 		return err
 	}

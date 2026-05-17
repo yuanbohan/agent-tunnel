@@ -73,6 +73,8 @@ func newRootCmd(handlers commandHandlers) *cobra.Command {
 	root.AddCommand(newAuthCmd(handlers))
 	root.AddCommand(newSessionCmd(handlers))
 	root.AddCommand(newDaemonCmd())
+	root.AddCommand(newPairCmd())
+	root.AddCommand(newWorkspaceCmd())
 	root.AddCommand(newUpdateCmd(handlers.update))
 	root.AddCommand(newRollbackCmd(handlers.rollback))
 	root.AddCommand(newVersionCmd())
@@ -155,8 +157,6 @@ func newAuthCmd(handlers commandHandlers) *cobra.Command {
 }
 
 func newSessionCmd(handlers commandHandlers) *cobra.Command {
-	var baseURL string
-
 	cmd := &cobra.Command{
 		Use:           "session",
 		Short:         "List and stop live tunnel sessions",
@@ -167,7 +167,6 @@ func newSessionCmd(handlers commandHandlers) *cobra.Command {
 			return cmd.Help()
 		},
 	}
-	cmd.PersistentFlags().StringVar(&baseURL, "base-url", "", "relay base URL")
 	cmd.SetHelpFunc(func(cmd *cobra.Command, _ []string) {
 		_, _ = io.WriteString(cmd.OutOrStdout(), sessionHelpText())
 	})
@@ -175,6 +174,7 @@ func newSessionCmd(handlers commandHandlers) *cobra.Command {
 		return usageWithHelp(sessionHelpText(), "%v", err)
 	})
 
+	var listJSON bool
 	listCmd := &cobra.Command{
 		Use:           "list",
 		Short:         "List live sessions",
@@ -182,13 +182,16 @@ func newSessionCmd(handlers commandHandlers) *cobra.Command {
 		SilenceErrors: true,
 		Args:          cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			resolved, err := resolveBaseURL(baseURL, osEnv)
-			if err != nil {
-				return err
+			runList := func() error {
+				return handlers.sessionList(cmd.Context(), sessionCommandArgs{JSON: listJSON}, cmd.OutOrStdout(), cmd.ErrOrStderr())
 			}
-			return handlers.sessionList(cmd.Context(), sessionCommandArgs{BaseURL: resolved}, cmd.OutOrStdout(), cmd.ErrOrStderr())
+			if listJSON {
+				return runSessionJSONCommand(cmd.OutOrStdout(), runList)
+			}
+			return runList()
 		},
 	}
+	listCmd.Flags().BoolVar(&listJSON, "json", false, "print live sessions as JSON")
 	listCmd.SetHelpFunc(func(cmd *cobra.Command, _ []string) {
 		_, _ = io.WriteString(cmd.OutOrStdout(), sessionListHelpText())
 	})
@@ -208,11 +211,7 @@ func newSessionCmd(handlers commandHandlers) *cobra.Command {
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			resolved, err := resolveBaseURL(baseURL, osEnv)
-			if err != nil {
-				return err
-			}
-			return handlers.sessionStop(cmd.Context(), sessionCommandArgs{BaseURL: resolved}, args[0], cmd.OutOrStdout(), cmd.ErrOrStderr())
+			return handlers.sessionStop(cmd.Context(), sessionCommandArgs{}, args[0], cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
 	stopCmd.SetHelpFunc(func(cmd *cobra.Command, _ []string) {
@@ -313,6 +312,7 @@ func newDaemonCmd() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&baseURL, "base-url", "",
 		fmt.Sprintf("relay base URL (fallback: %s, default: %s)", tunnelBaseURLEnv, defaultTunnelBaseURL))
 
+	var startJSON bool
 	startCmd := &cobra.Command{
 		Use:           "start",
 		Short:         "Start the background daemon",
@@ -320,9 +320,15 @@ func newDaemonCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runDaemonStart(cmd.Context(), baseURL, cmd.OutOrStdout(), cmd.ErrOrStderr())
+			if startJSON {
+				return runDaemonJSONCommand(cmd.OutOrStdout(), func() error {
+					return runDaemonStartWithOptions(cmd.Context(), baseURL, cmd.OutOrStdout(), cmd.ErrOrStderr(), daemonStartOptions{JSON: true})
+				})
+			}
+			return runDaemonStartWithOptions(cmd.Context(), baseURL, cmd.OutOrStdout(), cmd.ErrOrStderr(), daemonStartOptions{JSON: startJSON})
 		},
 	}
+	startCmd.Flags().BoolVar(&startJSON, "json", false, "print daemon status as JSON")
 	startCmd.SetHelpFunc(func(cmd *cobra.Command, _ []string) {
 		_, _ = io.WriteString(cmd.OutOrStdout(), daemonStartHelpText())
 	})
@@ -330,16 +336,24 @@ func newDaemonCmd() *cobra.Command {
 		return usageWithHelp(daemonStartHelpText(), "%v", err)
 	})
 	cmd.AddCommand(startCmd)
-	cmd.AddCommand(&cobra.Command{
+	var statusJSON bool
+	statusCmd := &cobra.Command{
 		Use:           "status",
 		Short:         "Show daemon status",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runDaemonStatus(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+			if statusJSON {
+				return runDaemonJSONCommand(cmd.OutOrStdout(), func() error {
+					return runDaemonStatusWithOptions(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), true)
+				})
+			}
+			return runDaemonStatusWithOptions(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), statusJSON)
 		},
-	})
+	}
+	statusCmd.Flags().BoolVar(&statusJSON, "json", false, "print daemon status as JSON")
+	cmd.AddCommand(statusCmd)
 	cmd.AddCommand(&cobra.Command{
 		Use:           "stop",
 		Short:         "Stop the background daemon",
@@ -350,46 +364,24 @@ func newDaemonCmd() *cobra.Command {
 			return runDaemonStop(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	})
-	cmd.AddCommand(&cobra.Command{
+	var doctorJSON bool
+	doctorCmd := &cobra.Command{
 		Use:           "doctor",
 		Short:         "Run daemon diagnostics",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runDaemonDoctor(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+			if doctorJSON {
+				return runDaemonJSONCommand(cmd.OutOrStdout(), func() error {
+					return runDaemonDoctorWithOptions(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), true)
+				})
+			}
+			return runDaemonDoctorWithOptions(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), doctorJSON)
 		},
-	})
-	cmd.AddCommand(&cobra.Command{
-		Use:           "open",
-		Short:         "Open the daemon tmux workspace",
-		Args:          cobra.NoArgs,
-		SilenceUsage:  true,
-		SilenceErrors: true,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runDaemonOpen(cmd.Context(), cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
-		},
-	})
-	cmd.AddCommand(&cobra.Command{
-		Use:           "close",
-		Short:         "Close one open daemon tmux workspace view",
-		Args:          cobra.NoArgs,
-		SilenceUsage:  true,
-		SilenceErrors: true,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runDaemonClose(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr())
-		},
-	})
-	cmd.AddCommand(&cobra.Command{
-		Use:           "sessions",
-		Short:         "List daemon tmux sessions",
-		Args:          cobra.NoArgs,
-		SilenceUsage:  true,
-		SilenceErrors: true,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runDaemonSessions(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr())
-		},
-	})
+	}
+	doctorCmd.Flags().BoolVar(&doctorJSON, "json", false, "print daemon diagnostics as JSON")
+	cmd.AddCommand(doctorCmd)
 	internalCmd := &cobra.Command{
 		Use:           "internal-run",
 		Hidden:        true,
@@ -403,4 +395,130 @@ func newDaemonCmd() *cobra.Command {
 	cmd.AddCommand(internalCmd)
 
 	return cmd
+}
+
+func newWorkspaceCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:           "workspace",
+		Short:         "Open or close the Tunnel workspace view",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		Args:          cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return cmd.Help()
+		},
+	}
+	cmd.SetHelpFunc(func(cmd *cobra.Command, _ []string) {
+		_, _ = io.WriteString(cmd.OutOrStdout(), workspaceHelpText())
+	})
+	cmd.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
+		return usageWithHelp(workspaceHelpText(), "%v", err)
+	})
+	openCmd := &cobra.Command{
+		Use:           "open",
+		Short:         "Open the Tunnel workspace view",
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runWorkspaceOpen(cmd.Context(), cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+		},
+	}
+	openCmd.SetHelpFunc(func(cmd *cobra.Command, _ []string) {
+		_, _ = io.WriteString(cmd.OutOrStdout(), workspaceOpenHelpText())
+	})
+	closeCmd := &cobra.Command{
+		Use:           "close",
+		Short:         "Close one open workspace view",
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runWorkspaceClose(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+		},
+	}
+	closeCmd.SetHelpFunc(func(cmd *cobra.Command, _ []string) {
+		_, _ = io.WriteString(cmd.OutOrStdout(), workspaceCloseHelpText())
+	})
+	cmd.AddCommand(openCmd)
+	cmd.AddCommand(closeCmd)
+	return cmd
+}
+
+func newPairCmd() *cobra.Command {
+	var pairJSON bool
+	pairCmd := &cobra.Command{
+		Use:           "pair",
+		Short:         "Pair and manage trusted client devices",
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if pairJSON {
+				return runDaemonJSONCommand(cmd.OutOrStdout(), func() error {
+					return runPair(cmd.Context(), cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), true)
+				})
+			}
+			if !pairInteractiveTerminal(cmd.InOrStdin(), cmd.OutOrStdout()) {
+				return guidancef("interactive pairing requires a terminal; use `tunnel pair --json` for automation")
+			}
+			return runPair(cmd.Context(), cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), false)
+		},
+	}
+	pairCmd.Flags().BoolVar(&pairJSON, "json", false, "print pairing invitation as JSON")
+	pairCmd.SetHelpFunc(func(cmd *cobra.Command, _ []string) {
+		_, _ = io.WriteString(cmd.OutOrStdout(), pairHelpText())
+	})
+	pairCmd.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
+		return usageWithHelp(pairHelpText(), "%v", err)
+	})
+	var devicesJSON bool
+	devicesCmd := &cobra.Command{
+		Use:           "devices",
+		Short:         "List trusted client devices",
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if devicesJSON {
+				return runDaemonJSONCommand(cmd.OutOrStdout(), func() error {
+					return runPairDevices(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), true)
+				})
+			}
+			return runPairDevices(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), devicesJSON)
+		},
+	}
+	devicesCmd.Flags().BoolVar(&devicesJSON, "json", false, "print trusted client devices as JSON")
+	devicesCmd.SetHelpFunc(func(cmd *cobra.Command, _ []string) {
+		_, _ = io.WriteString(cmd.OutOrStdout(), pairDevicesHelpText())
+	})
+	devicesCmd.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
+		return usageWithHelp(pairDevicesHelpText(), "%v", err)
+	})
+	pairCmd.AddCommand(devicesCmd)
+	var revokeJSON bool
+	revokeCmd := &cobra.Command{
+		Use:           "revoke <fingerprint>",
+		Short:         "Revoke a trusted client device",
+		Args:          cobra.ExactArgs(1),
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if revokeJSON {
+				return runDaemonJSONCommand(cmd.OutOrStdout(), func() error {
+					return runPairRevoke(cmd.Context(), args[0], cmd.OutOrStdout(), cmd.ErrOrStderr(), true)
+				})
+			}
+			return runPairRevoke(cmd.Context(), args[0], cmd.OutOrStdout(), cmd.ErrOrStderr(), revokeJSON)
+		},
+	}
+	revokeCmd.Flags().BoolVar(&revokeJSON, "json", false, "print revoked device as JSON")
+	revokeCmd.SetHelpFunc(func(cmd *cobra.Command, _ []string) {
+		_, _ = io.WriteString(cmd.OutOrStdout(), pairRevokeHelpText())
+	})
+	revokeCmd.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
+		return usageWithHelp(pairRevokeHelpText(), "%v", err)
+	})
+	pairCmd.AddCommand(revokeCmd)
+	return pairCmd
 }

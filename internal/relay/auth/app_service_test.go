@@ -2,7 +2,9 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 )
@@ -54,12 +56,13 @@ func (s *fakeStore) RegisterUser(_ context.Context, params RegisterUserParams) (
 		return User{}, ErrUsernameTaken
 	}
 	user := User{
-		ID:           s.nextUserID,
-		Username:     params.UsernameNorm,
-		UsernameNorm: params.UsernameNorm,
-		PasswordHash: params.PasswordHash,
-		CreatedAt:    params.Now,
-		UpdatedAt:    params.Now,
+		ID:               s.nextUserID,
+		Username:         params.UsernameNorm,
+		UsernameNorm:     params.UsernameNorm,
+		PasswordHash:     params.PasswordHash,
+		SubscriptionTier: SubscriptionTierFree,
+		CreatedAt:        params.Now,
+		UpdatedAt:        params.Now,
 	}
 	s.nextUserID++
 	s.usersByName[user.UsernameNorm] = user
@@ -115,6 +118,7 @@ func (s *fakeStore) CreateAppSession(_ context.Context, params CreateAppSessionP
 		AccessExpiresAt:    params.AccessExpiresAt,
 		RefreshTokenDigest: params.RefreshTokenDigest,
 		RefreshExpiresAt:   params.RefreshExpiresAt,
+		DeviceFingerprint:  params.DeviceFingerprint,
 		CreatedAt:          params.Now,
 		UpdatedAt:          params.Now,
 	}
@@ -157,6 +161,9 @@ func (s *fakeStore) RotateAppSessionByRefreshToken(_ context.Context, params Rot
 	if !session.RefreshExpiresAt.After(params.Now) {
 		return AppSession{}, ErrAppSessionExpired
 	}
+	if session.DeviceFingerprint != "" && session.DeviceFingerprint != params.DeviceFingerprint {
+		return AppSession{}, ErrAppSessionDeviceMismatch
+	}
 	if params.AbsoluteTTL > 0 {
 		absoluteExpiresAt := session.CreatedAt.Add(params.AbsoluteTTL)
 		if params.NewAccessExpiresAt.After(absoluteExpiresAt) {
@@ -193,11 +200,11 @@ func (s *fakeStore) RevokeAppSession(_ context.Context, sessionID string, now ti
 
 func (s *fakeStore) CreateInviteCode(_ context.Context, params CreateInviteCodeParams) (InviteCodeRecord, error) {
 	record := InviteCodeRecord{
-		ID:         int64(len(s.invites) + 1),
-		Code:       params.Code,
-		CreatedBy:  params.CreatedBy,
-		CreatedAt:  params.Now,
-		ExpiresAt:  params.ExpiresAt,
+		ID:        int64(len(s.invites) + 1),
+		Code:      params.Code,
+		CreatedBy: params.CreatedBy,
+		CreatedAt: params.Now,
+		ExpiresAt: params.ExpiresAt,
 	}
 	s.invites[params.Code] = record
 	return record, nil
@@ -305,10 +312,10 @@ func TestAppAuthServiceRegisterAndLogin(t *testing.T) {
 	}
 	code := "AB2C3D"
 	if _, err := store.CreateInviteCode(context.Background(), CreateInviteCodeParams{
-		Code: code,
-		CreatedBy:  "tester",
-		ExpiresAt:  now.Add(time.Hour),
-		Now:        now,
+		Code:      code,
+		CreatedBy: "tester",
+		ExpiresAt: now.Add(time.Hour),
+		Now:       now,
 	}); err != nil {
 		t.Fatalf("CreateInviteCode returned error: %v", err)
 	}
@@ -339,6 +346,61 @@ func TestAppAuthServiceRegisterAndLogin(t *testing.T) {
 	}
 	if issued.ExpiresIn != DefaultAccessTokenTTL {
 		t.Fatalf("ExpiresIn = %s, want %s", issued.ExpiresIn, DefaultAccessTokenTTL)
+	}
+}
+
+func TestAppAuthServiceBindsRefreshToDeviceFingerprint(t *testing.T) {
+	now := time.Date(2026, time.April, 11, 12, 0, 0, 0, time.UTC)
+	store := newFakeStore(func() time.Time { return now })
+	digester, err := NewSecretDigester("test-secret")
+	if err != nil {
+		t.Fatalf("NewSecretDigester returned error: %v", err)
+	}
+	service := NewAppAuthService(store, digester, PasswordHasher{
+		MemoryKiB:   8 * 1024,
+		Iterations:  1,
+		Parallelism: 1,
+		SaltLength:  8,
+		KeyLength:   16,
+	})
+	service.now = func() time.Time { return now }
+
+	const code = "AB2C3D"
+	if _, err := store.CreateInviteCode(context.Background(), CreateInviteCodeParams{
+		Code:      code,
+		CreatedBy: "operator",
+		ExpiresAt: now.Add(time.Hour),
+		Now:       now,
+	}); err != nil {
+		t.Fatalf("CreateInviteCode returned error: %v", err)
+	}
+	if _, err := service.Register(context.Background(), "alice", "password123", code); err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+
+	fingerprint := strings.Repeat("a", DeviceFingerprintHexLength)
+	issued, err := service.LoginWithDeviceFingerprint(context.Background(), "alice", "password123", strings.ToUpper(fingerprint))
+	if err != nil {
+		t.Fatalf("LoginWithDeviceFingerprint returned error: %v", err)
+	}
+	if issued.Session.DeviceFingerprint != fingerprint {
+		t.Fatalf("DeviceFingerprint = %q, want %q", issued.Session.DeviceFingerprint, fingerprint)
+	}
+
+	refreshed, err := service.RefreshWithDeviceFingerprint(context.Background(), issued.RefreshToken, fingerprint)
+	if err != nil {
+		t.Fatalf("RefreshWithDeviceFingerprint returned error: %v", err)
+	}
+	if refreshed.Session.DeviceFingerprint != fingerprint {
+		t.Fatalf("refreshed DeviceFingerprint = %q, want %q", refreshed.Session.DeviceFingerprint, fingerprint)
+	}
+
+	mismatchedFingerprint := strings.Repeat("b", DeviceFingerprintHexLength)
+	if _, err := service.RefreshWithDeviceFingerprint(context.Background(), refreshed.RefreshToken, mismatchedFingerprint); !errors.Is(err, ErrAppSessionDeviceMismatch) {
+		t.Fatalf("mismatched refresh error = %v, want ErrAppSessionDeviceMismatch", err)
+	}
+	if _, err := service.LoginWithDeviceFingerprint(context.Background(), "alice", "password123", "not-hex"); !errors.Is(err, ErrInvalidDeviceFingerprint) {
+		t.Fatalf("invalid fingerprint login error = %v, want ErrInvalidDeviceFingerprint", err)
 	}
 }
 

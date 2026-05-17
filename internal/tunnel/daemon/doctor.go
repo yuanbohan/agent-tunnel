@@ -48,6 +48,7 @@ func BuildDoctorReport(ctx context.Context, paths Paths, status StatusInfo) Doct
 		tmuxCheck(),
 		workspaceCheck(ctx, paths),
 		daemonConfigCheck(paths),
+		connectivityPathCheck(status),
 		lastLaunchFailureCheck(status),
 	}
 	return DoctorReport{Checks: checks}
@@ -217,6 +218,37 @@ func daemonConfigCheck(paths Paths) DoctorCheck {
 		Status: CheckStatusFail,
 		Detail: "local daemon config could not be read",
 	}
+}
+
+func connectivityPathCheck(status StatusInfo) DoctorCheck {
+	pathKind := strings.TrimSpace(status.LastConnectivityPath)
+	failure := strings.TrimSpace(status.LastConnectivityFailure)
+	if pathKind == "" && failure == "" {
+		return DoctorCheck{
+			Name:   "connectivity path",
+			Status: CheckStatusOK,
+			Detail: "no direct or relay connectivity attempt has been recorded yet",
+		}
+	}
+	if failure != "" {
+		return DoctorCheck{
+			Name:   "connectivity path",
+			Status: CheckStatusWarn,
+			Detail: fmt.Sprintf("last connectivity path attempt used %s and recorded failure: %s", pathKindOrUnknown(pathKind), failure),
+		}
+	}
+	return DoctorCheck{
+		Name:   "connectivity path",
+		Status: CheckStatusOK,
+		Detail: fmt.Sprintf("last connectivity path completed over %s", pathKind),
+	}
+}
+
+func pathKindOrUnknown(pathKind string) string {
+	if strings.TrimSpace(pathKind) == "" {
+		return "unknown path"
+	}
+	return pathKind
 }
 
 func lastLaunchFailureCheck(status StatusInfo) DoctorCheck {

@@ -74,16 +74,8 @@ func TestRegisterFrameRoundTrip(t *testing.T) {
 	}
 }
 
-func TestStopSessionFrame(t *testing.T) {
-	frame := StopSessionFrame()
-	if frame.Type != "stop_session" {
-		t.Fatalf("Type = %q, want stop_session", frame.Type)
-	}
-}
-
-func TestAttachOpenFrameRoundTrip(t *testing.T) {
-	frame := AttachOpenFrame("4d2c6ec8-787a-49c9-b9a0-5dbd8d31b7b1")
-
+func TestLaunchReadyFrame(t *testing.T) {
+	frame := LaunchReadyFrame(LaunchContext{Source: SessionLaunchSourceMobile, RequestID: "req-123"})
 	raw, err := json.Marshal(frame)
 	if err != nil {
 		t.Fatalf("Marshal returned error: %v", err)
@@ -93,53 +85,11 @@ func TestAttachOpenFrameRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(raw, &decoded); err != nil {
 		t.Fatalf("Unmarshal returned error: %v", err)
 	}
-
-	if decoded.Type != "attach_open" || decoded.ClientID != "4d2c6ec8-787a-49c9-b9a0-5dbd8d31b7b1" {
-		t.Fatalf("decoded = %#v, want attach_open with client id", decoded)
+	if decoded.Type != "launch_ready" {
+		t.Fatalf("Type = %q, want launch_ready", decoded.Type)
 	}
-}
-
-func TestAttachedMessageRoundTrip(t *testing.T) {
-	frame := AttachedMessage("sess-1", 132, 43)
-
-	raw, err := json.Marshal(frame)
-	if err != nil {
-		t.Fatalf("Marshal returned error: %v", err)
-	}
-
-	var decoded AttachControlMessage
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("Unmarshal returned error: %v", err)
-	}
-
-	if decoded.Type != "attached" || decoded.SessionID != "sess-1" || decoded.Cols != 132 || decoded.Rows != 43 {
-		t.Fatalf("decoded = %#v, want attached sess-1 132x43", decoded)
-	}
-}
-
-func TestSnapshotDoneMessagesRoundTrip(t *testing.T) {
-	agentRaw, err := json.Marshal(SnapshotDoneFrame("client-1"))
-	if err != nil {
-		t.Fatalf("Marshal agent frame returned error: %v", err)
-	}
-	var decoded AgentFrame
-	if err := json.Unmarshal(agentRaw, &decoded); err != nil {
-		t.Fatalf("Unmarshal agent frame returned error: %v", err)
-	}
-	if decoded.Type != "snapshot_done" || decoded.ClientID != "client-1" {
-		t.Fatalf("decoded = %#v, want snapshot_done client-1", decoded)
-	}
-
-	controlRaw, err := json.Marshal(SnapshotDoneMessage())
-	if err != nil {
-		t.Fatalf("Marshal control message returned error: %v", err)
-	}
-	var control AttachControlMessage
-	if err := json.Unmarshal(controlRaw, &control); err != nil {
-		t.Fatalf("Unmarshal control message returned error: %v", err)
-	}
-	if control.Type != "snapshot_done" {
-		t.Fatalf("control = %#v, want snapshot_done", control)
+	if decoded.LaunchContext == nil || decoded.LaunchContext.Source != SessionLaunchSourceMobile || decoded.LaunchContext.RequestID != "req-123" {
+		t.Fatalf("LaunchContext = %#v, want mobile req-123", decoded.LaunchContext)
 	}
 }
 
@@ -181,14 +131,10 @@ func TestSessionSummaryJSONUsesStableFieldNames(t *testing.T) {
 			t.Fatalf("json = %s, want field %q", got, want)
 		}
 	}
-	if strings.Contains(got, "latest_seq") {
-		t.Fatalf("json = %s, did not expect latest_seq", got)
-	}
-	if strings.Contains(got, "terminate_supported") {
-		t.Fatalf("json = %s, did not expect terminate_supported", got)
-	}
-	if strings.Contains(got, `"origin"`) {
-		t.Fatalf("json = %s, did not expect legacy origin", got)
+	for _, removed := range []string{"latest_seq", "terminate_supported", `"origin"`, "client_id"} {
+		if strings.Contains(got, removed) {
+			t.Fatalf("json = %s, did not expect removed field %q", got, removed)
+		}
 	}
 }
 
@@ -222,138 +168,5 @@ func TestSessionSummaryUsesStableDeviceIdentityKeysWhenUnset(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), `"device_id":""`) {
 		t.Fatalf("json = %s, want empty device_id", raw)
-	}
-}
-
-func TestClientInputMessageTextRoundTrip(t *testing.T) {
-	frame := EncodeClientInputText("hello", false)
-
-	raw, err := json.Marshal(frame)
-	if err != nil {
-		t.Fatalf("Marshal returned error: %v", err)
-	}
-
-	if strings.Contains(string(raw), `"session_id":`) {
-		t.Fatalf("json = %s, did not expect session_id field", raw)
-	}
-	if strings.Contains(string(raw), `"submit":`) {
-		t.Fatalf("json = %s, did not expect submit field when false", raw)
-	}
-
-	var decoded ClientInputMessage
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("Unmarshal returned error: %v", err)
-	}
-
-	if decoded.Type != "input_text" || decoded.Text != "hello" || decoded.Submit {
-		t.Fatalf("decoded = %#v, want input_text hello submit=false", decoded)
-	}
-}
-
-func TestClientInputMessageSubmitRoundTrip(t *testing.T) {
-	frame := EncodeClientInputText("hello\nworld", true)
-
-	raw, err := json.Marshal(frame)
-	if err != nil {
-		t.Fatalf("Marshal returned error: %v", err)
-	}
-
-	var decoded ClientInputMessage
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("Unmarshal returned error: %v", err)
-	}
-
-	if decoded.Type != "input_text" || decoded.Text != "hello\nworld" || !decoded.Submit {
-		t.Fatalf("decoded = %#v, want input_text submit hello\\nworld", decoded)
-	}
-}
-
-func TestClientInputMessageTextDefaultsSubmitFalseWhenOmitted(t *testing.T) {
-	raw := []byte(`{"type":"input_text","text":"hello"}`)
-
-	var decoded ClientInputMessage
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("Unmarshal returned error: %v", err)
-	}
-
-	if decoded.Submit {
-		t.Fatalf("Submit = true, want false for omitted field")
-	}
-
-	got := decoded.AgentFrame("client-1")
-	if got.Type != "input_text" || got.ClientID != "client-1" || got.Text != "hello" || got.Submit {
-		t.Fatalf("AgentFrame() = %#v, want input_text client-1 hello submit=false", got)
-	}
-}
-
-func TestClientInputMessageKeyRoundTrip(t *testing.T) {
-	frame := EncodeClientInputKey("TAB")
-
-	raw, err := json.Marshal(frame)
-	if err != nil {
-		t.Fatalf("Marshal returned error: %v", err)
-	}
-
-	var decoded ClientInputMessage
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("Unmarshal returned error: %v", err)
-	}
-
-	if decoded.Type != "input_key" || decoded.Key != "TAB" {
-		t.Fatalf("decoded = %#v, want input_key TAB", decoded)
-	}
-}
-
-func TestClientInputMessageAgentFrameIncludesClientID(t *testing.T) {
-	msg := EncodeClientInputText("hello", true)
-
-	got := msg.AgentFrame("client-1")
-	if got.Type != "input_text" || got.ClientID != "client-1" || got.Text != "hello" || !got.Submit {
-		t.Fatalf("AgentFrame() = %#v, want input_text client-1 hello submit=true", got)
-	}
-}
-
-func TestForwardInputTextFrameRoundTrip(t *testing.T) {
-	frame := ForwardInputTextFrame("client-1", "hello", true)
-
-	raw, err := json.Marshal(frame)
-	if err != nil {
-		t.Fatalf("Marshal returned error: %v", err)
-	}
-
-	var decoded AgentFrame
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("Unmarshal returned error: %v", err)
-	}
-
-	if decoded.Type != "input_text" || decoded.ClientID != "client-1" || decoded.Text != "hello" || !decoded.Submit {
-		t.Fatalf("decoded = %#v, want input_text client-1 hello submit=true", decoded)
-	}
-}
-
-func TestForwardInputKeyFrameRoundTrip(t *testing.T) {
-	frame := ForwardInputKeyFrame("client-1", "TAB")
-
-	raw, err := json.Marshal(frame)
-	if err != nil {
-		t.Fatalf("Marshal returned error: %v", err)
-	}
-
-	var decoded AgentFrame
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("Unmarshal returned error: %v", err)
-	}
-
-	if decoded.Type != "input_key" || decoded.ClientID != "client-1" || decoded.Key != "TAB" {
-		t.Fatalf("decoded = %#v, want input_key client-1 TAB", decoded)
-	}
-}
-
-func TestClientInputMessageAgentFrameSubmit(t *testing.T) {
-	msg := EncodeClientInputText("", true)
-
-	got := msg.AgentFrame("client-1")
-	if got.Type != "input_text" || got.ClientID != "client-1" || got.Text != "" || !got.Submit {
-		t.Fatalf("AgentFrame() = %#v, want input_text client-1 empty submit=true", got)
 	}
 }

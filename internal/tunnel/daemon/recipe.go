@@ -24,8 +24,9 @@ const (
 )
 
 var (
-	readOrCreateDeviceIdentityFn = ReadOrCreateDeviceIdentity
-	collectDeviceMetadataFn      = CollectDeviceMetadata
+	readOrCreateDeviceIdentityFn       = ReadOrCreateDeviceIdentity
+	readOrCreateConnectivityIdentityFn = ReadOrCreateConnectivityIdentity
+	collectDeviceMetadataFn            = CollectDeviceMetadata
 )
 
 type DeviceIdentity struct {

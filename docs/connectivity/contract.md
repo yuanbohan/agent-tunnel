@@ -2,7 +2,7 @@
 
 ## Status
 
-This document is the canonical phase-1 must-ship contract. When two docs disagree, this one wins. Decisions here were confirmed on 2026-04-26 and should not be changed without a new architecture review.
+This document is this repository's phase-1 implementation contract. Cross-repository protocol decisions live in [yuanbohan/agent-tunnel-protocols](https://github.com/yuanbohan/agent-tunnel-protocols); keep this file aligned with that protocol source of truth. Local mirror provenance for connectivity surfaces is tracked in `docs/protocols/connectivity.md`. Within this repository's connectivity docs, when two docs disagree, this file wins for implementation status. Decisions here were confirmed on 2026-04-26 and should not be changed without a new architecture review.
 
 This is intentionally short. Detail lives in the linked specs. Use this file to scope work.
 
@@ -32,14 +32,16 @@ Detail: `protocol/transport.md`, `protocol/relay.md`.
 
 ---
 
-### D2 — Daemon Auto-Start
+### D2 — Required Local Daemon
 
 - `tunnel run` checks for the local daemon socket on startup.
 - If the daemon is not running, `tunnel run` forks one as a detached child process before opening its PTY.
+- `tunnel run` waits for the local broker to accept its session id before opening its PTY.
 - The daemon process is parent-detached: it survives `tunnel run` exit.
-- The user does not manage daemon lifecycle as an explicit step.
+- The default user path does not require managing daemon lifecycle as an explicit step.
+- There is no public `tunnel run --daemon` bypass in this revision.
 
-`tunnel daemon ensure` is the new internal command that performs the check-and-fork. `tunnel run` calls it on every start.
+The check-and-fork path is internal to `tunnel run`; it is not a public daemon subcommand.
 
 **Why**: keeps the existing single-command UX. Without this, the connectivity rewrite would be a UX regression versus the old direct-relay-attach flow.
 
@@ -51,34 +53,35 @@ Detail: `ux/android.md` § Daemon Lifecycle Expectation, `protocol/local-broker.
 
 ---
 
-### D3 — Free Unlock Rule: Sticky First-Attach
+### D3 — Tier Rule: Computer Count Only
 
-- Each connected daemon card has at most one unlocked session for the official app on free tier.
-- The first session the user explicitly attaches (i.e., the first `interactive_request` Android sends for that daemon card) becomes that card's unlocked session.
-- Once chosen, the unlocked session does not change as long as it is alive.
-- When the unlocked session ends, the next user-attach picks a new one. **No auto-rollover**.
-- All other rows render as locked. Tapping a locked row shows: "Free can only run 1 session per computer at a time. Wait for `<unlocked label>` to finish, or upgrade Pro."
+- Free may keep at most one active trusted computer.
+- Pro may keep up to ten trusted computers.
+- Inside an active trusted computer, Free and Pro have identical session behavior: rows, previews, detail attach, reconnect, and path badges are all available.
+- There is no session-level tier gating in phase 1. Do not implement Free-only session row states, preview restrictions, or per-session entitlement leases.
+- Free computer changes use transactional Replace Computer: the old trust stays active until the new pairing SAS succeeds. On success, Android locally deletes the old trust and marks the new computer active.
+- Pro downgrade to Free requires a resolution UI when multiple trusted computers exist. Until the user chooses one active computer, the app must not auto-connect multiple computers.
 
-This rule is enforced **only by the official app**. Daemon and Relay do not know about it.
+This rule is enforced by the official app's local trusted-computer state. Daemon and Relay remain tier-unaware for session transport. Relay exposes only the account `tier`.
 
-**Why this and not "oldest"**: aligns with user intent ("the one I clicked is the one I want to use"). Eliminates the rollover surprise. Trivial to implement: Android stores `(daemon_id → unlocked_session_id?)`.
+**Phase-2 TODO**: Replace Computer currently removes the old trust locally on Android only. Add daemon-side old-trust revoke later so the replaced computer removes that Android fingerprint from its daemon trust store.
 
 Detail: `ux/subscription.md`.
 
 ---
 
-### D4 — App Identity: JWT With Client-Supplied `device_fingerprint`
+### D4 — App Identity: Opaque App Session With Client-Supplied `client_fingerprint`
 
-- Android first-install generates a long-lived device key in Android Keystore. `device_fingerprint = sha256(public_key_raw)` is cached locally.
-- Login request body: `{ username, password, device_fingerprint }`.
-- Relay validates credentials and signs a JWT carrying `{ sub: account_id, device_fingerprint, sid, exp }`.
-- Relay persists `(account_id, sid, device_fingerprint)` server-side.
-- Token refresh requires the same `device_fingerprint`; mismatch is rejected.
-- Phase 1 does **not** require a cryptographic proof that the JWT holder owns the device private key. Daemon-side security relies on pairing-pinned device keys, not JWT.
+- Android first-install generates a long-lived device key in Android Keystore. `client_fingerprint = sha256(public_key_raw)` is cached locally.
+- Login request body: `{ username, password, client_fingerprint }`.
+- Relay validates credentials and returns the existing opaque app access/refresh tokens.
+- Relay persists `(account_id, app_session_id, client_fingerprint)` server-side.
+- Token refresh requires the same `client_fingerprint`; mismatch is rejected.
+- Phase 1 does **not** require a cryptographic proof that the app-session holder owns the device private key. Daemon-side security relies on pairing-pinned device keys, not app-session token format.
 
 **Phase-2 TODO**
 
-- Add `/auth/register-device` flow that requires the client to sign a Relay challenge with the device key, upgrading the JWT to a "proof-of-possession" model.
+- Add `/auth/register-device` flow that requires the client to sign a Relay challenge with the device key, upgrading the app session to a proof-of-possession model.
 
 Detail: `protocol/relay.md` § App Authentication Model.
 
@@ -103,6 +106,8 @@ Detail: `protocol/transport.md` § Stream Model.
 ### D6 — Frame Encoding: JSON Payloads, Length-Framed
 
 - Outer frame: `[1 byte type] [varint length] [payload bytes]`.
+- `varint length` uses QUIC variable-length integer encoding.
+- Each frame payload is capped at 1 MiB (`1 << 20`).
 - Payload encoding for typed control frames: **JSON**.
 - Exception: `live_bytes` and `snapshot_chunk` carry raw PTY bytes, no JSON wrap. The outer length frame is sufficient.
 - Forward compatibility: receivers MUST ignore unknown JSON fields and unknown frame types. Protocol-breaking changes bump `protocol_version` in `hello`.
@@ -115,7 +120,7 @@ Detail: `protocol/transport.md` § Stream Model.
 
 **Phase-2 TODO**
 
-- If profiling shows JSON parse cost on Android > 5% of a frame's wall time, define `protocol_version = 2` with CBOR.
+- If profiling shows JSON parse cost on Android > 5% of a frame's wall time, define a new protocol version or compatibility-line decision for CBOR. `protocol_version = 2` remains the JSON protocol.
 
 Detail: `protocol/transport.md` § Control Stream Encoding.
 
@@ -125,48 +130,59 @@ Detail: `protocol/transport.md` § Control Stream Encoding.
 
 Each sub-phase has a hard gate: do not start the next until the current one's checklist passes.
 
-### 1.0 — Interop Spike (Hard Gate)
+### 1.0 — Interop Spike (Protocol/Data Gate)
 
 - `quic-go` listener with ALPN `tunnel-conn/1`.
-- `quiche` (JNI) Android client.
-- Both present self-signed Ed25519 certs; both verify peer SPKI byte-for-byte.
-- Exchange ≥ 1 KB on a bidirectional stream and ≥ 1 KB on a unidirectional stream.
+- Go mobile-simulator client that follows the Android-facing protocol shape.
+- Both Go endpoints present self-signed Ed25519 certs; both verify peer SPKI byte-for-byte.
+- Exchange JSON `hello`, JSON `session_index`, JSON `interactive_request`, JSON `interactive_granted`, JSON `snapshot_begin`, raw `snapshot_chunk`, JSON `snapshot_end`, and raw `live_bytes`.
+- Exercise direct UDP and Relay-like packet-carrier paths.
 - Reconnect 10 times in a loop without leaks.
-- **Exit criterion**: spike repo passes the above with both quiche and quic-go on macOS host, Android emulator API 33, Android device API 30+.
+- **Exit criterion**: repository tests pass the above with a Go daemon side and a Go mobile-simulator side. This proves Step 1 protocol/data assumptions, not production Android runtime compatibility.
 
-If `quiche` packaging blocks, fall back to `kwik` per `reference/decision-record.md`.
+FIXME(Android): Before claiming Android compatibility, run the same pinned TLS
+and stream/data exchange through the Android `quiche` JNI client on emulator and
+device. If `quiche` packaging blocks, fall back to `kwik` per
+`reference/decision-record.md`.
 
 ### 1.1 — Pairing + Local Broker
 
-- daemon identity persistence (`~/.tunnel/identity.json`, mode 0600).
+- daemon identity persistence (`connectivity_identity.json` in the daemon state directory, mode 0600).
 - invitation persistence (`~/.tunnel/invitations.json`).
 - SAS computation with golden vectors checked in (≥ 3 cases) before any pairing UI is built.
-- `tunnel daemon pair` mints an invitation; QR rendering.
+- `tunnel pair` reserves Relay correlation, prints a terminal QR code, waits for the client response, and prompts for the 6-digit SAS; `--json` prints the signed invitation payload.
 - Test client (Go-only, no Android required) completes a full pair end-to-end through Relay.
-- `tunnel daemon ensure` auto-start path works from cold.
-- Local broker socket: `tunnel run` registers, pushes preview, daemon mirrors.
+- `tunnel run` daemon auto-start path works from cold.
+- Local broker socket: `tunnel run` registers, pushes preview, daemon caches latest preview.
 
-**Exit criterion**: golden test (`tunnel daemon pair` + test client) passes; daemon-state sweep tests pass; local broker roundtrip < 5ms.
+**Exit criterion**: golden test (`tunnel pair` + test client) passes; daemon-state sweep tests pass; local broker roundtrip < 5ms.
 
 ### 1.2 — Relay Control Plane + Fallback Transport
 
-- Relay WSS for app + daemon, JWT auth with `device_fingerprint`.
-- `daemon_register`, `app_register`, `daemon_snapshot`, presence churn.
-- `pair_response_submit` / `pair_response_forward`.
+- Relay WSS for app + daemon, app-session auth with `client_fingerprint`.
+- `computer_register`, `app_register`, `computer_snapshot`, presence churn.
+- REST `POST /api/pairing/responses` / daemon `pair_response_forward`.
 - Fallback WSS-QUIC tunnel (no direct path yet).
-- Android `quiche` client connects via fallback only, runs full session list + preview + interactive flow.
+- Go mobile-simulator client connects via fallback only, runs the client-facing
+  session list, preview, interactive request, input, and reconnect flow.
+- Android companion implementation validates the same contract in Step 6 once
+  the production Android repository is in scope.
 
-**Exit criterion**: Android can list sessions, view preview, attach interactive, send input on fallback path against a real daemon. No direct-path code on this milestone.
+**Exit criterion**: repository tests prove the fallback-only transport contract
+with a Go daemon side and Go mobile-simulator side, including Relay-opaque
+packet forwarding. Android production runtime compatibility remains Step 6.
 
 ### 1.3 — Direct Path + STUN + Degradation
 
-- Self-hosted STUN listener.
-- `rendezvous_open` / `rendezvous_hint`.
-- UDP hole-punch + direct QUIC handshake with a 3s deadline.
-- On failure, transition to the fallback path from 1.2 without restarting the connection state machine.
-- Path badge in UI.
+- Self-hosted STUN listener in the Relay binary and Compose deployment.
+- `rendezvous_open` / `rendezvous_hint` / `rendezvous_close` live-only Relay control-plane events.
+- Go simulator and daemon-side direct UDP QUIC path with a 3s direct attempt default.
+- On direct timeout/failure, transition to the fallback path from 1.2 using a fresh relay QUIC handshake and the same session protocol.
+- Path badge data via `hello.path_kind` and `path_state`.
 
-**Exit criterion**: cone-NAT deployments achieve ≥ 80% direct success on a measurement panel of ≥ 20 test pairings; symmetric NATs cleanly fall back.
+**Repository exit criterion**: repository tests prove controlled local direct success and direct-timeout fallback with a Go daemon side and Go mobile-simulator side, while Relay remains content-opaque.
+
+**Production measurement gate**: before claiming production Android direct-path completeness, cone-NAT deployments should achieve ≥ 80% direct success on a measurement panel of ≥ 20 test pairings; symmetric NATs must cleanly fall back. That production validation is Step 6/Step 7 work.
 
 ---
 
@@ -174,7 +190,7 @@ If `quiche` packaging blocks, fall back to `kwik` per `reference/decision-record
 
 - UDP relay (deferred per D1 TODO).
 - Daemon-side per-session ACL (single-user assumption).
-- Per-session entitlement tokens / leases (replaced by D3).
+- Session-level tier gates and per-session entitlement tokens / leases (replaced by D3).
 - Multi-paired-device session handover.
 - Cross-device cursor / focus sync.
 - Preview cache on Android.
@@ -205,7 +221,8 @@ If `quiche` packaging blocks, fall back to `kwik` per `reference/decision-record
 - `protocol/relay.md` — control plane events and rate limits.
 - `protocol/pairing.md` — invitation + SAS.
 - `protocol/local-broker.md` — daemon ↔ tunnel run.
-- `ux/subscription.md` — sticky-first-attach detail.
+- `../protocols/connectivity.md` — local mirror provenance for cross-repo SSOT alignment.
+- `ux/subscription.md` — Free / Pro computer-count product rule.
 - `ux/android.md` — Android client behavior reference.
 - `reference/decision-record.md` — historical decision rationale.
 - `_archive/2026-04-26-architect-review.md` — earlier review record.

@@ -26,21 +26,6 @@ release_asset_name() {
 	printf 'tunnel_%s_%s_%s.tar.gz\n' "$version" "$os" "$arch"
 }
 
-release_compatibility_line() {
-	version="${1#v}"
-	version="${version%%-*}"
-	major="${version%%.*}"
-	if [ "$major" = "0" ]; then
-		rest="${version#*.}"
-		minor="${rest%%.*}"
-		if [ -n "$minor" ]; then
-			printf '%s.%s\n' "$major" "$minor"
-			return 0
-		fi
-	fi
-	printf '%s\n' "$major"
-}
-
 release_hash_file() {
 	if command -v shasum >/dev/null 2>&1; then
 		shasum -a 256 "$1" | awk '{print $1}'
@@ -78,6 +63,57 @@ detect_arch() {
 		arm64|aarch64) printf 'arm64\n' ;;
 		*) return 1 ;;
 	esac
+}
+
+tmux_available() {
+	case "${TUNNEL_INSTALL_TMUX_AVAILABLE:-}" in
+		1|true|yes) return 0 ;;
+		0|false|no) return 1 ;;
+	esac
+	command -v tmux >/dev/null 2>&1
+}
+
+tmux_install_guidance() {
+	case "$os" in
+		darwin)
+			printf 'tmux is required for mobile-created Tunnel workspaces; install it with `brew install tmux`.\n'
+			;;
+		linux)
+			if [ -r /etc/os-release ]; then
+				distro_id=$(sed -n 's/^ID=//p' /etc/os-release | head -n 1 | tr -d '"')
+			else
+				distro_id=""
+			fi
+			case "$distro_id" in
+				ubuntu|debian)
+					printf 'tmux is required for mobile-created Tunnel workspaces; install it with `sudo apt install tmux`.\n'
+					;;
+				fedora)
+					printf 'tmux is required for mobile-created Tunnel workspaces; install it with `sudo dnf install tmux`.\n'
+					;;
+				centos|rhel|rocky|almalinux)
+					printf 'tmux is required for mobile-created Tunnel workspaces; install it with `sudo yum install tmux`.\n'
+					;;
+				arch)
+					printf 'tmux is required for mobile-created Tunnel workspaces; install it with `sudo pacman -S tmux`.\n'
+					;;
+				*)
+					printf 'tmux is required for mobile-created Tunnel workspaces; install `tmux` with your system package manager.\n'
+					;;
+			esac
+			;;
+		*)
+			printf 'tmux is required for mobile-created Tunnel workspaces; install `tmux` with your system package manager.\n'
+			;;
+	esac
+}
+
+warn_if_tmux_missing() {
+	if tmux_available; then
+		return 0
+	fi
+	printf 'warning: '
+	tmux_install_guidance
 }
 
 curl_fetch() {
@@ -129,16 +165,6 @@ if [ -z "$version" ]; then
 	version=$(printf '%s' "$manifest_json" | read_manifest_field version)
 	if [ -z "$version" ]; then
 		printf 'error: latest.json did not contain a version\n' >&2
-		exit 1
-	fi
-
-	manifest_line=$(printf '%s' "$manifest_json" | read_manifest_field compatibility_line)
-	if [ -z "$manifest_line" ]; then
-		printf 'error: latest.json did not contain compatibility_line\n' >&2
-		exit 1
-	fi
-	if [ "$manifest_line" != "$(release_compatibility_line "$version")" ]; then
-		printf 'error: latest.json compatibility_line does not match version %s\n' "$version" >&2
 		exit 1
 	fi
 fi
@@ -211,3 +237,5 @@ case ":$PATH:" in
 		printf 'add %s to PATH to run tunnel globally\n' "$install_dir"
 		;;
 esac
+
+warn_if_tmux_missing

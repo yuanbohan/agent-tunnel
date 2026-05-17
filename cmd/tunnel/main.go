@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,7 +17,6 @@ import (
 	"strings"
 	"sync"
 	"syscall"
-	"text/tabwriter"
 	"time"
 
 	"golang.org/x/term"
@@ -24,10 +25,13 @@ import (
 	"yuanbohan/tunnel/internal/tunnel/connector"
 	"yuanbohan/tunnel/internal/tunnel/daemon"
 	"yuanbohan/tunnel/internal/tunnel/launcher"
+	"yuanbohan/tunnel/internal/tunnel/pairingqr"
 	"yuanbohan/tunnel/internal/tunnel/session"
 )
 
 const startupRelayWait = 10 * time.Second
+const tunnelRunBrokerRegistrationTimeout = 5 * time.Second
+const tunnelRunDaemonCleanupTimeout = 2 * time.Second
 
 const (
 	startupBannerGreen = "\x1b[92m"
@@ -35,19 +39,33 @@ const (
 	startupBannerReset = "\x1b[0m"
 )
 
+const pairDisplayNameWidth = 48
+const pairPromptRows = 2
+
 const startupBannerClear = "\r\x1b[2K"
 
 type relayConnector interface {
-	session.OutputSink
-	SetInitialSize(cols, rows int)
 	SetInitialConnectTimeout(timeout time.Duration)
 	SetLaunchContext(protocol.LaunchContext)
-	SetStopHandler(func())
-	BindHub(hub *session.Hub)
+	MarkLaunchReady(protocol.LaunchContext)
 	Run(ctx context.Context)
 	WaitUntilConnected(ctx context.Context, timeout time.Duration) bool
 	SubscribeStateChanges() (<-chan connector.State, func())
 	CurrentState() connector.State
+}
+
+type localSessionRegistration interface {
+	session.OutputSink
+	SetStopHandler(func())
+	BindHub(hub *session.Hub)
+	Run(context.Context)
+	WaitUntilRegistered(context.Context) error
+	Close() error
+}
+
+type tunnelRunDaemonEnsureResult struct {
+	Paths   daemon.Paths
+	Started bool
 }
 
 var (
@@ -61,19 +79,29 @@ var (
 	newConnector = func(url, token string, info protocol.SessionInfo) relayConnector {
 		return connector.New(url, token, info)
 	}
-	collectSessionMetadata    = daemon.CollectSessionMetadata
-	readSessionDeviceIdentity = daemon.ReadDeviceIdentity
-	resolveDaemonPaths        = daemon.ResolvePaths
-	startDaemon               = daemon.StartBackground
-	runDaemonRuntime          = daemon.Run
-	daemonStatus              = daemon.Status
-	daemonStop                = daemon.Stop
-	daemonDoctor              = daemon.Doctor
-	ensureDaemonTmuxAvailable = daemon.EnsureTmuxAvailable
-	openDaemonWorkspace       = daemon.OpenWorkspace
-	closeDaemonWorkspace      = daemon.CloseWorkspace
-	listDaemonWorkspace       = daemon.ListWorkspaceSessions
-	resolveDoctorRelayBaseURL = func(ctx context.Context, paths daemon.Paths) string {
+	newSessionRegistration = func(paths daemon.Paths, baseURL, authToken string, info protocol.SessionInfo) localSessionRegistration {
+		client := daemon.NewSessionRegistrationClient(paths, info)
+		client.SetExpectedDaemonContext(baseURL, authToken)
+		return client
+	}
+	ensureTunnelRunDaemon             = ensureDaemonForTunnelRun
+	collectSessionMetadata            = daemon.CollectSessionMetadata
+	readSessionDeviceIdentity         = daemon.ReadDeviceIdentity
+	readOrCreateSessionDeviceIdentity = daemon.ReadOrCreateDeviceIdentity
+	resolveDaemonPaths                = daemon.ResolvePaths
+	startDaemon                       = daemon.StartBackground
+	runDaemonRuntime                  = daemon.Run
+	daemonStatus                      = daemon.Status
+	daemonStop                        = daemon.Stop
+	daemonDoctor                      = daemon.Doctor
+	daemonPair                        = daemon.Pair
+	daemonPendingPairing              = daemon.PendingPairing
+	daemonConfirmPairing              = daemon.ConfirmPendingPairing
+	daemonTrustedDevices              = daemon.TrustedDevices
+	daemonRevokeTrustedDevice         = daemon.RevokeTrustedDevice
+	openDaemonWorkspace               = daemon.OpenWorkspace
+	closeDaemonWorkspace              = daemon.CloseWorkspace
+	resolveDoctorRelayBaseURL         = func(ctx context.Context, paths daemon.Paths) string {
 		status, err := daemonStatus(ctx, paths)
 		if err == nil && strings.TrimSpace(status.BaseURL) != "" {
 			return status.BaseURL
@@ -85,6 +113,19 @@ var (
 		return defaultTunnelBaseURL
 	}
 	doctorProbeRelayHealth = probeDoctorRelayHealth
+	pairNow                = func() time.Time { return time.Now().UTC() }
+	pairPollInterval       = time.Second
+	pairSleep              = func(ctx context.Context, d time.Duration) bool {
+		timer := time.NewTimer(d)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return false
+		case <-timer.C:
+			return true
+		}
+	}
+	pairTerminalSize = pairingqr.TerminalSizeForWriter
 )
 
 func main() {
@@ -174,7 +215,7 @@ func runTunnelSession(ctx context.Context, stdin io.Reader, parsed runArgs, stdo
 	}
 	info := protocol.SessionInfo{
 		SessionID:      sessionID,
-		DeviceID:       sessionDeviceID(),
+		DeviceID:       tunnelRunSessionDeviceID(),
 		Launcher:       command.Name,
 		Label:          parsed.Label,
 		CWD:            cwd,
@@ -187,15 +228,29 @@ func runTunnelSession(ctx context.Context, stdin io.Reader, parsed runArgs, stdo
 		LaunchSource:   launchSource,
 	}
 
-	relay := newConnector(relayURL, resolvedAuth.Token, info)
-	relay.SetLaunchContext(launchContext)
-	relay.SetInitialConnectTimeout(startupRelayWait)
+	daemonEnsure, err := ensureTunnelRunDaemon(ctx, parsed.BaseURL, resolvedAuth.Token)
+	if err != nil {
+		return fmt.Errorf("daemon is required for tunnel run: %w", err)
+	}
+	if ctx.Err() != nil {
+		stopAutoStartedDaemon(daemonEnsure)
+		return nil
+	}
+	paths := daemonEnsure.Paths
+	brokerInfo := info
+	if strings.TrimSpace(brokerInfo.DeviceID) == "" {
+		brokerInfo.DeviceID = sessionDeviceIDFromPaths(paths)
+	}
+
 	var (
 		runningMu     sync.Mutex
 		running       *session.Running
 		stopRequested bool
 	)
-	relay.SetStopHandler(func() {
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+	localRegistration := newSessionRegistration(paths, parsed.BaseURL, resolvedAuth.Token, brokerInfo)
+	localRegistration.SetStopHandler(func() {
 		runningMu.Lock()
 		current := running
 		if current == nil {
@@ -204,36 +259,69 @@ func runTunnelSession(ctx context.Context, stdin io.Reader, parsed runArgs, stdo
 		runningMu.Unlock()
 		if current != nil {
 			_ = current.Close()
+			return
 		}
+		_ = localRegistration.Close()
+		cancelRun()
 	})
-	go relay.Run(ctx)
-	if !relay.WaitUntilConnected(ctx, startupRelayWait) {
-		if ctx.Err() != nil {
+	go localRegistration.Run(runCtx)
+	registrationCtx, cancelRegistration := context.WithTimeout(runCtx, tunnelRunBrokerRegistrationTimeout)
+	if err := localRegistration.WaitUntilRegistered(registrationCtx); err != nil {
+		cancelRegistration()
+		_ = localRegistration.Close()
+		stopAutoStartedDaemon(daemonEnsure)
+		if errors.Is(err, context.Canceled) || errors.Is(runCtx.Err(), context.Canceled) {
+			return nil
+		}
+		return fmt.Errorf("daemon broker registration failed: %w; run `tunnel daemon start` and try again", err)
+	}
+	cancelRegistration()
+	if runCtx.Err() != nil {
+		_ = localRegistration.Close()
+		stopAutoStartedDaemon(daemonEnsure)
+		return nil
+	}
+	defer localRegistration.Close()
+
+	relayInfo := brokerInfo
+	relay := newConnector(relayURL, resolvedAuth.Token, relayInfo)
+	relay.SetLaunchContext(launchContext)
+	relay.SetInitialConnectTimeout(startupRelayWait)
+	relayCtx, cancelRelay := context.WithCancel(runCtx)
+	defer cancelRelay()
+	go relay.Run(relayCtx)
+	if !relay.WaitUntilConnected(runCtx, startupRelayWait) {
+		cancelRelay()
+		stopAutoStartedDaemon(daemonEnsure)
+		if runCtx.Err() != nil {
 			return nil
 		}
 		return fmt.Errorf("failed to connect to the relay server")
 	}
-	if ctx.Err() != nil {
+	if runCtx.Err() != nil {
+		cancelRelay()
+		stopAutoStartedDaemon(daemonEnsure)
 		return nil
 	}
 
 	local, err := prepareLocalTerminal()
 	if err != nil {
+		cancelRelay()
+		stopAutoStartedDaemon(daemonEnsure)
 		return err
 	}
 	defer local.Restore()
 
 	sinkID, sink := local.SinkRegistration()
-	if cols, rows, sizeErr := local.CurrentSize(); sizeErr == nil {
-		relay.SetInitialSize(cols, rows)
-	}
 	initialSinks := map[string]session.OutputSink{
-		sinkID:  sink,
-		"relay": relay,
+		sinkID:          sink,
+		"daemon-broker": localRegistration,
 	}
 
-	started, err := startSession(ctx, command.Path, command.Args, initialSinks)
+	started, err := startSession(runCtx, command.Path, command.Args, initialSinks)
 	if err != nil {
+		cancelRelay()
+		stopAutoStartedDaemon(daemonEnsure)
 		return err
 	}
 	runningMu.Lock()
@@ -245,7 +333,10 @@ func runTunnelSession(ctx context.Context, stdin io.Reader, parsed runArgs, stdo
 	}
 	defer started.Close()
 
-	relay.BindHub(started.Hub)
+	localRegistration.BindHub(started.Hub)
+	if !shouldStop {
+		relay.MarkLaunchReady(launchContext)
+	}
 
 	if parsed.Verbose {
 		fmt.Fprint(stderr, startupBanner(command.Name, sessionID))
@@ -259,6 +350,61 @@ func runTunnelSession(ctx context.Context, stdin io.Reader, parsed runArgs, stdo
 	}()
 
 	return waitForExit(ctx, done, waitErr)
+}
+
+func ensureDaemonForTunnelRun(ctx context.Context, baseURL, authToken string) (tunnelRunDaemonEnsureResult, error) {
+	if err := ensureDaemonPlatformSupported(); err != nil {
+		return tunnelRunDaemonEnsureResult{}, err
+	}
+	paths, err := resolveDaemonPaths()
+	if err != nil {
+		return tunnelRunDaemonEnsureResult{}, err
+	}
+	if status, err := daemonStatus(ctx, paths); err == nil && status.Running {
+		if runningBaseURL := strings.TrimSpace(status.BaseURL); runningBaseURL != "" && runningBaseURL != baseURL {
+			return tunnelRunDaemonEnsureResult{Paths: paths}, fmt.Errorf("daemon is running against %s; stop it before running against %s", runningBaseURL, baseURL)
+		}
+		if !daemon.AuthContextMatches(status, authToken) {
+			return tunnelRunDaemonEnsureResult{Paths: paths}, errors.New("daemon auth context does not match this tunnel run; stop and restart the daemon")
+		}
+		return tunnelRunDaemonEnsureResult{Paths: paths}, nil
+	}
+	if strings.TrimSpace(authToken) == "" {
+		return tunnelRunDaemonEnsureResult{Paths: paths}, errors.New("missing auth token")
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return tunnelRunDaemonEnsureResult{Paths: paths}, err
+	}
+	result, err := startDaemon(ctx, daemon.StartOptions{
+		Executable: executable,
+		Paths:      paths,
+		BaseURL:    baseURL,
+		AuthToken:  authToken,
+	})
+	if err != nil {
+		return tunnelRunDaemonEnsureResult{Paths: paths}, fmt.Errorf("failed to start daemon: %w", err)
+	}
+	status := result.Status
+	ensureResult := tunnelRunDaemonEnsureResult{Paths: paths, Started: !result.AlreadyRunning}
+	if runningBaseURL := strings.TrimSpace(status.BaseURL); runningBaseURL != "" && runningBaseURL != baseURL {
+		stopAutoStartedDaemon(ensureResult)
+		return tunnelRunDaemonEnsureResult{Paths: paths}, fmt.Errorf("daemon is running against %s; stop it before running against %s", runningBaseURL, baseURL)
+	}
+	if !daemon.AuthContextMatches(status, authToken) {
+		stopAutoStartedDaemon(ensureResult)
+		return tunnelRunDaemonEnsureResult{Paths: paths}, errors.New("daemon auth context does not match this tunnel run; stop and restart the daemon")
+	}
+	return ensureResult, nil
+}
+
+func stopAutoStartedDaemon(result tunnelRunDaemonEnsureResult) {
+	if !result.Started {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), tunnelRunDaemonCleanupTimeout)
+	defer cancel()
+	_ = daemonStop(ctx, result.Paths)
 }
 
 func launchContextFromRunArgs(parsed runArgs) protocol.LaunchContext {
@@ -278,7 +424,23 @@ func sessionDeviceID() string {
 	if err != nil {
 		return ""
 	}
+	return sessionDeviceIDFromPaths(paths)
+}
+
+func sessionDeviceIDFromPaths(paths daemon.Paths) string {
 	identity, err := readSessionDeviceIdentity(paths)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(identity.DeviceID)
+}
+
+func tunnelRunSessionDeviceID() string {
+	paths, err := resolveDaemonPaths()
+	if err != nil {
+		return ""
+	}
+	identity, err := readOrCreateSessionDeviceIdentity(paths)
 	if err != nil {
 		return ""
 	}
@@ -315,7 +477,7 @@ func legacyLauncherCommand(args []string) string {
 		return ""
 	}
 	switch first {
-	case "run", "auth", "session", "daemon", "update", "rollback", "help", "version":
+	case "run", "auth", "session", "daemon", "pair", "workspace", "update", "rollback", "help", "version":
 		return ""
 	default:
 		return first
@@ -361,6 +523,10 @@ func resolveDaemonAuth() (resolvedAuth, error) {
 	return resolveRuntimeAuth(newAuthStore(), osEnv)
 }
 
+func authUnavailable(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "no auth token available")
+}
+
 func ensureDaemonPlatformSupported() error {
 	switch runtime.GOOS {
 	case "darwin", "linux":
@@ -370,14 +536,16 @@ func ensureDaemonPlatformSupported() error {
 	}
 }
 
+type daemonStartOptions struct {
+	JSON bool
+}
+
 func runDaemonStart(ctx context.Context, rawBaseURL string, stdout, stderr io.Writer) error {
+	return runDaemonStartWithOptions(ctx, rawBaseURL, stdout, stderr, daemonStartOptions{})
+}
+
+func runDaemonStartWithOptions(ctx context.Context, rawBaseURL string, stdout, stderr io.Writer, options daemonStartOptions) error {
 	if err := ensureDaemonPlatformSupported(); err != nil {
-		return err
-	}
-	if err := ensureDaemonTmuxAvailable(); err != nil {
-		if errors.Is(err, daemon.ErrTmuxNotFound) {
-			return errors.New(daemonTmuxInstallGuidance())
-		}
 		return err
 	}
 	baseURL, err := resolveCLIBaseURL(rawBaseURL)
@@ -392,7 +560,18 @@ func runDaemonStart(ctx context.Context, rawBaseURL string, stdout, stderr io.Wr
 		if runningBaseURL := strings.TrimSpace(status.BaseURL); runningBaseURL != "" && runningBaseURL != baseURL {
 			return fmt.Errorf("daemon already running against %s; stop it before starting with %s", runningBaseURL, baseURL)
 		}
+		auth, err := resolveDaemonAuth()
+		if err != nil && !authUnavailable(err) {
+			return err
+		}
+		if err == nil && !daemon.AuthContextMatches(status, auth.Token) {
+			return errors.New("daemon already running with a different auth context; stop it with `tunnel daemon stop`, then run `tunnel daemon start` again")
+		}
+		if options.JSON {
+			return writeIndentedJSON(stdout, status)
+		}
 		_, _ = fmt.Fprintf(stdout, "daemon already running (pid=%d device_id=%s)\n", status.PID, status.DeviceID)
+		writeLaunchHealthWarning(stdout, status)
 		return nil
 	}
 	auth, err := resolveDaemonAuth()
@@ -416,17 +595,32 @@ func runDaemonStart(ctx context.Context, rawBaseURL string, stdout, stderr io.Wr
 		if runningBaseURL := strings.TrimSpace(result.Status.BaseURL); runningBaseURL != "" && runningBaseURL != baseURL {
 			return fmt.Errorf("daemon already running against %s; stop it before starting with %s", runningBaseURL, baseURL)
 		}
+		if !daemon.AuthContextMatches(result.Status, auth.Token) {
+			return errors.New("daemon already running with a different auth context; stop it with `tunnel daemon stop`, then run `tunnel daemon start` again")
+		}
+		if options.JSON {
+			return writeIndentedJSON(stdout, result.Status)
+		}
 		_, _ = fmt.Fprintf(stdout, "daemon already running (pid=%d device_id=%s)\n", result.Status.PID, result.Status.DeviceID)
+		writeLaunchHealthWarning(stdout, result.Status)
 		return nil
+	}
+	if options.JSON {
+		return writeIndentedJSON(stdout, result.Status)
 	}
 	_, _ = fmt.Fprintf(stdout, "daemon started (pid=%d device_id=%s)\n", result.Status.PID, result.Status.DeviceID)
 	if result.PreservedSessions > 0 {
 		_, _ = fmt.Fprintf(stdout, "preserved %d existing workspace sessions\n", result.PreservedSessions)
 	}
+	writeLaunchHealthWarning(stdout, result.Status)
 	return nil
 }
 
 func runDaemonStatus(ctx context.Context, stdout, stderr io.Writer) error {
+	return runDaemonStatusWithOptions(ctx, stdout, stderr, false)
+}
+
+func runDaemonStatusWithOptions(ctx context.Context, stdout, stderr io.Writer, jsonOutput bool) error {
 	if err := ensureDaemonPlatformSupported(); err != nil {
 		return err
 	}
@@ -437,6 +631,9 @@ func runDaemonStatus(ctx context.Context, stdout, stderr io.Writer) error {
 	status, err := daemonStatus(ctx, paths)
 	if err != nil {
 		if errors.Is(err, daemon.ErrNotRunning) {
+			if jsonOutput {
+				return writeIndentedJSON(stdout, daemon.StatusInfo{Running: false})
+			}
 			_, _ = io.WriteString(stdout, "running: false\n")
 			_, _ = io.WriteString(stdout, "status: not started\n")
 			_, _ = io.WriteString(stdout, "hint: start it with `tunnel daemon start`\n")
@@ -444,8 +641,109 @@ func runDaemonStatus(ctx context.Context, stdout, stderr io.Writer) error {
 		}
 		return err
 	}
+	if jsonOutput {
+		return writeIndentedJSON(stdout, status)
+	}
 	renderDaemonStatus(stdout, status)
 	return nil
+}
+
+func writeLaunchHealthWarning(stdout io.Writer, status daemon.StatusInfo) {
+	if strings.TrimSpace(status.LaunchHealth) != daemon.LaunchHealthDegraded {
+		return
+	}
+	detail := daemonLaunchHealthSummary(status)
+	if failure := strings.TrimSpace(status.LastFailure); failure != "" {
+		detail = fmt.Sprintf("%s (%s)", detail, failure)
+	}
+	_, _ = fmt.Fprintf(stdout, "warning: launch readiness is %s; remote launch may be unavailable\n", detail)
+}
+
+func writeIndentedJSON(stdout io.Writer, value any) error {
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(value)
+}
+
+type daemonCommandErrorEnvelope struct {
+	Error daemonCommandError `json:"error"`
+}
+
+type daemonCommandError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+func runDaemonJSONCommand(stdout io.Writer, run func() error) error {
+	err := run()
+	if err == nil {
+		return nil
+	}
+	var exit exitError
+	if errors.As(err, &exit) {
+		return err
+	}
+	_ = writeIndentedJSON(stdout, daemonCommandErrorEnvelope{
+		Error: daemonCommandError{
+			Code:    daemonCommandErrorCode(err),
+			Message: err.Error(),
+		},
+	})
+	return err
+}
+
+func runSessionJSONCommand(stdout io.Writer, run func() error) error {
+	err := run()
+	if err == nil {
+		return nil
+	}
+	var exit exitError
+	if errors.As(err, &exit) {
+		return err
+	}
+	_ = writeIndentedJSON(stdout, daemonCommandErrorEnvelope{
+		Error: daemonCommandError{
+			Code:    sessionCommandErrorCode(err),
+			Message: err.Error(),
+		},
+	})
+	return err
+}
+
+func sessionCommandErrorCode(err error) string {
+	message := strings.TrimSpace(err.Error())
+	switch {
+	case errors.Is(err, daemon.ErrNotRunning) || strings.Contains(message, daemon.ErrNotRunning.Error()):
+		return "daemon_not_running"
+	case errors.Is(err, daemon.ErrSessionNotFound) || strings.Contains(message, daemon.ErrSessionNotFound.Error()):
+		return "session_not_found"
+	default:
+		return "session_command_failed"
+	}
+}
+
+func daemonCommandErrorCode(err error) string {
+	message := strings.TrimSpace(err.Error())
+	switch {
+	case errors.Is(err, daemon.ErrNotRunning) || strings.Contains(message, daemon.ErrNotRunning.Error()):
+		return "daemon_not_running"
+	case errors.Is(err, daemon.ErrPairingInvitationNotFound) || message == daemon.ErrPairingInvitationNotFound.Error():
+		return "pairing_invitation_not_found"
+	case errors.Is(err, daemon.ErrPairingInvitationExpired) || message == daemon.ErrPairingInvitationExpired.Error():
+		return "pairing_invitation_expired"
+	case errors.Is(err, daemon.ErrPairingInvitationConsumed) || message == daemon.ErrPairingInvitationConsumed.Error():
+		return "pairing_invitation_consumed"
+	case errors.Is(err, daemon.ErrPairingSASMismatch) || message == daemon.ErrPairingSASMismatch.Error():
+		return "pairing_sas_mismatch"
+	case errors.Is(err, daemon.ErrTrustedDeviceNotFound) || message == daemon.ErrTrustedDeviceNotFound.Error():
+		return "trusted_device_not_found"
+	case errors.Is(err, daemon.ErrInvalidAndroidFingerprint) || message == daemon.ErrInvalidAndroidFingerprint.Error():
+		return "invalid_client_fingerprint"
+	case message == "relay connectivity event queue unavailable":
+		return "connectivity_event_queue_unavailable"
+	default:
+		return "daemon_command_failed"
+	}
 }
 
 func renderDaemonStatus(stdout io.Writer, status daemon.StatusInfo) {
@@ -463,6 +761,8 @@ func renderDaemonStatus(stdout io.Writer, status daemon.StatusInfo) {
 	_, _ = fmt.Fprintf(stdout, "%s Relay URL: %s\n", doctorStyled("🔗", "36", color), daemonRelayURLSummary(status))
 	_, _ = fmt.Fprintf(stdout, "%s Workspace: %s\n", doctorStyled("🧰", "36", color), daemonWorkspaceSummary(status))
 	_, _ = fmt.Fprintf(stdout, "%s Last Launch Failure: %s\n", doctorStyled("📝", "36", color), daemonLastFailureSummary(status))
+	_, _ = fmt.Fprintf(stdout, "%s Connectivity Path: %s\n", doctorStyled("📡", "36", color), daemonConnectivityPathSummary(status))
+	_, _ = fmt.Fprintf(stdout, "%s Last Connectivity Failure: %s\n", doctorStyled("🧭", "36", color), daemonConnectivityFailureSummary(status))
 }
 
 func daemonStatusHeadline(label, summary string, state string, color bool) string {
@@ -576,11 +876,22 @@ func daemonLastFailureSummary(status daemon.StatusInfo) string {
 	return status.LastFailure
 }
 
-func daemonDisplayValue(value, fallback string) string {
-	if strings.TrimSpace(value) == "" {
-		return fallback
+func daemonConnectivityPathSummary(status daemon.StatusInfo) string {
+	if strings.TrimSpace(status.LastConnectivityPath) == "" {
+		return "unknown"
 	}
-	return value
+	return status.LastConnectivityPath
+}
+
+func daemonConnectivityFailureSummary(status daemon.StatusInfo) string {
+	if strings.TrimSpace(status.LastConnectivityFailure) == "" {
+		return "none"
+	}
+	return status.LastConnectivityFailure
+}
+
+func daemonDisplayValue(value, fallback string) string {
+	return terminalDisplayValue(value, fallback)
 }
 
 func runDaemonStop(ctx context.Context, stdout, stderr io.Writer) error {
@@ -602,7 +913,7 @@ func runDaemonStop(ctx context.Context, stdout, stderr io.Writer) error {
 	return nil
 }
 
-func runDaemonOpen(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer) error {
+func runWorkspaceOpen(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer) error {
 	if err := ensureDaemonPlatformSupported(); err != nil {
 		return err
 	}
@@ -615,7 +926,7 @@ func runDaemonOpen(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 			return errors.New(daemonTmuxInstallGuidance())
 		}
 		if errors.Is(err, daemon.ErrNoWorkspaceSessions) {
-			_, _ = io.WriteString(stdout, "no daemon-managed sessions; start one from a remote launch first\n")
+			_, _ = io.WriteString(stdout, "no workspace sessions yet; start one from the mobile app first\n")
 			return nil
 		}
 		return err
@@ -623,7 +934,7 @@ func runDaemonOpen(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	return nil
 }
 
-func runDaemonClose(ctx context.Context, stdout, stderr io.Writer) error {
+func runWorkspaceClose(ctx context.Context, stdout, stderr io.Writer) error {
 	if err := ensureDaemonPlatformSupported(); err != nil {
 		return err
 	}
@@ -636,16 +947,16 @@ func runDaemonClose(ctx context.Context, stdout, stderr io.Writer) error {
 			return errors.New(daemonTmuxInstallGuidance())
 		}
 		if errors.Is(err, daemon.ErrNoOpenWorkspace) {
-			_, _ = io.WriteString(stdout, "no open daemon workspace to close\n")
+			_, _ = io.WriteString(stdout, "no open Tunnel workspace view to close\n")
 			return nil
 		}
 		return err
 	}
-	_, _ = io.WriteString(stdout, "daemon workspace view closed\n")
+	_, _ = io.WriteString(stdout, "Tunnel workspace view closed\n")
 	return nil
 }
 
-func runDaemonSessions(ctx context.Context, stdout, stderr io.Writer) error {
+func runPair(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, jsonOutput bool) error {
 	if err := ensureDaemonPlatformSupported(); err != nil {
 		return err
 	}
@@ -653,26 +964,250 @@ func runDaemonSessions(ctx context.Context, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	sessions, err := listDaemonWorkspace(ctx, paths)
+	invitation, err := daemonPair(ctx, paths)
 	if err != nil {
-		if errors.Is(err, daemon.ErrTmuxNotFound) {
-			return errors.New(daemonTmuxInstallGuidance())
+		return err
+	}
+	if jsonOutput {
+		return writeIndentedJSON(stdout, invitation)
+	}
+	qrPayload, err := pairingqr.CompactPayload(pairingqr.CompactInvitation{
+		Version:         invitation.Version,
+		InvitationID:    invitation.InvitationID,
+		CorrelationID:   invitation.CorrelationID,
+		Nonce:           invitation.Nonce,
+		DeviceID:        invitation.DeviceID,
+		DisplayName:     invitation.DisplayName,
+		DaemonPublicKey: invitation.DaemonPublicKey,
+		ExpiresAt:       invitation.ExpiresAt,
+		Signature:       invitation.Signature,
+	})
+	if err != nil {
+		return err
+	}
+	qr, err := pairingqr.RenderTerminal(qrPayload)
+	if err != nil {
+		return err
+	}
+	_, _ = io.WriteString(stdout, "Scan this QR in the mobile app to pair this computer.\n\n")
+	if warning := pairQRSizeWarning(qr, stdout); warning != "" {
+		_, _ = io.WriteString(stdout, warning)
+		_, _ = io.WriteString(stdout, "\n")
+	}
+	_, _ = io.WriteString(stdout, qr.Output)
+	_, _ = io.WriteString(stdout, "\n")
+	response, err := waitForPairingResponse(ctx, paths, invitation, func(secondsRemaining int64) {
+		writePairCountdown(stdout, secondsRemaining)
+	})
+	if err != nil {
+		_, _ = io.WriteString(stdout, "\n")
+		if errors.Is(err, daemon.ErrPairingInvitationExpired) {
+			_, _ = io.WriteString(stdout, "Pairing invitation expired. Run `tunnel pair` again to create a new QR code.\n")
+			return nil
 		}
 		return err
 	}
-	if len(sessions) == 0 {
-		_, _ = io.WriteString(stdout, "no workspace sessions\n")
+	_, _ = fmt.Fprintf(stdout, "\nClient: %s\n", pairingDisplayName(response.AndroidDisplayName, "unknown"))
+	_, _ = fmt.Fprintf(stdout, "Fingerprint: %s\n", response.AndroidFingerprint)
+	_, _ = io.WriteString(stdout, "Enter the 6-digit pairing code shown on the client: ")
+	sas, err := readPairingSAS(stdin)
+	if err != nil {
+		return err
+	}
+	if sas == "" {
+		_, _ = io.WriteString(stdout, "Pairing cancelled.\n")
 		return nil
 	}
-	w := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(w, "NAME\tWINDOWS\tATTACHED")
-	for _, session := range sessions {
-		_, _ = fmt.Fprintf(w, "%s\t%d\t%d\n", session.Name, session.Windows, session.Attached)
+	completion, err := daemonConfirmPairing(ctx, paths, response.InvitationID, sas)
+	if err != nil {
+		if errors.Is(err, daemon.ErrPairingSASMismatch) {
+			return fmt.Errorf("pairing code did not match; run `tunnel pair` again")
+		}
+		return err
 	}
-	return w.Flush()
+	name := pairingDisplayName(completion.Device.DisplayName, "client")
+	_, _ = fmt.Fprintf(stdout, "Paired %s (%s)\n", name, completion.Device.Fingerprint)
+	if warning := pairingWarningText(completion.Warning); warning != "" {
+		_, _ = fmt.Fprintf(stdout, "Warning: %s\n", warning)
+	}
+	return nil
+}
+
+func pairInteractiveTerminal(stdin io.Reader, stdout io.Writer) bool {
+	inFile, ok := stdin.(*os.File)
+	if !ok {
+		return false
+	}
+	outFile, ok := stdout.(*os.File)
+	if !ok {
+		return false
+	}
+	return term.IsTerminal(int(inFile.Fd())) && term.IsTerminal(int(outFile.Fd()))
+}
+
+func pairingDisplayName(value, fallback string) string {
+	return truncateCell(terminalDisplayValue(value, fallback), pairDisplayNameWidth)
+}
+
+func pairingWarningText(warning string) string {
+	warning = strings.TrimSpace(warning)
+	if warning == "" {
+		return ""
+	}
+	if warning == "relay connectivity event queue unavailable" {
+		return "local trust changed, but relay visibility update is delayed; daemon reconnect will refresh mobile visibility"
+	}
+	return terminalDisplayValue(warning, "pairing completed with a warning")
+}
+
+func writePairCountdown(stdout io.Writer, secondsRemaining int64) {
+	_, _ = fmt.Fprintf(stdout, "\r\x1b[2KWaiting for a client response. This invitation expires in %d seconds.", secondsRemaining)
+}
+
+func pairSecondsRemaining(expiresAt int64) int64 {
+	secondsRemaining := expiresAt - pairNow().Unix()
+	if secondsRemaining < 0 {
+		return 0
+	}
+	return secondsRemaining
+}
+
+func waitForPairingResponse(ctx context.Context, paths daemon.Paths, invitation daemon.PairInvitation, onCountdown func(int64)) (daemon.PendingPairingResponse, error) {
+	invitationID := strings.TrimSpace(invitation.InvitationID)
+	lastCountdown := int64(-1)
+	for {
+		secondsRemaining := pairSecondsRemaining(invitation.ExpiresAt)
+		if onCountdown != nil && secondsRemaining != lastCountdown {
+			onCountdown(secondsRemaining)
+			lastCountdown = secondsRemaining
+		}
+		pending, err := daemonPendingPairing(ctx, paths)
+		if err != nil {
+			return daemon.PendingPairingResponse{}, err
+		}
+		for _, response := range pending {
+			if strings.TrimSpace(response.InvitationID) == invitationID {
+				return response, nil
+			}
+		}
+		if pairNow().Unix() >= invitation.ExpiresAt {
+			return daemon.PendingPairingResponse{}, daemon.ErrPairingInvitationExpired
+		}
+		interval := pairPollInterval
+		if interval <= 0 {
+			interval = 10 * time.Millisecond
+		}
+		if !pairSleep(ctx, interval) {
+			if ctx.Err() != nil {
+				return daemon.PendingPairingResponse{}, ctx.Err()
+			}
+			return daemon.PendingPairingResponse{}, errors.New("pairing wait cancelled")
+		}
+	}
+}
+
+func readPairingSAS(stdin io.Reader) (string, error) {
+	if stdin == nil {
+		return "", nil
+	}
+	reader := bufio.NewReader(stdin)
+	value, err := reader.ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	if len(value) != 6 {
+		return "", errors.New("pairing code must be 6 digits")
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return "", errors.New("pairing code must be 6 digits")
+		}
+	}
+	return value, nil
+}
+
+func pairQRSizeWarning(qr pairingqr.TerminalQRCode, stdout io.Writer) string {
+	size, ok := pairTerminalSize(stdout)
+	if !ok {
+		return ""
+	}
+	return pairingqr.SizeWarning(qr, size, pairPromptRows)
+}
+
+func runPairDevices(ctx context.Context, stdout, stderr io.Writer, jsonOutput bool) error {
+	if err := ensureDaemonPlatformSupported(); err != nil {
+		return err
+	}
+	paths, err := resolveDaemonPaths()
+	if err != nil {
+		return err
+	}
+	devices, err := daemonTrustedDevices(ctx, paths)
+	if err != nil {
+		return err
+	}
+	if jsonOutput {
+		return writeIndentedJSON(stdout, devices)
+	}
+	if len(devices) == 0 {
+		_, _ = io.WriteString(stdout, "No paired devices.\n")
+		return nil
+	}
+	columns := []tableColumn{
+		{title: "Fingerprint", width: 64},
+		{title: "Name", width: 22},
+		{title: "Paired", width: 16},
+	}
+	rows := make([][]string, 0, len(devices))
+	for _, device := range devices {
+		rows = append(rows, []string{
+			device.Fingerprint,
+			daemonDisplayValue(device.DisplayName, "unknown"),
+			formatPairingTimestamp(device.PairedAt),
+		})
+	}
+	renderTable(stdout, columns, rows)
+	return nil
+}
+
+func formatPairingTimestamp(unixSeconds int64) string {
+	if unixSeconds <= 0 {
+		return "-"
+	}
+	return time.Unix(unixSeconds, 0).Local().Format("2006-01-02 15:04")
+}
+
+func runPairRevoke(ctx context.Context, fingerprint string, stdout, stderr io.Writer, jsonOutput bool) error {
+	if err := ensureDaemonPlatformSupported(); err != nil {
+		return err
+	}
+	paths, err := resolveDaemonPaths()
+	if err != nil {
+		return err
+	}
+	device, err := daemonRevokeTrustedDevice(ctx, paths, fingerprint)
+	if err != nil {
+		return err
+	}
+	if jsonOutput {
+		return writeIndentedJSON(stdout, device)
+	}
+	_, _ = fmt.Fprintf(stdout, "Revoked %s\n", device.Fingerprint)
+	if warning := pairingWarningText(device.Warning); warning != "" {
+		_, _ = fmt.Fprintf(stdout, "Warning: %s\n", warning)
+	}
+	return nil
 }
 
 func runDaemonDoctor(ctx context.Context, stdout, stderr io.Writer) error {
+	return runDaemonDoctorWithOptions(ctx, stdout, stderr, false)
+}
+
+func runDaemonDoctorWithOptions(ctx context.Context, stdout, stderr io.Writer, jsonOutput bool) error {
 	if err := ensureDaemonPlatformSupported(); err != nil {
 		return err
 	}
@@ -685,6 +1220,15 @@ func runDaemonDoctor(ctx context.Context, stdout, stderr io.Writer) error {
 		return err
 	}
 	report = augmentDaemonDoctorReport(ctx, paths, report)
+	if jsonOutput {
+		if err := writeIndentedJSON(stdout, report); err != nil {
+			return err
+		}
+		if code := report.ExitCode(); code != 0 {
+			return exitError{code: code}
+		}
+		return nil
+	}
 	renderDaemonDoctor(stdout, report)
 	if code := report.ExitCode(); code != 0 {
 		return exitError{code: code}
@@ -871,22 +1415,22 @@ func doctorCheckLabel(name string) string {
 func daemonTmuxInstallGuidance() string {
 	switch runtime.GOOS {
 	case "darwin":
-		return "tmux is required for `tunnel daemon`; install it with `brew install tmux` and try again"
+		return "tmux is required for mobile-created Tunnel workspaces; install it with `brew install tmux` and try again"
 	case "linux":
 		switch detectLinuxDistroID() {
 		case "ubuntu", "debian":
-			return "tmux is required for `tunnel daemon`; install it with `sudo apt install tmux` and try again"
+			return "tmux is required for mobile-created Tunnel workspaces; install it with `sudo apt install tmux` and try again"
 		case "fedora":
-			return "tmux is required for `tunnel daemon`; install it with `sudo dnf install tmux` and try again"
+			return "tmux is required for mobile-created Tunnel workspaces; install it with `sudo dnf install tmux` and try again"
 		case "centos", "rhel", "rocky", "almalinux":
-			return "tmux is required for `tunnel daemon`; install it with `sudo yum install tmux` and try again"
+			return "tmux is required for mobile-created Tunnel workspaces; install it with `sudo yum install tmux` and try again"
 		case "arch":
-			return "tmux is required for `tunnel daemon`; install it with `sudo pacman -S tmux` and try again"
+			return "tmux is required for mobile-created Tunnel workspaces; install it with `sudo pacman -S tmux` and try again"
 		default:
-			return "tmux is required for `tunnel daemon`; install `tmux` with your system package manager and try again"
+			return "tmux is required for mobile-created Tunnel workspaces; install `tmux` with your system package manager and try again"
 		}
 	default:
-		return "tmux is required for `tunnel daemon`; install `tmux` and try again"
+		return "tmux is required for mobile-created Tunnel workspaces; install `tmux` and try again"
 	}
 }
 

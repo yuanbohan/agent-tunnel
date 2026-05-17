@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 
+	"yuanbohan/tunnel/internal/tunnel/daemon"
 	tunnelupdate "yuanbohan/tunnel/internal/tunnel/update"
 )
 
@@ -27,6 +28,8 @@ var newUpdaterEngine = func(callbacks updaterCallbacks) updaterEngine {
 		OnReplaceFailure: callbacks.onReplaceFailure,
 	})
 }
+
+var checkTmuxAvailable = daemon.EnsureTmuxAvailable
 
 func runManualUpdate(ctx context.Context, stdout, stderr io.Writer) error {
 	state, err := loadUpdaterStateForInstall(stderr)
@@ -49,11 +52,21 @@ func runManualUpdate(ctx context.Context, stdout, stderr io.Writer) error {
 	if _, err := fmt.Fprintf(stdout, "updated tunnel from %s to %s\n", result.CurrentVersion, result.InstalledVersion); err != nil {
 		return err
 	}
+	writeTmuxReadinessWarning(stdout)
 	if strings.TrimSpace(result.RollbackUnavailableReason) != "" {
 		_, err := fmt.Fprintf(stdout, "%s\n", result.RollbackUnavailableReason)
 		return err
 	}
 	return nil
+}
+
+func writeTmuxReadinessWarning(stdout io.Writer) {
+	if checkTmuxAvailable == nil {
+		return
+	}
+	if err := checkTmuxAvailable(); errors.Is(err, daemon.ErrTmuxNotFound) {
+		_, _ = fmt.Fprintf(stdout, "warning: %s\n", daemonTmuxInstallGuidance())
+	}
 }
 
 func runManualRollback(ctx context.Context, stdout, stderr io.Writer) error {

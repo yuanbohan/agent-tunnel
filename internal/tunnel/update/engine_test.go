@@ -280,8 +280,8 @@ func releaseTestServer(t *testing.T, version, goos, goarch string, binaryPayload
 	archiveChecksum := sha256.Sum256(archivePayload)
 	checksumsPayload := []byte(fmt.Sprintf("%s  %s\n", hex.EncodeToString(archiveChecksum[:]), assetName))
 	corruptChecksumsPayload := []byte(fmt.Sprintf("%s  %s\n", hex.EncodeToString(bytes.Repeat([]byte{'0'}, sha256.Size))[:64], assetName))
-	latestManifestPayload := []byte(fmt.Sprintf(`{"version":"%s","compatibility_line":"%s"}`, version, "0.1"))
-	badLatestManifestPayload := []byte(fmt.Sprintf(`{"version":"%s","compatibility_line":"%s"}`, version, "0.1"))
+	latestManifestPayload := []byte(fmt.Sprintf(`{"version":"%s"}`, version))
+	badLatestManifestPayload := []byte(`{}`)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

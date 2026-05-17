@@ -12,28 +12,29 @@ type Envelope struct {
 }
 
 const (
-	CodeSuccess            = 0
-	CodeInvalidRequest     = 1001
-	CodeRateLimited        = 1002
-	CodeUsernameTaken      = 1003
-	CodePasswordTooShort   = 1004
-	CodeInvalidAccessCode  = 1005
-	CodeInviteCodeNotFound = 1006
-	CodeInviteCodeExpired  = 1007
-	CodeInviteCodeDisabled = 1008
-	CodeInviteCodeConsumed = 1009
-	CodeInvalidUsername    = 1010
-	CodeInvalidCredentials = 1011
-	CodeInvalidSession     = 1012
-	CodeAgentTokenNotFound = 1013
-	CodeUserNotFound       = 1014
-	CodeSessionNotFound    = 1015
-	CodeUnauthorized       = 1016
-	CodeForbidden          = 1017
-	CodeNotFound           = 1018
-	CodeMethodNotAllowed   = 1019
-	CodeServiceUnavailable = 2001
-	CodeInternalError      = 2002
+	CodeSuccess                  = 0
+	CodeInvalidRequest           = 1001
+	CodeRateLimited              = 1002
+	CodeUsernameTaken            = 1003
+	CodePasswordTooShort         = 1004
+	CodeInvalidAccessCode        = 1005
+	CodeInviteCodeNotFound       = 1006
+	CodeInviteCodeExpired        = 1007
+	CodeInviteCodeDisabled       = 1008
+	CodeInviteCodeConsumed       = 1009
+	CodeInvalidUsername          = 1010
+	CodeInvalidCredentials       = 1011
+	CodeInvalidSession           = 1012
+	CodeAgentTokenNotFound       = 1013
+	CodeUserNotFound             = 1014
+	CodeSessionNotFound          = 1015
+	CodeUnauthorized             = 1016
+	CodeForbidden                = 1017
+	CodeNotFound                 = 1018
+	CodeMethodNotAllowed         = 1019
+	CodeInvalidDeviceFingerprint = 1020
+	CodeServiceUnavailable       = 2001
+	CodeInternalError            = 2002
 )
 
 type reasonInfo struct {
@@ -90,6 +91,10 @@ var reasonMap = map[string]reasonInfo{
 		Code:    CodeInvalidSession,
 		Message: "The session is invalid.",
 	},
+	"invalid_client_fingerprint": {
+		Code:    CodeInvalidDeviceFingerprint,
+		Message: "The client fingerprint is invalid.",
+	},
 	"agent_token_not_found": {
 		Code:    CodeAgentTokenNotFound,
 		Message: "This agent token was not found.",
@@ -110,9 +115,21 @@ var reasonMap = map[string]reasonInfo{
 		Code:    CodeForbidden,
 		Message: "The request is forbidden.",
 	},
+	"client_fingerprint_mismatch": {
+		Code:    CodeForbidden,
+		Message: "The request is forbidden.",
+	},
+	"pairing_account_mismatch": {
+		Code:    CodeForbidden,
+		Message: "The request is forbidden.",
+	},
 	"not_found": {
 		Code:    CodeNotFound,
 		Message: "The requested endpoint was not found.",
+	},
+	"pairing_correlation_not_found": {
+		Code:    CodeNotFound,
+		Message: "The requested resource was not found.",
 	},
 	"method_not_allowed": {
 		Code:    CodeMethodNotAllowed,

@@ -28,18 +28,6 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-repo_relay_version=$("$go_bin" run "$repo_root/cmd/relay" version | awk 'NR==1 {print $2}')
-if [ -z "$repo_relay_version" ]; then
-	printf 'error: could not determine relay compatibility line from current repo\n' >&2
-	exit 1
-fi
-release_line=$(release_compatibility_line "$version")
-relay_line=$(release_compatibility_line "$repo_relay_version")
-if [ "$release_line" != "$relay_line" ]; then
-	printf 'error: release version %s is outside the current relay compatibility line %s\n' "$version" "$relay_line" >&2
-	exit 1
-fi
-
 rm -rf "$output_dir"
 mkdir -p "$output_dir"
 

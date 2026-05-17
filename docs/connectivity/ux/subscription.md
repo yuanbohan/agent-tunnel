@@ -1,8 +1,8 @@
-# Phase-1 Subscription Model
+# Phase-1 Connectivity Tier Model
 
 ## Status
 
-Phase-1 subscription rule for the QUIC session-connectivity architecture. Per `../contract.md` D3, this is the **sticky first-attach** rule. Older drafts based on "oldest live session" or "active-session lease tokens" are superseded.
+Phase 1 uses a computer-count product rule. Free and Pro are identical inside one active trusted computer: session rows, previews, detail attach, reconnect, and path badges use the same daemon transport behavior.
 
 ## Product Direction
 
@@ -11,168 +11,130 @@ Phase 1 has two product tiers:
 - `free`
 - `pro`
 
-There are no other paid packages in phase 1.
+The only entitlement difference is trusted computer count:
 
-The product promise:
+- `free`: at most 1 active trusted computer.
+- `pro`: at most 10 trusted computers.
 
-- transport security is identical on free and pro
-- `tunnel run` on the computer is not subscription-limited
-- the only difference is how much of the daemon-owned session list the official mobile app lets the user actively use
+There is no session-level tier logic in phase 1. Do not implement Free-only session row states, preview restrictions, or per-session entitlement leases.
 
-## Core Rule
+## Definitions
 
-- **Free may actively use only one session per connected daemon card at a time**
-- **Pro is not app-limited by this rule in phase 1**
+- **Trusted computer**: a daemon the Android app has paired with and still trusts locally.
+- **Active trusted computer**: a trusted computer the official app is allowed to connect to under the current tier.
+- **Online trusted computer**: an active trusted computer currently visible through Relay presence.
 
-Relay tells the app the current tier. The app applies the rule against the daemon-provided session roster. The daemon does not know whether the account is free or pro.
+Relay exposes the account tier. Android owns the local trusted-computer set and the active-computer decision. Daemon and Relay do not know which session rows are "allowed" because there is no per-session allowance.
 
-A "connected daemon card" is any daemon card the user has explicitly opened and for which the app currently has a live daemon transport.
+## Free Rule
 
-## What "Actively Use" Means
+Free may keep exactly one active trusted computer.
 
-For phase 1, a session is actively usable in the official app when the app may:
+Startup behavior:
 
-- subscribe to real preview updates for it
-- open its interactive detail view
-- send input and resize for it
+1. If the user has one active trusted computer and it is online, the app auto-connects to it.
+2. If the user has no active trusted computer, the app shows pairing.
+3. If local state somehow contains multiple active trusted computers, the app enters resolution UI and requires the user to choose one before connecting.
 
-This does not affect:
+Inside the active computer, all live sessions are usable:
 
-- whether the session exists on the daemon
-- whether the session appears in `session_index`
-- whether the local `tunnel run` process continues running
+- all rows are visible
+- previews may be requested for any row
+- detail attach works for any row
+- reconnect rebuilds the same full session list
+- path badges behave the same as Pro
 
-## Free Rule: Sticky First-Attach
+## Replace Computer
 
-For each connected daemon card, the official app maintains one piece of state:
+Free users change computers through transactional Replace Computer.
 
-```
-unlocked_session_id?  // optional; empty = no session has been chosen yet
-```
+Flow:
 
-Transitions:
+1. User starts pairing with the new computer.
+2. The app keeps the old trusted computer active during the pairing attempt.
+3. Only after the new pairing SAS succeeds does Android mark the new computer active and locally delete the old trust.
+4. If pairing fails, is canceled, or the SAS mismatches, the old trust remains active.
 
-1. **Initial bootstrap**: `unlocked_session_id` is empty. All session rows render as locked. Tapping a locked row shows the lock dialog (see Locked UI).
-2. **First attach**: when the user explicitly invokes interactive on any visible session — i.e., the moment the app sends its first `interactive_request` for that daemon card — that `session_id` becomes `unlocked_session_id`.
-3. **Sticky while alive**: as long as the unlocked session is alive in the daemon roster, `unlocked_session_id` does not change. New sessions appearing in the roster do not displace it. Other sessions remain locked.
-4. **End of life**: when the unlocked session disappears (`session_gone` for that `session_id`), `unlocked_session_id` clears.
-5. **Next attach picks again**: with `unlocked_session_id` cleared, the next user-initiated interactive_request becomes the new sticky unlocked session.
-
-There is no auto-rollover. There is no manual switch UI. There is no scheduled or oldest-first selection.
-
-### Why Sticky First-Attach
-
-- Matches user intent: "the one I clicked is the one I want."
-- No surprise rollovers when an unrelated session ends.
-- Trivial to implement: one nullable `session_id` per daemon card.
-- Predictable across reconnects and account switches.
+TODO: phase 1 only deletes the old trust locally on Android. Add daemon-side old-trust revoke later so the replaced computer also removes the Android fingerprint from its daemon trust store.
 
 ## Pro Rule
 
-On pro tier, the official app is not restricted by the free rule.
+Pro may keep up to 10 trusted computers.
 
-Phase-1 pro behavior:
+Startup behavior:
 
-- after roster bootstrap, automatically subscribe to preview for every live session in the opened daemon card
-- allow interactive attach on any session
-- no per-card or per-account session count cap in phase 1
+1. Auto-connect every online trusted computer, up to the 10-computer limit.
+2. If the user is already at 10 trusted computers, block new pairing and ask the user to remove one computer first.
+3. Within each connected computer, session behavior is identical to Free.
 
-Future product phases may add cap-or-throttle UX, but those are not part of the phase-1 contract.
+There is no Pro-only preview mode. Pro only increases the number of computers the account may actively trust.
 
-## Locked Session UI
+## Downgrade From Pro To Free
 
-Locked sessions render with:
+If a Pro user downgrades to Free while more than one trusted computer exists, the app enters downgrade resolution.
 
-- a lock icon
-- light grey styling
-- metadata readable (label, command_preview, cwd, git_branch, online state)
-- no real preview text
+Rules:
 
-When the user taps a locked session on free tier, the app should explain:
+- Do not auto-connect multiple computers.
+- Show the trusted computers and require the user to choose one to keep active.
+- After the user chooses, locally deactivate or delete the others according to the app's trust-management UI.
+- Until resolution completes, session transport should stay closed for all but an already selected active computer.
 
-- "Free can only run 1 session per computer at a time."
-- if `unlocked_session_id` is empty: "Tap again to start using this session."
-- if `unlocked_session_id` is set: the currently unlocked session's `label`, and "Wait for `<label>` to finish, or upgrade Pro."
-
-Do not silently switch. Do not offer manual override.
-
-If the payment flow is still deferred (`../contract.md` open TODOs), the upgrade affordance is informational only — no clickable link.
-
-## Pre-Attach State
-
-Before the user has attached to anything in a daemon card, every row is locked. UI guidance:
-
-- show all rows with the lock icon
-- show a friendly hint like "Tap any session to start using it" or similar
-- do not auto-pick one for the user
-
-This avoids the bootstrap ambiguity of the prior "oldest" rule and keeps the UX deterministic.
-
-## Daemon Responsibilities
-
-The daemon stays subscription-unaware.
-
-It must:
-
-- expose the full session roster to paired devices
-- honor preview and interactive requests from paired devices regardless of the client's free / pro state
-- avoid any free / pro branching
-
-The free-tier restriction is therefore an official-app product behavior, not a daemon-side hard authorization boundary.
+This keeps the Free invariant simple: one active trusted computer.
 
 ## Relay Responsibilities
 
-Relay owns only the subscription tier surface.
+Relay owns only the tier surface:
 
-Phase-1 expectations:
+- `GET /api/account/policy` returns `account_id` and `tier`.
+- Relay does not store active computer selection.
+- Relay does not store selected session rows.
+- Relay does not send per-session policy events.
+- Relay does not fan out tier changes to daemon sockets.
 
-- Relay exposes the current tier to the app via authenticated app APIs
-- Relay does not maintain any chosen session row
-- Relay does not issue per-session access tokens
-- Relay does not fan out per-session subscription decisions to daemons
-- daemon sockets do not receive subscription-policy updates
+## Daemon Responsibilities
 
-This keeps Relay simple and avoids turning phase 1 into a distributed entitlement-control system.
+The daemon is tier-unaware.
+
+It must:
+
+- expose the full local session roster to every paired Android device
+- serve preview subscriptions for any local session
+- serve interactive attach for any local session
+- avoid Free / Pro branching
+
+Trust remains daemon-local. Pairing and revocation decide which Android device fingerprints the daemon accepts; account tier does not.
+
+## Android Responsibilities
+
+The official Android app owns:
+
+- local trusted-computer inventory
+- the Free active-computer invariant
+- the Pro 10-computer limit
+- Replace Computer flow
+- downgrade resolution UI
+- which session previews to subscribe to for performance and UX
+
+Android must not hide, lock, or gate individual session rows based on tier once a computer is active.
 
 ## Security Boundary
 
-The official app enforces the rule; a modified client could ignore it. Phase 1 accepts that explicitly.
+Phase 1 product enforcement is official-client behavior. A modified client could ignore the local computer-count rule if it already holds daemon trust. This is accepted for phase 1.
 
-What subscription state MUST NOT influence:
+The tier model must not influence:
 
-- pairing trust validation
 - SAS confirmation
-- the QUIC handshake
-- transport keys
+- device-key identity
+- QUIC/TLS handshake
 - direct vs relay path selection
 - daemon-local session existence
-
-If stronger daemon-side enforcement becomes necessary later, it should be added explicitly as a future capability system, not implied by phase-1 docs.
-
-## Cross-Device Behavior
-
-Two phones logged into the same account looking at the same daemon card may make different first-attach choices, so they may show different unlocked sessions. This is intentional: each device picks what its user clicks first.
-
-This is acceptable for phase 1 because:
-
-- the rule is enforced per device and per daemon card
-- there is no Relay-owned "chosen session" state to conflict
-- both devices remain free to attach to the unlocked session they each picked
-
-## Account Switch / Reconnect
-
-- account switch on Android closes the Relay and daemon transports and clears `unlocked_session_id` for every daemon card
-- reconnect to the same account on the same daemon: `unlocked_session_id` is restored from local app state if the session is still in the roster; otherwise cleared
-- daemon-side pairing trust survives account switches; only the in-app `unlocked_session_id` resets
-
-## What Subscription Does Not Touch
-
-Subscription state does not change which sessions exist, which devices are paired, or how the QUIC handshake authenticates peers. It only changes which sessions the official app permits real preview / interactive on.
+- input, resize, preview, or attach authorization inside an already trusted daemon connection
 
 ## References
 
-- `../architecture.md`
 - `../contract.md`
+- `../architecture.md`
 - `../protocol/relay.md`
 - `../protocol/transport.md`
 - `android.md`

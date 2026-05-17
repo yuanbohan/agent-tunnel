@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"yuanbohan/tunnel/internal/protocol"
+	"yuanbohan/tunnel/internal/tunnel/daemon"
 )
 
 type sessionRow struct {
@@ -21,42 +22,58 @@ type sessionRow struct {
 	age     string
 }
 
-type tableColumn struct {
-	title string
-	width int
-	value func(sessionRow) string
+type sessionListJSONRow struct {
+	Scope          string `json:"scope"`
+	Source         string `json:"source"`
+	SessionID      string `json:"session_id"`
+	DeviceID       string `json:"device_id,omitempty"`
+	Label          string `json:"label,omitempty"`
+	Launcher       string `json:"launcher,omitempty"`
+	Command        string `json:"command,omitempty"`
+	Machine        string `json:"machine,omitempty"`
+	CWD            string `json:"cwd,omitempty"`
+	StartedAt      int    `json:"started_at,omitempty"`
+	PlatformFamily string `json:"platform_family,omitempty"`
+	PlatformID     string `json:"platform_id,omitempty"`
+	ComputerName   string `json:"computer_name,omitempty"`
 }
 
 const sessionCWDColumnWidth = 32
 
 var sessionTableColumns = []tableColumn{
-	{title: "Scope", width: 7, value: func(row sessionRow) string { return row.scope }},
-	{title: "Source", width: 6, value: func(row sessionRow) string { return row.source }},
-	{title: "Session", width: 14, value: func(row sessionRow) string { return row.id }},
-	{title: "Label", width: 16, value: func(row sessionRow) string { return row.label }},
-	{title: "Command", width: 24, value: func(row sessionRow) string { return row.command }},
-	{title: "Machine", width: 22, value: func(row sessionRow) string { return row.machine }},
-	{title: "CWD", width: sessionCWDColumnWidth, value: func(row sessionRow) string { return row.cwd }},
-	{title: "Age", width: 8, value: func(row sessionRow) string { return row.age }},
+	{title: "Scope", width: 7},
+	{title: "Source", width: 7},
+	{title: "Session", width: 19},
+	{title: "Label", width: 16},
+	{title: "Command", width: 24},
+	{title: "Machine", width: 22},
+	{title: "CWD", width: sessionCWDColumnWidth, truncateMiddle: true},
+	{title: "Age", width: 8},
 }
 
 func runSessionList(ctx context.Context, args sessionCommandArgs, stdout, stderr io.Writer) error {
-	auth, err := resolveRuntimeAuth(newAuthStore(), osEnv)
+	paths, err := resolveDaemonPaths()
 	if err != nil {
 		return err
 	}
-	sessions, err := newAuthAPI(args.BaseURL).listSessions(ctx, auth.Token)
+	sessions, err := daemon.ListSessions(ctx, paths)
 	if err != nil {
 		return err
 	}
-	localDeviceID := sessionDeviceID()
+	if args.JSON {
+		jsonRows := make([]sessionListJSONRow, 0, len(sessions))
+		for _, snapshot := range sessions {
+			jsonRows = append(jsonRows, buildSessionJSONRow(sessionInfoFromBrokerSnapshot(snapshot)))
+		}
+		return writeIndentedJSON(stdout, jsonRows)
+	}
 	rows := make([]sessionRow, 0, len(sessions))
 	now := time.Now()
-	for _, info := range sessions {
-		rows = append(rows, buildSessionRow(info, localDeviceID, now))
+	for _, snapshot := range sessions {
+		rows = append(rows, buildSessionRow(sessionInfoFromBrokerSnapshot(snapshot), now))
 	}
 	if len(rows) == 0 {
-		_, _ = io.WriteString(stdout, "No live sessions.\n")
+		_, _ = io.WriteString(stdout, "No local live sessions.\n")
 		return nil
 	}
 	renderSessionTable(stdout, rows)
@@ -68,48 +85,82 @@ func runSessionStop(ctx context.Context, args sessionCommandArgs, sessionID stri
 	if sessionID == "" {
 		return usageWithHelp(sessionStopHelpText(), "session id must not be empty")
 	}
-	auth, err := resolveRuntimeAuth(newAuthStore(), osEnv)
+	paths, err := resolveDaemonPaths()
 	if err != nil {
 		return err
 	}
-	if _, err := newAuthAPI(args.BaseURL).stopSession(ctx, auth.Token, sessionID); err != nil {
+	if err := daemon.StopSession(ctx, paths, sessionID); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(stdout, "stopped session %s\n", sessionID)
 	return nil
 }
 
-func buildSessionRow(info protocol.SessionInfo, localDeviceID string, now time.Time) sessionRow {
+func sessionInfoFromBrokerSnapshot(snapshot daemon.BrokerSessionSnapshot) protocol.SessionInfo {
+	return protocol.SessionInfo{
+		SessionID:      strings.TrimSpace(snapshot.SessionID),
+		DeviceID:       strings.TrimSpace(snapshot.DeviceID),
+		Launcher:       strings.TrimSpace(snapshot.Launcher),
+		Label:          strings.TrimSpace(snapshot.Label),
+		CWD:            strings.TrimSpace(snapshot.CWD),
+		CommandPreview: strings.TrimSpace(snapshot.CommandPreview),
+		GitBranch:      strings.TrimSpace(snapshot.GitBranch),
+		StartedAt:      snapshot.StartedAt,
+		PlatformFamily: strings.TrimSpace(snapshot.PlatformFamily),
+		PlatformID:     strings.TrimSpace(snapshot.PlatformID),
+		ComputerName:   strings.TrimSpace(snapshot.ComputerName),
+		LaunchSource:   strings.TrimSpace(snapshot.LaunchSource),
+	}
+}
+
+func buildSessionRow(info protocol.SessionInfo, now time.Time) sessionRow {
+	scope := sessionScope()
+	machine := sessionMachine(info)
+	if scope == "local" {
+		machine = "This machine"
+	}
 	return sessionRow{
-		scope:   sessionScope(info, localDeviceID),
+		scope:   scope,
 		source:  sessionLaunchSource(info.LaunchSource),
 		id:      emptyValue(info.SessionID),
 		label:   emptyValue(info.Label),
 		command: emptyValue(sessionCommand(info)),
-		machine: emptyValue(sessionMachine(info)),
+		machine: emptyValue(machine),
 		cwd:     emptyValue(sessionCWD(info.CWD)),
 		age:     sessionAge(info.StartedAt, now),
 	}
 }
 
-func sessionScope(info protocol.SessionInfo, localDeviceID string) string {
-	localDeviceID = strings.TrimSpace(localDeviceID)
-	sessionDeviceID := strings.TrimSpace(info.DeviceID)
-	if localDeviceID == "" || sessionDeviceID == "" {
-		return "unknown"
+func buildSessionJSONRow(info protocol.SessionInfo) sessionListJSONRow {
+	return sessionListJSONRow{
+		Scope:          sessionScope(),
+		Source:         sessionLaunchSource(info.LaunchSource),
+		SessionID:      strings.TrimSpace(info.SessionID),
+		DeviceID:       strings.TrimSpace(info.DeviceID),
+		Label:          strings.TrimSpace(info.Label),
+		Launcher:       strings.TrimSpace(info.Launcher),
+		Command:        strings.TrimSpace(sessionCommand(info)),
+		Machine:        strings.TrimSpace(sessionMachine(info)),
+		CWD:            strings.TrimSpace(info.CWD),
+		StartedAt:      info.StartedAt,
+		PlatformFamily: strings.TrimSpace(info.PlatformFamily),
+		PlatformID:     strings.TrimSpace(info.PlatformID),
+		ComputerName:   strings.TrimSpace(info.ComputerName),
 	}
-	if localDeviceID == sessionDeviceID {
-		return "local"
-	}
-	return "remote"
+}
+
+func sessionScope() string {
+	return "local"
 }
 
 func sessionLaunchSource(launchSource string) string {
 	switch strings.TrimSpace(launchSource) {
+	case protocol.SessionLaunchSourceLocal:
+		return protocol.SessionLaunchSourceLocal
 	case protocol.SessionLaunchSourceMobile:
 		return protocol.SessionLaunchSourceMobile
 	default:
-		return protocol.SessionLaunchSourceLocal
+		return "unknown"
 	}
 }
 
@@ -164,72 +215,18 @@ func sessionAge(startedAt int, now time.Time) string {
 }
 
 func renderSessionTable(w io.Writer, rows []sessionRow) {
-	border := sessionTableBorder()
-	_, _ = io.WriteString(w, border)
-	renderSessionTableLine(w, func(col tableColumn) string { return col.title })
-	_, _ = io.WriteString(w, border)
+	tableRows := make([][]string, 0, len(rows))
 	for _, row := range rows {
-		renderSessionTableLine(w, func(col tableColumn) string { return col.value(row) })
+		tableRows = append(tableRows, []string{
+			row.scope,
+			row.source,
+			row.id,
+			row.label,
+			row.command,
+			row.machine,
+			row.cwd,
+			row.age,
+		})
 	}
-	_, _ = io.WriteString(w, border)
-}
-
-func renderSessionTableLine(w io.Writer, value func(tableColumn) string) {
-	_, _ = io.WriteString(w, "|")
-	for _, col := range sessionTableColumns {
-		_, _ = fmt.Fprintf(w, " %-*s |", col.width, truncateCell(value(col), col.width))
-	}
-	_, _ = io.WriteString(w, "\n")
-}
-
-func sessionTableBorder() string {
-	var b strings.Builder
-	b.WriteString("+")
-	for _, col := range sessionTableColumns {
-		b.WriteString(strings.Repeat("-", col.width+2))
-		b.WriteString("+")
-	}
-	b.WriteString("\n")
-	return b.String()
-}
-
-func truncateCell(value string, width int) string {
-	value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
-	if value == "" {
-		value = "-"
-	}
-	runes := []rune(value)
-	if len(runes) <= width {
-		return value
-	}
-	if width <= 3 {
-		return string(runes[:width])
-	}
-	return string(runes[:width-3]) + "..."
-}
-
-func truncateMiddleCell(value string, width int) string {
-	value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
-	if value == "" {
-		return ""
-	}
-	runes := []rune(value)
-	if len(runes) <= width {
-		return value
-	}
-	if width <= 3 {
-		return string(runes[:width])
-	}
-	remaining := width - 3
-	left := (remaining + 1) / 2
-	right := remaining - left
-	return string(runes[:left]) + "..." + string(runes[len(runes)-right:])
-}
-
-func emptyValue(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return "-"
-	}
-	return value
+	renderTable(w, sessionTableColumns, tableRows)
 }

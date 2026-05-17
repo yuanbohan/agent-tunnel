@@ -20,8 +20,6 @@ Supported targets:
 - Linux ARM64 (`linux/arm64`)
 
 The installer writes `tunnel` to `~/.local/bin/tunnel`.
-Official releases also publish `checksums.txt` used by native `tunnel update` and `tunnel rollback`.
-The public `yuanbohan/tunnel` repository is distribution-only; official releases are prepared from the private repo `Release` workflow and then published here as plain `vX.Y.Z` releases.
 
 Manual lifecycle commands:
 
@@ -37,9 +35,3 @@ Verify the installed version:
 ```sh
 tunnel --version
 ```
-
-Compatibility:
-
-- Tunnel and Relay are guaranteed compatible within the same compatibility line.
-- For `v1+`, the compatibility line is the major version. `tunnel v1.4.2` is compatible with `relay v1.9.0`.
-- For pre-`v1`, the compatibility line is `0.minor`. `tunnel v0.1.7` is compatible with `relay v0.1.3`, but not guaranteed with `relay v0.2.0`.

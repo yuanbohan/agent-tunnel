@@ -13,14 +13,14 @@ const OperatorActor = "operator"
 var ErrInvalidOperatorRequest = errors.New("invalid operator request")
 
 type OperatorService struct {
-	store    Repository
-	now      func() time.Time
+	store Repository
+	now   func() time.Time
 }
 
 func NewOperatorService(store Repository) *OperatorService {
 	return &OperatorService{
-		store:    store,
-		now:      func() time.Time { return time.Now().UTC() },
+		store: store,
+		now:   func() time.Time { return time.Now().UTC() },
 	}
 }
 
@@ -42,7 +42,7 @@ func (s *OperatorService) CreateInviteCodes(ctx context.Context, count int, expi
 			Code:      code,
 			CreatedBy: OperatorActor,
 			ExpiresAt: expiresAt,
-			Now:      now,
+			Now:       now,
 		})
 		codes = append(codes, code)
 	}
@@ -70,4 +70,16 @@ func (s *OperatorService) DeleteUser(ctx context.Context, username string) (auth
 		return auth.DeleteUserResult{}, err
 	}
 	return s.store.DeleteUser(ctx, normalized, OperatorActor, s.now())
+}
+
+func (s *OperatorService) SetUserSubscriptionTier(ctx context.Context, username, tier string) (auth.User, string, error) {
+	normalized, err := auth.NormalizeUsername(username)
+	if err != nil {
+		return auth.User{}, "", err
+	}
+	tierNorm, err := auth.NormalizeSubscriptionTier(tier)
+	if err != nil {
+		return auth.User{}, "", err
+	}
+	return s.store.SetUserSubscriptionTier(ctx, normalized, tierNorm, OperatorActor, s.now())
 }

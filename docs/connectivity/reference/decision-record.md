@@ -23,7 +23,7 @@ The project should not continue with:
 
 This choice should be read as:
 
-- pairing provides pinned long-lived device identity
+- pairing provides pinned long-lived client identity
 - direct and relay fallback both run the same QUIC/TLS transport
 - direct and relay differ only in how packets are carried
 - session discovery, preview, and interactive traffic all come from the daemon after transport is established
@@ -111,9 +111,18 @@ Rationale:
 - exposes the certificate verification callback needed for device-key pinning
 - daemon-side `quic-go` and Android-side `quiche` both implement RFC 9000/9001 and have been demonstrated to interop in third-party deployments
 
-Phase-0 prerequisite before higher-level features are built:
+Step 1 repository prerequisite before higher-level features are built:
 
-- run a small interoperability spike where `quic-go` listens with ALPN `tunnel-conn/1`, an Android-side `quiche` client completes the QUIC/TLS handshake using a self-signed Ed25519 certificate, and both sides exchange at least 1KB of test data over a single bidirectional stream
+- run a small Go mobile-simulator spike where `quic-go` listens with ALPN
+  `tunnel-conn/1`, both Go endpoints complete the QUIC/TLS handshake using
+  self-signed Ed25519 certificates, both sides verify peer SPKI pins, and the
+  Android-facing frame/data sequence passes over direct UDP and the Relay-like
+  packet carrier
+
+FIXME(Android): Real Android `quiche` JNI/emulator/device validation remains
+required before production Android compatibility is claimed. That validation
+must run the same pinned TLS and stream/data exchange recorded by the Go
+simulator.
 
 Phase-1 fallback if `quiche` packaging proves unworkable on Android:
 
@@ -133,13 +142,13 @@ That keeps one end-to-end security model while avoiding TURN.
 
 ## Phase-1 App Identity Simplification
 
-Confirmed on 2026-04-27: phase 1 uses a Relay-issued app-session JWT as the only app-side Relay authentication mechanism.
+Updated by Step 2 implementation on 2026-04-28: phase 1 uses the existing Relay-issued opaque app session as the only app-side Relay authentication mechanism. The planned JWT conversion was not necessary for the auth/pairing foundation.
 
-The JWT should carry:
+The server-side app session stores:
 
 - account identity
 - app-session identifier
-- Android app `device_fingerprint`
+- Client app `client_fingerprint`
 
 This replaces the earlier idea of requiring an additional per-websocket `device_proof` on `app_register`.
 
@@ -152,27 +161,27 @@ Why this simplification was chosen:
 
 Tradeoff:
 
-- Relay-side Android device identity is only as strong as the authenticated app session, not a second websocket-bound signature proof
+- Relay-side Android client identity is only as strong as the authenticated app session, not a second websocket-bound signature proof
 
 That tradeoff is accepted for phase 1.
 
-## Phase-1 Daemon Card Connection Strategy
+## Phase-1 Trusted-Computer Connection Strategy
 
-Confirmed on 2026-04-27: the official app should not eagerly connect to every visible online daemon in phase 1.
+Updated on 2026-04-30: the official app applies tier policy at the trusted-computer level only.
 
-Instead:
+Rules:
 
-- Relay presence renders daemon cards
-- daemon transport starts only when the user opens a daemon card
-- once connected, free/pro rules are evaluated only within that card
-- pro may auto-subscribe preview for every live session in that opened card
+- Relay presence renders trusted computer cards.
+- Free opens the one active online trusted computer.
+- Pro opens online trusted computers up to the ten-computer limit.
+- Once connected, Free and Pro session behavior is identical inside that computer.
 
 Why this simplification was chosen:
 
-- keeps the first version smaller
-- avoids foreground fan-out to every visible daemon
-- avoids viewport and idle-eviction policy work
-- still gives a good pro experience once a daemon card is opened
+- keeps tier logic out of per-session UI
+- avoids Relay-owned active-session state
+- makes Replace Computer and downgrade resolution explicit product flows
+- keeps daemon and session transport tier-unaware
 
 Tradeoff:
 

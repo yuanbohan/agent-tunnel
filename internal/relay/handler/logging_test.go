@@ -8,8 +8,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
-	"yuanbohan/tunnel/internal/protocol"
 )
 
 type syncBuffer struct {
@@ -103,7 +101,6 @@ func TestHandlerAccessLogsRequestsAndSkipsHealthz(t *testing.T) {
 	env.addInvite(t, "AB2C3D")
 	env.registerUser(t, "alice", "password123", "AB2C3D")
 	issued := env.login(t, "alice", "password123")
-	env.registry.RegisterOwned(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, SessionOwner{UserID: 1, AgentTokenID: "agt-1"}, fakeAgentPeer{})
 	logs := &syncBuffer{}
 
 	handler := env.handler(logs)
@@ -113,15 +110,15 @@ func TestHandlerAccessLogsRequestsAndSkipsHealthz(t *testing.T) {
 	handler.ServeHTTP(healthRec, healthReq)
 
 	unauthRec := httptest.NewRecorder()
-	unauthReq := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+	unauthReq := httptest.NewRequest(http.MethodGet, "/api/account/policy", nil)
 	unauthReq.Header.Set("User-Agent", "scanbot/1.0")
 	unauthReq.Header.Set("X-Request-Id", "req-unauth-1")
 	handler.ServeHTTP(unauthRec, unauthReq)
 
-	badMethodRec := httptest.NewRecorder()
-	badMethodReq := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-1/attach/ws", nil)
-	badMethodReq.Header.Set("Authorization", bearerAuth(issued.AccessToken))
-	handler.ServeHTTP(badMethodRec, badMethodReq)
+	removedRec := httptest.NewRecorder()
+	removedReq := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+	removedReq.Header.Set("Authorization", bearerAuth(issued.AccessToken))
+	handler.ServeHTTP(removedRec, removedReq)
 
 	entries := readLogEntries(t, logs)
 	if countLogEvents(entries, "http_request_completed") != 2 {
@@ -134,12 +131,12 @@ func TestHandlerAccessLogsRequestsAndSkipsHealthz(t *testing.T) {
 		}
 	}
 
-	unauthEntry := findLogEntryByEventAndPath(t, entries, "http_request_completed", "/api/sessions")
+	unauthEntry := findLogEntryByEventAndPath(t, entries, "http_request_completed", "/api/account/policy")
 	if got := int(logNumber(t, unauthEntry, "status")); got != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", got)
 	}
-	if got := logString(unauthEntry, "target"); got != "/api/sessions" {
-		t.Fatalf("target = %q, want /api/sessions", got)
+	if got := logString(unauthEntry, "target"); got != "/api/account/policy" {
+		t.Fatalf("target = %q, want /api/account/policy", got)
 	}
 	if got := logString(unauthEntry, "user_agent"); got != "scanbot/1.0" {
 		t.Fatalf("user_agent = %q, want scanbot/1.0", got)
@@ -151,23 +148,41 @@ func TestHandlerAccessLogsRequestsAndSkipsHealthz(t *testing.T) {
 		t.Fatalf("response_bytes = %d, want %d", got, unauthRec.Body.Len())
 	}
 
-	badMethodEntry := findLogEntryByEventAndPath(t, entries, "http_request_completed", "/api/sessions/sess-1/attach/ws")
-	if got := int(logNumber(t, badMethodEntry, "status")); got != http.StatusMethodNotAllowed {
-		t.Fatalf("status = %d, want 405", got)
+	removedEntry := findLogEntryByEventAndPath(t, entries, "http_request_completed", "/api/sessions")
+	if got := int(logNumber(t, removedEntry, "status")); got != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", got)
 	}
 
 	authFailed := findLogEntryByEvent(t, entries, "auth_failed")
-	if got := logString(authFailed, "path"); got != "/api/sessions" {
-		t.Fatalf("auth_failed path = %q, want /api/sessions", got)
+	if got := logString(authFailed, "path"); got != "/api/account/policy" {
+		t.Fatalf("auth_failed path = %q, want /api/account/policy", got)
 	}
 }
 
-func TestHandlerLogsWebSocketUpgradeFailureWithoutLifecycle(t *testing.T) {
+func TestHandlerAccessLogRedactsQueryTokens(t *testing.T) {
+	env := newHandlerTestEnv(t)
+	logs := &syncBuffer{}
+	handler := env.handler(logs)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/connectivity/tunnel/ws?token=secret-token&attempt_id=a", nil)
+	handler.ServeHTTP(rec, req)
+
+	entry := findLogEntryByEventAndPath(t, readLogEntries(t, logs), "http_request_completed", "/connectivity/tunnel/ws")
+	target := logString(entry, "target")
+	if strings.Contains(target, "secret-token") {
+		t.Fatalf("target leaked token: %q", target)
+	}
+	if !strings.Contains(target, "token=%3Credacted%3E") {
+		t.Fatalf("target = %q, want redacted token", target)
+	}
+}
+
+func TestHandlerLogsRemovedAttachRouteWithoutWebSocketLifecycle(t *testing.T) {
 	env := newHandlerTestEnv(t)
 	env.addInvite(t, "AB2C3D")
-	user := env.registerUser(t, "alice", "password123", "AB2C3D")
+	env.registerUser(t, "alice", "password123", "AB2C3D")
 	issued := env.login(t, "alice", "password123")
-	env.registry.RegisterOwned(protocol.SessionInfo{SessionID: "sess-1", Launcher: "codex"}, SessionOwner{UserID: user.ID, AgentTokenID: "agt-1"}, fakeAgentPeer{})
 	logs := &syncBuffer{}
 	handler := env.handler(logs)
 
@@ -177,12 +192,11 @@ func TestHandlerLogsWebSocketUpgradeFailureWithoutLifecycle(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	entries := readLogEntries(t, logs)
-	upgradeFailed := findLogEntryByEvent(t, entries, "ws_upgrade_failed")
-	if got := logString(upgradeFailed, "path"); got != "/api/sessions/sess-1/attach/ws" {
-		t.Fatalf("path = %q, want attach path", got)
+	if got := countLogEvents(entries, "ws_upgrade_failed"); got != 0 {
+		t.Fatalf("ws_upgrade_failed count = %d, want 0", got)
 	}
 	access := findLogEntryByEventAndPath(t, entries, "http_request_completed", "/api/sessions/sess-1/attach/ws")
-	if got := int(logNumber(t, access, "status")); got != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", got)
+	if got := int(logNumber(t, access, "status")); got != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", got)
 	}
 }

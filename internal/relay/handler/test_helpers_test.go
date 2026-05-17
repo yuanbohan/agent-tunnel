@@ -47,6 +47,7 @@ const (
 	OperatorInviteDisablePath = handlertypes.OperatorInviteDisablePath
 	OperatorInviteListPath    = handlertypes.OperatorInviteListPath
 	OperatorDeleteUserPath    = handlertypes.OperatorDeleteUserPath
+	OperatorUserTierPath      = handlertypes.OperatorUserTierPath
 )
 
 var (
@@ -86,40 +87,6 @@ func (p *recordingAgentPeer) Frames() []protocol.AgentFrame {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return append([]protocol.AgentFrame(nil), p.frames...)
-}
-
-type recordingAttachPeer struct {
-	mu          sync.Mutex
-	controls    []protocol.AttachControlMessage
-	binaries    [][]byte
-	closeReason []string
-}
-
-func (p *recordingAttachPeer) SendControl(msg protocol.AttachControlMessage) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.controls = append(p.controls, msg)
-	return nil
-}
-
-func (p *recordingAttachPeer) SendBinary(payload []byte) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.binaries = append(p.binaries, append([]byte(nil), payload...))
-	return nil
-}
-
-func (p *recordingAttachPeer) Close(reason string) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.closeReason = append(p.closeReason, reason)
-	return nil
-}
-
-func (p *recordingAttachPeer) CloseReasons() []string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return append([]string(nil), p.closeReason...)
 }
 
 type fakeStore struct {
@@ -169,12 +136,13 @@ func (s *fakeStore) RegisterUser(_ context.Context, params auth.RegisterUserPara
 		return auth.User{}, auth.ErrUsernameTaken
 	}
 	user := auth.User{
-		ID:           s.nextUserID,
-		Username:     params.UsernameNorm,
-		UsernameNorm: params.UsernameNorm,
-		PasswordHash: params.PasswordHash,
-		CreatedAt:    params.Now,
-		UpdatedAt:    params.Now,
+		ID:               s.nextUserID,
+		Username:         params.UsernameNorm,
+		UsernameNorm:     params.UsernameNorm,
+		PasswordHash:     params.PasswordHash,
+		SubscriptionTier: auth.SubscriptionTierFree,
+		CreatedAt:        params.Now,
+		UpdatedAt:        params.Now,
 	}
 	s.nextUserID++
 	s.usersByName[user.UsernameNorm] = user
@@ -231,6 +199,7 @@ func (s *fakeStore) CreateAppSession(_ context.Context, params auth.CreateAppSes
 		AccessExpiresAt:    params.AccessExpiresAt,
 		RefreshTokenDigest: params.RefreshTokenDigest,
 		RefreshExpiresAt:   params.RefreshExpiresAt,
+		DeviceFingerprint:  params.DeviceFingerprint,
 		CreatedAt:          params.Now,
 		UpdatedAt:          params.Now,
 	}
@@ -272,6 +241,9 @@ func (s *fakeStore) RotateAppSessionByRefreshToken(_ context.Context, params aut
 	}
 	if !session.RefreshExpiresAt.After(params.Now) {
 		return auth.AppSession{}, auth.ErrAppSessionExpired
+	}
+	if session.DeviceFingerprint != "" && session.DeviceFingerprint != params.DeviceFingerprint {
+		return auth.AppSession{}, auth.ErrAppSessionDeviceMismatch
 	}
 	if params.AbsoluteTTL > 0 {
 		absoluteExpiresAt := session.CreatedAt.Add(params.AbsoluteTTL)
@@ -433,6 +405,31 @@ func (s *fakeStore) DeleteUser(_ context.Context, usernameNorm string, actor str
 		CreatedAt:      now,
 	})
 	return auth.DeleteUserResult{UserID: user.ID, UsernameNorm: user.UsernameNorm}, nil
+}
+
+func (s *fakeStore) SetUserSubscriptionTier(_ context.Context, usernameNorm string, tier string, actor string, now time.Time) (auth.User, string, error) {
+	user, ok := s.usersByName[usernameNorm]
+	if !ok {
+		return auth.User{}, "", auth.ErrUserNotFound
+	}
+	previous := user.SubscriptionTier
+	if previous == "" {
+		previous = auth.SubscriptionTierFree
+	}
+	user.SubscriptionTier = tier
+	user.UpdatedAt = now
+	s.usersByName[usernameNorm] = user
+	s.usersByID[user.ID] = user
+	s.auditEvents = append(s.auditEvents, auth.AuditEvent{
+		ID:             int64(len(s.auditEvents) + 1),
+		EventType:      "user_subscription_tier_changed",
+		Actor:          actor,
+		TargetUserID:   int64Ptr(user.ID),
+		TargetUsername: user.UsernameNorm,
+		MetadataJSON:   `{"new_tier":"` + tier + `","previous_tier":"` + previous + `"}`,
+		CreatedAt:      now,
+	})
+	return user, previous, nil
 }
 
 type handlerTestEnv struct {
@@ -705,39 +702,6 @@ func readAgentFrame(t *testing.T, conn *websocket.Conn) protocol.AgentFrame {
 	return frame
 }
 
-func readAttachControl(t *testing.T, conn *websocket.Conn) protocol.AttachControlMessage {
-	t.Helper()
-	for {
-		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-		messageType, payload, err := conn.ReadMessage()
-		if err != nil {
-			t.Fatalf("ReadMessage returned error: %v", err)
-		}
-		if messageType != websocket.TextMessage {
-			continue
-		}
-		var msg protocol.AttachControlMessage
-		if err := json.Unmarshal(payload, &msg); err != nil {
-			t.Fatalf("Unmarshal returned error: %v", err)
-		}
-		return msg
-	}
-}
-
-func readAttachBinary(t *testing.T, conn *websocket.Conn) []byte {
-	t.Helper()
-	for {
-		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-		messageType, payload, err := conn.ReadMessage()
-		if err != nil {
-			t.Fatalf("ReadMessage returned error: %v", err)
-		}
-		if messageType == websocket.BinaryMessage {
-			return payload
-		}
-	}
-}
-
 func dialAndRegisterAgent(t *testing.T, serverURL, agentToken, sessionID string) *websocket.Conn {
 	t.Helper()
 	return dialAndRegisterAgentWithLaunchRequest(t, serverURL, agentToken, sessionID, "")
@@ -821,25 +785,13 @@ func waitForOwnedSession(t *testing.T, registry *Registry, sessionID string, use
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, ok := registry.SessionForUser(sessionID, userID); ok {
+		if registry.HasSession(sessionID) {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 
 	t.Fatalf("session %q for user %d was not registered before timeout", sessionID, userID)
-}
-
-func dialAttachClient(t *testing.T, serverURL, accessToken, sessionID string) *websocket.Conn {
-	t.Helper()
-	wsURL := "ws" + strings.TrimPrefix(serverURL, "http") + "/api/sessions/" + sessionID + "/attach/ws"
-	headers := http.Header{}
-	headers.Set("Authorization", bearerAuth(accessToken))
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, headers)
-	if err != nil {
-		t.Fatalf("Dial attach returned error: %v", err)
-	}
-	return conn
 }
 
 func timePtr(t time.Time) *time.Time { return &t }

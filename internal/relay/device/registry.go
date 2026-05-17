@@ -311,9 +311,11 @@ func (r *Registry) Launch(ctx context.Context, deviceID string, userID int64, co
 	case <-request.done:
 		return request.snapshot()
 	case <-ctx.Done():
-		request.complete(LaunchResult{RequestID: requestID, Status: LaunchStatusFailed, Reason: "launch_timeout"})
-		r.clearRequest(requestID)
-		return request.snapshot()
+		result, target, targetPeer := r.timeoutLaunchRequest(requestID)
+		if hasTerminateTarget(target) && targetPeer != nil {
+			_ = targetPeer.SendJSON(protocol.DeviceTerminateRequestFrame(requestID+"-cleanup", "", target.WorkspaceSession))
+		}
+		return result
 	}
 }
 
@@ -475,6 +477,24 @@ func (r *Registry) clearRequestLocked(requestID string) *launchRequest {
 func (r *Registry) completeRequestLocked(requestID string, result LaunchResult) {
 	request := r.clearRequestLocked(requestID)
 	completeLaunchRequest(request, result)
+}
+
+func (r *Registry) timeoutLaunchRequest(requestID string) (LaunchResult, TerminateTarget, DevicePeer) {
+	result := LaunchResult{RequestID: requestID, Status: LaunchStatusFailed, Reason: "launch_timeout"}
+	r.mu.Lock()
+	request := r.clearRequestLocked(requestID)
+	if request == nil {
+		r.mu.Unlock()
+		return result, TerminateTarget{}, nil
+	}
+	target := TerminateTarget{
+		DeviceID:         request.deviceID,
+		WorkspaceSession: request.acceptedWorkspaceSession(),
+	}
+	peer := request.peer
+	completeLaunchRequest(request, result)
+	r.mu.Unlock()
+	return result, target, peer
 }
 
 func (r *Registry) completeReadyLaunchLocked(requestID string, request *launchRequest, sessionID string) (LaunchCompletion, bool) {

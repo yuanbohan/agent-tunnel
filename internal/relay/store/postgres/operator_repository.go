@@ -124,7 +124,7 @@ func (s *PostgresStore) DeleteUser(ctx context.Context, usernameNorm string, act
 	defer tx.Rollback()
 
 	user, err := queryUser(ctx, tx, `
-		select id, username, username_norm, password_hash, created_at, updated_at
+		select id, username, username_norm, password_hash, subscription_tier, created_at, updated_at
 		from users
 		where username_norm = $1
 		for update
@@ -154,6 +154,61 @@ func (s *PostgresStore) DeleteUser(ctx context.Context, usernameNorm string, act
 		return auth.DeleteUserResult{}, err
 	}
 	return auth.DeleteUserResult{UserID: user.ID, UsernameNorm: user.UsernameNorm}, nil
+}
+
+func (s *PostgresStore) SetUserSubscriptionTier(ctx context.Context, usernameNorm string, tier string, actor string, now time.Time) (auth.User, string, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return auth.User{}, "", err
+	}
+	defer tx.Rollback()
+
+	user, err := queryUser(ctx, tx, `
+		select id, username, username_norm, password_hash, subscription_tier, created_at, updated_at
+		from users
+		where username_norm = $1
+		for update
+	`, usernameNorm)
+	if err != nil {
+		return auth.User{}, "", err
+	}
+	previousTier := user.SubscriptionTier
+	if previousTier == "" {
+		previousTier = auth.SubscriptionTierFree
+	}
+
+	updated, err := queryUser(ctx, tx, `
+		update users
+		set subscription_tier = $2, updated_at = $3
+		where id = $1
+		returning id, username, username_norm, password_hash, subscription_tier, created_at, updated_at
+	`, user.ID, tier, now)
+	if err != nil {
+		return auth.User{}, "", err
+	}
+
+	metadata, err := json.Marshal(map[string]string{
+		"previous_tier": previousTier,
+		"new_tier":      tier,
+	})
+	if err != nil {
+		return auth.User{}, "", err
+	}
+	if err := insertAuditEvent(ctx, tx, auth.AuditEvent{
+		EventType:      "user_subscription_tier_changed",
+		Actor:          actor,
+		TargetUserID:   &user.ID,
+		TargetUsername: user.UsernameNorm,
+		MetadataJSON:   string(metadata),
+		CreatedAt:      now,
+	}); err != nil {
+		return auth.User{}, "", err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return auth.User{}, "", err
+	}
+	return updated, previousTier, nil
 }
 
 func insertAuditEvent(ctx context.Context, tx *sql.Tx, event auth.AuditEvent) error {

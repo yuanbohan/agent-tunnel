@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -19,21 +21,24 @@ import (
 )
 
 type runtimeEnv struct {
-	getenv     func(string) string
-	stdout     io.Writer
-	stderr     io.Writer
-	openDB     func(string) (*sql.DB, error)
-	httpClient *http.Client
-	listen     func(network, address string) (net.Listener, error)
-	serveHTTP  func(*http.Server, net.Listener) error
+	getenv       func(string) string
+	stdout       io.Writer
+	stderr       io.Writer
+	openDB       func(string) (*sql.DB, error)
+	httpClient   *http.Client
+	listen       func(network, address string) (net.Listener, error)
+	listenPacket func(network, address string) (net.PacketConn, error)
+	serveHTTP    func(*http.Server, net.Listener) error
 }
 
 type commandHandlers struct {
 	serve         func(context.Context, serveConfig) error
+	stunServe     func(context.Context, stunServeConfig) error
 	inviteCreate  func(context.Context, inviteCreateConfig) error
 	inviteDisable func(context.Context, inviteDisableConfig) error
 	inviteList    func(context.Context, inviteListConfig) error
 	userDelete    func(context.Context, userDeleteConfig) error
+	userTier      func(context.Context, userTierConfig) error
 }
 
 func defaultRuntimeEnv() runtimeEnv {
@@ -44,8 +49,9 @@ func defaultRuntimeEnv() runtimeEnv {
 		openDB: func(dsn string) (*sql.DB, error) {
 			return sql.Open("pgx", dsn)
 		},
-		httpClient: &http.Client{Timeout: 10 * time.Second},
-		listen:     net.Listen,
+		httpClient:   &http.Client{Timeout: 10 * time.Second},
+		listen:       net.Listen,
+		listenPacket: net.ListenPacket,
 		serveHTTP: func(srv *http.Server, ln net.Listener) error {
 			return srv.Serve(ln)
 		},
@@ -83,21 +89,27 @@ func newRootCmd(env runtimeEnv, handlers commandHandlers) *cobra.Command {
 	root := &cobra.Command{
 		Use:   "relay",
 		Short: "Tunnel relay server and operator CLI",
-		Long: `Run the relay server and local-only operator commands.
+		Long: `Run the relay server, Binding-only STUN service, and local-only operator commands.
 
 The public server entrypoint is "relay serve". It requires:
   - RELAY_DATABASE_URL
   - RELAY_APP_SECRET
   - RELAY_OPERATOR_TOKEN
 
+The STUN-only entrypoint is "relay stun serve". It requires no Relay database
+or Relay secrets and listens on RELAY_STUN_LISTEN_ADDR (default 0.0.0.0:3478).
+
 The operator commands under "relay invite" and "relay user" are intentionally
 local-only. Run them on the relay host after "relay serve" is already running.
 They use RELAY_OPERATOR_TOKEN and connect to RELAY_LISTEN_ADDR (default
-127.0.0.1:8586).`,
+127.0.0.1:8586). "relay serve" does not start embedded STUN unless
+RELAY_STUN_LISTEN_ADDR or --stun-listen-addr is set to a UDP address.`,
 		Example: `  relay serve --listen-addr 127.0.0.1:8586
+  relay stun serve --listen-addr 0.0.0.0:3478
   relay invite create --count 3 --expires-in 7d
   relay invite disable --code AB2C3D
-  relay user delete --username alice`,
+  relay user delete --username alice
+  relay user tier alice pro`,
 		CompletionOptions: cobra.CompletionOptions{
 			DisableDefaultCmd: true,
 		},
@@ -107,6 +119,7 @@ They use RELAY_OPERATOR_TOKEN and connect to RELAY_LISTEN_ADDR (default
 	wrapFlagErrors(root)
 	root.AddCommand(newVersionCmd())
 	root.AddCommand(newServeCmd(env, handlers))
+	root.AddCommand(newSTUNCmd(env, handlers))
 	root.AddCommand(newInviteCmd(env, handlers))
 	root.AddCommand(newUserCmd(env, handlers))
 	return root
@@ -151,6 +164,7 @@ Required environment variables:
 
 Optional environment variables:
   - RELAY_LISTEN_ADDR (default 127.0.0.1:8586)
+  - RELAY_STUN_LISTEN_ADDR (default off; set to a UDP address to enable embedded STUN)
   - RELAY_LOG_FILE`,
 		Example: `  relay serve
   relay serve --listen-addr 127.0.0.1:8586
@@ -168,6 +182,52 @@ Optional environment variables:
 	}
 	wrapFlagErrors(cmd)
 	applyServeFlags(cmd.Flags(), &cfg)
+	return cmd
+}
+
+func newSTUNCmd(env runtimeEnv, handlers commandHandlers) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "stun",
+		Short: "Run Binding-only STUN services",
+		Long: `Run Binding-only STUN services.
+
+These commands do not require Relay database or operator secrets.`,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+	}
+	wrapFlagErrors(cmd)
+	cmd.AddCommand(newSTUNServeCmd(env, handlers))
+	return cmd
+}
+
+func newSTUNServeCmd(env runtimeEnv, handlers commandHandlers) *cobra.Command {
+	var cfg stunServeConfig
+	cmd := &cobra.Command{
+		Use:   "serve",
+		Short: "Start the Binding-only STUN UDP service",
+		Long: `Start the Binding-only STUN UDP service.
+
+This command requires no Relay database, app secret, or operator token.
+
+Optional environment variables:
+  - RELAY_STUN_LISTEN_ADDR (default 0.0.0.0:3478)
+  - RELAY_LOG_FILE`,
+		Example: `  relay stun serve
+  relay stun serve --listen-addr 0.0.0.0:3478
+  RELAY_LOG_FILE=/var/log/stun.log relay stun serve`,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		Args:          cobra.NoArgs,
+		RunE: func(c *cobra.Command, _ []string) error {
+			final, err := finalizeSTUNServeConfig(cfg, env.getenv)
+			if err != nil {
+				return err
+			}
+			return handlers.stunServe(c.Context(), final)
+		},
+	}
+	wrapFlagErrors(cmd)
+	applySTUNServeFlags(cmd.Flags(), &cfg)
 	return cmd
 }
 
@@ -291,6 +351,7 @@ running. They require RELAY_OPERATOR_TOKEN and use RELAY_LISTEN_ADDR
 	}
 	wrapFlagErrors(cmd)
 	cmd.AddCommand(newUserDeleteCmd(env, handlers))
+	cmd.AddCommand(newUserTierCmd(env, handlers))
 	return cmd
 }
 
@@ -322,6 +383,85 @@ Uses RELAY_LISTEN_ADDR when set, otherwise defaults to 127.0.0.1:8586.`,
 	applyUserDeleteFlags(cmd.Flags(), &flags)
 	markFlagRequired(cmd, "username")
 	return cmd
+}
+
+func newUserTierCmd(env runtimeEnv, handlers commandHandlers) *cobra.Command {
+	var jsonOutput bool
+	cmd := &cobra.Command{
+		Use:   "tier <username> <free|pro>",
+		Short: "Set a user's subscription tier",
+		Long: `Set a user's subscription tier through the relay's local-only operator API.
+
+Requires:
+  - RELAY_OPERATOR_TOKEN
+  - username
+  - tier, either free or pro
+
+Uses RELAY_LISTEN_ADDR when set, otherwise defaults to 127.0.0.1:8586.`,
+		Example: `  relay user tier alice pro
+  relay user tier alice pro --json`,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		Args:          cobra.ExactArgs(2),
+		RunE: func(c *cobra.Command, args []string) error {
+			run := func() error {
+				cfg, err := finalizeUserTierConfig(args[0], args[1], jsonOutput, env.getenv)
+				if err != nil {
+					return err
+				}
+				return handlers.userTier(c.Context(), cfg)
+			}
+			if jsonOutput {
+				stdout := env.stdout
+				if stdout == nil {
+					stdout = io.Discard
+				}
+				return runOperatorJSONCommand(stdout, run)
+			}
+			return run()
+		},
+	}
+	wrapFlagErrors(cmd)
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "print result as JSON")
+	return cmd
+}
+
+type operatorCommandErrorEnvelope struct {
+	Error operatorCommandError `json:"error"`
+}
+
+type operatorCommandError struct {
+	Code       string `json:"code"`
+	Message    string `json:"message"`
+	StatusCode int    `json:"status_code,omitempty"`
+	Reason     string `json:"reason,omitempty"`
+}
+
+func runOperatorJSONCommand(stdout io.Writer, run func() error) error {
+	err := run()
+	if err == nil {
+		return nil
+	}
+	envelope := operatorCommandErrorEnvelope{
+		Error: operatorCommandError{
+			Code:    "operator_command_failed",
+			Message: err.Error(),
+		},
+	}
+	var apiErr operatorAPIError
+	if errors.As(err, &apiErr) {
+		envelope.Error.Code = "operator_api_error"
+		envelope.Error.StatusCode = apiErr.StatusCode
+		if apiErr.Reason != "" {
+			envelope.Error.Reason = apiErr.Reason
+		} else if apiErr.Code != 0 {
+			envelope.Error.Reason = fmt.Sprintf("%d", apiErr.Code)
+		}
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	_ = encoder.Encode(envelope)
+	return err
 }
 
 func newCommandHandlers(env runtimeEnv) commandHandlers {
@@ -364,7 +504,21 @@ func newCommandHandlers(env runtimeEnv) commandHandlers {
 				return err
 			}
 
-			return startRelay(handler, env.listen, env.serveHTTP)
+			return startRelay(ctx, handler, env.listen, env.listenPacket, env.serveHTTP)
+		},
+		stunServe: func(ctx context.Context, cfg stunServeConfig) error {
+			logSink := env.stderr
+			if cfg.LogFile != "" {
+				f, err := os.OpenFile(cfg.LogFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o640)
+				if err != nil {
+					return fmt.Errorf("open log file %q: %w", cfg.LogFile, err)
+				}
+				defer f.Close()
+				logSink = f
+			}
+			logx.Setup(logSink)
+
+			return startSTUN(ctx, cfg.ListenAddr, env.listenPacket)
 		},
 		inviteCreate: func(ctx context.Context, cfg inviteCreateConfig) error {
 			return runInviteCreate(ctx, newHTTPOperatorClient(cfg.RelayAddr, cfg.OperatorToken, env.httpClient), cfg, env.stdout)
@@ -377,6 +531,9 @@ func newCommandHandlers(env runtimeEnv) commandHandlers {
 		},
 		userDelete: func(ctx context.Context, cfg userDeleteConfig) error {
 			return runUserDelete(ctx, newHTTPOperatorClient(cfg.RelayAddr, cfg.OperatorToken, env.httpClient), cfg, env.stdout)
+		},
+		userTier: func(ctx context.Context, cfg userTierConfig) error {
+			return runUserTier(ctx, newHTTPOperatorClient(cfg.RelayAddr, cfg.OperatorToken, env.httpClient), cfg, env.stdout)
 		},
 	}
 }

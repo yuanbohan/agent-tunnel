@@ -18,4 +18,4 @@ fi
 version="$1"
 release_validate_version "$version"
 
-printf '{"version":"%s","compatibility_line":"%s"}\n' "$version" "$(release_compatibility_line "$version")"
+printf '{"version":"%s"}\n' "$version"

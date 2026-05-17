@@ -12,8 +12,16 @@ import (
 )
 
 const defaultRelayListenAddr = relayconfig.DefaultRelayListenAddr
+const defaultRelaySTUNListenAddr = relayconfig.DefaultRelaySTUNListenAddr
+const defaultRelayServeSTUNListenAddr = "off"
 
 type serveConfig struct {
+	ListenAddr     string
+	STUNListenAddr string
+	LogFile        string
+}
+
+type stunServeConfig struct {
 	ListenAddr string
 	LogFile    string
 }
@@ -40,6 +48,14 @@ type userDeleteConfig struct {
 	RelayAddr     string
 	OperatorToken string
 	Username      string
+}
+
+type userTierConfig struct {
+	RelayAddr     string
+	OperatorToken string
+	Username      string
+	Tier          string
+	JSON          bool
 }
 
 type inviteCreateFlags struct {
@@ -72,6 +88,7 @@ func usagef(format string, args ...any) error {
 // applyServeFlags registers serve-subcommand flags on fs.
 func applyServeFlags(fs *pflag.FlagSet, cfg *serveConfig) {
 	fs.StringVarP(&cfg.ListenAddr, "listen-addr", "a", "", "relay listen address (env: RELAY_LISTEN_ADDR)")
+	fs.StringVar(&cfg.STUNListenAddr, "stun-listen-addr", "", `embedded STUN UDP listen address, or "off" to disable (env: RELAY_STUN_LISTEN_ADDR, default: off)`)
 	fs.StringVarP(&cfg.LogFile, "log-file", "L", "", "append structured logs to this file (env: RELAY_LOG_FILE, default: stderr)")
 }
 
@@ -79,13 +96,16 @@ func finalizeServeConfig(cfg serveConfig, getenv func(string) string) (serveConf
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = envOrDefault(getenv, "RELAY_LISTEN_ADDR", defaultRelayListenAddr)
 	}
+	if cfg.STUNListenAddr == "" {
+		cfg.STUNListenAddr = envOrDefault(getenv, "RELAY_STUN_LISTEN_ADDR", defaultRelayServeSTUNListenAddr)
+	}
 	if cfg.LogFile == "" {
 		cfg.LogFile = envValue(getenv, "RELAY_LOG_FILE")
 	}
-	if err := relayconfig.SetupRelay(getenv, cfg.ListenAddr); err != nil {
+	if err := relayconfig.SetupRelay(getenv, cfg.ListenAddr, cfg.STUNListenAddr); err != nil {
 		return serveConfig{}, usagef("%v", err)
 	}
-	return serveConfig{ListenAddr: relayconfig.RelayListenAddr(), LogFile: cfg.LogFile}, nil
+	return serveConfig{ListenAddr: relayconfig.RelayListenAddr(), STUNListenAddr: relayconfig.RelaySTUNListenAddr(), LogFile: cfg.LogFile}, nil
 }
 
 func loadServeConfig(getenv func(string) string, args []string) (serveConfig, error) {
@@ -99,6 +119,39 @@ func loadServeConfig(getenv func(string) string, args []string) (serveConfig, er
 		return serveConfig{}, usagef("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
 	return finalizeServeConfig(cfg, getenv)
+}
+
+// applySTUNServeFlags registers stun-serve-subcommand flags on fs.
+func applySTUNServeFlags(fs *pflag.FlagSet, cfg *stunServeConfig) {
+	fs.StringVarP(&cfg.ListenAddr, "listen-addr", "a", "", "STUN UDP listen address (env: RELAY_STUN_LISTEN_ADDR)")
+	fs.StringVarP(&cfg.LogFile, "log-file", "L", "", "append structured logs to this file (env: RELAY_LOG_FILE, default: stderr)")
+}
+
+func finalizeSTUNServeConfig(cfg stunServeConfig, getenv func(string) string) (stunServeConfig, error) {
+	if cfg.ListenAddr == "" {
+		cfg.ListenAddr = envOrDefault(getenv, "RELAY_STUN_LISTEN_ADDR", defaultRelaySTUNListenAddr)
+	}
+	cfg.ListenAddr = relayconfig.NormalizeSTUNListenAddr(cfg.ListenAddr)
+	if cfg.ListenAddr == "" {
+		return stunServeConfig{}, usagef("missing STUN listen address; relay stun serve requires a UDP listener")
+	}
+	if cfg.LogFile == "" {
+		cfg.LogFile = envValue(getenv, "RELAY_LOG_FILE")
+	}
+	return cfg, nil
+}
+
+func loadSTUNServeConfig(getenv func(string) string, args []string) (stunServeConfig, error) {
+	var cfg stunServeConfig
+	fs := newFlagSet("stun serve")
+	applySTUNServeFlags(fs, &cfg)
+	if err := fs.Parse(args); err != nil {
+		return stunServeConfig{}, usagef("%v", err)
+	}
+	if len(fs.Args()) != 0 {
+		return stunServeConfig{}, usagef("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	return finalizeSTUNServeConfig(cfg, getenv)
 }
 
 // applyInviteCreateFlags registers invite-create flags on fs.
@@ -231,6 +284,38 @@ func loadUserDeleteConfig(getenv func(string) string, args []string) (userDelete
 		return userDeleteConfig{}, usagef("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
 	return finalizeUserDeleteConfig(flags, getenv)
+}
+
+func finalizeUserTierConfig(username, tier string, jsonOutput bool, getenv func(string) string) (userTierConfig, error) {
+	cfg := userTierConfig{
+		RelayAddr:     envOrDefault(getenv, "RELAY_LISTEN_ADDR", defaultRelayListenAddr),
+		OperatorToken: envValue(getenv, "RELAY_OPERATOR_TOKEN"),
+		Username:      username,
+		Tier:          tier,
+		JSON:          jsonOutput,
+	}
+	switch {
+	case cfg.OperatorToken == "":
+		return userTierConfig{}, usagef("missing RELAY_OPERATOR_TOKEN")
+	case strings.TrimSpace(cfg.Username) == "":
+		return userTierConfig{}, usagef("missing username")
+	case strings.TrimSpace(cfg.Tier) == "":
+		return userTierConfig{}, usagef("missing tier")
+	}
+	return cfg, nil
+}
+
+func loadUserTierConfig(getenv func(string) string, args []string) (userTierConfig, error) {
+	fs := newFlagSet("user tier")
+	jsonOutput := fs.Bool("json", false, "print result as JSON")
+	if err := fs.Parse(args); err != nil {
+		return userTierConfig{}, usagef("%v", err)
+	}
+	remaining := fs.Args()
+	if len(remaining) != 2 {
+		return userTierConfig{}, usagef("accepts 2 arg(s), received %d", len(remaining))
+	}
+	return finalizeUserTierConfig(remaining[0], remaining[1], *jsonOutput, getenv)
 }
 
 func parseInviteExpiryDays(raw string) (int, error) {

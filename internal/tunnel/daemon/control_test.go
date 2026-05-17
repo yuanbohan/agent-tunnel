@@ -40,6 +40,32 @@ func TestStatusReadsLiveDaemonResponse(t *testing.T) {
 	}
 }
 
+func TestConfirmPendingPairingPreservesSASMismatchSentinel(t *testing.T) {
+	paths := testPaths(t)
+	if err := EnsureRuntimeDirs(paths); err != nil {
+		t.Fatalf("EnsureRuntimeDirs returned error: %v", err)
+	}
+
+	server, err := NewServer(paths.SocketPath, func(context.Context, Request) Response {
+		return Response{Error: ErrPairingSASMismatch.Error()}
+	})
+	if err != nil {
+		t.Fatalf("NewServer returned error: %v", err)
+	}
+	defer server.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = server.Serve(ctx)
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	_, err = ConfirmPendingPairing(context.Background(), paths, "pair_123", "000000")
+	if !errors.Is(err, ErrPairingSASMismatch) {
+		t.Fatalf("ConfirmPendingPairing error = %v, want ErrPairingSASMismatch", err)
+	}
+}
+
 func TestStatusFallsBackToPersistedStateWhenSocketUnavailable(t *testing.T) {
 	paths := testPaths(t)
 	status := StatusInfo{Running: true, PID: 321, DeviceID: "dev_321", LaunchHealth: LaunchHealthDegraded}

@@ -52,7 +52,7 @@ func TestWSAgentPeerSendJSONSetsWriteDeadline(t *testing.T) {
 		active: true,
 	}
 
-	if err := peer.SendJSON(protocol.ResizeFrame(120, 40)); err != nil {
+	if err := peer.SendJSON(protocol.LaunchReadyFrame(protocol.LaunchContext{})); err != nil {
 		t.Fatalf("SendJSON returned error: %v", err)
 	}
 
@@ -76,7 +76,7 @@ func TestWSAgentPeerSendJSONReturnsDeadlineError(t *testing.T) {
 		active: true,
 	}
 
-	if err := peer.SendJSON(protocol.ResizeFrame(120, 40)); err == nil || err.Error() != "deadline failed" {
+	if err := peer.SendJSON(protocol.LaunchReadyFrame(protocol.LaunchContext{})); err == nil || err.Error() != "deadline failed" {
 		t.Fatalf("SendJSON error = %v, want deadline failed", err)
 	}
 }
@@ -93,7 +93,7 @@ func TestWSAgentPeerRejectsSendsAfterDeactivate(t *testing.T) {
 
 	peer.Deactivate()
 
-	if err := peer.SendJSON(protocol.ResizeFrame(120, 40)); !errors.Is(err, session.ErrAgentPeerInactive) {
+	if err := peer.SendJSON(protocol.LaunchReadyFrame(protocol.LaunchContext{})); !errors.Is(err, session.ErrAgentPeerInactive) {
 		t.Fatalf("SendJSON error = %v, want errAgentPeerInactive", err)
 	}
 

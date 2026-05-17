@@ -69,12 +69,7 @@ fixture_root="$tmpdir/fixture"
 release_root="$fixture_root/releases/download"
 mkdir -p "$release_root"
 go_bin="${GO:-go}"
-repo_relay_version=$("$go_bin" run ./cmd/relay version | awk 'NR==1 {print $2}')
-if [ -z "$repo_relay_version" ]; then
-	printf 'error: could not determine current relay version\n' >&2
-	exit 1
-fi
-version="${TEST_RELEASE_VERSION:-$(release_fixture_version "$repo_relay_version")}"
+version="${TEST_RELEASE_VERSION:-v0.1.2}"
 
 GO="$go_bin" RELEASE_DIR="$release_root" "$script_dir/release-package.sh" "$version" >/dev/null
 "$script_dir/render-latest-manifest.sh" "$version" >"$fixture_root/latest.json"
@@ -92,6 +87,7 @@ PATH="/usr/bin:/bin" HOME="$home_dir" \
 TUNNEL_INSTALL_BASE_URL="$base_url" \
 TUNNEL_RELEASE_BASE_URL="$release_base_url" \
 TUNNEL_INSTALL_DIR="$home_dir/.local/bin" \
+TUNNEL_INSTALL_TMUX_AVAILABLE=0 \
 "$script_dir/install-tunnel.sh" >"$tmpdir/install.out"
 
 if [ ! -x "$home_dir/.local/bin/tunnel" ]; then
@@ -109,48 +105,22 @@ if ! grep -q "add $home_dir/.local/bin to PATH" "$tmpdir/install.out"; then
 	exit 1
 fi
 
+if ! grep -q "warning: tmux is required for mobile-created Tunnel workspaces" "$tmpdir/install.out"; then
+	printf 'error: installer did not print tmux readiness warning\n' >&2
+	exit 1
+fi
+
 mv "$fixture_root/latest.json" "$fixture_root/latest.json.hidden"
 PATH="/usr/bin:/bin" HOME="$home_dir" \
 VERSION="$version" \
 TUNNEL_RELEASE_BASE_URL="$release_base_url" \
 TUNNEL_INSTALL_DIR="$home_dir/.local/bin" \
+TUNNEL_INSTALL_TMUX_AVAILABLE=1 \
 "$script_dir/install-tunnel.sh" >/dev/null
 mv "$fixture_root/latest.json.hidden" "$fixture_root/latest.json"
 
 if [ "$("$home_dir/.local/bin/tunnel" --version)" != "tunnel $version" ]; then
 	printf 'error: pinned install path did not preserve requested version\n' >&2
-	exit 1
-fi
-
-printf '{"version":"%s"}\n' "$version" >"$fixture_root/latest.json"
-if PATH="/usr/bin:/bin" HOME="$home_dir" \
-	TUNNEL_INSTALL_BASE_URL="$base_url" \
-	TUNNEL_RELEASE_BASE_URL="$release_base_url" \
-	TUNNEL_INSTALL_DIR="$home_dir/.local/bin" \
-	"$script_dir/install-tunnel.sh" >/dev/null 2>"$tmpdir/missing-line.err"
-then
-	printf 'error: missing compatibility line install unexpectedly succeeded\n' >&2
-	exit 1
-fi
-
-if ! grep -q 'latest.json did not contain compatibility_line' "$tmpdir/missing-line.err"; then
-	printf 'error: missing compatibility line path did not explain failure\n' >&2
-	exit 1
-fi
-
-printf '{"version":"%s","compatibility_line":"9"}\n' "$version" >"$fixture_root/latest.json"
-if PATH="/usr/bin:/bin" HOME="$home_dir" \
-	TUNNEL_INSTALL_BASE_URL="$base_url" \
-	TUNNEL_RELEASE_BASE_URL="$release_base_url" \
-	TUNNEL_INSTALL_DIR="$home_dir/.local/bin" \
-	"$script_dir/install-tunnel.sh" >/dev/null 2>"$tmpdir/manifest.err"
-then
-	printf 'error: mismatched compatibility line install unexpectedly succeeded\n' >&2
-	exit 1
-fi
-
-if ! grep -q "latest.json compatibility_line does not match version $version" "$tmpdir/manifest.err"; then
-	printf 'error: mismatched compatibility line path did not explain failure\n' >&2
 	exit 1
 fi
 

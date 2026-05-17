@@ -13,7 +13,11 @@
 	migrate-dev migrate-prod \
 	compose-sync-dev compose-sync-prod compose-sync-relay-cn \
 	compose-pull-dev compose-pull-prod compose-pull-relay-cn \
+	compose-pull-stun-dev compose-pull-stun-prod compose-pull-stun-relay-cn \
+	compose-pull-stack-dev compose-pull-stack-prod compose-pull-stack-relay-cn \
 	compose-up-dev compose-up-prod compose-up-relay-cn \
+	compose-up-stun-dev compose-up-stun-prod compose-up-stun-relay-cn \
+	compose-up-stack-dev compose-up-stack-prod compose-up-stack-relay-cn \
 	compose-start-dev compose-start-prod compose-start-relay-cn \
 	compose-stop-dev compose-stop-prod compose-stop-relay-cn \
 	compose-down-dev compose-down-prod compose-down-relay-cn \
@@ -145,22 +149,58 @@ compose-sync-prod: ## Sync Docker Compose relay assets to the prod host without 
 compose-sync-relay-cn: ## Sync Docker Compose relay assets to the relay-cn host without starting services.
 	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/relay-cn.yml ANSIBLE_TAGS="$(DEPLOY_COMPOSE_TAGS)" RELAY_COMPOSE_ACTION=sync
 
-compose-pull-dev: ## Pull configured Relay/PostgreSQL images on the dev host.
+compose-pull-dev: ## Pull the configured Relay image on the dev host without touching STUN.
+	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/dev.yml ANSIBLE_TAGS="$(DEPLOY_COMPOSE_TAGS)" RELAY_COMPOSE_ACTION=pull-relay
+
+compose-pull-prod: ## Pull the configured Relay image on the prod host without touching STUN.
+	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/prod.yml ANSIBLE_TAGS="$(DEPLOY_COMPOSE_TAGS)" RELAY_COMPOSE_ACTION=pull-relay
+
+compose-pull-relay-cn: ## Pull the configured Relay image on relay-cn without touching STUN.
+	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/relay-cn.yml ANSIBLE_TAGS="$(DEPLOY_COMPOSE_TAGS)" RELAY_COMPOSE_ACTION=pull-relay
+
+compose-pull-stun-dev: ## Pull the configured STUN image on the dev host without touching Relay.
+	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/dev.yml ANSIBLE_TAGS="$(DEPLOY_COMPOSE_TAGS)" RELAY_COMPOSE_ACTION=pull-stun
+
+compose-pull-stun-prod: ## Pull the configured STUN image on the prod host without touching Relay.
+	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/prod.yml ANSIBLE_TAGS="$(DEPLOY_COMPOSE_TAGS)" RELAY_COMPOSE_ACTION=pull-stun
+
+compose-pull-stun-relay-cn: ## Pull the configured STUN image on relay-cn without touching Relay.
+	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/relay-cn.yml ANSIBLE_TAGS="$(DEPLOY_COMPOSE_TAGS)" RELAY_COMPOSE_ACTION=pull-stun
+
+compose-pull-stack-dev: ## Pull all configured Compose images on the dev host.
 	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/dev.yml ANSIBLE_TAGS="$(DEPLOY_COMPOSE_TAGS)" RELAY_COMPOSE_ACTION=pull
 
-compose-pull-prod: ## Pull configured Relay/PostgreSQL images on the prod host.
+compose-pull-stack-prod: ## Pull all configured Compose images on the prod host.
 	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/prod.yml ANSIBLE_TAGS="$(DEPLOY_COMPOSE_TAGS)" RELAY_COMPOSE_ACTION=pull
 
-compose-pull-relay-cn: ## Pull configured Relay/PostgreSQL images on the relay-cn host.
+compose-pull-stack-relay-cn: ## Pull all configured Compose images on relay-cn.
 	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/relay-cn.yml ANSIBLE_TAGS="$(DEPLOY_COMPOSE_TAGS)" RELAY_COMPOSE_ACTION=pull
 
-compose-up-dev: ## Pull and start the Docker Compose relay stack on the dev host.
+compose-up-dev: ## Pull and start only the Relay Compose service on the dev host.
+	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/dev.yml ANSIBLE_TAGS="$(DEPLOY_COMPOSE_TAGS)" RELAY_COMPOSE_ACTION=up-relay
+
+compose-up-prod: ## Pull and start only the Relay Compose service on the prod host.
+	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/prod.yml ANSIBLE_TAGS="$(DEPLOY_COMPOSE_TAGS)" RELAY_COMPOSE_ACTION=up-relay
+
+compose-up-relay-cn: ## Pull and start only the Relay Compose service on relay-cn.
+	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/relay-cn.yml ANSIBLE_TAGS="$(DEPLOY_COMPOSE_TAGS)" RELAY_COMPOSE_ACTION=up-relay
+
+compose-up-stun-dev: ## Pull and start only the STUN Compose service on the dev host.
+	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/dev.yml ANSIBLE_TAGS="$(DEPLOY_COMPOSE_TAGS)" RELAY_COMPOSE_ACTION=up-stun
+
+compose-up-stun-prod: ## Pull and start only the STUN Compose service on the prod host.
+	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/prod.yml ANSIBLE_TAGS="$(DEPLOY_COMPOSE_TAGS)" RELAY_COMPOSE_ACTION=up-stun
+
+compose-up-stun-relay-cn: ## Pull and start only the STUN Compose service on relay-cn.
+	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/relay-cn.yml ANSIBLE_TAGS="$(DEPLOY_COMPOSE_TAGS)" RELAY_COMPOSE_ACTION=up-stun
+
+compose-up-stack-dev: ## Pull and start the full Docker Compose stack on the dev host.
 	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/dev.yml ANSIBLE_TAGS="$(DEPLOY_COMPOSE_TAGS)" RELAY_COMPOSE_ACTION=up
 
-compose-up-prod: ## Pull and start the Docker Compose relay stack on the prod host.
+compose-up-stack-prod: ## Pull and start the full Docker Compose stack on the prod host.
 	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/prod.yml ANSIBLE_TAGS="$(DEPLOY_COMPOSE_TAGS)" RELAY_COMPOSE_ACTION=up
 
-compose-up-relay-cn: ## Pull and start the Docker Compose relay stack on the relay-cn host.
+compose-up-stack-relay-cn: ## Pull and start the full Docker Compose stack on relay-cn.
 	@$(MAKE) _deploy-ansible ANSIBLE_INVENTORY=ansible/inventories/relay-cn.yml ANSIBLE_TAGS="$(DEPLOY_COMPOSE_TAGS)" RELAY_COMPOSE_ACTION=up
 
 compose-start-dev: ## Start existing Docker Compose relay services on the dev host.
@@ -193,6 +233,10 @@ compose-down-relay-cn: ## Stop and remove Docker Compose relay containers on the
 relay-cn-ops: ## Print the common Docker Compose operator commands for relay-cn.
 	@printf '%s\n' \
 	'relay-cn quick ops (run from your Mac in this repo):' \
+	'  make compose-sync-relay-cn                            # sync Compose assets without starting services' \
+	'  make compose-up-relay-cn                              # routine Relay-only update' \
+	'  make compose-up-stun-relay-cn                         # rare STUN-only update' \
+	'  make compose-up-stack-relay-cn                        # first rollout/full-stack update' \
 	'  make relay-cn-relay-version                              # running relay version/build' \
 	'  make relay-cn-invite-create RELAY_CN_INVITE_COUNT=3 RELAY_CN_INVITE_EXPIRES_IN=7d' \
 	'  make relay-cn-invite-list' \
@@ -200,7 +244,7 @@ relay-cn-ops: ## Print the common Docker Compose operator commands for relay-cn.
 	'  make relay-cn-user-delete RELAY_CN_USERNAME=alice        # destructive' \
 	'  make relay-cn-psql                                       # open PostgreSQL shell' \
 	'  make relay-cn-logs                                       # tail Relay structured logs' \
-	'  make relay-cn-status                                     # end-to-end health check'
+	'  make relay-cn-status                                     # end-to-end health check incl. public STUN'
 
 relay-cn-relay-version: ## Print the relay version from the running relay-cn container.
 	@ssh "$(RELAY_CN_SSH_DEST)" 'cd "$(RELAY_CN_COMPOSE_DIR)" && sudo docker compose --env-file .env exec relay relay version'
@@ -231,7 +275,7 @@ relay-cn-psql: ## Open a PostgreSQL shell on relay-cn using the Compose postgres
 relay-cn-logs: ## Tail the persisted Relay structured log on relay-cn.
 	@ssh -t "$(RELAY_CN_SSH_DEST)" 'sudo tail -n 100 -f /opt/agentunnel/logs/relay/relay.log'
 
-relay-cn-status: ## Check relay-cn DNS, website, relay health, API auth paths, websocket auth paths, and Compose service state.
+relay-cn-status: ## Check relay-cn DNS, nginx site routes, website, relay health, websocket auth paths, and Compose service state.
 	@./scripts/relay-cn-status.sh
 
 restart-dev: ## Restart only the remote `agentunnel-relay` systemd service. Use after manual config fixes or to bounce the process without redeploying binaries.

@@ -11,37 +11,59 @@ import (
 )
 
 const (
-	actionStatus = "status"
-	actionStop   = "stop"
-	actionDoctor = "doctor"
+	actionStatus                = "status"
+	actionStop                  = "stop"
+	actionDoctor                = "doctor"
+	actionPair                  = "pair"
+	actionPendingPairing        = "pending_pairing"
+	actionConfirmPendingPairing = "confirm_pending_pairing"
+	actionDevices               = "devices"
+	actionRevokeDevice          = "revoke_device"
+	actionSessionList           = "session_list"
+	actionSessionStop           = "session_stop"
 )
 
 var ErrNotRunning = errors.New("daemon is not running")
+var ErrSessionNotFound = errors.New("local session not found")
 
 type StatusInfo struct {
-	Running          bool   `json:"running"`
-	PID              int    `json:"pid,omitempty"`
-	StartedAt        int64  `json:"started_at,omitempty"`
-	BaseURL          string `json:"base_url,omitempty"`
-	DeviceID         string `json:"device_id,omitempty"`
-	DisplayName      string `json:"display_name,omitempty"`
-	Hostname         string `json:"hostname,omitempty"`
-	PlatformFamily   string `json:"platform_family,omitempty"`
-	PlatformID       string `json:"platform_id,omitempty"`
-	RelayConnected   bool   `json:"relay_connected"`
-	LaunchHealth     string `json:"launch_health,omitempty"`
-	WorkspaceBackend string `json:"workspace_backend,omitempty"`
-	LastFailure      string `json:"last_failure,omitempty"`
+	Running                 bool   `json:"running"`
+	PID                     int    `json:"pid,omitempty"`
+	StartedAt               int64  `json:"started_at,omitempty"`
+	BaseURL                 string `json:"base_url,omitempty"`
+	AuthContextFingerprint  string `json:"auth_context_fingerprint,omitempty"`
+	DeviceID                string `json:"device_id,omitempty"`
+	DaemonFingerprint       string `json:"daemon_fingerprint,omitempty"`
+	DisplayName             string `json:"display_name,omitempty"`
+	Hostname                string `json:"hostname,omitempty"`
+	PlatformFamily          string `json:"platform_family,omitempty"`
+	PlatformID              string `json:"platform_id,omitempty"`
+	RelayConnected          bool   `json:"relay_connected"`
+	LaunchHealth            string `json:"launch_health,omitempty"`
+	WorkspaceBackend        string `json:"workspace_backend,omitempty"`
+	LastFailure             string `json:"last_failure,omitempty"`
+	LastConnectivityPath    string `json:"last_connectivity_path,omitempty"`
+	LastConnectivityFailure string `json:"last_connectivity_failure,omitempty"`
 }
 
 type Request struct {
-	Action string `json:"action"`
+	Action            string `json:"action"`
+	DeviceFingerprint string `json:"device_fingerprint,omitempty"`
+	InvitationID      string `json:"invitation_id,omitempty"`
+	SAS               string `json:"sas,omitempty"`
+	SessionID         string `json:"session_id,omitempty"`
 }
 
 type Response struct {
-	Status *StatusInfo   `json:"status,omitempty"`
-	Doctor *DoctorReport `json:"doctor,omitempty"`
-	Error  string        `json:"error,omitempty"`
+	Status         *StatusInfo              `json:"status,omitempty"`
+	Doctor         *DoctorReport            `json:"doctor,omitempty"`
+	Sessions       []BrokerSessionSnapshot  `json:"sessions,omitempty"`
+	PairInvitation *PairInvitation          `json:"pair_invitation,omitempty"`
+	PendingPairing []PendingPairingResponse `json:"pending_pairing,omitempty"`
+	PairCompletion *PairingCompletion       `json:"pair_completion,omitempty"`
+	TrustedDevices []TrustedAndroidDevice   `json:"trusted_devices,omitempty"`
+	TrustedDevice  *TrustedAndroidDevice    `json:"trusted_device,omitempty"`
+	Error          string                   `json:"error,omitempty"`
 }
 
 type Server struct {
@@ -174,6 +196,108 @@ func Doctor(ctx context.Context, paths Paths) (DoctorReport, error) {
 	status, _ := LoadStatus(paths)
 	report := BuildDoctorReport(ctx, paths, status)
 	return report, nil
+}
+
+func Pair(ctx context.Context, paths Paths) (PairInvitation, error) {
+	response, err := request(ctx, paths.SocketPath, Request{Action: actionPair})
+	if err != nil {
+		return PairInvitation{}, fmt.Errorf("%w; start it with `tunnel daemon start`", ErrNotRunning)
+	}
+	if response.Error != "" {
+		return PairInvitation{}, errors.New(response.Error)
+	}
+	if response.PairInvitation == nil {
+		return PairInvitation{}, errors.New("daemon returned empty pairing invitation response")
+	}
+	return *response.PairInvitation, nil
+}
+
+func PendingPairing(ctx context.Context, paths Paths) ([]PendingPairingResponse, error) {
+	response, err := request(ctx, paths.SocketPath, Request{Action: actionPendingPairing})
+	if err != nil {
+		return nil, fmt.Errorf("%w; start it with `tunnel daemon start`", ErrNotRunning)
+	}
+	if response.Error != "" {
+		return nil, errors.New(response.Error)
+	}
+	return response.PendingPairing, nil
+}
+
+func ConfirmPendingPairing(ctx context.Context, paths Paths, invitationID, sas string) (PairingCompletion, error) {
+	response, err := request(ctx, paths.SocketPath, Request{
+		Action:       actionConfirmPendingPairing,
+		InvitationID: invitationID,
+		SAS:          sas,
+	})
+	if err != nil {
+		return PairingCompletion{}, fmt.Errorf("%w; start it with `tunnel daemon start`", ErrNotRunning)
+	}
+	if response.Error != "" {
+		if response.Error == ErrPairingSASMismatch.Error() {
+			return PairingCompletion{}, ErrPairingSASMismatch
+		}
+		return PairingCompletion{}, errors.New(response.Error)
+	}
+	if response.PairCompletion == nil {
+		return PairingCompletion{}, errors.New("daemon returned empty pairing completion response")
+	}
+	return *response.PairCompletion, nil
+}
+
+func TrustedDevices(ctx context.Context, paths Paths) ([]TrustedAndroidDevice, error) {
+	response, err := request(ctx, paths.SocketPath, Request{Action: actionDevices})
+	if err != nil {
+		return nil, fmt.Errorf("%w; start it with `tunnel daemon start`", ErrNotRunning)
+	}
+	if response.Error != "" {
+		return nil, errors.New(response.Error)
+	}
+	return response.TrustedDevices, nil
+}
+
+func RevokeTrustedDevice(ctx context.Context, paths Paths, fingerprint string) (TrustedAndroidDevice, error) {
+	response, err := request(ctx, paths.SocketPath, Request{
+		Action:            actionRevokeDevice,
+		DeviceFingerprint: fingerprint,
+	})
+	if err != nil {
+		return TrustedAndroidDevice{}, fmt.Errorf("%w; start it with `tunnel daemon start`", ErrNotRunning)
+	}
+	if response.Error != "" {
+		return TrustedAndroidDevice{}, errors.New(response.Error)
+	}
+	if response.TrustedDevice == nil {
+		return TrustedAndroidDevice{}, errors.New("daemon returned empty trusted device response")
+	}
+	return *response.TrustedDevice, nil
+}
+
+func ListSessions(ctx context.Context, paths Paths) ([]BrokerSessionSnapshot, error) {
+	response, err := request(ctx, paths.SocketPath, Request{Action: actionSessionList})
+	if err != nil {
+		return nil, fmt.Errorf("%w; start it with `tunnel daemon start`", ErrNotRunning)
+	}
+	if response.Error != "" {
+		return nil, errors.New(response.Error)
+	}
+	return response.Sessions, nil
+}
+
+func StopSession(ctx context.Context, paths Paths, sessionID string) error {
+	response, err := request(ctx, paths.SocketPath, Request{
+		Action:    actionSessionStop,
+		SessionID: sessionID,
+	})
+	if err != nil {
+		return fmt.Errorf("%w; start it with `tunnel daemon start`", ErrNotRunning)
+	}
+	if response.Error != "" {
+		if response.Error == ErrSessionNotFound.Error() {
+			return ErrSessionNotFound
+		}
+		return errors.New(response.Error)
+	}
+	return nil
 }
 
 func request(ctx context.Context, socketPath string, payload Request) (Response, error) {

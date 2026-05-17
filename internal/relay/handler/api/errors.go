@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
 	"yuanbohan/tunnel/internal/relay/auth"
@@ -14,7 +15,8 @@ func WriteOperatorError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, operator.ErrInvalidOperatorRequest),
 		errors.Is(err, auth.ErrInvalidInviteCode),
-		errors.Is(err, auth.ErrInvalidUsername):
+		errors.Is(err, auth.ErrInvalidUsername),
+		errors.Is(err, auth.ErrInvalidSubscriptionTier):
 		WriteJSONError(w, http.StatusBadRequest, "invalid_request")
 	case errors.Is(err, auth.ErrInviteCodeNotFound):
 		WriteJSONError(w, http.StatusNotFound, "invite_code_not_found")
@@ -69,7 +71,8 @@ func registerFailureDetailsFromError(err error) (string, bool) {
 func isRefreshFailure(err error) bool {
 	return errors.Is(err, auth.ErrAppSessionNotFound) ||
 		errors.Is(err, auth.ErrAppSessionExpired) ||
-		errors.Is(err, auth.ErrAppSessionRevoked)
+		errors.Is(err, auth.ErrAppSessionRevoked) ||
+		errors.Is(err, auth.ErrAppSessionDeviceMismatch)
 }
 
 func newAppSessionResponse(issued auth.IssuedAppSession) types.AppSessionResponse {
@@ -82,6 +85,7 @@ func newAppSessionResponse(issued auth.IssuedAppSession) types.AppSessionRespons
 		RefreshToken: issued.RefreshToken,
 		ExpiresIn:    int64(expiresIn / time.Second),
 		TokenType:    "Bearer",
+		AccountID:    strconv.FormatInt(issued.User.ID, 10),
 	}
 }
 

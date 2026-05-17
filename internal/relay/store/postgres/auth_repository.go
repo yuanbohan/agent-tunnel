@@ -21,14 +21,15 @@ func (s *PostgresStore) RegisterUser(ctx context.Context, params auth.RegisterUs
 
 	var user auth.User
 	err = tx.QueryRowContext(ctx, `
-		insert into users(username, username_norm, password_hash, created_at, updated_at)
-		values ($1, $2, $3, $4, $4)
-		returning id, username, username_norm, password_hash, created_at, updated_at
-	`, params.UsernameNorm, params.UsernameNorm, params.PasswordHash, params.Now).Scan(
+		insert into users(username, username_norm, password_hash, subscription_tier, created_at, updated_at)
+		values ($1, $2, $3, $4, $5, $5)
+		returning id, username, username_norm, password_hash, subscription_tier, created_at, updated_at
+	`, params.UsernameNorm, params.UsernameNorm, params.PasswordHash, auth.SubscriptionTierFree, params.Now).Scan(
 		&user.ID,
 		&user.Username,
 		&user.UsernameNorm,
 		&user.PasswordHash,
+		&user.SubscriptionTier,
 		&user.CreatedAt,
 		&user.UpdatedAt,
 	)
@@ -55,7 +56,7 @@ func (s *PostgresStore) RegisterUser(ctx context.Context, params auth.RegisterUs
 
 func (s *PostgresStore) FindUserByUsername(ctx context.Context, usernameNorm string) (auth.User, error) {
 	return queryUser(ctx, s.db, `
-		select id, username, username_norm, password_hash, created_at, updated_at
+		select id, username, username_norm, password_hash, subscription_tier, created_at, updated_at
 		from users
 		where username_norm = $1
 	`, usernameNorm)
@@ -63,7 +64,7 @@ func (s *PostgresStore) FindUserByUsername(ctx context.Context, usernameNorm str
 
 func (s *PostgresStore) FindUserByID(ctx context.Context, userID int64) (auth.User, error) {
 	return queryUser(ctx, s.db, `
-		select id, username, username_norm, password_hash, created_at, updated_at
+		select id, username, username_norm, password_hash, subscription_tier, created_at, updated_at
 		from users
 		where id = $1
 	`, userID)
@@ -108,20 +109,21 @@ func (s *PostgresStore) CreateAppSession(ctx context.Context, params auth.Create
 	err := s.db.QueryRowContext(ctx, `
 		insert into app_sessions(
 			id, user_id, access_token_digest, access_expires_at,
-			refresh_token_digest, refresh_expires_at, created_at, updated_at
+			refresh_token_digest, refresh_expires_at, device_fingerprint, created_at, updated_at
 		)
-		values ($1, $2, $3, $4, $5, $6, $7, $7)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $8)
 		returning id, user_id, access_token_digest, access_expires_at,
-			refresh_token_digest, refresh_expires_at,
+			refresh_token_digest, refresh_expires_at, device_fingerprint,
 			revoked_at, revoke_reason, created_at, updated_at
 	`, params.ID, params.UserID, params.AccessTokenDigest, params.AccessExpiresAt,
-		params.RefreshTokenDigest, params.RefreshExpiresAt, params.Now).Scan(
+		params.RefreshTokenDigest, params.RefreshExpiresAt, params.DeviceFingerprint, params.Now).Scan(
 		&session.ID,
 		&session.UserID,
 		&session.AccessTokenDigest,
 		&session.AccessExpiresAt,
 		&session.RefreshTokenDigest,
 		&session.RefreshExpiresAt,
+		&session.DeviceFingerprint,
 		nullTimeDest(&session.RevokedAt),
 		&session.RevokeReason,
 		&session.CreatedAt,
@@ -133,7 +135,7 @@ func (s *PostgresStore) CreateAppSession(ctx context.Context, params auth.Create
 func (s *PostgresStore) FindAppSessionByAccessToken(ctx context.Context, accessTokenDigest string, now time.Time, absoluteTTL time.Duration) (auth.AppSession, error) {
 	session, err := queryAppSession(ctx, s.db, `
 		select id, user_id, access_token_digest, access_expires_at,
-			refresh_token_digest, refresh_expires_at,
+			refresh_token_digest, refresh_expires_at, device_fingerprint,
 			revoked_at, revoke_reason, created_at, updated_at
 		from app_sessions
 		where access_token_digest = $1
@@ -153,7 +155,7 @@ func (s *PostgresStore) RotateAppSessionByRefreshToken(ctx context.Context, para
 
 	session, err := queryAppSession(ctx, tx, `
 		select id, user_id, access_token_digest, access_expires_at,
-			refresh_token_digest, refresh_expires_at,
+			refresh_token_digest, refresh_expires_at, device_fingerprint,
 			revoked_at, revoke_reason, created_at, updated_at
 		from app_sessions
 		where refresh_token_digest = $1
@@ -172,6 +174,9 @@ func (s *PostgresStore) RotateAppSessionByRefreshToken(ctx context.Context, para
 	if !session.RefreshExpiresAt.After(effectiveNow) {
 		return auth.AppSession{}, auth.ErrAppSessionExpired
 	}
+	if session.DeviceFingerprint != "" && session.DeviceFingerprint != params.DeviceFingerprint {
+		return auth.AppSession{}, auth.ErrAppSessionDeviceMismatch
+	}
 
 	accessTTL := params.NewAccessExpiresAt.Sub(params.Now)
 	refreshTTL := params.NewRefreshExpiresAt.Sub(params.Now)
@@ -187,7 +192,7 @@ func (s *PostgresStore) RotateAppSessionByRefreshToken(ctx context.Context, para
 			updated_at = $6
 		where id = $1
 		returning id, user_id, access_token_digest, access_expires_at,
-			refresh_token_digest, refresh_expires_at,
+			refresh_token_digest, refresh_expires_at, device_fingerprint,
 			revoked_at, revoke_reason, created_at, updated_at
 	`, session.ID, params.NewAccessTokenDigest, newAccessExpiresAt,
 		params.NewRefreshTokenDigest, newRefreshExpiresAt, effectiveNow).Scan(
@@ -197,6 +202,7 @@ func (s *PostgresStore) RotateAppSessionByRefreshToken(ctx context.Context, para
 		&session.AccessExpiresAt,
 		&session.RefreshTokenDigest,
 		&session.RefreshExpiresAt,
+		&session.DeviceFingerprint,
 		nullTimeDest(&session.RevokedAt),
 		&session.RevokeReason,
 		&session.CreatedAt,
