@@ -82,7 +82,7 @@ The broader connectivity program is moving terminal traffic away from Relay-term
 - `internal/relay/handler/connectivity/app_ws.go` and `internal/relay/handler/connectivity/daemon_ws.go` already host the Step 2 realtime WebSockets and unsupported-event handling.
 - `internal/tunnel/daemon/connectivity_connector.go` already maintains the daemon-side realtime connection and sends `daemon_register` with trusted Android roster.
 - `internal/tunnel/daemon/broker.go` and `internal/tunnel/daemon/session_registration.go` implement the Step 3 local roster/cache and are the natural place to add Step 4 interactive broker frames.
-- `internal/tunnel/session/hub.go`, `internal/tunnel/session/terminal_mirror.go`, and `internal/tunnel/connector/connector.go` show the existing PTY input, resize, snapshot, live output, and submit-anchor patterns that Step 4 should reuse rather than reimplementing terminal semantics in Relay.
+- `internal/tunnel/session/hub.go`, `internal/tunnel/session/terminal_mirror.go`, and daemon broker code show the existing PTY input, resize, snapshot, and live output patterns that Step 4 should reuse rather than reimplementing terminal semantics in Relay.
 - `internal/relay/handler/new.go` wires connectivity routes beside existing API and agent/device routes.
 
 ### Institutional Learnings
@@ -122,7 +122,7 @@ The broader connectivity program is moving terminal traffic away from Relay-term
 - Exact fallback tunnel route path and query/header token placement: choose while editing `internal/relay/handler/new.go`, then document in `docs/api.md` and `docs/connectivity/protocol/relay.md`.
 - Exact WebSocket packet envelope: binary frame per QUIC datagram is the assumed shape, but implementation may add a minimal per-packet wrapper if quic-go `net.PacketConn` behavior requires peer addressing metadata.
 - Exact production package names for session protocol payloads: `internal/connectivity/sessionproto` is a reasonable default, but the implementer may choose a clearer local name if it fits existing package boundaries better.
-- Submit-anchor exposure over the new transport: the Step 4 source checklist does not require anchors. If implementation can include `snapshot_end` anchor metadata without destabilizing Android contract, document it; otherwise defer anchors for a focused follow-up.
+- Additional terminal navigation metadata is out of scope for Step 4; session snapshots and live bytes remain the transport contract.
 
 ---
 

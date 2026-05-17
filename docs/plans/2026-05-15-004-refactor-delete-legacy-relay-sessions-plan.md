@@ -65,7 +65,7 @@ The latest product premise is also narrower for CLI: `tunnel session list` only 
 - `internal/relay/handler/new.go` wires the legacy session routes and creates `session.NewAttachSessionIndex()` solely for app attach logout/password-change cleanup.
 - `internal/relay/handler/api/sessions.go` implements `GET /api/sessions`, `POST /api/sessions/:sessionID/stop`, and `DELETE /api/sessions/:sessionID`.
 - `internal/relay/handler/attach/ws.go` and `internal/relay/handler/attach/client.go` implement the legacy app attach WebSocket, same-origin checks, client IDs, input forwarding, control messages, and binary PTY byte writes.
-- `internal/relay/session/registry.go` currently mixes live agent ownership needed for launch correlation with legacy session listing, stopping, attach lifecycle, input forwarding, resize, snapshot, submit-anchor, terminal-byte, and attach-close routing.
+- `internal/relay/session/registry.go` currently mixes live agent ownership needed for launch correlation with legacy session listing, stopping, attach lifecycle, input forwarding, resize, snapshot, terminal-byte, and attach-close routing.
 - `internal/protocol/message.go` and `internal/protocol/attach_packet.go` define legacy attach/stop message helpers used by both Relay attach and the tunnel connector.
 - `internal/tunnel/connector/connector.go` still handles `attach_open`, `attach_close`, `input_text`, `input_key`, and `stop_session` frames from Relay.
 - `internal/tunnel/daemon/broker.go` already maintains local live session metadata, snapshots, previews, event subscription, input routing, resize routing, and interactive ownership for the current computer.
@@ -207,7 +207,7 @@ After this work, Relay may know that a launch request completed with a `session_
 - Modify: `internal/relay/handler/rest_api_test.go`
 
 **Approach:**
-- Remove `AttachPeer`, pending/attached maps, attach start/detach methods, attach input forwarding, resize broadcast, snapshot completion routing, submit-anchor routing, terminal-byte routing, and attach-close routing from the Relay registry.
+- Remove `AttachPeer`, pending/attached maps, attach start/detach methods, attach input forwarding, resize broadcast, snapshot completion routing, terminal-byte routing, and attach-close routing from the Relay registry.
 - Keep `RegisterOwned`, `DisconnectIfOwner`, `SetLaunchSourceForUser`, `DisconnectUserSessions`, and `DisconnectAgentTokenSessions` or equivalent live-owner APIs.
 - Decide whether `ListForUser`, `SessionForUser`, and `StopForUser` should be deleted immediately or kept unexported only where current code still needs them during U1/U3 sequencing; the final state should expose no Relay app/client session list or stop API.
 - In `/agent/ws`, ignore or remove handling for attach-only frames and binary attach packets. Keep `register`, `launch_ready`, and any fields needed by control-plane launch correlation.
@@ -223,7 +223,7 @@ After this work, Relay may know that a launch request completed with a `session_
 - Happy path: agent registration records a live owner and `launch_ready` still completes the matching device launch request.
 - Happy path: agent disconnect removes the live owner state for that registered session.
 - Security: agent token revocation and user deletion still disconnect live agent sessions owned by that token/user.
-- Regression: Relay registry tests no longer contain attach-ready, snapshot, submit-anchor, input, resize, terminal-byte, or slow-client scenarios.
+- Regression: Relay registry tests no longer contain attach-ready, snapshot, input, resize, terminal-byte, or slow-client scenarios.
 - Regression: `/agent/ws` binary messages no longer route terminal bytes to app attach clients.
 
 **Verification:**

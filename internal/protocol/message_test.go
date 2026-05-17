@@ -131,7 +131,7 @@ func TestSessionSummaryJSONUsesStableFieldNames(t *testing.T) {
 			t.Fatalf("json = %s, want field %q", got, want)
 		}
 	}
-	for _, removed := range []string{"latest_seq", "terminate_supported", `"origin"`, "client_id", "submit_anchor"} {
+	for _, removed := range []string{"latest_seq", "terminate_supported", `"origin"`, "client_id"} {
 		if strings.Contains(got, removed) {
 			t.Fatalf("json = %s, did not expect removed field %q", got, removed)
 		}

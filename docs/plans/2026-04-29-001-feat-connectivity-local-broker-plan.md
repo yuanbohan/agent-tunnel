@@ -81,9 +81,9 @@ The upstream requirements move Tunnel toward a path-agnostic attach model where 
 - `internal/tunnel/daemon/control.go` is the existing short-lived Unix socket RPC pattern; the broker should use a separate listener because broker connections are long-lived.
 - `internal/tunnel/daemon/paths.go` is the right place to add a dedicated broker socket path under the daemon runtime directory.
 - `internal/tunnel/daemon/connector.go` already keeps remote launch tmux failures local and reports `LaunchHealthDegraded`; launch health should remain tied to tmux-backed remote launch, not connectivity-core readiness.
-- `internal/tunnel/session/hub.go` provides output sink fanout, PTY input serialization, resize listeners, and input observer hooks.
+- `internal/tunnel/session/hub.go` provides output sink fanout, PTY input serialization, and resize listeners.
 - `internal/tunnel/session/terminal_mirror.go` already maintains a local xterm mirror and exposes `ViewportText`; preview generation should extend this local mirror capability instead of asking Relay to derive previews.
-- `internal/tunnel/connector/connector.go` is the existing Relay attach adapter. The local broker should not weaken its strict startup registration, snapshot, live-byte, submit-anchor, or reconnect behavior.
+- `internal/tunnel/connector/connector.go` is the existing Relay startup/control adapter. The local broker should not weaken its strict startup registration or reconnect behavior.
 - `docs/connectivity/protocol/local-broker.md`, `docs/connectivity/contract.md`, and `docs/connectivity/reference/sequence-flows.md` define the Step 3 target shape and the Step 4 boundary.
 
 ### Institutional Learnings
@@ -343,7 +343,7 @@ The key invariant is that Relay connector behavior and local terminal behavior r
 - Send full `preview_update` replacements, not diffs. The daemon broker stores only the latest preview for each session.
 - Throttle preview pushes lightly and skip duplicate text so chatty terminal output does not flood the local socket.
 - Treat empty preview as valid and keep session metadata visible even before meaningful output exists.
-- Keep preview independent from the Relay connector's attach snapshot path so Relay attach semantics and submit-anchor behavior are not refactored in this step.
+- Keep preview independent from Relay startup/control registration so terminal semantics stay daemon-local in this step.
 - Ensure status/doctor-style responses and routine error strings do not include cached preview text.
 
 **Patterns to follow:**
