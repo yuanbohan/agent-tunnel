@@ -6,7 +6,7 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 
 ## Start Here
 
-- Cross-repository protocol decisions live in `https://github.com/yuanbohan/agent-tunnel-protocols`; local checkout path is usually `../agent-tunnel-protocols`. This repository keeps implementation-specific mirrors, public Relay API docs, daemon behavior docs, and operational guidance aligned with that protocol source of truth.
+- Cross-repository protocol decisions live in `https://github.com/yuanbohan/agent-tunnel-protocols`; local checkout path is usually `../agent-tunnel-protocols`. This repository keeps implementation-specific pointers, daemon behavior docs, tests, and operational guidance aligned with that protocol source of truth.
 - The official Android companion lives in `https://github.com/yuanbohan/agent-tunnel-android`; local checkout path is usually `../agent-tunnel-android`. Use it when checking mobile pairing, trusted-computer list, direct-first/fallback behavior, session previews, and session detail input.
 - The main product is the `tunnel` CLI with strict relay startup requirement and automatic reconnect with backoff after startup.
 - `cmd/tunnel` builds the `tunnel` CLI. It launches a PATH-resolved CLI command, keeps the local terminal interactive, and maintains the authoritative headless terminal mirror for the current PTY session.
@@ -29,9 +29,9 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 - `internal/relay/store/postgres/` owns PostgreSQL persistence for relay auth and operator state.
 - `internal/tunnel/launcher/` is the thin PATH resolution layer for the user-provided launcher command.
 - `internal/buildinfo/` owns shared tunnel/relay version metadata used by release builds and version reporting.
-- `docs/api.md` is this repository's current public app-facing relay API implementation reference, including auth, request and response shapes, and error contracts.
+- `docs/api.md` is a local pointer to `../agent-tunnel-protocols/docs/api.md`, plus Go implementation entry points.
 - `docs/daemon.md` is the daemon-specific implementation contract for lifecycle, tmux workspace ownership, workspace close behavior, launch validation, launch health, and failure reasons.
-- `docs/architecture.md` describes how all Go packages and relay-facing protocols interact.
+- `docs/architecture.md` is a local pointer to `../agent-tunnel-protocols/docs/architecture.md`, plus Go implementation entry points.
 - `docs/release-distribution.md` describes the private-source/public-distribution release workflow for `tunnel`.
 
 ## Current Product Boundaries
@@ -79,13 +79,13 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 ## Docs Expectations
 
 - Cross-repository protocol docs belong in `../agent-tunnel-protocols`. For pairing, Relay connectivity realtime, direct/relay carrier semantics, daemon transport frames, security invariants, trusted-computer flows, and mobile detail input data flow, update the SSOT docs first or in the same PR set. Local docs should point to the SSOT and add only Go implementation entry points, tests, API examples, and operational notes.
-- Keep `README.md`, `docs/api.md`, `docs/protocol.md`, `docs/daemon.md`, `docs/architecture.md`, `CLAUDE.md`, and `AGENTS.md` aligned with the active daemon-transport contract and current implementation status when behavior or scope changes.
-- If you change app-facing relay auth, public client endpoints, request or response shapes, app-visible error statuses or reasons, or connectivity WebSocket message contracts, update `docs/api.md`.
-- If you change relay auth, relay lifecycle, client-facing endpoints, or PTY/input behavior, update `docs/architecture.md`.
+- Keep `README.md`, `docs/protocol.md`, `docs/daemon.md`, `CLAUDE.md`, and `AGENTS.md` aligned with the active daemon-transport contract and current implementation status when behavior or scope changes. Keep `docs/api.md` and `docs/architecture.md` as pointers, not detailed mirrors.
+- If you change app-facing relay auth, public client endpoints, request or response shapes, app-visible error statuses or reasons, or connectivity WebSocket message contracts, update `../agent-tunnel-protocols/docs/api.md`; update local `docs/api.md` only if implementation entry points changed.
+- If you change relay auth, relay lifecycle, client-facing endpoints, PTY/input behavior, or system ownership boundaries, update `../agent-tunnel-protocols/docs/architecture.md`; update local `docs/architecture.md` only if implementation entry points changed.
 - If you change PostgreSQL schema, update `deploy/postgres/latest.sql` in the same change and document any manual SQL required for existing deployed databases.
 - If you change daemon lifecycle, tmux workspace ownership, workspace close behavior, launch validation, daemon health, local daemon state, or daemon failure reasons, update `docs/daemon.md`.
-- If you change session-state semantics, daemon transport session messages, `/agent/ws` registration/readiness, or local daemon session management, update `README.md`, `docs/protocol.md`, `docs/architecture.md`, `docs/daemon.md`, `CLAUDE.md`, and `AGENTS.md`.
-- If you change daemon snapshot generation, live-byte delivery, resize ownership, or structured input semantics, update `README.md`, `docs/protocol.md`, `docs/architecture.md`, `docs/daemon.md`, `CLAUDE.md`, and `AGENTS.md`.
+- If you change session-state semantics, daemon transport session messages, `/agent/ws` registration/readiness, or local daemon session management, update `README.md`, `docs/protocol.md`, `docs/daemon.md`, `CLAUDE.md`, `AGENTS.md`, and the relevant `../agent-tunnel-protocols` SSOT doc.
+- If you change daemon snapshot generation, live-byte delivery, resize ownership, or structured input semantics, update `README.md`, `docs/protocol.md`, `docs/daemon.md`, `CLAUDE.md`, `AGENTS.md`, and the relevant `../agent-tunnel-protocols` SSOT doc.
 - If you change operator-facing startup flow or environment variables, update `README.md`.
 - If you change the public `tunnel` release flow, installer contract, or distribution repo surface, update `README.md`, `docs/release-distribution.md`, `docs/public-distribution-readme.md`, `CLAUDE.md`, and `AGENTS.md`.
 

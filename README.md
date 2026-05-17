@@ -2,7 +2,7 @@
 
 Launch a terminal agent locally and expose daemon-backed mobile connectivity without making Relay the terminal data plane.
 
-Cross-repository protocol decisions live in [yuanbohan/agent-tunnel-protocols](https://github.com/yuanbohan/agent-tunnel-protocols). This repository keeps the Go implementation, Relay API mirror, daemon behavior, and operational docs aligned with that protocol source of truth.
+Cross-repository protocol decisions live in [yuanbohan/agent-tunnel-protocols](https://github.com/yuanbohan/agent-tunnel-protocols). This repository keeps the Go implementation, local pointers, daemon behavior, and operational docs aligned with that protocol source of truth.
 
 For local cross-repository work, keep these sibling checkouts together:
 
@@ -235,7 +235,7 @@ App clients authenticate with bearer tokens returned by `POST /api/auth/login`.
 
 The mobile companion uses Relay for auth, account policy, pairing, computer presence, rendezvous, fallback tunnel setup, and `POST /api/computers/:computerID/sessions`; after `session_ready`, it waits for the daemon connectivity transport to report the launched session through `session_index` or `session_upsert`.
 
-See [docs/api.md](docs/api.md) for the current repo-local public app-facing endpoint inventory, auth requirements, request and response examples, and error contracts.
+See `../agent-tunnel-protocols/docs/api.md` for the current public Relay API endpoint inventory, auth requirements, request/response examples, and error contracts. The local [docs/api.md](docs/api.md) file is only a pointer with Go implementation entry points.
 
 Device daemons connect separately on `/device/ws`. Reverse proxies for hosted relay deployments must forward that path alongside `/api/` and `/agent/ws`.
 ## Session Transport Model
@@ -408,9 +408,10 @@ See [docs/local-e2e.md](docs/local-e2e.md) for the Docker-backed local E2E workf
 
 ## Protocol
 
-See [docs/api.md](docs/api.md) for the current public app-facing relay API reference.
-See [docs/protocol.md](docs/protocol.md) for this repository's Relay and connectivity implementation map.
 See [yuanbohan/agent-tunnel-protocols](https://github.com/yuanbohan/agent-tunnel-protocols) (local checkout: `../agent-tunnel-protocols`) for the cross-repository protocol source of truth.
+See `../agent-tunnel-protocols/docs/api.md` for the current public Relay API reference.
+See `../agent-tunnel-protocols/docs/architecture.md` for the cross-repository system architecture.
+See [docs/protocol.md](docs/protocol.md) for this repository's Relay and connectivity implementation map.
 See [docs/connectivity/protocol/transport.md](docs/connectivity/protocol/transport.md) for the local daemon transport implementation pointer.
 See [docs/tui-attach-flow.md](docs/tui-attach-flow.md) for the tombstone of the removed Relay attach path.
 See [docs/deployment.md](docs/deployment.md) for VPS deployment, nginx/TLS setup, and operations guide.

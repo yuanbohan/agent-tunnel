@@ -1,6 +1,6 @@
 # Connectivity Docs Index
 
-Phase-1 design for the QUIC session-connectivity stack. This is this repository's implementation/design mirror; cross-repository protocol decisions live in [yuanbohan/agent-tunnel-protocols](https://github.com/yuanbohan/agent-tunnel-protocols).
+Phase-1 design for the QUIC session-connectivity stack. This is this repository's implementation/design mirror; cross-repository protocol decisions live in [yuanbohan/agent-tunnel-protocols](https://github.com/yuanbohan/agent-tunnel-protocols). For current API, architecture, and flow diagrams, read `../agent-tunnel-protocols/docs/api.md`, `../agent-tunnel-protocols/docs/architecture.md`, and `../agent-tunnel-protocols/docs/draws/README.md`.
 
 ## Read In This Order
 

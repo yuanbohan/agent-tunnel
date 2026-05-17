@@ -9,12 +9,16 @@ Cross-repository protocol decisions live in
 Use these SSOT documents for protocol facts:
 
 - `../agent-tunnel-protocols/docs/end-to-end-flows.md`
+- `../agent-tunnel-protocols/docs/api.md`
+- `../agent-tunnel-protocols/docs/architecture.md`
+- `../agent-tunnel-protocols/docs/draws/README.md`
 - `../agent-tunnel-protocols/docs/pairing.md`
 - `../agent-tunnel-protocols/docs/relay-control-plane.md`
 - `../agent-tunnel-protocols/docs/protocol.md`
 
-Endpoint-level request/response examples, auth requirements, and public Relay
-API error contracts remain in [api.md](api.md).
+Endpoint-level request/response examples, auth requirements, public Relay API
+error contracts, and system architecture now live in the protocols SSOT. Local
+[api.md](api.md) and [architecture.md](architecture.md) are pointers only.
 
 ## Current Product Boundary
 
@@ -62,7 +66,7 @@ Removed from the current product contract:
 
 ## Implementation Entry Points
 
-- Relay public API docs: `docs/api.md`
+- Relay public API pointer: `docs/api.md`
 - Connectivity provenance map: `docs/protocols/connectivity.md`
 - Connectivity implementation contract: `docs/connectivity/contract.md`
 - Pairing pointer: `docs/connectivity/protocol/pairing.md`
@@ -70,7 +74,7 @@ Removed from the current product contract:
 - Daemon transport pointer: `docs/connectivity/protocol/transport.md`
 - Local broker mechanics: `docs/connectivity/protocol/local-broker.md`
 - Daemon behavior: `docs/daemon.md`
-- System architecture: `docs/architecture.md`
+- System architecture pointer: `docs/architecture.md`
 
 Keep this file as an implementation map. Do not reintroduce detailed
 cross-repository protocol mirrors here.

@@ -6,6 +6,9 @@ This file records the local implementation boundary for `agent-tunnel`.
 Cross-repository protocol details live in:
 
 - `../agent-tunnel-protocols/docs/end-to-end-flows.md`
+- `../agent-tunnel-protocols/docs/api.md`
+- `../agent-tunnel-protocols/docs/architecture.md`
+- `../agent-tunnel-protocols/docs/draws/README.md`
 - `../agent-tunnel-protocols/docs/pairing.md`
 - `../agent-tunnel-protocols/docs/relay-control-plane.md`
 - `../agent-tunnel-protocols/docs/protocol.md`
