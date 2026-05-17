@@ -15,16 +15,17 @@ Markdown document owns the protocol decision.
 
 | Surface | Cross-repo SSOT | Local docs | Local Go mirrors/tests | Local scope |
 |---|---|---|---|---|
-| Daemon-to-mobile QUIC transport, stream model, frame registry, JSON payload families, `ProtocolVersion`, transport security invariants | `agent-tunnel-protocols:docs/protocol.md` | `docs/connectivity/protocol/transport.md`, `docs/connectivity/contract.md` | `internal/connectivity/frame`, `internal/connectivity/sessionproto`, `internal/connectivity/transport`, `internal/connectivity/interop`, `internal/tunnel/daemon/connectivity_transport.go`, `internal/tunnel/daemon/connectivity_transport_test.go` | Implementation mirror and Go compatibility tests |
-| Mobile-visible session metadata and launch convergence semantics | `agent-tunnel-protocols:docs/protocol.md` | `docs/connectivity/protocol/transport.md`, selected mobile-visible parts of `docs/connectivity/protocol/local-broker.md` | `internal/connectivity/sessionproto`, daemon broker/session registration tests | Mirror only the mobile-visible metadata contract; keep broker mechanics repo-local |
+| End-to-end trusted-computer, pairing, list/preview, direct/relay, detail input, and key-storage flows | `agent-tunnel-protocols:docs/end-to-end-flows.md` | `docs/connectivity/contract.md`, `docs/protocol.md` | Cross-package behavior in `internal/relay`, `internal/tunnel/daemon`, `internal/connectivity` | Local implementation map only |
+| Pairing protocol, canonical transcripts, SAS, trust completion, persistence, revocation | `agent-tunnel-protocols:docs/pairing.md` | `docs/connectivity/protocol/pairing.md` | `internal/connectivity/pairing`, `internal/tunnel/daemon/pairing_state.go`, `internal/tunnel/daemon/connectivity_connector.go`, `internal/relay/handler/api/pairing.go`, `internal/relay/connectivity` | Implementation mirror and compatibility tests |
+| Relay connectivity realtime control plane, presence, pairing forwarding, rendezvous, fallback tunnel tokens, opaque packet forwarding | `agent-tunnel-protocols:docs/relay-control-plane.md` | `docs/connectivity/protocol/relay.md`, `docs/api.md` | `internal/protocol/connectivity.go`, `internal/protocol/connectivity_test.go`, `internal/relay/connectivity`, `internal/relay/handler/connectivity_ws_test.go`, `internal/relay/handler/connectivity/tunnel_ws.go` | Implementation mirror and API reference |
+| Daemon-to-mobile QUIC transport, stream model, frame registry, JSON payload families, `ProtocolVersion`, direct/relay packet-carrier boundary, transport security invariants | `agent-tunnel-protocols:docs/protocol.md` | `docs/connectivity/protocol/transport.md`, `docs/connectivity/contract.md` | `internal/connectivity/frame`, `internal/connectivity/sessionproto`, `internal/connectivity/transport`, `internal/connectivity/interop`, `internal/tunnel/daemon/connectivity_transport.go`, `internal/tunnel/daemon/connectivity_transport_test.go` | Implementation mirror and Go compatibility tests |
+| Mobile-visible session metadata and launch convergence semantics | `agent-tunnel-protocols:docs/protocol.md`, `agent-tunnel-protocols:docs/end-to-end-flows.md` | `docs/connectivity/protocol/transport.md`, selected mobile-visible parts of `docs/connectivity/protocol/local-broker.md` | `internal/connectivity/sessionproto`, daemon broker/session registration tests | Mirror only the mobile-visible metadata contract; keep broker mechanics repo-local |
 
-## Gated Or Deferred Surfaces
+## Repo-Local Surfaces
 
-| Surface | Status | Local docs/tests | Notes |
-|---|---|---|---|
-| Relay connectivity realtime control plane | Gated | `docs/connectivity/protocol/relay.md`, `internal/protocol/connectivity.go`, `internal/protocol/connectivity_test.go`, `internal/relay/connectivity`, `internal/relay/handler/connectivity_ws_test.go` | Include in issue #134 only if the protocols PR explicitly adds `agent-tunnel-protocols:docs/connectivity/relay.md`. Relay remains auth, pairing transport, presence, rendezvous, fallback setup, and opaque packet forwarding only. |
-| Pairing protocol | Deferred | `docs/connectivity/protocol/pairing.md`, `internal/connectivity/pairing`, `internal/connectivity/pairtest` | Pairing is security-sensitive and should get a focused SSOT slice rather than being folded into daemon transport mirror work. |
-| Local daemon broker mechanics | Repo-local | `docs/connectivity/protocol/local-broker.md`, `internal/tunnel/daemon/broker.go`, `internal/tunnel/daemon/broker_test.go` | Cross-repo SSOT owns only mobile-visible metadata/convergence semantics. Local socket lifecycle, broker ownership, and process mechanics remain implementation details of this repository. |
+| Surface | Local docs/tests | Notes |
+|---|---|---|
+| Local daemon broker mechanics | `docs/connectivity/protocol/local-broker.md`, `internal/tunnel/daemon/broker.go`, `internal/tunnel/daemon/broker_test.go` | Cross-repo SSOT owns only mobile-visible metadata/convergence semantics. Local socket lifecycle, broker ownership, tmux workspace mechanics, and process mechanics remain implementation details of this repository. |
 
 ## Compatibility Rules Mirrored Locally
 
@@ -52,3 +53,10 @@ If this repository later consumes or mirrors fixtures from
 `agent-tunnel-protocols`, those fixtures must be synthetic and non-secret. Do
 not commit real credentials, private keys, tunnel tokens, device fingerprints,
 terminal captures, private paths, or user input.
+
+## Change Rule
+
+Do not reintroduce detailed protocol mirrors under this repository when the
+surface is already covered by `agent-tunnel-protocols`. Local docs should link
+to the SSOT and describe only Go implementation entry points, tests, and
+operational concerns.

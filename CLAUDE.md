@@ -6,7 +6,8 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 
 ## Start Here
 
-- Cross-repository protocol decisions live in `https://github.com/yuanbohan/agent-tunnel-protocols`. This repository keeps implementation-specific mirrors, public Relay API docs, daemon behavior docs, and operational guidance aligned with that protocol source of truth.
+- Cross-repository protocol decisions live in `https://github.com/yuanbohan/agent-tunnel-protocols`; local checkout path is usually `../agent-tunnel-protocols`. This repository keeps implementation-specific mirrors, public Relay API docs, daemon behavior docs, and operational guidance aligned with that protocol source of truth.
+- The official Android companion lives in `https://github.com/yuanbohan/agent-tunnel-android`; local checkout path is usually `../agent-tunnel-android`. Use it when checking mobile pairing, trusted-computer list, direct-first/fallback behavior, session previews, and session detail input.
 - The main product is the `tunnel` CLI with strict relay startup requirement and automatic reconnect with backoff after startup.
 - `cmd/tunnel` builds the `tunnel` CLI. It launches a PATH-resolved CLI command, keeps the local terminal interactive, and maintains the authoritative headless terminal mirror for the current PTY session.
 - `cmd/relay` is the standalone relay server. It exposes authenticated HTTP and WebSocket APIs for external clients, authenticates app clients with bearer app sessions, authenticates agents with user-owned bearer agent tokens, keeps operator maintenance routes local-only outside the public `/api/` namespace, persists accounts and auth state in PostgreSQL, and maintains live in-memory routing only for online sessions and online device daemons. It does not retain transcript history. It starts via explicit subcommands such as `serve`, `invite create`, `invite disable`, and `user delete`.
@@ -77,6 +78,7 @@ During brainstorming and spec phases, avoid writing code whenever possible; impl
 
 ## Docs Expectations
 
+- Cross-repository protocol docs belong in `../agent-tunnel-protocols`. For pairing, Relay connectivity realtime, direct/relay carrier semantics, daemon transport frames, security invariants, trusted-computer flows, and mobile detail input data flow, update the SSOT docs first or in the same PR set. Local docs should point to the SSOT and add only Go implementation entry points, tests, API examples, and operational notes.
 - Keep `README.md`, `docs/api.md`, `docs/protocol.md`, `docs/daemon.md`, `docs/architecture.md`, `CLAUDE.md`, and `AGENTS.md` aligned with the active daemon-transport contract and current implementation status when behavior or scope changes.
 - If you change app-facing relay auth, public client endpoints, request or response shapes, app-visible error statuses or reasons, or connectivity WebSocket message contracts, update `docs/api.md`.
 - If you change relay auth, relay lifecycle, client-facing endpoints, or PTY/input behavior, update `docs/architecture.md`.

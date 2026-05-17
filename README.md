@@ -4,6 +4,19 @@ Launch a terminal agent locally and expose daemon-backed mobile connectivity wit
 
 Cross-repository protocol decisions live in [yuanbohan/agent-tunnel-protocols](https://github.com/yuanbohan/agent-tunnel-protocols). This repository keeps the Go implementation, Relay API mirror, daemon behavior, and operational docs aligned with that protocol source of truth.
 
+For local cross-repository work, keep these sibling checkouts together:
+
+- `../agent-tunnel-protocols` - SSOT protocol docs for pairing, Relay
+  control-plane behavior, daemon transport, and end-to-end mobile flows.
+- `../agent-tunnel-android` - official Android companion implementation and
+  mobile UX/docs.
+
+When a change affects pairing, trusted-computer visibility, direct/relay
+transport, daemon session frames, or mobile detail input, update
+`agent-tunnel-protocols` first or in the same PR set. This repository should
+link to SSOT docs instead of carrying a second detailed copy of shared protocol
+rules.
+
 The remote contract has separate live-only surfaces:
 
 - computer launch control plane: app clients discover currently online computers with `GET /api/computers`, then ask one computer daemon to launch `tunnel run <command>` with required `cwd`, optional `label`, and wait for `session_ready`
@@ -396,8 +409,9 @@ See [docs/local-e2e.md](docs/local-e2e.md) for the Docker-backed local E2E workf
 ## Protocol
 
 See [docs/api.md](docs/api.md) for the current public app-facing relay API reference.
-See [docs/protocol.md](docs/protocol.md) for the full wire format specification.
-See [docs/connectivity/protocol/transport.md](docs/connectivity/protocol/transport.md) for the daemon-owned session transport used by trusted mobile clients.
+See [docs/protocol.md](docs/protocol.md) for this repository's Relay and connectivity implementation map.
+See [yuanbohan/agent-tunnel-protocols](https://github.com/yuanbohan/agent-tunnel-protocols) (local checkout: `../agent-tunnel-protocols`) for the cross-repository protocol source of truth.
+See [docs/connectivity/protocol/transport.md](docs/connectivity/protocol/transport.md) for the local daemon transport implementation pointer.
 See [docs/tui-attach-flow.md](docs/tui-attach-flow.md) for the tombstone of the removed Relay attach path.
 See [docs/deployment.md](docs/deployment.md) for VPS deployment, nginx/TLS setup, and operations guide.
 See [docs/operation.md](docs/operation.md) for day-to-day relay CLI usage and operator command examples.
