@@ -65,9 +65,10 @@ The Compose file fixes the non-secret runtime defaults for production operations
 - Docker publishes STUN directly to the host on UDP `3478`; nginx does not proxy STUN
 - PostgreSQL uses database `agent_tunnel`
 - PostgreSQL uses role `relay_user`
+- Docker publishes PostgreSQL to the host on TCP `5432`
 - PostgreSQL stores data in Docker volume `relay-postgres-data`
 
-For `relay-cn`, point `agentunnel.cn` and `www.agentunnel.cn` at the VPS for nginx HTTP/WebSocket traffic. Point `stun.agentunnel.cn` at the same VPS for direct UDP STUN, and allow inbound `3478/udp` in the cloud security group and any host firewall.
+For `relay-cn`, point `agentunnel.cn` and `www.agentunnel.cn` at the VPS for nginx HTTP/WebSocket traffic. Point `stun.agentunnel.cn` at the same VPS for direct UDP STUN, and allow inbound `3478/udp` in the cloud security group and any host firewall. If off-host PostgreSQL access is needed, allow inbound `5432/tcp` only from trusted database clients.
 
 ## Ansible Compose Commands
 

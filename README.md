@@ -373,9 +373,10 @@ The Compose file hardcodes the non-secret runtime defaults for production operat
 - Docker publishes STUN directly to the host on UDP `3478`; nginx does not proxy STUN
 - PostgreSQL uses database `agent_tunnel`
 - PostgreSQL uses role `relay_user`
+- Docker publishes PostgreSQL to the host on TCP `5432`
 - PostgreSQL stores data in Docker volume `relay-postgres-data`
 
-DNS for production should point `agentunnel.cn` and `www.agentunnel.cn` at nginx for HTTP/WebSocket traffic, and `stun.agentunnel.cn` at the same VPS for direct UDP `3478` today. The separate STUN hostname lets operators move STUN later without changing the Relay hostname. The VPS cloud security group and any host firewall must allow inbound `3478/udp`.
+DNS for production should point `agentunnel.cn` and `www.agentunnel.cn` at nginx for HTTP/WebSocket traffic, and `stun.agentunnel.cn` at the same VPS for direct UDP `3478` today. The separate STUN hostname lets operators move STUN later without changing the Relay hostname. The VPS cloud security group and any host firewall must allow inbound `3478/udp`; if off-host PostgreSQL access is needed, allow inbound `5432/tcp` only from trusted database clients.
 
 PostgreSQL data lives in the fixed `relay-postgres-data` Docker named volume. Relay structured logs are appended inside the container to `/var/log/agentunnel/relay.log`, which Compose persists on the host at `/opt/agentunnel/logs/relay/relay.log`. STUN logs are written beside it as `/opt/agentunnel/logs/relay/stun.log`. `deploy/postgres/latest.sql` initializes only an empty volume. Updating an existing database schema is a manual operator step: update `deploy/postgres/latest.sql` in the same code change, then run the required SQL on the server before deploying a Relay image that depends on it.
 
